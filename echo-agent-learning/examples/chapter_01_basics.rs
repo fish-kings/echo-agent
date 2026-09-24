@@ -2,9 +2,10 @@ use echo_agent_learning::fundamentals::{
     AttemptDecision, countdown, decide_attempt, safe_item, summarize_scores, swap_coordinates,
 };
 
+/// 演示变量遮蔽（shadowing）、安全索引访问、元组交换等基础用法。
 fn main() {
     let language = "Rust";
-    let language = format!("{language} 2024 edition"); // shadowing creates a new binding
+    let language = format!("{language} 2024 edition"); // 遮蔽（shadowing）会创建一个新绑定
     let scores = [72_u32, 88, 95];
     let summary = summarize_scores(&scores);
 

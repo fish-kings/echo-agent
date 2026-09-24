@@ -1,19 +1,23 @@
-//! Regression suite — automated regression testing from trace history.
-//!
-//! Builds eval cases from past runs and re-runs them to detect regressions.
+/*!
+回归测试套件 —— 基于历史 trace 的自动化回归测试。
+
+从历史运行记录构建评测用例，并重新运行以检测回归问题。
+*/
 
 use crate::eval::{EvalCase, EvalReport, EvalRunner, SuccessCriteria};
 use crate::trace::{Run, RunEvent, RunStatus};
 use std::collections::HashSet;
 
-/// A suite of eval cases built from historical trace data.
+/// 基于历史 trace 数据构建的一组评测用例。
 pub struct RegressionSuite {
+    /// 套件名称
     pub name: String,
+    /// 套件中的评测用例列表
     pub cases: Vec<EvalCase>,
 }
 
 impl RegressionSuite {
-    /// Create an empty suite.
+    /// 创建一个空的套件。
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -21,20 +25,22 @@ impl RegressionSuite {
         }
     }
 
-    /// Build a regression suite from past run traces.
-    ///
-    /// Each successful run becomes an eval case that checks for the
-    /// same tool usage pattern and output characteristics.
+    /**
+    基于历史运行的 trace 构建一个回归测试套件。
+
+    每一个成功的运行都会变成一个评测用例，用于检查相同的
+    工具使用模式和输出特征是否依然成立。
+    */
     pub fn from_traces(runs: &[Run]) -> Self {
         let mut suite = Self::new("regression_from_traces");
         let mut seen_tasks: HashSet<String> = HashSet::new();
 
         for run in runs {
-            // Only use completed, successful runs
+            // 只使用已完成且成功的运行
             if !matches!(run.status, RunStatus::Completed) {
                 continue;
             }
-            // Skip duplicates
+            // 跳过重复项
             let task_key = run.input.trim().to_lowercase();
             if !seen_tasks.insert(task_key) {
                 continue;
@@ -47,9 +53,9 @@ impl RegressionSuite {
         suite
     }
 
-    /// Build a single eval case from one run.
+    /// 基于单次运行构建一个评测用例。
     fn build_case_from_run(run: &Run) -> EvalCase {
-        // Collect tools used in this run
+        // 收集本次运行中使用过的工具
         let skipped = crate::trace::skipped_tool_call_ids(&run.events);
         let tools_used: Vec<&str> = run
             .events
@@ -100,13 +106,13 @@ impl RegressionSuite {
         }
     }
 
-    /// Add a case manually.
+    /// 手动添加一个用例。
     pub fn with_case(mut self, case: EvalCase) -> Self {
         self.cases.push(case);
         self
     }
 
-    /// Run all cases in the suite.
+    /// 运行套件中的所有用例。
     pub async fn run_all(
         &self,
         runner: &EvalRunner,
@@ -120,12 +126,12 @@ impl RegressionSuite {
         EvalReport::new(results)
     }
 
-    /// Number of cases.
+    /// 用例数量。
     pub fn len(&self) -> usize {
         self.cases.len()
     }
 
-    /// Whether the suite is empty.
+    /// 套件是否为空。
     pub fn is_empty(&self) -> bool {
         self.cases.is_empty()
     }
@@ -300,6 +306,7 @@ mod tests {
             ),
         ];
         let suite = RegressionSuite::from_traces(&runs);
-        assert_eq!(suite.len(), 1); // deduped
+        assert_eq!(suite.len(), 1); // 已去重
     }
 }
+</content>

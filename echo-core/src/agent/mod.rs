@@ -1,4 +1,4 @@
-//! Agent core trait, events, and callback interfaces
+//! Agent 核心 trait、事件与回调接口
 
 pub mod admission;
 pub mod builder;
@@ -37,42 +37,51 @@ use std::future::Future;
 use std::pin::Pin;
 pub use tokio_util::sync::CancellationToken;
 
-/// Product-neutral usage facts for one finite Agent execution.
-///
-/// Provider-specific counters remain on their native responses. This value is
-/// the stable result surface shared by primary Agent turns and delegated
-/// Subagent executions.
+/**
+一次有限 Agent 执行的、与具体产品无关的用量事实。
+
+特定 provider 的计数器仍保留在其原生响应上。这个值是主 Agent turn 与
+被委派的 Subagent 执行共用的稳定结果面。
+*/
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionUsage {
-    /// Total wall-clock duration in milliseconds.
+    /// 总的墙钟耗时（毫秒）。
     pub duration_ms: Option<u64>,
-    /// Total input plus output tokens when the provider reported usage.
+    /// provider 上报用量时的输入加输出 token 总数。
     pub tokens_used: Option<u64>,
-    /// Number of ReAct iterations when the execution path reports it.
+    /// 当执行路径上报时的 ReAct 迭代次数。
     pub iterations: Option<u64>,
 }
 
 impl ExecutionUsage {
-    /// Return the duration in milliseconds, defaulting to zero when absent.
+    /// 返回耗时（毫秒），缺失时默认为 0。
     pub fn duration_millis(&self) -> u64 {
         self.duration_ms.unwrap_or(0)
     }
 }
 
-/// Typed failure returned when a caller tries to steer an active agent turn.
+/// 当调用方尝试引导一个活跃 agent turn 时返回的带类型失败。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentSteerError {
-    /// This agent implementation does not expose live steering.
+    /// 该 agent 实现未暴露实时引导能力。
     Unsupported,
-    /// No turn is currently active.
+    /// 当前没有活跃的 turn。
     NoActiveTurn,
-    /// The active turn does not match the caller's exact expected identity.
-    TurnMismatch { expected: String, actual: String },
-    /// The turn exists but has not reached a safe injection point.
-    NotSteerable { turn_id: String },
-    /// Empty instructions are never admitted.
+    /// 活跃 turn 与调用方给出的确切预期身份不匹配。
+    TurnMismatch {
+        /// 调用方预期的 turn 标识。
+        expected: String,
+        /// 实际活跃的 turn 标识。
+        actual: String,
+    },
+    /// 该 turn 存在，但尚未到达一个安全的注入点。
+    NotSteerable {
+        /// 该 turn 的标识。
+        turn_id: String,
+    },
+    /// 空指令永远不会被接受。
     EmptyInput,
-    /// The steering state could not be accessed.
+    /// 无法访问引导状态。
     StateUnavailable,
 }
 
@@ -96,40 +105,41 @@ impl std::fmt::Display for AgentSteerError {
 
 impl std::error::Error for AgentSteerError {}
 
-/// Observable lifecycle phase of one accepted steering input.
-///
-/// Acceptance only means that the active turn's mailbox owns the input.
-/// [`AgentSteerPhase::Drained`] means the ReAct loop moved it into model
-/// context, while [`AgentSteerPhase::TurnSettled`] means the owning root turn
-/// reached its real terminal boundary.
+/**
+一次已被接受的引导输入的可观察生命周期阶段。
+
+「已接受」只意味着活跃 turn 的邮箱拥有该输入。[`AgentSteerPhase::Drained`]
+表示 ReAct 循环已经把它纳入模型上下文，而 [`AgentSteerPhase::TurnSettled`]
+表示所属的根 turn 已到达其真正的终止边界。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSteerPhase {
-    /// The active turn mailbox owns the input, but model context does not.
+    /// 活跃 turn 的邮箱拥有该输入，但模型上下文尚未拥有。
     Accepted,
-    /// The input was inserted into the active turn's model context.
+    /// 该输入已被插入活跃 turn 的模型上下文中。
     Drained,
-    /// The root turn reached a terminal boundary.
+    /// 根 turn 已到达一个终止边界。
     TurnSettled,
 }
 
-/// Terminal outcome of the root turn that owned a steering input.
+/// 拥有某条引导输入的根 turn 的终止结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSteerTurnOutcome {
-    /// The root turn completed normally.
+    /// 根 turn 正常完成。
     Completed,
-    /// Cancellation reached the root turn.
+    /// 取消信号到达了根 turn。
     Cancelled,
-    /// Provider, tool, validation, or runtime processing failed.
+    /// provider、工具、校验或运行时处理失败。
     Failed,
-    /// The turn owner was dropped or aborted before it could publish a typed
-    /// terminal. This is terminal, but must not be interpreted as success.
+    /// turn 的持有者在发布带类型的终态之前被丢弃或中止。这是一种终止状态，
+    /// 但不得被理解为成功。
     Dropped,
 }
 
 impl AgentSteerTurnOutcome {
-    /// Stable lowercase wire identifier for this terminal outcome.
+    /// 该终止结果的稳定小写线上标识符。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -139,7 +149,7 @@ impl AgentSteerTurnOutcome {
         }
     }
 
-    /// Parse a stable lowercase wire identifier.
+    /// 解析一个稳定的小写线上标识符。
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "completed" => Some(Self::Completed),
@@ -151,35 +161,37 @@ impl AgentSteerTurnOutcome {
     }
 }
 
-/// Producer hook for a generic initial-input lifecycle.
-///
-/// The turn driver owns acceptance and terminal settlement. An Agent
-/// implementation that knows the exact point at which its input entered model
-/// context may publish the drain boundary through this hook. Implementations
-/// without that knowledge leave the receipt at `drained = false`.
+/**
+通用初始输入生命周期的生产者钩子。
+
+turn driver 拥有接受与终止结算的所有权。若某个 Agent 实现确切知道其输入
+进入模型上下文的时刻，可以通过此钩子发布 drain 边界。不掌握该信息的实现
+则让回执保持 `drained = false`。
+*/
 pub trait AgentInputLifecycle: Send + Sync {
+    /// 标记该输入已被纳入模型上下文（drained）。
     fn mark_drained(&self);
 }
 
-/// Current durable-consumption boundary observed for one steering input.
+/// 针对一条引导输入观察到的当前持久消费边界。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentSteerState {
-    /// The mailbox owns the input.
+    /// 邮箱拥有该输入。
     Accepted,
-    /// The active model context owns the input.
+    /// 活跃模型上下文拥有该输入。
     Drained,
-    /// The root turn terminated.
+    /// 根 turn 已终止。
     TurnSettled {
-        /// Root-turn terminal outcome.
+        /// 根 turn 的终止结果。
         outcome: AgentSteerTurnOutcome,
-        /// Whether the input reached model context before the turn settled.
+        /// 该输入是否在 turn 结算之前就已进入模型上下文。
         drained: bool,
     },
 }
 
 impl AgentSteerState {
-    /// Return the coarse lifecycle phase.
+    /// 返回粗粒度的生命周期阶段。
     pub fn phase(&self) -> AgentSteerPhase {
         match self {
             Self::Accepted => AgentSteerPhase::Accepted,
@@ -188,7 +200,7 @@ impl AgentSteerState {
         }
     }
 
-    /// Whether the input reached model context before the current state.
+    /// 该输入是否在当前状态之前就已进入模型上下文。
     pub fn was_drained(&self) -> bool {
         matches!(
             self,
@@ -197,20 +209,27 @@ impl AgentSteerState {
     }
 }
 
-/// Tracked receipt for one steering input accepted by an active Agent turn.
-///
-/// The receipt is driven by the Agent implementation. Product adapters should
-/// retain their durable input until `state().was_drained()` is true, and use
-/// `wait_for_turn_settled` when terminal root-turn semantics are required.
+/**
+被某个活跃 Agent turn 接受的一条引导输入的可追踪回执。
+
+该回执由 Agent 实现驱动。产品层适配器应保留其持久化输入直到
+`state().was_drained()` 为 true；当需要根 turn 的终止语义时使用
+`wait_for_turn_settled`。
+*/
 #[derive(Debug, Clone)]
 pub struct AgentSteerReceipt {
+    /// 该引导输入的稳定标识。
     steer_id: String,
+    /// 接受该输入的根 turn 标识。
     turn_id: String,
+    /// 观察生命周期状态变化的 watch 通道接收端。
     state: tokio::sync::watch::Receiver<AgentSteerState>,
+    /// 发送端关闭后合成的终止状态缓存。
     closed_terminal: std::sync::Arc<std::sync::Mutex<Option<AgentSteerState>>>,
 }
 
 impl AgentSteerReceipt {
+    /// 构造一个新的回执（框架内部使用）。
     #[doc(hidden)]
     pub fn new(
         steer_id: String,
@@ -225,17 +244,17 @@ impl AgentSteerReceipt {
         }
     }
 
-    /// Stable identity of this steering input.
+    /// 该引导输入的稳定标识。
     pub fn steer_id(&self) -> &str {
         &self.steer_id
     }
 
-    /// Identity of the root turn that accepted this input.
+    /// 接受该输入的根 turn 标识。
     pub fn turn_id(&self) -> &str {
         &self.turn_id
     }
 
-    /// Snapshot the latest observed lifecycle state without waiting.
+    /// 在不等待的情况下，快照当前观察到的最新生命周期状态。
     pub fn state(&self) -> AgentSteerState {
         if let Some(state) = self.cached_closed_terminal() {
             return state;
@@ -246,6 +265,7 @@ impl AgentSteerReceipt {
         self.state.borrow().clone()
     }
 
+    /// 读取已缓存的、发送端关闭后合成的终止状态（若已有）。
     fn cached_closed_terminal(&self) -> Option<AgentSteerState> {
         self.closed_terminal
             .lock()
@@ -253,6 +273,7 @@ impl AgentSteerReceipt {
             .clone()
     }
 
+    /// 当发送端已关闭时，基于最后一次观察到的状态合成一个终止状态并缓存。
     fn synthesize_closed_terminal(&self) -> AgentSteerState {
         let mut cached = self
             .closed_terminal
@@ -273,7 +294,7 @@ impl AgentSteerReceipt {
         terminal
     }
 
-    /// Wait until the input is drained or its turn settles first.
+    /// 等待直到该输入被 drain，或其 turn 先行结算。
     pub async fn wait_for_drained(&mut self) -> AgentSteerState {
         loop {
             let state = self.state();
@@ -286,7 +307,7 @@ impl AgentSteerReceipt {
         }
     }
 
-    /// Wait for the owning root turn's real terminal boundary.
+    /// 等待所属根 turn 真正的终止边界。
     pub async fn wait_for_turn_settled(&mut self) -> AgentSteerState {
         loop {
             let state = self.state();
@@ -365,106 +386,118 @@ mod steer_receipt_tests {
     }
 }
 
-/// Optional soft budgets applied to one ReAct invocation.
-///
-/// `None` fields preserve the existing behavior. The hard iteration limit
-/// remains `AgentConfig::max_iterations`; this policy only adds an explicit
-/// wind-down point and a provider-reported model-token ceiling.
+/**
+应用于一次 ReAct 调用的可选软预算。
+
+`None` 字段保留既有行为。硬性的迭代次数上限仍由 `AgentConfig::max_iterations`
+决定；本策略只额外增加一个显式的收尾（wind-down）时机，以及一个由
+provider 上报的模型 token 上限。
+*/
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunBudgetPolicy {
-    /// Inject a one-shot wind-down instruction when this many iterations remain.
+    /// 当剩余迭代次数达到这个值时，注入一次性的收尾指令。
     pub iteration_wind_down_remaining: Option<usize>,
-    /// Enter final-only mode after this many provider-reported model tokens.
+    /// 当 provider 上报的模型 token 数达到这个值后，进入仅输出最终答案的模式。
     pub max_model_tokens: Option<usize>,
 }
 
-/// Observable decision made by the run budget controller.
+/// run 预算控制器做出的可观察决策。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetDecision {
-    /// Normal ReAct execution may continue.
+    /// 正常的 ReAct 执行可以继续。
     Continue,
-    /// The run should converge, but tools remain available.
+    /// run 应当收敛，但工具仍然可用。
     WindDown,
-    /// The next model call must produce text without tools.
+    /// 下一次模型调用必须只产出文本，不带工具。
     FinalOnly,
-    /// A hard budget has been exhausted and the run must fail.
+    /// 硬性预算已耗尽，run 必须失败。
     HardStop,
 }
 
-/// A policy stage that changed the model-requested tool invocation.
+/// 修改了模型请求的工具调用的策略阶段。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolInvocationRewrite {
+    /// 由干预机制重定向到了另一个工具。
     InterventionRedirect,
+    /// 由干预机制修改了参数。
     InterventionArguments,
+    /// 由 PreToolUse hook 修改。
     PreToolUseHook,
+    /// 由审批流程修改。
     Approval,
 }
 
-/// The requested and effective identity of one tool execution.
+/// 一次工具执行的请求身份与生效身份。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolInvocation {
+    /// 模型最初请求的工具名。
     pub requested_name: String,
+    /// 模型最初请求的参数。
     pub requested_args: Value,
+    /// 经过策略改写后，最终生效的工具名。
     pub name: String,
+    /// 经过策略改写后，最终生效的参数。
     pub args: Value,
+    /// 依次应用的改写来源列表。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rewrites: Vec<ToolInvocationRewrite>,
 }
 
-/// Value-scoped metadata for one streaming agent invocation.
+/// 一次流式 agent 调用的、限定值作用域的元数据。
 #[derive(Clone, Default)]
 pub struct AgentInvocationContext {
-    /// Run metadata propagated into the invocation's tool context.
+    /// 传播进本次调用的工具上下文中的 run 元数据。
     pub runtime: Option<crate::tools::ExternalRunContext>,
-    /// Optional runtime checkpoint identity distinct from the product
-    /// conversation carried by `runtime`.
-    ///
-    /// `None` preserves the existing behavior: a runtime conversation override
-    /// is also used for checkpoints. Persistent runtimes may set this to an
-    /// ephemeral incarnation while keeping product events and transcripts on a
-    /// stable conversation ID. When one Agent instance receives a different
-    /// runtime-state identity, the framework resets or restores that identity
-    /// before model input is prepared; warm context is reused only for the same
-    /// identity.
+    /**
+    与 `runtime` 携带的产品对话不同的可选运行时 checkpoint 身份。
+
+    `None` 保留既有行为：运行时对话覆盖值同时也用于 checkpoint。
+    持久化运行时可以把它设置为一个临时化身，同时让产品事件和 transcript
+    保持在一个稳定的会话 ID 上。当同一个 Agent 实例收到不同的运行时状态
+    身份时，框架会在准备模型输入之前重置或恢复该身份；只有相同身份时
+    才会复用热上下文。
+    */
     pub runtime_state_id: Option<String>,
-    /// Optional model-context generation for append-only transcript projection.
-    ///
-    /// When set, the framework tracks the already-projected prefix on the Agent
-    /// and appends only new messages from this generation. This prevents a
-    /// fresh model context from being content-deduplicated against an older
-    /// product transcript that happens to end with identical text.
-    /// The value must equal the effective runtime-state identity resolved from
-    /// explicit `runtime_state_id`, the runtime conversation, or the configured
-    /// conversation. A mismatch fails closed with a runtime-state error before
-    /// admission side effects or checkpoint persistence.
+    /**
+    用于仅追加式 transcript 投影的可选模型上下文代次（generation）。
+
+    设置后，框架会在 Agent 上跟踪已经投影过的前缀，只追加本代次中的
+    新消息。这可以防止一个全新的模型上下文，被错误地按内容去重到
+    某个恰好以相同文本结尾的旧产品 transcript 上。该值必须等于从显式
+    `runtime_state_id`、运行时对话或已配置对话解析出的生效运行时状态
+    身份。不匹配时，会在产生任何准入副作用或 checkpoint 持久化之前，
+    以运行时状态错误的形式安全失败（fail closed）。
+    */
     pub transcript_generation_id: Option<String>,
-    /// Per-invocation working directory. `None` uses the agent's configured default.
+    /// 本次调用的工作目录。`None` 表示使用 agent 配置的默认值。
     pub working_dir: Option<std::path::PathBuf>,
-    /// Cancellation token captured with the invocation before queueing.
+    /// 在入队之前随本次调用一并捕获的取消令牌。
     pub cancel: Option<CancellationToken>,
-    /// Tool names hidden only for this invocation.
-    ///
-    /// These exclusions are combined with agent-level defaults when the run
-    /// snapshot is created. They never mutate the shared tool registry.
+    /**
+    仅对本次调用隐藏的工具名集合。
+
+    这些排除项会在创建 run 快照时与 agent 级别的默认值合并。
+    它们绝不会修改共享的工具注册表。
+    */
     pub disabled_tools: Option<std::collections::HashSet<String>>,
-    /// Initial tool names whose schemas are visible to the model.
-    /// `None` keeps the complete eligible tool surface visible.
+    /// 对模型可见其 schema 的初始工具名集合。
+    /// `None` 表示保持完整的合规工具集合全部可见。
     pub visible_tools: Option<std::collections::HashSet<String>>,
-    /// Per-invocation budget policy. `None` uses the agent default.
+    /// 本次调用的预算策略。`None` 表示使用 agent 的默认值。
     pub run_budget: Option<RunBudgetPolicy>,
-    /// Structured conversation turns inserted after the system prompt and
-    /// before the current input. This is value-scoped and never mutates the
-    /// agent's configured system prompt.
+    /// 插入在 system prompt 之后、当前输入之前的结构化对话 turn。
+    /// 这是限定值作用域的，绝不会修改 agent 已配置的 system prompt。
     pub history: Option<Vec<Message>>,
-    /// Opaque resources retained through the invocation's spawned Agent,
-    /// subagent, and tool work.
+    /// 在本次调用所派生的 Agent、subagent 与工具工作期间保留的不透明资源。
     pub resource_guards: Vec<crate::tools::InvocationResourceGuard>,
-    /// Optional generic producer for the initial input's drain boundary.
-    ///
-    /// This is framework-only lifecycle plumbing. Product policy and durable
-    /// receipt ownership remain with the caller of the turn driver.
+    /**
+    初始输入 drain 边界的可选通用生产者。
+
+    这是仅供框架使用的生命周期管道。产品策略与持久回执的所有权
+    仍归 turn driver 的调用方所有。
+    */
     pub input_lifecycle: Option<std::sync::Arc<dyn AgentInputLifecycle>>,
 }
 
@@ -522,193 +555,200 @@ impl std::fmt::Debug for AgentInvocationContext {
     }
 }
 
-/// Events produced during Agent execution
-///
-/// Cover each phase of the Agent lifecycle for progress bars, logs, UI updates, etc.
+/**
+Agent 执行期间产生的事件
+
+覆盖 Agent 生命周期的每个阶段，供进度条、日志、UI 更新等场景使用。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 #[non_exhaustive]
-// Boxing ToolStream would break the public event contract for every consumer.
+// 把 ToolStream 装箱会破坏所有消费者共用的公开事件契约。
 #[allow(clippy::large_enum_variant)]
 pub enum AgentEvent {
-    // ── LLM Interaction ──────────────────────────────────────────────────────────
-    /// LLM is generating a token (streaming)
+    // ── LLM 交互 ──────────────────────────────────────────────────────────
+    /// LLM 正在生成一个 token（流式）
     Token(String),
-    /// LLM reasoning started
+    /// LLM 推理开始
     ThinkStart,
-    /// LLM reasoning ended
+    /// LLM 推理结束
     ThinkEnd {
-        /// Number of prompt tokens consumed
+        /// 消耗的 prompt token 数
         prompt_tokens: usize,
-        /// Number of completion tokens consumed
+        /// 消耗的 completion token 数
         completion_tokens: usize,
     },
-    /// Provider-reported LLM usage for a single request.
+    /// provider 针对单次请求上报的 LLM 用量。
     ///
-    /// `ThinkEnd` is kept as a compact, backward-compatible UI event. This
-    /// richer event carries cache observability. When `usage_reported` is
-    /// false, the provider or gateway did not return usage metadata; callers
-    /// must treat cache fields as unknown instead of a zero-percent cache hit.
+    /// `ThinkEnd` 作为一个精简、向后兼容的 UI 事件保留下来。这个信息更丰富的
+    /// 事件携带缓存可观测性数据。当 `usage_reported` 为 false 时，说明
+    /// provider 或网关没有返回用量元数据；调用方必须把缓存相关字段视为
+    /// 未知，而不是零命中率。
     LlmUsage {
-        /// Model used for the request.
+        /// 该请求使用的模型。
         model: String,
-        /// Prompt/input tokens reported by the provider.
+        /// provider 上报的 prompt/输入 token 数。
         prompt_tokens: usize,
-        /// Completion/output tokens reported by the provider.
+        /// provider 上报的 completion/输出 token 数。
         completion_tokens: usize,
-        /// Total tokens reported by the provider, or prompt + completion when absent.
+        /// provider 上报的总 token 数；缺失时为 prompt + completion。
         total_tokens: usize,
-        /// Prompt/input tokens served from provider-side cache.
+        /// 由 provider 侧缓存命中提供的 prompt/输入 token 数。
         cached_prompt_tokens: usize,
-        /// Prompt/input tokens written into provider-side cache.
+        /// 写入 provider 侧缓存的 prompt/输入 token 数。
         cache_creation_prompt_tokens: usize,
-        /// Whether the provider response contained usage metadata.
+        /// provider 响应中是否包含用量元数据。
         usage_reported: bool,
     },
-    /// A run budget crossed a behavior boundary.
+    /// 一次 run 预算越过了某个行为边界。
     BudgetDecision {
-        /// Decision taken by the harness.
+        /// harness 做出的决策。
         decision: BudgetDecision,
-        /// Stable machine-readable reason.
+        /// 稳定的、机器可读的原因。
         reason: String,
-        /// Current iteration count (one-based).
+        /// 当前迭代计数（从 1 开始）。
         iteration: usize,
-        /// Provider-reported model tokens accumulated in this invocation.
+        /// 本次调用中累计的、由 provider 上报的模型 token 数。
         reported_model_tokens: usize,
-        /// False when at least one provider response omitted usage metadata.
+        /// 当至少有一次 provider 响应缺失用量元数据时为 false。
         usage_complete: bool,
     },
 
-    // ── Tool Invocation ──────────────────────────────────────────────────────────
-    /// Canonical invocation emitted after policy rewrites and before execution.
+    // ── 工具调用 ──────────────────────────────────────────────────────────
+    /// 经过策略改写之后、执行之前发出的规范化调用。
     ToolCall {
-        /// Stable tool-call identity (model tool_call_id, or generated UUID).
+        /// 稳定的工具调用身份（模型的 tool_call_id，或生成的 UUID）。
         call_id: String,
-        /// Requested/effective invocation and rewrite provenance.
+        /// 请求/生效的调用信息及改写来源。
         invocation: ToolInvocation,
     },
-    /// Tool execution completed, successfully or unsuccessfully.
+    /// 工具执行已完成，无论成功还是失败。
     ToolResult {
-        /// Stable tool-call identity matching the preceding [`Self::ToolCall`].
+        /// 与前面 [`Self::ToolCall`] 相匹配的稳定工具调用身份。
         call_id: String,
-        /// Effective tool name.
+        /// 生效的工具名。
         name: String,
-        /// Complete result, including typed failure, artifact metadata, and truncation.
+        /// 完整结果，包括带类型的失败信息、artifact 元数据与截断标记。
         result: crate::tools::ToolResult,
     },
-    /// Streaming tool progress / output event (not a terminal lifecycle event).
+    /// 流式工具进度/输出事件（不是终止生命周期事件）。
     ToolStream {
-        /// Stable tool-call identity matching the preceding [`Self::ToolCall`].
+        /// 与前面 [`Self::ToolCall`] 相匹配的稳定工具调用身份。
         call_id: String,
-        /// Tool name
+        /// 工具名
         name: String,
-        /// Stream event payload (`Progress` / `Output`; `Complete` is mapped to
-        /// [`Self::ToolResult`] by the ReAct runner).
+        /// stream 事件负载（`Progress` / `Output`；`Complete` 会被 ReAct
+        /// runner 映射为 [`Self::ToolResult`]）。
         event: crate::tools::ToolStreamEvent,
     },
-    /// Emitted before a batch of tools starts executing.
-    /// All tools between ToolBatchStart and ToolBatchEnd are concurrent.
+    /// 在一批工具开始执行之前发出。
+    /// ToolBatchStart 与 ToolBatchEnd 之间的所有工具都是并发执行的。
     ToolBatchStart {
-        /// Number of tools in this batch
+        /// 本批次中的工具数量
         tool_count: usize,
     },
-    /// Emitted after all tools in the batch have completed.
+    /// 在该批次中所有工具都执行完成后发出。
     ToolBatchEnd,
 
-    // ── Guard & Safety ──────────────────────────────────────────────────────
-    /// A guard was triggered
+    // ── Guard 与安全 ──────────────────────────────────────────────────────
+    /// 某个 guard 被触发
     GuardTriggered {
-        /// Guard name
+        /// guard 名称
         guard: String,
-        /// Whether the action was blocked
+        /// 该动作是否被阻断
         blocked: bool,
     },
 
-    // ── Memory & Orchestration ──────────────────────────────────────────────────────
-    /// Long-term memory was recalled
+    // ── 记忆与编排 ──────────────────────────────────────────────────────────
+    /// 已回忆出长期记忆
     MemoryRecalled {
-        /// Number of recalled memory entries
+        /// 被回忆出的记忆条目数量
         count: usize,
     },
-    /// Context was auto-compressed to fit within token limits
+    /// 上下文因超出 token 限制而被自动压缩
     ContextCompressed {
-        /// Message count before compression
+        /// 压缩前的消息数
         before_count: usize,
-        /// Message count after compression
+        /// 压缩后的消息数
         after_count: usize,
-        /// Estimated token count before compression
+        /// 压缩前的估算 token 数
         before_tokens: usize,
-        /// Estimated token count after compression
+        /// 压缩后的估算 token 数
         after_tokens: usize,
     },
-    /// Transcript projection reached a typed persistence settlement before terminal publication.
+    /// transcript 投影在终止发布之前，达到了一个带类型的持久化结算点。
     TranscriptProjectionSettlement(crate::memory::TranscriptProjectionSettlement),
 
-    // ── Visualization ────────────────────────────────────────────────────────────
-    /// Chart generation (vega-lite JSON spec)
-    Chart { spec: Value },
+    // ── 可视化 ────────────────────────────────────────────────────────────
+    /// 图表生成（vega-lite JSON spec）
+    Chart {
+        /// vega-lite 图表 spec。
+        spec: Value,
+    },
 
-    // ── Errors ────────────────────────────────────────────────────────────
-    /// Generic Agent error (non-tool errors, e.g. LLM call failure, guard rejection, etc.)
+    // ── 错误 ────────────────────────────────────────────────────────────
+    /// 通用 Agent 错误（非工具错误，例如 LLM 调用失败、guard 拒绝等）
     Error {
-        /// Error source (e.g. "llm", "guard", "config")
+        /// 错误来源（例如 "llm"、"guard"、"config"）
         source: String,
-        /// Error message
+        /// 错误信息
         message: String,
-        /// Stable classification used by retry, lifecycle, and UI adapters.
+        /// 供重试、生命周期与 UI 适配器使用的稳定分类。
         failure: crate::error::AgentFailure,
     },
 
-    /// Safety notice: the agent is about to perform an action that needs user awareness.
-    /// Includes what action, why, risk level, and required permission.
+    /// 安全提示：agent 即将执行一个需要用户关注的动作。
+    /// 包含具体动作、原因、风险等级和所需权限。
     SafetyNotice {
-        /// What the agent is about to do.
+        /// agent 即将执行的动作。
         action: String,
-        /// Why this action is needed.
+        /// 为何需要该动作。
         reason: String,
-        /// Risk description.
+        /// 风险描述。
         risk: String,
-        /// Permission level required.
+        /// 所需的权限等级。
         permission: String,
     },
-    /// A tool parameter validation error occurred.
+    /// 发生了一次工具参数校验错误。
     ParameterError {
-        /// Tool name.
+        /// 工具名。
         tool: String,
-        /// Parameter name.
+        /// 参数名。
         parameter: String,
-        /// Expected type.
+        /// 期望的类型。
         expected: String,
-        /// Actual type received.
+        /// 实际收到的类型。
         got: String,
     },
 
-    // ── Terminal States ──────────────────────────────────────────────────────────────
-    /// Final answer
+    // ── 终止状态 ──────────────────────────────────────────────────────────────
+    /// 最终答案
     FinalAnswer(String),
-    /// Cancelled
+    /// 已取消
     Cancelled,
 }
 
-/// The lifecycle phase an Agent event belongs to
-///
-/// Maps each variant of `AgentEvent` into a unified phase model for:
-/// - **State persistence**: checkpoints are only created at phase boundaries
-/// - **Frontend rendering**: route to the corresponding UI component per phase, without matching every variant
-/// - **Developer understanding**: newcomers first understand phases, then specific events
+/**
+一个 Agent 事件所属的生命周期阶段
+
+把 `AgentEvent` 的每个变体映射进一个统一的阶段模型，用于：
+- **状态持久化**：checkpoint 只在阶段边界处创建
+- **前端渲染**：按阶段路由到对应的 UI 组件，而无需匹配每一个具体变体
+- **开发者理解**：新人先理解阶段，再理解具体事件
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AgentPhase {
-    /// LLM reasoning in progress (Token → ThinkStart → ThinkEnd)
+    /// LLM 推理进行中（Token → ThinkStart → ThinkEnd）
     Thinking,
-    /// Tool execution in progress (ToolCall -> typed ToolResult)
+    /// 工具执行进行中（ToolCall -> 带类型的 ToolResult）
     Acting,
-    /// Final result produced or cancelled
+    /// 已产出最终结果或已取消
     Terminal,
 }
 
 impl AgentEvent {
-    /// Build a terminal event while preserving the typed framework failure.
+    /// 构造一个终止事件，同时保留带类型的框架失败信息。
     pub fn from_error(source: impl Into<String>, error: &ReactError) -> Self {
         let failure = crate::error::AgentFailure::from(error);
         Self::Error {
@@ -718,7 +758,7 @@ impl AgentEvent {
         }
     }
 
-    /// Build an unclassified terminal failure for boundaries that have no typed error.
+    /// 为没有带类型错误的边界，构造一个未分类的终止失败。
     pub fn error_message(source: impl Into<String>, message: impl Into<String>) -> Self {
         let source = source.into();
         let failure = crate::error::AgentFailure::message(&source, message);
@@ -729,7 +769,7 @@ impl AgentEvent {
         }
     }
 
-    /// Whether this event ends the invocation event stream.
+    /// 该事件是否结束本次调用的事件流。
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -737,7 +777,7 @@ impl AgentEvent {
         )
     }
 
-    /// Return prompt token count for `ThinkEnd`.
+    /// 返回 `ThinkEnd` 的 prompt token 数。
     pub fn prompt_tokens(&self) -> Option<usize> {
         match self {
             AgentEvent::ThinkEnd { prompt_tokens, .. } => Some(*prompt_tokens),
@@ -746,7 +786,7 @@ impl AgentEvent {
         }
     }
 
-    /// Return completion token count for `ThinkEnd`.
+    /// 返回 `ThinkEnd` 的 completion token 数。
     pub fn completion_tokens(&self) -> Option<usize> {
         match self {
             AgentEvent::ThinkEnd {
@@ -759,7 +799,7 @@ impl AgentEvent {
         }
     }
 
-    /// Return total token usage for `ThinkEnd`.
+    /// 返回 `ThinkEnd` 的总 token 用量。
     pub fn total_tokens(&self) -> Option<usize> {
         match self {
             AgentEvent::ThinkEnd {
@@ -771,26 +811,28 @@ impl AgentEvent {
         }
     }
 
-    /// Compatibility helper for older call sites that tracked a single token count.
+    /// 供只追踪单一 token 计数的旧调用点使用的兼容辅助方法。
     pub fn tokens_used(&self) -> Option<usize> {
         self.total_tokens()
     }
 
-    /// Return the lifecycle phase of this event
-    ///
-    /// Used for frontend phase-routed rendering, state machine derivation, and similar scenarios.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use echo_core::agent::{AgentEvent, AgentPhase};
-    ///
-    /// let event = AgentEvent::ThinkStart;
-    /// assert_eq!(event.phase(), AgentPhase::Thinking);
-    ///
-    /// let event = AgentEvent::FinalAnswer("done".into());
-    /// assert_eq!(event.phase(), AgentPhase::Terminal);
-    /// ```
+    /**
+    返回该事件的生命周期阶段
+
+    用于前端按阶段路由渲染、状态机推导等类似场景。
+
+    # 示例
+
+    ```
+    use echo_core::agent::{AgentEvent, AgentPhase};
+
+    let event = AgentEvent::ThinkStart;
+    assert_eq!(event.phase(), AgentPhase::Thinking);
+
+    let event = AgentEvent::FinalAnswer("done".into());
+    assert_eq!(event.phase(), AgentPhase::Terminal);
+    ```
+    */
     pub fn phase(&self) -> AgentPhase {
         match self {
             AgentEvent::Token(_)
@@ -818,20 +860,23 @@ impl AgentEvent {
         }
     }
 
-    /// Whether this is a persistable snapshot point (phase boundary event)
-    ///
-    /// When these events occur, the Agent state is at a "stable point" — no in-flight LLM calls
-    /// or tool executions, suitable for checkpoint save, resume-from-checkpoint, or Time Travel debugging.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use echo_core::agent::AgentEvent;
-    ///
-    /// assert!(AgentEvent::ThinkEnd { prompt_tokens: 100, completion_tokens: 50 }.is_checkpoint());
-    /// assert!(AgentEvent::FinalAnswer("done".into()).is_checkpoint());
-    /// assert!(!AgentEvent::Token("hello".into()).is_checkpoint());
-    /// ```
+    /**
+    该事件是否是一个可持久化的快照点（阶段边界事件）
+
+    当这些事件发生时，Agent 状态处于一个"稳定点"——没有正在进行的 LLM
+    调用或工具执行，适合用来保存 checkpoint、从 checkpoint 恢复，
+    或进行时间旅行式调试。
+
+    # 示例
+
+    ```
+    use echo_core::agent::AgentEvent;
+
+    assert!(AgentEvent::ThinkEnd { prompt_tokens: 100, completion_tokens: 50 }.is_checkpoint());
+    assert!(AgentEvent::FinalAnswer("done".into()).is_checkpoint());
+    assert!(!AgentEvent::Token("hello".into()).is_checkpoint());
+    ```
+    */
     pub fn is_checkpoint(&self) -> bool {
         matches!(
             self,
@@ -881,49 +926,53 @@ mod accounting_tests {
     }
 }
 
-/// Parsed step type from LLM response
+/// 从 LLM 响应中解析出的步骤类型
 #[derive(Debug)]
 pub enum StepType {
-    /// Thought step (internal reasoning)
+    /// 思考步骤（内部推理）
     Thought(String),
-    /// Tool invocation step
+    /// 工具调用步骤
     Call {
-        /// Tool call ID (unique identifier)
+        /// 工具调用 ID（唯一标识符）
         tool_call_id: String,
-        /// Function name
+        /// 函数名
         function_name: String,
-        /// Function arguments (JSON format)
+        /// 函数参数（JSON 格式）
         arguments: Value,
     },
 }
 
-/// Unified Agent execution interface
+/**
+统一的 Agent 执行接口
+
+所有方法都接受 `&self`，以便一个 `Agent` 可以通过 `Arc` 共享。
+**但是**，其底层的可变状态（对话历史、上下文、工具缓存）在同一实例上
+并发调用 `execute` / `chat_stream` 时*并不*安全。调用方**必须**序列化访问——
+通常通过 `Arc<RwLock<Agent>>` 或 `Arc<tokio::sync::Mutex<Agent>>`。
+
+workflow 层在通过 plan-execute 和多 agent 拓扑驱动 agent 时，已经强制执行了
+这种序列化。
+*/
+/// 可共享的、agent 全局范围的工具可见性策略。
 ///
-/// All methods accept `&self` so that an `Agent` may be shared via `Arc`.
-/// **However**, the underlying mutable state (dialogue history, context,
-/// tool caches) is *not* safe for concurrent `execute` / `chat_stream` calls
-/// on the same instance.  Callers **must** serialize access — typically
-/// through `Arc<RwLock<Agent>>` or `Arc<tokio::sync::Mutex<Agent>>`.
-///
-/// The workflow layer already enforces this serialization when driving
-/// agents through plan-execute and multi-agent topologies.
-/// Shareable agent-wide tool visibility policy.
-///
-/// The policy is read when an invocation snapshot is created. Sharing it with
-/// lazily built Subagents keeps their registered capability surface aligned
-/// without coupling the framework to any product-specific tool-control store.
+/// 该策略会在创建一次调用快照时被读取。与惰性构建的 Subagent 共享它，
+/// 可以在不让框架耦合任何特定产品的工具控制存储的前提下，保持它们注册的
+/// 能力面一致。
 #[derive(Debug, Clone, Default)]
 pub struct ToolVisibilityPolicy {
+    /// 当前被禁用的工具名集合；`None` 表示没有禁用项。
     disabled: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
 }
 
 impl ToolVisibilityPolicy {
+    /// 设置被禁用的工具名集合（空集合会被归一化为 `None`）。
     pub fn set_disabled(&self, names: Option<std::collections::HashSet<String>>) {
         if let Ok(mut guard) = self.disabled.write() {
             *guard = names.filter(|names| !names.is_empty());
         }
     }
 
+    /// 返回当前被禁用的工具名集合（未设置时为空集合）。
     pub fn disabled_names(&self) -> std::collections::HashSet<String> {
         self.disabled
             .read()
@@ -933,108 +982,108 @@ impl ToolVisibilityPolicy {
 }
 
 pub trait Agent: Send + Sync {
-    /// Human-readable agent name used in logs, events, and orchestration.
+    /// 用于日志、事件与编排中的、人类可读的 agent 名称。
     fn name(&self) -> &str;
-    /// Model identifier currently bound to the agent.
+    /// 该 agent 当前绑定的模型标识符。
     fn model_name(&self) -> &str;
-    /// System prompt that seeds the agent's behavior.
+    /// 为该 agent 行为奠基的 system prompt。
     fn system_prompt(&self) -> &str;
 
-    /// Names of tools currently exposed to the model.
+    /// 当前暴露给模型的工具名列表。
     fn tool_names(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Tool definitions serialized into LLM requests.
+    /// 序列化进 LLM 请求中的工具定义。
     fn tool_definitions(&self) -> Vec<ToolDefinition> {
         vec![]
     }
 
-    /// Registered tools hidden from the model by the agent-wide capability
-    /// policy. Invocation-specific exclusions remain in
-    /// [`AgentInvocationContext::disabled_tools`].
+    /// 被 agent 全局能力策略对模型隐藏的已注册工具。仅限本次调用的排除项
+    /// 保留在 [`AgentInvocationContext::disabled_tools`] 中。
     fn disabled_tool_names(&self) -> std::collections::HashSet<String> {
         self.tool_visibility_policy().disabled_names()
     }
 
-    /// Agent-wide visibility policy used for future invocation snapshots.
+    /// 供未来调用快照使用的、agent 全局范围的可见性策略。
     fn tool_visibility_policy(&self) -> ToolVisibilityPolicy {
         ToolVisibilityPolicy::default()
     }
 
-    /// Effective working directory configured for subsequent invocations.
+    /// 为后续调用配置的、生效中的工作目录。
     fn working_dir(&self) -> Option<std::path::PathBuf> {
         None
     }
 
-    /// Human-readable skill identifiers available to this agent.
+    /// 该 agent 可用的、人类可读的 skill 标识符。
     fn skill_names(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Configured MCP server identifiers available to this agent.
+    /// 该 agent 可用的、已配置的 MCP server 标识符。
     fn mcp_server_names(&self) -> Vec<String> {
         vec![]
     }
 
-    /// Release external resources before dropping the agent.
+    /// 在丢弃该 agent 之前释放外部资源。
     ///
-    /// Returns `Err` if cleanup fails (e.g., MCP server disconnect error,
-    /// flush failure), allowing callers to log or handle resource leaks.
+    /// 若清理失败（例如 MCP server 断开连接出错、flush 失败）返回 `Err`，
+    /// 使调用方可以记录日志或处理资源泄漏。
     fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
 
-    /// Execute a task and return the final answer.
-    ///
-    /// **Task-oriented**: resets/restores context, may run a planning phase
-    /// then enters the ReAct loop.
-    /// Use this for standalone, single-round tasks where the agent starts fresh
-    /// or resumes from a checkpoint.
-    ///
-    /// # ⚠️ Warning: Do NOT use for multi-turn chat UIs
-    ///
-    /// `execute()` **clears conversation history** on every call (only the
-    /// system prompt survives). Calling it in a REPL / terminal UI / chatbot loop
-    /// will make the agent "forget" all previous turns.
-    ///
-    /// **Use [`chat()`](Agent::chat) instead** for any scenario where the
-    /// agent must remember prior messages across calls.
-    ///
-    /// | Scenario | Correct method |
-    /// |---|---|
-    /// | CLI one-shot command | `execute()` ✓ |
-    /// | Workflow / pipeline node | `execute()` ✓ |
-    /// | Batch processing (independent tasks) | `execute()` ✓ |
-    /// | REPL / terminal UI / chatbot | `chat()` ✓ |
-    /// | Multi-turn dialogue | `chat()` ✓ |
+    /**
+    执行一个任务并返回最终答案。
+
+    **面向任务**：重置/恢复上下文，可能先运行一个规划阶段，再进入 ReAct 循环。
+    用于独立的单轮任务，此时 agent 要么全新开始，要么从 checkpoint 恢复。
+
+    # ⚠️ 警告：不要用于多轮对话 UI
+
+    `execute()` 在每次调用时都会**清空对话历史**（只有 system prompt 会保留）。
+    在 REPL / 终端 UI / 聊天机器人循环中调用它，会使 agent"忘记"所有先前的对话轮次。
+
+    对于任何 agent 必须跨调用记住先前消息的场景，**请改用
+    [`chat()`](Agent::chat)**。
+
+    | 场景 | 正确的方法 |
+    |---|---|
+    | CLI 一次性命令 | `execute()` ✓ |
+    | Workflow / 流水线节点 | `execute()` ✓ |
+    | 批处理（相互独立的任务） | `execute()` ✓ |
+    | REPL / 终端 UI / 聊天机器人 | `chat()` ✓ |
+    | 多轮对话 | `chat()` ✓ |
+    */
     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>>;
 
-    /// Execute a task and stream lifecycle events.
-    ///
-    /// Same semantics as [`Self::execute`] but returns a stream of
-    /// [`AgentEvent`] for real-time observability.
-    ///
-    /// # ⚠️ Warning
-    ///
-    /// Clears conversation history on every call — see [`execute()`](Agent::execute)
-    /// for details. Use [`chat_stream()`](Agent::chat_stream) for multi-turn UIs.
+    /**
+    执行一个任务并流式产出生命周期事件。
+
+    与 [`Self::execute`] 语义相同，但返回一个 [`AgentEvent`] 流，
+    用于实时可观测性。
+
+    # ⚠️ 警告
+
+    每次调用都会清空对话历史——详情见 [`execute()`](Agent::execute)。
+    多轮对话 UI 请使用 [`chat_stream()`](Agent::chat_stream)。
+    */
     fn execute_stream<'a>(
         &'a self,
         task: &'a str,
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>>;
 
-    /// Execute a task with cooperative cancellation support.
-    ///
-    /// The default implementation wraps [`Self::execute_stream`] with a
-    /// cancellation-aware wrapper. When `cancel` is triggered, the stream
-    /// yields [`AgentEvent::Cancelled`] and terminates.
-    ///
-    /// # ⚠️ Warning
-    ///
-    /// Clears conversation history on every call — see [`execute()`](Agent::execute)
-    /// for details. Use [`chat_stream_with_cancel()`](Agent::chat_stream_with_cancel)
-    /// for multi-turn UIs.
+    /**
+    执行一个任务，支持协作式取消。
+
+    默认实现用一个感知取消的包装器包裹 [`Self::execute_stream`]。当 `cancel`
+    被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
+
+    # ⚠️ 警告
+
+    每次调用都会清空对话历史——详情见 [`execute()`](Agent::execute)。
+    多轮对话 UI 请使用 [`chat_stream_with_cancel()`](Agent::chat_stream_with_cancel)。
+    */
     fn execute_stream_with_cancel<'a>(
         &'a self,
         task: &'a str,
@@ -1046,10 +1095,9 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Execute with invocation metadata carried as one immutable value.
+    /// 以一个不可变值携带调用元数据来执行。
     ///
-    /// The default preserves compatibility for agents that do not consume
-    /// invocation metadata.
+    /// 默认实现保持对不消费调用元数据的 agent 的兼容性。
     fn execute_stream_with_invocation_context<'a>(
         &'a self,
         task: &'a str,
@@ -1062,29 +1110,31 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Chat with the agent in a multi-turn conversation.
-    ///
-    /// **Conversation-oriented**: preserves existing context (no reset),
-    /// appends the user message, and runs the ReAct loop.
-    /// Use this for interactive, multi-turn dialogue where the agent
-    /// accumulates state across calls.
-    ///
-    /// **Prefer this over [`execute()`](Agent::execute)** for any UI that
-    /// sends multiple messages in sequence (REPL, terminal UI, chatbot, web chat).
-    ///
-    /// By default this delegates to [`Self::execute`]; concrete implementations
-    /// (like `ReactAgent`) override it to avoid resetting context.
+    /**
+    在一次多轮对话中与该 agent 聊天。
+
+    **面向对话**：保留既有上下文（不重置），追加用户消息，运行 ReAct 循环。
+    用于 agent 需要跨调用累积状态的交互式多轮对话场景。
+
+    对于任何按顺序发送多条消息的 UI（REPL、终端 UI、聊天机器人、网页聊天），
+    **优先使用它而不是 [`execute()`](Agent::execute)**。
+
+    默认实现委托给 [`Self::execute`]；具体实现（如 `ReactAgent`）会覆盖它
+    以避免重置上下文。
+    */
     fn chat<'a>(&'a self, message: &'a str) -> BoxFuture<'a, Result<String>> {
         self.execute(message)
     }
 
-    /// Chat with the agent and stream lifecycle events.
-    ///
-    /// Same semantics as [`Self::chat`] but returns a stream of
-    /// [`AgentEvent`] for real-time observability.
-    ///
-    /// **Prefer this over [`execute_stream()`](Agent::execute_stream)** for
-    /// any UI that sends multiple messages in sequence.
+    /**
+    与该 agent 聊天并流式产出生命周期事件。
+
+    与 [`Self::chat`] 语义相同，但返回一个 [`AgentEvent`] 流，
+    用于实时可观测性。
+
+    对于任何按顺序发送多条消息的 UI，**优先使用它而不是
+    [`execute_stream()`](Agent::execute_stream)**。
+    */
     fn chat_stream<'a>(
         &'a self,
         message: &'a str,
@@ -1092,11 +1142,10 @@ pub trait Agent: Send + Sync {
         self.execute_stream(message)
     }
 
-    /// Chat streaming variant with cooperative cancellation support.
+    /// 支持协作式取消的聊天流式变体。
     ///
-    /// The default implementation wraps [`Self::chat_stream`] with a
-    /// cancellation-aware wrapper. When `cancel` is triggered, the stream
-    /// yields [`AgentEvent::Cancelled`] and terminates.
+    /// 默认实现用一个感知取消的包装器包裹 [`Self::chat_stream`]。当 `cancel`
+    /// 被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
     fn chat_stream_with_cancel<'a>(
         &'a self,
         message: &'a str,
@@ -1108,12 +1157,11 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Multi-turn chat streaming with a structured multimodal message.
+    /// 使用结构化多模态消息的多轮聊天流式方法。
     ///
-    /// Implementations must preserve the same conversational semantics as
-    /// [`Self::chat_stream_with_cancel`]: append to the existing context rather
-    /// than resetting it. The default is unsupported because extracting a
-    /// borrowed text fallback from an owned message would not be lifetime-safe.
+    /// 实现必须保持与 [`Self::chat_stream_with_cancel`] 相同的对话语义：
+    /// 追加到既有上下文，而不是重置它。默认实现不支持，因为从一个拥有所有权
+    /// 的消息中提取出借用的文本回退值，在生命周期上是不安全的。
     fn chat_stream_message_with_cancel<'a>(
         &'a self,
         _message: Message,
@@ -1127,10 +1175,10 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Structured multi-turn chat with value-scoped invocation metadata.
+    /// 带限定值作用域调用元数据的结构化多轮聊天。
     ///
-    /// The default delegates to the existing structured chat method so
-    /// third-party agents can opt into metadata without changing semantics.
+    /// 默认实现委托给既有的结构化聊天方法，使第三方 agent 无需改变语义
+    /// 即可选择接入元数据。
     fn chat_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1145,18 +1193,18 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Streaming task execution with cancellation (multimodal version).
-    ///
-    /// Accepts a pre-built [`Message`] so subagents dispatched via subagent
-    /// delegation can see images/files attached by the user. `ReactAgent`
-    /// overrides this to route through its real multimodal pipeline.
-    ///
-    /// The default implementation is **not supported** — agents that don't
-    /// implement multimodal streaming return an error if a multimodal task is
-    /// dispatched to them. This keeps the trait signature lifetime-safe (the
-    /// text-extracted fallback would borrow a local). Callers that need a
-    /// text fallback should extract the text themselves and use
-    /// [`execute_stream_with_cancel`](Self::execute_stream_with_cancel).
+    /**
+    带取消支持的流式任务执行（多模态版本）。
+
+    接受一个预先构建好的 [`Message`]，使经由 subagent 委派派发的 subagent
+    能够看到用户附带的图片/文件。`ReactAgent` 会覆盖此方法，
+    使其经由真正的多模态流水线路由。
+
+    默认实现**不支持**——未实现多模态流式处理的 agent，在被派发多模态任务时
+    会返回一个错误。这样可以保持 trait 签名在生命周期上的安全性（提取出的
+    文本回退值会借用一个局部变量）。需要文本回退值的调用方应自行提取文本，
+    并使用 [`execute_stream_with_cancel`](Self::execute_stream_with_cancel)。
+    */
     fn execute_stream_message_with_cancel<'a>(
         &'a self,
         _message: Message,
@@ -1169,10 +1217,9 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Multimodal streaming with value-scoped invocation metadata.
+    /// 带限定值作用域调用元数据的多模态流式处理。
     ///
-    /// The default delegates to the existing multimodal method so third-party
-    /// agents remain source compatible.
+    /// 默认实现委托给既有的多模态方法，使第三方 agent 保持源码兼容。
     fn execute_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1187,31 +1234,30 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// Reset in-memory conversational state.
+    /// 重置内存中的对话状态。
     ///
-    /// Implementations should clear context and fire `SessionStart("clear")` hooks
-    /// so that registered hooks can react to the reset event.
+    /// 实现应清空上下文，并触发 `SessionStart("clear")` hook，
+    /// 使已注册的 hook 能够响应该重置事件。
     fn reset(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
 
-    /// Get the current run ID, if the agent is tracking one.
-    /// Default: None. ReactAgent overrides this.
+    /// 若该 agent 正在跟踪某个 run ID，返回它。
+    /// 默认值：None。ReactAgent 会覆盖此方法。
     fn current_run_id(&self) -> Option<String> {
         None
     }
 
-    /// Return a cumulative token-usage snapshot for this agent instance.
+    /// 返回该 agent 实例的累计 token 用量快照。
     ///
-    /// Lightweight and third-party agents may keep the empty default. Team
-    /// orchestration compares snapshots before and after execution to collect
-    /// usage without depending on a concrete agent implementation.
+    /// 轻量级和第三方 agent 可以保持空的默认实现。团队编排会在执行前后
+    /// 比较快照，从而在不依赖具体 agent 实现的情况下收集用量信息。
     fn token_usage_summary(&self) -> crate::tokenizer::UsageSummary {
         crate::tokenizer::UsageSummary::default()
     }
 
-    /// Inject a message into the current turn at the implementation's existing
-    /// safe point. Implementations without live steering keep the typed default.
+    /// 在实现现有的安全点，向当前 turn 注入一条消息。
+    /// 不支持实时引导的实现保持这个带类型的默认返回值。
     fn steer_input(
         &self,
         _expected_turn_id: Option<&str>,
@@ -1220,12 +1266,11 @@ pub trait Agent: Send + Sync {
         Err(AgentSteerError::Unsupported)
     }
 
-    /// Inject and track one message through acceptance, model-context drain,
-    /// and root-turn settlement.
+    /// 注入一条消息，并跟踪它经历接受、模型上下文 drain、根 turn 结算的全过程。
     ///
-    /// Implementations that only support the legacy [`Self::steer_input`]
-    /// remain source compatible and return [`AgentSteerError::Unsupported`]
-    /// here until they can provide real lifecycle signals.
+    /// 只支持旧版 [`Self::steer_input`] 的实现保持源码兼容，
+    /// 在能够提供真实的生命周期信号之前，在这里返回
+    /// [`AgentSteerError::Unsupported`]。
     fn steer_input_tracked(
         &self,
         _expected_turn_id: Option<&str>,
@@ -1236,7 +1281,7 @@ pub trait Agent: Send + Sync {
 
     // ── External run context (跨 spawn 安全的值传递, 见 ExternalRunContext) ──
 
-    /// Legacy agent-wide run context setter.
+    /// 旧版的、agent 全局范围的 run 上下文 setter。
     ///
     /// **背景**：`tokio::task_local!` 不会跨 `tokio::spawn` 继承。subagent instance
     /// 在框架层的 `tokio::spawn`（subagent_executor.rs 的 dispatch_fork）里执行，
@@ -1245,56 +1290,55 @@ pub trait Agent: Send + Sync {
     /// 此 setter 仅为外部兼容保留。
     fn set_external_context(&self, _ctx: &crate::tools::ExternalRunContext) {}
 
-    /// Clear context installed through the legacy setter.
+    /// 清除通过旧版 setter 安装的上下文。
     fn clear_external_context(&self) {}
 
-    /// Bind a working directory for this agent's tool calls (Sprint 8 worktree
-    /// isolation). When set, every shell/file/git tool runs inside `path`
-    /// (via `ToolContext.working_dir`). `None` clears it (restore default cwd).
+    /// 为该 agent 的工具调用绑定一个工作目录（Sprint 8 worktree
+    /// 隔离）。设置后，每一次 shell/文件/git 工具调用都会在 `path` 内部运行
+    /// （经由 `ToolContext.working_dir`）。`None` 会清除它（恢复默认 cwd）。
     ///
-    /// Default: noop. New invocation paths should use
-    /// `AgentInvocationContext::working_dir`; this setter remains compatible
-    /// with callers that intentionally configure an agent-wide default.
+    /// 默认值：noop。新的调用路径应使用 `AgentInvocationContext::working_dir`；
+    /// 此 setter 仅为需要刻意配置 agent 全局默认值的调用方保留兼容性。
     fn set_working_dir(&self, _path: Option<std::path::PathBuf>) {}
 
-    /// Clear the bound working directory (alias for `set_working_dir(None)`).
-    /// Default: noop. ReactAgent override.
+    /// 清除已绑定的工作目录（等价于 `set_working_dir(None)`）。
+    /// 默认值：noop。ReactAgent 会覆盖它。
     fn clear_working_dir(&self) {}
 
-    // ── Dynamic capability methods (default noop) ────────────────────
+    // ── 动态能力方法（默认 noop）────────────────────
 
-    /// Dynamically register a tool at runtime.
+    /// 在运行时动态注册一个工具。
     ///
-    /// Default: noop (returns without action). ReactAgent overrides this
-    /// to add the tool to its ToolManager.
+    /// 默认值：noop（不做任何操作直接返回）。ReactAgent 会覆盖此方法，
+    /// 把工具添加进它的 ToolManager。
     fn register_tool(&self, _tool: Box<dyn crate::tools::Tool>) {}
 
-    /// Dynamically remove a tool by name at runtime.
+    /// 在运行时按名称动态移除一个工具。
     ///
-    /// Returns `true` if the tool was found and removed, `false` otherwise.
-    /// Default: returns `false` (no action). ReactAgent overrides this.
+    /// 若找到并移除该工具返回 `true`，否则返回 `false`。
+    /// 默认值：返回 `false`（不做任何操作）。ReactAgent 会覆盖此方法。
     fn remove_tool(&self, _name: &str) -> bool {
         false
     }
 
-    /// Get the current conversation history.
+    /// 获取当前对话历史。
     ///
-    /// Default: empty list. ReactAgent overrides this to return
-    /// messages from its ContextManager.
+    /// 默认值：空列表。ReactAgent 会覆盖此方法，
+    /// 返回其 ContextManager 中的消息。
     fn messages(&self) -> Vec<Message> {
         vec![]
     }
 
-    /// Update the system prompt at runtime.
+    /// 在运行时更新 system prompt。
     ///
-    /// Default: noop. ReactAgent overrides this to update its config
-    /// and re-inject the prompt into the context.
+    /// 默认值：noop。ReactAgent 会覆盖此方法，
+    /// 更新其配置并把该 prompt 重新注入上下文。
     fn set_system_prompt(&self, _prompt: &str) {}
 
-    /// Delegate a task to a named subagent or team member.
+    /// 把一个任务委派给某个具名的 subagent 或团队成员。
     ///
-    /// Default: returns error ("delegation not supported").
-    /// ReactAgent overrides this when Subagent feature is enabled.
+    /// 默认值：返回错误（"delegation not supported"）。
+    /// 当启用了 Subagent 特性时，ReactAgent 会覆盖此方法。
     fn delegate_to<'a>(
         &'a self,
         _target: &'a str,
@@ -1308,12 +1352,14 @@ pub trait Agent: Send + Sync {
     }
 }
 
-// ── Blanket impl for Box<dyn Agent> ──────────────────────────────────────
+// ── 为 Box<dyn Agent> 提供的统一实现 ──────────────────────────────────────
 
-/// Allow `Box<dyn Agent>` to be used as an `Agent` directly.
-///
-/// This enables `Arc<Box<dyn Agent>>` to coerce to `Arc<dyn Agent>`,
-/// which is essential for removing the outer `Mutex` from `SharedAgent`.
+/**
+允许 `Box<dyn Agent>` 直接作为一个 `Agent` 使用。
+
+这使得 `Arc<Box<dyn Agent>>` 可以强制转换为 `Arc<dyn Agent>`，
+这对于从 `SharedAgent` 中移除外层 `Mutex` 是必需的。
+*/
 impl Agent for Box<dyn Agent> {
     fn name(&self) -> &str {
         self.as_ref().name()
@@ -1466,11 +1512,10 @@ impl Agent for Box<dyn Agent> {
     }
 }
 
-/// Wrap an agent event stream with cooperative cancellation support.
+/// 用一个支持协作式取消的包装器包裹一个 agent 事件 stream。
 ///
-/// When `cancel` is triggered, the stream yields [`AgentEvent::Cancelled`]
-/// and terminates. Shared by both `execute_stream_with_cancel` and
-/// `chat_stream_with_cancel` default implementations.
+/// 当 `cancel` 被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
+/// `execute_stream_with_cancel` 和 `chat_stream_with_cancel` 的默认实现共用它。
 fn cancel_aware_stream<'a>(
     mut stream: BoxStream<'a, Result<AgentEvent>>,
     cancel: CancellationToken,
@@ -1627,19 +1672,19 @@ mod invocation_retaining_stream_tests {
     }
 }
 
-/// Agent lifecycle callback interface
+/// Agent 生命周期回调接口
 pub trait AgentCallback: Send + Sync {
-    /// Optional stable callback kind for targeted removal.
+    /// 供定向移除使用的可选稳定回调种类。
     fn callback_kind(&self) -> Option<&'static str> {
         None
     }
 
-    /// Optional stable identifier for removing a specific callback instance.
+    /// 供移除某个具体回调实例使用的可选稳定标识符。
     fn callback_id(&self) -> Option<&str> {
         None
     }
 
-    /// Called before the model starts a reasoning step.
+    /// 在模型开始一次推理步骤之前调用。
     fn on_think_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -1648,7 +1693,7 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called after the model reasoning step with token usage information.
+    /// 在模型推理步骤结束后调用，携带 token 用量信息。
     fn on_think_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -1659,7 +1704,7 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called before a tool invocation begins.
+    /// 在一次工具调用开始之前调用。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -1669,10 +1714,9 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called before a tool invocation begins with its canonical call identity.
+    /// 在一次工具调用开始之前调用，携带其规范调用身份。
     ///
-    /// The default preserves source compatibility for callbacks that only need
-    /// tool-level lifecycle notifications.
+    /// 默认实现为只需要工具级生命周期通知的回调保留源码兼容性。
     fn on_tool_start_with_id<'a>(
         &'a self,
         agent: &'a str,
@@ -1683,7 +1727,7 @@ pub trait AgentCallback: Send + Sync {
         self.on_tool_start(agent, tool, args)
     }
 
-    /// Called after a tool invocation succeeds.
+    /// 在一次工具调用成功后调用。
     fn on_tool_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -1693,7 +1737,7 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called after a tool invocation succeeds with its canonical call identity.
+    /// 在一次工具调用成功后调用，携带其规范调用身份。
     fn on_tool_end_with_id<'a>(
         &'a self,
         agent: &'a str,
@@ -1704,7 +1748,7 @@ pub trait AgentCallback: Send + Sync {
         self.on_tool_end(agent, tool, result)
     }
 
-    /// Called when a tool invocation fails.
+    /// 在一次工具调用失败时调用。
     fn on_tool_error<'a>(
         &'a self,
         _agent: &'a str,
@@ -1714,7 +1758,7 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called after a tool invocation fails with its canonical call identity.
+    /// 在一次工具调用失败后调用，携带其规范调用身份。
     fn on_tool_error_with_id<'a>(
         &'a self,
         agent: &'a str,
@@ -1725,12 +1769,13 @@ pub trait AgentCallback: Send + Sync {
         self.on_tool_error(agent, tool, error)
     }
 
-    /// Settle an invocation that the runtime interrupted without a captured result.
-    ///
-    /// The full input lets persistence callbacks retain the admitted call even
-    /// when interruption happened before their normal start callback. The
-    /// default emits one error terminal and deliberately does not fabricate a
-    /// duplicate start notification.
+    /**
+    结算一次被运行时中断、且未捕获到结果的调用。
+
+    完整的输入使持久化类回调即使在中断发生于其正常的开始回调之前，
+    也能够保留这次已被受理的调用。默认实现会发出一个错误终态，
+    并刻意不伪造一次重复的开始通知。
+    */
     fn on_tool_interrupted_with_id<'a>(
         &'a self,
         agent: &'a str,
@@ -1742,12 +1787,12 @@ pub trait AgentCallback: Send + Sync {
         self.on_tool_error_with_id(agent, call_id, tool, error)
     }
 
-    /// Called when the agent emits its final answer.
+    /// 在 agent 产出最终答案时调用。
     fn on_final_answer<'a>(&'a self, _agent: &'a str, _answer: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 
-    /// Called at the end of each outer control-loop iteration.
+    /// 在每一次外层控制循环迭代结束时调用。
     fn on_iteration<'a>(&'a self, _agent: &'a str, _iteration: usize) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }

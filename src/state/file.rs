@@ -1,26 +1,25 @@
-//! File-backed [`RuntimeStateStore`] — a no-dependency JSON-file backend.
-//!
-//! One record per runtime identity under
-//! `<base>/runtime_state/_runtime_owners/<safe_id>.json`. The record owns the
-//! stable scope binding, lifecycle phase, and checkpoint atomically. The
-//! `_scope_index` files are rebuildable projections, never deletion authority.
-//!
-//! This is the no-SQLite alternative to `SqliteRuntimeStateStore` (feature
-//! `sqlite`). Suitable for a single-process local agent (typical
-//! echo-agent consumer). For multi-process concurrency, use the SQLite backend.
-//!
-//! ## Robustness
-//!
-//! - **Path-safe ids.** Conversation ids are sanitized before joining into the
-//!   path (rejecting `/`, `\`, `..`, empty) to prevent directory escapes.
-//! - **Corrupt JSON is an error.** A malformed owner record surfaces as a
-//!   typed runtime-state serialization error rather than silently returning
-//!   `None`.
-//! - **Unique temp names.** Each atomic write uses a uuid-suffixed temp file
-//!   (no cross-write collisions; multi-process belt-and-suspenders).
-//!
-//! Atomic writes use tmp + fsync + rename so a crash never leaves a
-//! half-written file.
+/*! 文件后端的 [`RuntimeStateStore`] —— 一个无额外依赖的 JSON 文件后端。
+
+每个运行时身份对应一条记录，路径为
+`<base>/runtime_state/_runtime_owners/<safe_id>.json`。该记录原子性地拥有稳定的
+作用域绑定、生命周期阶段和检查点。`_scope_index` 文件是可重建的投影，
+不具备删除权威性。
+
+这是不依赖 SQLite 的 `SqliteRuntimeStateStore`（`sqlite` feature）替代方案，
+适用于单进程本地 agent（典型的 echo-agent 使用场景）。如需多进程并发，
+请使用 SQLite 后端。
+
+## 健壮性
+
+- **路径安全的 id。** 会话 id 在拼接进路径之前会被净化（拒绝 `/`、`\`、`..`、
+  空字符串），以防止目录逃逸。
+- **损坏的 JSON 视为错误。** 格式错误的 owner 记录会被上抛为带类型的
+  runtime-state 序列化错误，而不是静默返回 `None`。
+- **唯一的临时文件名。** 每次原子写入都使用带 uuid 后缀的临时文件
+  （避免跨写入冲突；多进程场景下的双重保险）。
+
+原子写入采用 tmp + fsync + rename 的方式，保证崩溃不会遗留半写文件。
+*/
 
 use echo_core::error::ReactError;
 use echo_core::utils::blocking::{
@@ -54,77 +53,117 @@ const RUNTIME_SCOPE_RECORD_VERSION: u8 = 1;
 const RUNTIME_STATE_SHARDS: usize = 64;
 const MAX_CONVERSATION_EPOCH: u64 = i64::MAX as u64;
 
+/** 作用域索引文件（`_scope_index/<scope>.json`）的磁盘表示，是可从
+owner 记录重建的投影，不具备删除权威性。
+*/
 #[derive(Debug, Serialize, Deserialize)]
 struct RuntimeStateScopeIndex {
+    /// 索引文件格式版本号。
     version: u8,
+    /// 该索引所属的作用域 id。
     scope_id: String,
+    /// 该作用域下已知的运行时状态 id 集合。
     runtime_state_ids: BTreeSet<String>,
 }
 
+/// 运行时状态记录所处的生命周期阶段。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum RuntimeStatePhase {
+    /// 记录正常存活，检查点可用。
     #[default]
     Active,
+    /// 记录正在被删除（墓碑态），检查点已被清空。
     Deleting,
 }
 
+/** `_runtime_owners/<safe_id>.json` 中一条运行时身份记录的磁盘表示，
+原子性地持有作用域绑定、生命周期阶段与检查点。
+*/
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RuntimeStateOwner {
+    /// 记录格式版本号（区分 legacy 与 revisioned 两代格式）。
     version: u8,
+    /// 该记录对应的运行时状态 id。
     runtime_state_id: String,
+    /// 该运行时状态归属的作用域 id。
     scope_id: String,
+    /// 当前生命周期阶段（存活 / 删除中）。
     #[serde(default)]
     phase: RuntimeStatePhase,
+    /// 最近一次保存的 agent 检查点；删除中的记录该字段为空。
     checkpoint: Option<AgentCheckpoint>,
+    /// 受版本管理的运行时状态版本号（`None` 表示旧式非受管记录）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_version: Option<RuntimeStateVersion>,
+    /// 该运行时状态绑定的会话 epoch。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     conversation_epoch: Option<u64>,
+    /// 记录写入时所属作用域的修订号快照。
     #[serde(default)]
     scope_revision: u64,
+    /// 记录写入时所属作用域的生命周期状态快照。
     #[serde(default = "active_scope_lifecycle")]
     scope_lifecycle: RuntimeScopeLifecycle,
+    /// 上一次比较并保存（CAS）时期望的状态版本，用于幂等重放判定。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cas_expected_state_version: Option<RuntimeStateExpectedVersion>,
+    /// 上一次比较并保存（CAS）时期望的作用域修订号，用于幂等重放判定。
     #[serde(default)]
     cas_expected_scope_revision: u64,
+    /// 已确认的转写投影回执证明（如果存在待确认投影的话）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transcript_ack_proof: Option<RuntimeTranscriptAckProof>,
 }
 
+/// 转写投影已被确认的证明，记录了产生该确认的操作 id 与负载摘要。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct RuntimeTranscriptAckProof {
+    /// 确认该转写投影的操作 id。
     operation_id: String,
+    /// 被确认负载的摘要（用于校验一致性）。
     payload_digest: String,
 }
 
+/// 默认的作用域生命周期取值，用于旧记录反序列化时的字段默认值。
 fn active_scope_lifecycle() -> RuntimeScopeLifecycle {
     RuntimeScopeLifecycle::Active
 }
 
+/** `_scope_owners/<safe_id>.json` 中一条作用域记录的磁盘表示，持有作用域权威
+状态、正在进行的退役清单以及已完成的退役历史。
+*/
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RuntimeScopeOwner {
+    /// 记录格式版本号。
     version: u8,
+    /// 该作用域当前的权威状态（修订号、epoch、生命周期）。
     authority: RuntimeScopeAuthority,
+    /// 当前正在进行中的退役清单（如果作用域正处于退役流程中）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     current_retirement: Option<ScopeRetirementManifest>,
+    /// 已完成的退役回执历史，用于幂等重放已完成的退役请求。
     #[serde(default)]
     completed_retirements: Vec<ScopeRetirementReceipt>,
 }
 
-/// File-backed runtime state store.
-///
-/// [`Self::new`] performs synchronous directory bootstrap. Construct the store
-/// before entering latency-sensitive async work, or call it from a blocking
-/// setup task. The [`RuntimeStateStore`] methods offload their file operations.
+/** 文件后端运行时状态存储的进程内权威对象。
+
+[`Self::new`] 执行同步的目录初始化。请在进入延迟敏感的异步工作之前
+构造该存储，或者从一个阻塞的初始化任务中调用它。[`RuntimeStateStore`]
+的各方法会把文件操作转移到阻塞线程上执行。
+*/
 struct FileRuntimeStateAuthority {
+    /// 按作用域 id 哈希分片的互斥锁，用于串行化同一作用域上的并发操作。
     scope_shards: [Mutex<()>; RUNTIME_STATE_SHARDS],
+    /// 按运行时状态 id 哈希分片的互斥锁，用于串行化同一运行时记录上的并发操作。
     shards: [Mutex<()>; RUNTIME_STATE_SHARDS],
+    /// 持有的独占文件租约，保证同一 base 目录在进程内只有一个权威实例。
     _lease: ExclusiveFileLease,
 }
 
 impl FileRuntimeStateAuthority {
+    /// 使用给定的独占文件租约构造一个新的权威对象，并初始化所有分片锁。
     fn new(lease: ExclusiveFileLease) -> Self {
         Self {
             scope_shards: std::array::from_fn(|_| Mutex::new(())),
@@ -134,6 +173,9 @@ impl FileRuntimeStateAuthority {
     }
 }
 
+/** 返回按 base 目录路径索引的进程级权威注册表，用于在同一路径上
+复用已存在的 [`FileRuntimeStateAuthority`]（弱引用，避免阻止其被回收）。
+*/
 fn runtime_state_authorities() -> &'static Mutex<HashMap<PathBuf, Weak<FileRuntimeStateAuthority>>>
 {
     static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<FileRuntimeStateAuthority>>>> =
@@ -141,17 +183,24 @@ fn runtime_state_authorities() -> &'static Mutex<HashMap<PathBuf, Weak<FileRunti
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/** 文件后端的运行时状态存储句柄，可自由克隆，内部通过 [`Arc`] 共享
+同一个进程级权威对象。
+*/
 #[derive(Clone)]
 pub struct FileRuntimeStateStore {
+    /// 存储根目录（`<base>/runtime_state`）的规范化绝对路径。
     base: PathBuf,
+    /// 共享的进程内权威对象，负责分片加锁与独占租约。
     authority: Arc<FileRuntimeStateAuthority>,
+    /// 当前调用绑定的持久化调用上下文（用于截止时间检查），可为空。
     call_context: Option<crate::memory::PersistenceCallContext>,
 }
 
 impl FileRuntimeStateStore {
-    /// Create a file-backed state store rooted at `base/runtime_state/`.
-    ///
-    /// This synchronous bootstrap creates and canonicalizes the directory.
+    /** 创建一个根目录为 `base/runtime_state/` 的文件后端状态存储。
+
+    该同步初始化过程会创建并规范化相关目录。
+    */
     pub fn new(base: impl AsRef<Path>) -> Result<Self, ReactError> {
         let base = base.as_ref().join("runtime_state");
         create_dir_all_durable(&base)
@@ -185,21 +234,25 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 仅测试可见：返回给定会话 id 对应的运行时 owner 记录文件路径。
     #[cfg(test)]
     fn checkpoint_path(&self, conversation_id: &str) -> Result<PathBuf, ReactError> {
         self.runtime_owner_path(conversation_id)
     }
 
+    /// 返回给定作用域 id 对应的 `_scope_index` 索引文件路径。
     fn scope_index_path(&self, scope_id: &str) -> Result<PathBuf, ReactError> {
         let safe = safe_segment(scope_id)?;
         Ok(self.base.join("_scope_index").join(format!("{safe}.json")))
     }
 
+    /// 返回给定作用域 id 对应的 `_scope_owners` 记录文件路径。
     fn scope_owner_path(&self, scope_id: &str) -> Result<PathBuf, ReactError> {
         let safe = safe_segment(scope_id)?;
         Ok(self.base.join("_scope_owners").join(format!("{safe}.json")))
     }
 
+    /// 返回给定运行时状态 id 对应的 `_runtime_owners` 记录文件路径。
     fn runtime_owner_path(&self, runtime_state_id: &str) -> Result<PathBuf, ReactError> {
         let safe = safe_segment(runtime_state_id)?;
         Ok(self
@@ -208,6 +261,7 @@ impl FileRuntimeStateStore {
             .join(format!("{safe}.json")))
     }
 
+    /// 将一个身份字符串（FNV-1a 风格哈希）映射到固定数量的分片索引上。
     fn shard(identity: &str) -> usize {
         let hash = identity.as_bytes().iter().fold(0_u64, |hash, byte| {
             hash.wrapping_mul(1099511628211)
@@ -216,6 +270,7 @@ impl FileRuntimeStateStore {
         usize::try_from(hash % u64::try_from(RUNTIME_STATE_SHARDS).unwrap_or(1)).unwrap_or(0)
     }
 
+    /// 加锁给定作用域对应的分片，串行化该作用域上的并发操作。
     fn lock_scope(&self, scope_id: &str) -> crate::error::Result<std::sync::MutexGuard<'_, ()>> {
         self.authority
             .scope_shards
@@ -225,6 +280,7 @@ impl FileRuntimeStateStore {
             .map_err(|error| Self::to_react_err(format!("scope shard poisoned: {error}")))
     }
 
+    /// 加锁给定运行时状态对应的分片，串行化该运行时记录上的并发操作。
     fn lock_runtime(
         &self,
         runtime_state_id: &str,
@@ -237,6 +293,7 @@ impl FileRuntimeStateStore {
             .map_err(|error| Self::to_react_err(format!("runtime shard poisoned: {error}")))
     }
 
+    /// 依次加锁全部运行时分片，用于需要遍历/修改整个作用域下所有运行时记录的操作。
     fn lock_all_runtime_shards(&self) -> crate::error::Result<Vec<std::sync::MutexGuard<'_, ()>>> {
         let mut guards = Vec::with_capacity(RUNTIME_STATE_SHARDS);
         for shard in &self.authority.shards {
@@ -249,28 +306,35 @@ impl FileRuntimeStateStore {
         Ok(guards)
     }
 
+    /// 将一个底层 IO 错误包装为带 `FileRuntimeStateStore` 前缀的 [`ReactError`]。
     fn to_react_err(e: impl std::fmt::Display) -> ReactError {
         echo_core::error::RuntimeStateError::Io(format!("FileRuntimeStateStore: {e}")).into()
     }
 
+    /// 构造一个表示状态非法/损坏的序列化错误。
     fn invalid_state(message: impl Into<String>) -> ReactError {
         echo_core::error::RuntimeStateError::SerializationError(message.into()).into()
     }
 
+    /// 构造一个"该操作要求使用受版本管理（CAS）路径"的错误。
     fn managed_state_error(message: impl Into<String>) -> ReactError {
         echo_core::error::RuntimeStateError::ManagedStateRequiresCas(message.into()).into()
     }
 
+    /// 构造一个修订号已耗尽（溢出）的错误。
     fn revision_exhausted(message: impl Into<String>) -> ReactError {
         echo_core::error::RuntimeStateError::RevisionExhausted(message.into()).into()
     }
 
+    /// 克隆当前存储句柄并绑定给定的持久化调用上下文，返回新句柄。
     fn with_call_context(&self, context: crate::memory::PersistenceCallContext) -> Self {
         let mut store = self.clone();
         store.call_context = Some(context);
         store
     }
 
+    /// 校验给定的持久化调用上下文尚未超出截止时间；若已超时，
+    /// 转换为对应操作名称的截止超时错误。
     fn ensure_call_deadline(
         context: crate::memory::PersistenceCallContext,
         operation: &str,
@@ -285,18 +349,21 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 若当前存储句柄绑定了调用上下文，则校验其尚未超出截止时间；未绑定时视为通过。
     fn ensure_active_deadline(&self, operation: &str) -> crate::error::Result<()> {
         self.call_context.map_or(Ok(()), |context| {
             Self::ensure_call_deadline(context, operation)
         })
     }
 
+    /// 计算下一个修订号（当前值加一），溢出时返回修订号耗尽错误。
     fn next_revision(current: u64, identity: &str) -> crate::error::Result<u64> {
         current
             .checked_add(1)
             .ok_or_else(|| Self::revision_exhausted(identity.to_string()))
     }
 
+    /// 计算给定检查点序列化后的 SHA-256 摘要（十六进制字符串）。
     fn checkpoint_digest(checkpoint: &AgentCheckpoint) -> crate::error::Result<String> {
         let encoded = serde_json::to_vec(checkpoint).map_err(|error| {
             echo_core::error::RuntimeStateError::SerializationError(format!(
@@ -306,6 +373,7 @@ impl FileRuntimeStateStore {
         Ok(format!("{:x}", Sha256::digest(encoded)))
     }
 
+    /// 通过将两个值分别序列化为 JSON 字节比较其相等性，避免要求 `T: PartialEq`。
     fn serialized_eq<T: Serialize>(left: &T, right: &T) -> crate::error::Result<bool> {
         let left = serde_json::to_vec(left).map_err(|error| {
             Self::invalid_state(format!("failed to serialize runtime payload: {error}"))
@@ -316,6 +384,8 @@ impl FileRuntimeStateStore {
         Ok(left == right)
     }
 
+    /// 校验一个非受管（unmanaged）检查点不携带待确认的转写投影
+    /// （待确认投影只允许存在于受版本管理的 CAS 路径上）。
     fn validate_unmanaged_checkpoint(checkpoint: &AgentCheckpoint) -> crate::error::Result<()> {
         let payload = checkpoint.restore_managed_runtime_payload()?;
         if payload.pending_transcript_projection.is_some() {
@@ -326,6 +396,8 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验一条运行时 owner 记录的内部一致性：不同状态版本（未管理/受管/已退役）
+    /// 下检查点是否存在、待确认投影是否与修订号匹配、转写确认证明是否合法。
     fn validate_runtime_owner_payload(owner: &RuntimeStateOwner) -> crate::error::Result<()> {
         match owner.state_version.as_ref() {
             None | Some(RuntimeStateVersion::Unmanaged { .. }) => {
@@ -394,6 +466,8 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 获取一条 owner 记录的状态版本：优先使用显式的 `state_version` 字段，
+    /// 若不存在（旧式记录）则用检查点摘要合成一个 `Unmanaged` 版本。
     fn owner_state_version(owner: &RuntimeStateOwner) -> crate::error::Result<RuntimeStateVersion> {
         if let Some(version) = owner.state_version.as_ref() {
             return Ok(version.clone());
@@ -409,6 +483,7 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 提取一个状态版本对应的修订号；`Absent`/`Unmanaged` 视为修订号 0。
     fn state_revision(version: &RuntimeStateVersion) -> u64 {
         match version {
             RuntimeStateVersion::Absent => 0,
@@ -418,6 +493,7 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 判断当前状态版本是否与 CAS 请求所期望的版本匹配（用于比较并保存的乐观锁判定）。
     fn state_matches_expected(
         current: Option<&RuntimeStateVersion>,
         expected: &RuntimeStateExpectedVersion,
@@ -436,10 +512,14 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 校验会话 epoch 是否在合法取值范围内（`None` 视为合法，代表尚未绑定 epoch）。
     fn epoch_is_valid(epoch: Option<u64>) -> bool {
         epoch.is_none_or(|epoch| (1..=MAX_CONVERSATION_EPOCH).contains(&epoch))
     }
 
+    /// 校验一个检查点 CAS 请求的基本合法性：id 可安全编码为路径、
+    /// 检查点身份与请求身份一致、epoch 合法、待确认转写投影与请求的
+    /// 作用域/epoch/游标一致。
     fn validate_checkpoint_cas_request(
         request: &RuntimeCheckpointCasRequest,
     ) -> crate::error::Result<()> {
@@ -468,6 +548,10 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验一次检查点更新中"待确认转写投影"字段的状态迁移是否合法：
+    /// 新增待确认投影的基准修订号必须等于本次写入后的修订号；已存在的待确认投影
+    /// 在被确认之前身份不可变（仅允许重试类的 attempt 推进）；出现新的待确认投影时
+    /// 消息内容必须与当前一致。
     fn validate_pending_transition(
         owner: Option<&RuntimeStateOwner>,
         checkpoint: &AgentCheckpoint,
@@ -567,6 +651,8 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 判断待确认转写投影的 attempt 计数迁移是否合法：要么是同一次 attempt
+    /// 首次记录失败信息，要么是在上一次失败可重试的前提下推进到下一次 attempt。
     fn valid_pending_attempt_transition(
         current: &super::PendingTranscriptProjection,
         next: &super::PendingTranscriptProjection,
@@ -593,6 +679,7 @@ impl FileRuntimeStateStore {
         same_attempt_failure || retry_dispatch
     }
 
+    /// 判断某个转写投影尝试失败的分类是否属于可重试的瞬时性失败。
     fn retryable_attempt_class(class: &super::TranscriptProjectionAttemptClass) -> bool {
         matches!(
             class,
@@ -603,6 +690,9 @@ impl FileRuntimeStateStore {
         )
     }
 
+    /// 校验一次转写投影确认请求是否与当前 owner 记录中的待确认投影匹配
+    /// （操作 id、负载摘要、作用域、生成代、epoch、确认后的游标、消息内容
+    /// 及检查点其余字段均需一致），否则拒绝该确认。
     fn validate_transcript_ack(
         owner: &RuntimeStateOwner,
         request: &RuntimeTranscriptAckRequest,
@@ -650,6 +740,8 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 判断给定的 CAS 请求是否是对当前记录的一次幂等重放
+    /// （期望版本、期望作用域修订号、检查点内容均与当前一致）。
     fn is_direct_cas_replay(
         owner: &RuntimeStateOwner,
         request: &RuntimeCheckpointCasRequest,
@@ -663,6 +755,8 @@ impl FileRuntimeStateStore {
             && Self::checkpoint_is_current(owner, &request.checkpoint)?)
     }
 
+    /// 判断给定的生成代退役请求是否是对当前已退役记录的一次幂等重放
+    /// （操作 id、期望版本、期望作用域修订号均一致）。
     fn is_direct_retirement_replay(
         owner: &RuntimeStateOwner,
         request: &RuntimeGenerationRetireRequest,
@@ -676,6 +770,7 @@ impl FileRuntimeStateStore {
             && request.expected_scope_revision.checked_add(1) == Some(owner.scope_revision)
     }
 
+    /// 仅测试可见：同步写入一条旧式（非受管）检查点记录。
     #[cfg(test)]
     fn save_checkpoint_sync(&self, checkpoint: &AgentCheckpoint) -> crate::error::Result<()> {
         self.write_runtime_owner_sync(&RuntimeStateOwner {
@@ -694,6 +789,8 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 同步写入一个作用域索引文件；若索引中运行时状态 id 集合为空，则改为删除
+    /// 该索引文件（索引本身可重建，不需要保留空文件）。
     fn write_scope_index_sync(&self, index: &RuntimeStateScopeIndex) -> crate::error::Result<()> {
         let path = self.scope_index_path(&index.scope_id)?;
         if index.runtime_state_ids.is_empty() {
@@ -710,6 +807,8 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
+    /// 同步读取并校验给定作用域的 owner 记录；文件不存在时返回 `None`，
+    /// 记录版本/身份/修订号/epoch 不合法或退役墓碑不一致时返回错误。
     fn read_scope_owner_sync(
         &self,
         scope_id: &str,
@@ -745,6 +844,7 @@ impl FileRuntimeStateStore {
         Ok(Some(owner))
     }
 
+    /// 校验并同步原子写入给定作用域的 owner 记录。
     fn write_scope_owner_sync(&self, owner: &RuntimeScopeOwner) -> crate::error::Result<()> {
         Self::validate_scope_owner(owner)?;
         self.validate_retirement_tombstones_sync(owner)?;
@@ -758,6 +858,9 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
+    /// 校验作用域 owner 记录的内部一致性：退役中的作用域必须携带匹配的退役清单
+    /// （且清单 epoch 与作用域权威一致），非退役中的作用域不得携带清单；
+    /// 所有已完成的退役回执必须归属本作用域且状态确实为"已完成"。
     fn validate_scope_owner(owner: &RuntimeScopeOwner) -> crate::error::Result<()> {
         match (owner.authority.lifecycle, owner.current_retirement.as_ref()) {
             (RuntimeScopeLifecycle::Retiring, Some(manifest)) => {
@@ -801,6 +904,9 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 同步校验退役清单中每一个"已因删除而丢弃"的条目，都能在对应的
+    /// 运行时 owner 记录中找到匹配的退役墓碑（归属正确的作用域、处于删除阶段、
+    /// 状态版本为与本次删除操作 id 一致的 `Retired`）。
     fn validate_retirement_tombstones_sync(
         &self,
         owner: &RuntimeScopeOwner,
@@ -843,6 +949,8 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
+    /// 当作用域自身没有 owner 记录时，从属于该作用域、修订号最高的运行时记录
+    /// 合成一个等价的作用域权威快照（用于恢复/兜底场景）。
     fn synthetic_scope_authority(
         scope_id: &str,
         owners: &[RuntimeStateOwner],
@@ -859,6 +967,9 @@ impl FileRuntimeStateStore {
             })
     }
 
+    /// 同步读取作用域 owner 记录，并在合成的权威（从运行时记录推导）比
+    /// 已保存记录更新时进行修复：提升修订号/epoch/生命周期，并按需更新
+    /// 退役清单中条目的丢弃状态；若记录完全不存在但能够合成，则新建之。
     fn reconcile_scope_owner_sync(
         &self,
         scope_id: &str,
@@ -911,6 +1022,9 @@ impl FileRuntimeStateStore {
         Ok(record)
     }
 
+    /// 同步读取并全面校验给定运行时状态的 owner 记录：版本号与身份匹配、
+    /// 旧式记录不含受管字段、受管记录携带完整的版本元数据、epoch 合法、
+    /// 转写确认证明合法、生命周期阶段与检查点存在性一致。文件不存在时返回 `None`。
     fn read_runtime_owner_sync(
         &self,
         runtime_state_id: &str,
@@ -1030,7 +1144,9 @@ impl FileRuntimeStateStore {
         Ok(Some(owner))
     }
 
-    /// Normalize a legacy clear crash-cut while the caller holds this runtime's shard.
+    /// 在调用方已持有该运行时分片锁的前提下，读取记录并纠正旧式清除操作
+    /// 崩溃留下的中间态（legacy clear crash-cut）：旧式记录若已处于删除阶段，
+    /// 则直接彻底移除该记录并返回 `None`。
     fn read_live_runtime_owner_sync(
         &self,
         runtime_state_id: &str,
@@ -1046,6 +1162,7 @@ impl FileRuntimeStateStore {
         Ok(owner)
     }
 
+    /// 校验并同步原子写入给定运行时状态的 owner 记录。
     fn write_runtime_owner_sync(&self, owner: &RuntimeStateOwner) -> crate::error::Result<()> {
         Self::validate_runtime_owner_payload(owner)?;
         let _safe_scope = safe_segment(&owner.scope_id)?;
@@ -1059,6 +1176,8 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
+    /// 同步将一条存活的运行时记录标记为删除中（清空检查点，保留其余元数据）。
+    /// 记录不存在时返回 `false`；记录存在但归属不同作用域时返回错误。
     fn mark_runtime_deleting_sync(
         &self,
         scope_id: &str,
@@ -1092,10 +1211,13 @@ impl FileRuntimeStateStore {
         Ok(true)
     }
 
+    /// 同步删除给定运行时状态的 owner 记录文件；返回文件此前是否存在。
     fn remove_runtime_record_sync(&self, runtime_state_id: &str) -> crate::error::Result<bool> {
         remove_file_durable(&self.runtime_owner_path(runtime_state_id)?).map_err(Self::to_react_err)
     }
 
+    /// 同步扫描 `_runtime_owners` 目录，读取并校验全部运行时记录，
+    /// 过滤掉旧式的、已处于删除阶段的记录，并按 id 排序返回。
     fn runtime_records_sync(&self) -> crate::error::Result<Vec<RuntimeStateOwner>> {
         let root = self.base.join("_runtime_owners");
         let mut records = Vec::new();
@@ -1134,6 +1256,7 @@ impl FileRuntimeStateStore {
         Ok(records)
     }
 
+    /// 从给定的记录集合中筛选出属于该作用域的运行时状态 id（去重并排序）。
     fn scope_runtime_state_ids(scope_id: &str, records: &[RuntimeStateOwner]) -> Vec<String> {
         records
             .iter()
@@ -1144,6 +1267,7 @@ impl FileRuntimeStateStore {
             .collect()
     }
 
+    /// 依据当前权威的运行时记录集合，重建并写入给定作用域的索引投影文件。
     fn reconcile_scope_index_sync(
         &self,
         scope_id: &str,
@@ -1157,6 +1281,8 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 尽力重建给定作用域的索引投影；失败时仅记录警告日志而不中断调用方，
+    /// 因为索引只是可重建的投影，owner 记录始终是权威数据源。
     fn repair_scope_index_best_effort(&self, scope_id: &str) {
         let repaired = self
             .runtime_records_sync()
@@ -1170,6 +1296,9 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 解析出该作用域当前的权威快照：优先使用已保存的 owner 记录，
+    /// 其次尝试从运行时记录合成，都没有时回退为一个全新、未绑定 epoch 的
+    /// 活跃作用域默认值。
     fn authority_or_unmanaged(
         scope_id: &str,
         record: Option<&RuntimeScopeOwner>,
@@ -1186,6 +1315,7 @@ impl FileRuntimeStateStore {
             })
     }
 
+    /// 通过比较摘要判断给定检查点是否与 owner 记录当前保存的检查点内容相同。
     fn checkpoint_is_current(
         owner: &RuntimeStateOwner,
         checkpoint: &AgentCheckpoint,
@@ -1198,6 +1328,7 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 若该记录的检查点携带待确认转写投影，返回其对应的操作 id；否则返回 `None`。
     fn pending_operation_id(owner: &RuntimeStateOwner) -> crate::error::Result<Option<String>> {
         let Some(checkpoint) = owner.checkpoint.as_ref() else {
             return Ok(None);
@@ -1208,6 +1339,8 @@ impl FileRuntimeStateStore {
             .map(|pending| pending.batch.operation_id))
     }
 
+    /// 根据作用域权威、退役清单和最终状态，组装一份退役回执
+    /// （汇总因删除而丢弃的待确认操作 id 列表及保留下限 epoch）。
     fn retirement_receipt(
         scope: RuntimeScopeAuthority,
         manifest: ScopeRetirementManifest,
@@ -1235,6 +1368,8 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 在已完成的退役历史中查找给定删除操作 id 对应的回执；找到后依据
+    /// 当前已知的保留下限 epoch 更新其状态（已完成 或 回执已过期）。
     fn completed_retirement(
         record: &RuntimeScopeOwner,
         delete_operation_id: &str,
@@ -1269,6 +1404,8 @@ impl FileRuntimeStateStore {
             })
     }
 
+    /// 判断一次会话删除回执是否代表删除成功，且保留下限 epoch 严格早于
+    /// 实际删除时的 epoch（否则该回执已被后续保留策略作废）。
     fn successful_conversation_delete(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> bool {
@@ -1279,6 +1416,8 @@ impl FileRuntimeStateStore {
         ) && receipt.retention_floor_epoch < receipt.deleted_epoch
     }
 
+    /// 将一次会话删除回执的失败状态映射为对应的作用域退役状态；
+    /// 删除成功（或本就已删除）时返回 `None`。
     fn conversation_delete_failure_status(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> Option<ScopeRetirementStatus> {
@@ -1297,6 +1436,8 @@ impl FileRuntimeStateStore {
         }
     }
 
+    /// 判断两次会话删除回执是否代表同一次成功删除的效果
+    /// （操作 id、负载摘要、删除 epoch 一致，且两者均为成功删除）。
     fn same_conversation_delete_effect(
         left: &crate::memory::ManagedConversationDeleteReceipt,
         right: &crate::memory::ManagedConversationDeleteReceipt,
@@ -1308,6 +1449,9 @@ impl FileRuntimeStateStore {
             && Self::successful_conversation_delete(right)
     }
 
+    /// 在按运行时状态 id（实体级）排队的阻塞线程上执行给定操作：先校验
+    /// 调用截止时间与 id 的路径安全性，再通过按键排队的阻塞文件操作
+    /// 运行器串行化执行，并将其错误转换为 [`ReactError`]。
     fn run_blocking<'a, T, F>(
         &'a self,
         conversation_id: String,
@@ -1335,6 +1479,8 @@ impl FileRuntimeStateStore {
         })
     }
 
+    /// 与 [`Self::run_blocking`] 类似，但按作用域 id（集合级）排队，
+    /// 用于需要遍历/修改整个作用域的操作。
     fn run_scope_blocking<'a, T, F>(
         &'a self,
         scope_id: String,
@@ -1364,14 +1510,18 @@ impl FileRuntimeStateStore {
 }
 
 impl RuntimeStateStore for FileRuntimeStateStore {
+    /// 本文件后端支持带修订号（revisioned）的检查点管理（`RevisionedV1`）。
     fn runtime_state_capability(&self) -> RuntimeStateCapability {
         RuntimeStateCapability::RevisionedV1
     }
 
+    /// 本文件后端会真正强制执行调用方传入的绝对截止时间（`AbsoluteDeadlineV1`）。
     fn persistence_call_capability(&self) -> crate::memory::PersistenceCallCapability {
         crate::memory::PersistenceCallCapability::AbsoluteDeadlineV1
     }
 
+    /// [`RuntimeStateStore::load_runtime_state_with_context`] 的文件后端实现：
+    /// 先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
     fn load_runtime_state_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1387,6 +1537,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.load_runtime_state(&scope_id, &runtime_state_id).await })
     }
 
+    /// [`RuntimeStateStore::load_scope_authority_with_context`] 的文件后端实现：
+    /// 先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
     fn load_scope_authority_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1400,6 +1552,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.load_scope_authority(&scope_id).await })
     }
 
+    /// [`RuntimeStateStore::compare_and_save_checkpoint_with_context`] 的文件
+    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
     fn compare_and_save_checkpoint_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1412,6 +1566,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.compare_and_save_checkpoint(request).await })
     }
 
+    /// [`RuntimeStateStore::acknowledge_transcript_projection_with_context`] 的
+    /// 文件后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
     fn acknowledge_transcript_projection_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1426,6 +1582,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.acknowledge_transcript_projection(request).await })
     }
 
+    /// [`RuntimeStateStore::retire_runtime_generation_with_context`] 的文件
+    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
     fn retire_runtime_generation_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1438,6 +1596,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.retire_runtime_generation(request).await })
     }
 
+    /// [`RuntimeStateStore::begin_scope_retirement_with_context`] 的文件
+    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
     fn begin_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1450,6 +1610,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.begin_scope_retirement(request).await })
     }
 
+    /// [`RuntimeStateStore::continue_scope_retirement_with_context`] 的文件
+    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
     fn continue_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1477,6 +1639,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 加载指定运行时状态的受管快照：对作用域与运行时记录分别加锁后，
+    /// 校正作用域权威快照并返回当前 owner 的检查点与状态版本。
     fn load_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1510,6 +1674,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 加载指定作用域的当前权威快照：优先读取已保存的作用域 owner 记录，
+    /// 不存在时回退为从运行时记录合成的等价权威。
     fn load_scope_authority<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1526,6 +1692,12 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /** 仅当作用域与代次版本号都匹配（比较并保存，CAS）时才原子性地写入检查点。
+
+    会依次判断：请求是否合法、代次是否已退役、作用域围栏是否放行、是否为
+    幂等重放、期望版本是否与当前版本一致；只有全部通过才会推进修订号并
+    写入新的运行时/作用域 owner 记录。
+    */
     fn compare_and_save_checkpoint<'a>(
         &'a self,
         request: RuntimeCheckpointCasRequest,
@@ -1657,6 +1829,11 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /** 仅当提供了与当前待确认投影匹配的已应用回执时，才清除该转写投影标记。
+
+    校验请求合法性、代次是否已退役、作用域围栏是否放行、是否为幂等重放，
+    再对照当前 owner 记录中的待确认投影核实回执，全部通过后写入确认证明。
+    */
     fn acknowledge_transcript_projection<'a>(
         &'a self,
         request: RuntimeTranscriptAckRequest,
@@ -1795,6 +1972,12 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /** 用一个持久化墓碑退休某一代次运行时状态。
+
+    校验请求合法性、是否已退役（含幂等重放判定）、作用域围栏是否放行、
+    是否存在待确认投影、期望版本是否匹配，全部通过后清空检查点并写入
+    `Retired` 状态版本。
+    */
     fn retire_runtime_generation<'a>(
         &'a self,
         request: RuntimeGenerationRetireRequest,
@@ -1918,6 +2101,11 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /** 为一个稳定作用域加上围栏（fence），并原子性地捕获其完整的退役清单。
+
+    处理幂等重放（已完成 / 进行中）、epoch 冲突、生命周期冲突等情形，
+    通过后将作用域标记为 `Retiring` 并持久化本次退役清单。
+    */
     fn begin_scope_retirement<'a>(
         &'a self,
         request: ScopeRetirementRequest,
@@ -2054,6 +2242,12 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /** 持久化一次针对作用域退役 saga 的幂等推进。
+
+    处理已完成回执的幂等重放、清单缺失、修订号冲突等情形；通过后依据
+    `advance` 应用条目状态变化，若清单已全部收敛则将作用域标记为
+    `Tombstoned` 并归档为已完成的退役回执。
+    */
     fn continue_scope_retirement<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2320,6 +2514,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 获取某个会话最近的一次检查点（如果存在）；若旧式记录处于删除阶段
+    /// 且尚未清理，则顺带将其彻底移除并返回 `None`。
     fn get_checkpoint<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -2344,6 +2540,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         )
     }
 
+    /// 保存一个检查点；作用域即会话 id 本身，委托给
+    /// [`Self::save_checkpoint_for_scope`] 完成实际写入。
     fn save_checkpoint<'a>(
         &'a self,
         checkpoint: &'a AgentCheckpoint,
@@ -2351,6 +2549,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         self.save_checkpoint_for_scope(&checkpoint.conversation_id, checkpoint)
     }
 
+    /// 保存一个旧式（非受管）检查点，并将其运行时身份绑定到给定作用域；
+    /// 若该作用域或该运行时状态已被纳入版本管理，则拒绝写入。
     fn save_checkpoint_for_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2409,6 +2609,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 列出持久化绑定到 `scope_id` 的、已排序的运行时状态标识符；
+    /// 枚举过程中会尽力修复该作用域的索引投影文件。
     fn runtime_state_ids<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2429,6 +2631,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 删除某一确切的运行时状态实例并移除其与作用域的绑定关系；
+    /// 若该作用域或该运行时状态已被纳入版本管理，则拒绝该操作。
     fn clear_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2465,6 +2669,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 删除 `scope_id` 下建立了索引的全部运行时状态实例；
+    /// 若该作用域已被纳入版本管理，则拒绝该操作。
     fn clear_runtime_state_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2497,6 +2703,8 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
+    /// 删除某个会话的全部状态；作用域即会话 id 本身，委托给
+    /// [`Self::clear_runtime_state`] 完成实际删除。
     fn clear_conversation<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -2509,19 +2717,21 @@ impl RuntimeStateStore for FileRuntimeStateStore {
     }
 }
 
-/// Validate an id and encode its exact UTF-8 bytes as one safe path segment.
+/// 校验一个 id 并将其精确的 UTF-8 字节编码为一个安全的路径片段。
 fn safe_segment(id: &str) -> Result<String, ReactError> {
     echo_core::utils::fs::encode_path_segment_identity(id).map_err(|error| {
         echo_core::error::RuntimeStateError::SerializationError(error.to_string()).into()
     })
 }
 
+/// 针对 [`FileRuntimeStateStore`] 的单元测试与并发/崩溃场景测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Utc;
     use std::time::Duration;
 
+    /// 生成一个进程与用例都唯一的临时目录路径，供各测试用例隔离使用。
     fn tmp_base() -> PathBuf {
         std::env::temp_dir().join(format!(
             "echo-file-runtime-state-{}-{}",
@@ -2530,6 +2740,7 @@ mod tests {
         ))
     }
 
+    /// 构造一个携带单条用户消息（内容为 `marker`）的旧式（非受管）检查点。
     fn checkpoint(runtime_state_id: &str, marker: &str) -> AgentCheckpoint {
         AgentCheckpoint {
             conversation_id: runtime_state_id.to_string(),
@@ -2542,6 +2753,7 @@ mod tests {
         }
     }
 
+    /// 构造一个携带单条用户消息的受管（managed）检查点，消息内容为 `marker`。
     fn managed_checkpoint(
         runtime_state_id: &str,
         marker: &str,
@@ -2554,6 +2766,7 @@ mod tests {
         Ok(checkpoint)
     }
 
+    /// 构造一个携带待确认转写投影（基准修订号为 1）的受管检查点。
     fn pending_checkpoint(
         runtime_state_id: &str,
         scope_id: &str,
@@ -2561,6 +2774,7 @@ mod tests {
         pending_checkpoint_at_revision(runtime_state_id, scope_id, 1)
     }
 
+    /// 构造一个携带待确认转写投影、基准修订号可指定的受管检查点。
     fn pending_checkpoint_at_revision(
         runtime_state_id: &str,
         scope_id: &str,
@@ -2619,6 +2833,7 @@ mod tests {
         })
     }
 
+    /// 依据一个携带待确认投影的检查点，构造与之匹配的转写投影确认请求。
     fn transcript_ack_request(
         checkpoint: &AgentCheckpoint,
         scope_revision: u64,
@@ -2662,6 +2877,7 @@ mod tests {
         })
     }
 
+    /// 对一个检查点中已存在的待确认转写投影字段做局部更新，其余负载保持不变。
     fn update_pending_checkpoint(
         checkpoint: &AgentCheckpoint,
         update: impl FnOnce(&mut super::super::PendingTranscriptProjection),
@@ -2681,6 +2897,7 @@ mod tests {
         Ok(updated)
     }
 
+    /// 为给定作用域与 epoch 准备一个空的（不含任何条目的）退役清单。
     fn retirement_manifest(
         scope_id: &str,
         epoch: u64,
@@ -4333,7 +4550,7 @@ mod tests {
         store.clear_conversation("conv-1").await?;
         assert!(store.get_checkpoint("conv-1").await?.is_none());
 
-        // clear on a never-existing conversation is a no-op.
+        // 对一个从未存在过的会话执行清除操作应是无操作（no-op）。
         store.clear_conversation("never").await?;
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -4440,8 +4657,8 @@ mod tests {
                 .save_checkpoint_for_scope("scope-a", &checkpoint("shared-runtime", "a"))
                 .await
         });
-        // A separately constructed handle for the same canonical root must
-        // share the fixed process authority, not create per-ID lock files.
+        /* 对同一个规范化根目录单独构造出来的句柄，必须共享固定的进程级权威对象，
+        而不是各自创建按 ID 区分的锁文件。 */
         let second_store = FileRuntimeStateStore::new(&tmp)?;
         let second_barrier = std::sync::Arc::clone(&barrier);
         let second = tokio::spawn(async move {
@@ -4781,7 +4998,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        // No directory was created outside base.
+        // 没有在 base 目录之外创建任何目录。
         let parent = tmp
             .parent()
             .ok_or_else(|| ReactError::Other("temporary path has no parent".to_string()))?;

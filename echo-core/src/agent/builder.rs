@@ -1,19 +1,19 @@
-//! Unified `AgentBuilder` trait — common interface for constructing any agent type.
+//! 统一的 `AgentBuilder` trait —— 构建任意 agent 类型的通用接口。
 //!
-//! All concrete builders (`ReactAgentBuilder`, `SubagentBuilder`, etc.) implement
-//! this trait so code can be written generically over agent type.
+//! 所有具体的 builder（`ReactAgentBuilder`、`SubagentBuilder` 等）都实现
+//! 这个 trait，从而可以编写与具体 agent 类型无关的通用代码。
 
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::tools::Tool;
 
-/// Minimal interface shared by ALL agent builders.
+/// 所有 agent builder 共享的最小接口。
 ///
-/// # Type Parameters
+/// # 类型参数
 ///
-/// * `A` — The concrete agent type this builder constructs.
+/// * `A` —— 该 builder 所构建的具体 agent 类型。
 ///
-/// # Example
+/// # 示例
 ///
 /// ```rust,ignore
 /// fn create<B: AgentBuilder>(builder: B, task: &str) -> Result<B::Agent> {
@@ -21,36 +21,36 @@ use crate::tools::Tool;
 /// }
 /// ```
 pub trait AgentBuilder: Sized {
-    /// The concrete agent type this builder constructs.
+    /// 该 builder 所构建的具体 agent 类型。
     type Agent: Agent;
 
-    /// Set the model name (e.g., "qwen3-max", "gpt-5.5").
+    /// 设置模型名称（例如 "qwen3-max"、"gpt-5.5"）。
     fn model(self, model: impl Into<String>) -> Self;
 
-    /// Set the system prompt that seeds the agent's behavior.
+    /// 设置用于初始化 agent 行为的系统提示词。
     fn system_prompt(self, prompt: impl Into<String>) -> Self;
 
-    /// Set a human-readable name for the agent.
+    /// 设置 agent 的人类可读名称。
     fn name(self, name: impl Into<String>) -> Self;
 
-    /// Set the maximum number of reasoning iterations.
+    /// 设置最大推理迭代次数。
     fn max_iterations(self, max: usize) -> Self;
 
-    /// Set the maximum token limit for the context window.
+    /// 设置上下文窗口的最大 token 数限制。
     fn token_limit(self, limit: usize) -> Self;
 
-    /// Register a single tool.
+    /// 注册单个工具。
     fn tool(self, tool: Box<dyn Tool>) -> Self;
 
-    /// Batch-register tools.
+    /// 批量注册多个工具。
     fn tools(self, tools: Vec<Box<dyn Tool>>) -> Self {
         tools.into_iter().fold(self, |b, t| b.tool(t))
     }
 
-    /// Finalize and construct the agent.
+    /// 完成构建并返回 agent 实例。
     fn build(self) -> Result<Self::Agent>;
 
-    /// Build the agent and return it as a trait object.
+    /// 构建 agent 并以 trait object 的形式返回。
     fn build_boxed(self) -> Result<Box<dyn Agent>>
     where
         Self::Agent: 'static,

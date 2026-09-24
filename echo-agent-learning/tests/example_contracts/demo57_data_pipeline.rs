@@ -1,10 +1,10 @@
-//! demo57: code-first, file-backed data analysis pipeline.
-//!
-//! The real pipeline expects an Agent with file tools and `run_code`. This
-//! example uses `MockAgent` to demonstrate the public configuration and state
-//! contract without writing files.
-//!
-//! Contract test: `contract_demo57_data_pipeline` (requires the `testing` feature).
+/*! demo57：以代码为先、基于文件的数据分析流水线。
+
+真实的流水线需要一个具备文件工具和 `run_code` 能力的 Agent。本示例
+使用 `MockAgent` 在不实际写文件的情况下，演示其公开的配置与状态契约。
+
+契约测试：`contract_demo57_data_pipeline`（需要 `testing` feature）。
+*/
 
 use echo_agent::error::Result;
 use echo_agent::testing::MockAgent;
@@ -13,6 +13,7 @@ use echo_agent::workflow::pipelines::{
 };
 use echo_agent::workflow::shared_agent;
 
+/// 契约测试：验证数据分析流水线在使用 mock agent 时的配置与状态契约保持稳定。
 #[tokio::test]
 async fn contract_demo57_data_pipeline() -> Result<()> {
     let _ = tracing_subscriber::fmt()

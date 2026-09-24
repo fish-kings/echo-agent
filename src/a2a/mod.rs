@@ -1,33 +1,33 @@
-//! A2A (Agent-to-Agent) protocol support
+//! A2A（Agent-to-Agent）协议支持
 //!
-//! Implements the Google A2A protocol specification, supporting:
-//! - **Agent Card** publishing: describes Agent capabilities, skills, and endpoints
-//! - **Agent discovery**: find remote Agents via `/.well-known/agent.json`
-//! - **Task interaction**: send tasks and query status across Agent frameworks
-//! - **Task state machine**: `submitted → working → [input-required] → completed / failed`
-//! - **Streaming events**: receive real-time SSE event streams via `tasks/sendSubscribe`
+//! 实现了 Google A2A 协议规范，支持：
+//! - **Agent Card** 发布：描述 Agent 的能力、技能与端点
+//! - **Agent 发现**：通过 `/.well-known/agent.json` 查找远程 Agent
+//! - **任务交互**：跨 Agent 框架发送任务并查询状态
+//! - **任务状态机**：`submitted → working → [input-required] → completed / failed`
+//! - **流式事件**：通过 `tasks/sendSubscribe` 接收实时 SSE 事件流
 //!
-//! # State machine
+//! # 状态机
 //!
 //! ```text
 //! submitted → working → completed
 //!                     → failed
 //!                     → input-required ⇄ working
 //!
-//! Any non-terminal state → canceled
+//! 任意非终态 → canceled
 //! ```
 //!
-//! # Core types
+//! # 核心类型
 //!
-//! | Type | Description |
+//! | 类型 | 说明 |
 //! |------|-------------|
-//! | [`AgentCard`] | Agent capability description card |
-//! | [`A2AServer`] | Server, exposes Agent Card and task endpoints |
-//! | [`A2AClient`] | Client, discovers and invokes remote Agents |
-//! | [`TaskState`] | Task lifecycle state enum |
-//! | [`A2AStreamEvent`] | Streaming events (status changes / artifact updates) |
+//! | [`AgentCard`] | Agent 能力描述卡片 |
+//! | [`A2AServer`] | 服务端，暴露 Agent Card 与任务端点 |
+//! | [`A2AClient`] | 客户端，发现并调用远程 Agent |
+//! | [`TaskState`] | 任务生命周期状态枚举 |
+//! | [`A2AStreamEvent`] | 流式事件（状态变化 / artifact 更新） |
 //!
-//! # Example
+//! # 示例
 //!
 //! ```rust,no_run
 //! use echo_agent::a2a::{AgentCard, AgentSkill, A2AServer, TaskState};

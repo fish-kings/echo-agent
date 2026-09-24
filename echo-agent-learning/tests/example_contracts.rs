@@ -1,4 +1,4 @@
-//! Executable contracts migrated from deterministic framework examples.
+//! 从确定性框架示例迁移而来的可执行契约测试。
 
 #[cfg(all(feature = "testing", feature = "human-loop"))]
 #[path = "example_contracts/demo04_subagent.rs"]

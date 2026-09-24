@@ -1,18 +1,19 @@
-//! Channel-based streaming execution — returns `BoxStream<'static>`.
-//!
-//! Uses a tokio::mpsc channel + spawned task instead of `try_stream!`.
-//! All streaming execution goes through this module.
-//!
-//! The body of [`AgentRunSnapshot::run_core_loop`] is a thin driver that
-//! sequences the phase functions in [`super::phases`]: the loop itself stays
-//! here so there is one — and only one — place to read the unified ReAct
-//! control flow. Each phase is responsible for a focused subset of work
-//! (audit, compaction, LLM call, tool execution, verification, finalization)
-//!
-//! **Converged with the non-streaming path:** `run_stream_channel` runs the
-//! same pre-flight checks as `prepare_react_context` — `GuardDirection::Input`
-//! and `IntentRouter` classification (including skill activation). A blocked
-//! guard yields a terminal stream without entering `run_core_loop`.
+/*!
+ * 基于 channel 的流式执行——返回 `BoxStream<'static>`。
+ *
+ * 使用 tokio::mpsc channel 加一个后台任务来实现，而不是 `try_stream!`。
+ * 所有的流式执行都经过本模块。
+ *
+ * [`AgentRunSnapshot::run_core_loop`] 的函数体是一个很薄的驱动层，
+ * 按顺序调用 [`super::phases`] 中的各个阶段函数：循环本身留在这里，
+ * 因此整个统一的 ReAct 控制流只有这一个地方可读。每个阶段只负责一段
+ * 聚焦的工作（审计、压缩、LLM 调用、工具执行、校验、收尾）。
+ *
+ * **与非流式路径收敛：** `run_stream_channel` 执行的前置检查与
+ * `prepare_react_context` 完全相同——`GuardDirection::Input` 以及
+ * `IntentRouter` 分类（包括技能激活）。被拦截的 guard 会直接产出一个
+ * 终止事件流，而不会进入 `run_core_loop`。
+ */
 
 use super::super::ReactAgent;
 use super::phases::{self, IterOutcome, LoopState, PrepareOutcome};
@@ -29,6 +30,7 @@ use std::task::{Context, Poll};
 use tokio::sync::mpsc;
 use tracing::debug;
 
+/// 在还未 spawn 后台任务之前就需要终止本次调用时，保存事务日志投影并产出终止事件。
 async fn finish_pre_spawn_terminal(
     snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -86,16 +88,27 @@ async fn finish_pre_spawn_terminal(
     (crate::agent::AgentSteerTurnOutcome::Failed, events)
 }
 
+/*
+ * 包装底层 channel 接收端的事件流：负责在把终止事件交给消费者之前，
+ * 先等待后台生产者任务真正落定，并在被提前丢弃时负责取消与回收该任务。
+ */
 struct ManagedAgentEventStream {
+    /// 底层的 mpsc 接收端，包装成 Stream。
     receiver: tokio_stream::wrappers::ReceiverStream<Result<AgentEvent>>,
+    /// 用于在该流被丢弃时取消后台生产者任务的取消令牌。
     cancel: crate::agent::CancellationToken,
+    /// 正在运行的生产者任务句柄；任务结束后置为 `None`。
     task: Option<tokio::task::JoinHandle<()>>,
+    /// 用于在 Drop 时 spawn 收尾（reaper）任务的 runtime 句柄。
     runtime: tokio::runtime::Handle,
+    /// 已从 channel 中取出、但要等生产者任务落定后才能交给消费者的终止事件。
     pending_terminal: Option<Result<AgentEvent>>,
+    /// 标记底层 channel 是否已经关闭。
     receiver_closed: bool,
 }
 
 impl ManagedAgentEventStream {
+    /// 轮询后台生产者任务是否已经结束；`Ok(())` 表示任务正常完成或尚未开始。
     fn poll_producer(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
         let Some(task) = self.task.as_mut() else {
             return Poll::Ready(Ok(()));
@@ -174,15 +187,15 @@ impl Drop for ManagedAgentEventStream {
                 let _ = task.await;
             }
         });
-        // The runtime owns the bounded reaper after the consumer releases the stream.
+        // 消费者释放流之后，这个有界的 reaper 任务就交给 runtime 自行接管。
         std::mem::drop(reaper);
     }
 }
 
-// ── ReactAgent: entry point ──────────────────────────────────────────
+// ── ReactAgent：入口点 ──────────────────────────────────────────
 
 impl ReactAgent {
-    /// Channel-based streaming entry point. Returns `BoxStream<'static>`.
+    /// 基于 channel 的流式入口。返回 `BoxStream<'static>`。
     pub(crate) async fn run_stream_channel(
         &self,
         init: StreamInit,
@@ -195,10 +208,11 @@ impl ReactAgent {
         let mut message = init.message.clone();
         let label = init.label.clone();
         let mut invocation = init.invocation;
-        // Capture value-carried run metadata before the execution mutex wait.
-        // Concurrent callers may update/clear the agent's shared external
-        // context while this invocation is queued, but this snapshot belongs
-        // to the invocation that entered here.
+        /*
+         * 在等待 execution mutex 之前，先捕获通过值传递的运行元数据。
+         * 并发调用方可能在本次调用排队期间更新/清空 agent 共享的外部
+         * context，但这份快照属于进入此处的这次调用。
+         */
         let mut legacy_runtime = if invocation.is_none() {
             Some(self.capture_legacy_external_context())
         } else {
@@ -241,9 +255,11 @@ impl ReactAgent {
         )?;
         self.validate_persistence_configuration()?;
 
-        // ★ Acquire execution mutex BEFORE context mutation — using lock_owned()
-        // so the guard can be moved into the spawned task and held for the
-        // entire stream lifetime.
+        /*
+         * ★ 在修改 context 之前先获取 execution mutex——这里用 lock_owned()
+         * 是为了让这把锁可以被移动进 spawned task，并在整个流的生命周期内
+         * 一直持有。
+         */
         let execution_guard = self.execution_mutex.clone().lock_owned().await;
         if lifecycle_cancel.is_cancelled() {
             return Err(crate::error::ReactError::Agent(Box::new(
@@ -252,9 +268,11 @@ impl ReactAgent {
                 ),
             )));
         }
-        // Preparation below may reconcile persistence, hydrate state, emit
-        // diagnostics, or start a trace. Abandoning this caller future after
-        // admission must therefore remain visible as close debt.
+        /*
+         * 下面的准备阶段可能会对持久化做一致性核对、恢复状态、发出诊断信息，
+         * 或者启动一次 trace。因此，如果在准入之后放弃（abandon）这个调用方
+         * future，必须仍然能作为关闭债务（close debt）被观察到。
+         */
         turn_lease.mark_started();
 
         let admission_snapshot = match (invocation.as_ref(), legacy_runtime.as_ref()) {
@@ -314,8 +332,10 @@ impl ReactAgent {
             }
         }
 
-        // Guard raw input before trace, hooks, memory, or conversation context
-        // can retain it. Transformations become the authoritative turn input.
+        /*
+         * 在 trace、hooks、memory 或 conversation context 有机会保留原始输入之前，
+         * 先对其执行 guard 检查。guard 的转换结果将成为本轮权威的输入内容。
+         */
         if let Some(gm) = &self.guard.guard_manager {
             let result = match gm
                 .check_all(&text, crate::guard::GuardDirection::Input)
@@ -394,8 +414,10 @@ impl ReactAgent {
             }
         }
 
-        // Start a unique trace invocation after guard transformation. Product run identity
-        // remains in ExternalRunContext and is only used as correlation.
+        /*
+         * 在 guard 转换完成之后启动一次独立的 trace invocation。产品侧的 run
+         * identity 仍然保存在 ExternalRunContext 中，这里只是用作关联（correlation）。
+         */
         let trace_run_id;
         if let Some(invocation) = invocation.as_ref() {
             let parent_run_id = invocation
@@ -446,7 +468,7 @@ impl ReactAgent {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let active_turn_lease = self.turn_steer_mailbox.begin(turn_id.clone());
 
-        // ── Restore thread context (Execute mode) + memory triggers/recall ──
+        // ── 恢复线程 context（Execute 模式）+ memory 触发器/召回 ──
         let history = invocation
             .as_ref()
             .and_then(|value| value.history.as_deref())
@@ -526,11 +548,12 @@ impl ReactAgent {
                 return Ok(Box::pin(futures::stream::iter(events)));
             }
         };
-        // A tracked cold-input receipt may be published only after the initial
-        // message has been inserted into ContextManager and before intent
-        // routing or provider execution begins. Generic Agent implementations
-        // that do not provide this publisher intentionally leave the receipt
-        // at `drained = false`.
+        /*
+         * 被追踪的冷输入回执（cold-input receipt）只能在初始消息已经插入
+         * ContextManager 之后、且在 intent 路由或 provider 执行开始之前发布。
+         * 不提供该发布者的通用 Agent 实现，会有意让回执保持在
+         * `drained = false` 状态。
+         */
         if let Some(lifecycle) = invocation
             .as_ref()
             .and_then(|context| context.input_lifecycle.as_ref())
@@ -538,9 +561,11 @@ impl ReactAgent {
             lifecycle.mark_drained();
         }
 
-        // ── G2: IntentRouter classification (converged with run_react_loop) ──
-        // Routing may activate a skill. DirectAnswer uses the canonical loop
-        // so every invocation has the same lifecycle and terminal authority.
+        // ── G2：IntentRouter 分类（与 run_react_loop 收敛）──
+        /*
+         * 路由可能会激活一个技能。DirectAnswer 使用同一套标准循环，
+         * 这样每次调用都拥有相同的生命周期和终止权威（terminal authority）。
+         */
         if let Some(ref router) = self.intent_router {
             let messages = self.memory.context.lock().await.messages().to_vec();
             let cancel = invocation
@@ -579,7 +604,7 @@ impl ReactAgent {
                             "Stream IntentRouter: failed to activate skill"
                         );
                     }
-                    // Fall through to run_core_loop.
+                    // 继续走到 run_core_loop。
                 }
                 crate::intent::Intent::Fallback => {
                     tracing::debug!(
@@ -622,8 +647,10 @@ impl ReactAgent {
             }
         };
         let task = runtime.spawn(async move {
-            // The task owns both the execution guard and close lease for its
-            // full lifetime, even if the caller drops the returned stream.
+            /*
+             * 这个 task 在其整个生命周期内都拥有 execution guard 和 close lease，
+             * 即便调用方把返回的 stream 丢弃了也是如此。
+             */
             let turn_lease = turn_lease;
             let _execution_guard = execution_guard;
             match snap
@@ -686,6 +713,7 @@ impl ReactAgent {
     }
 }
 
+/// 用 `replacement` 替换消息中的文本部分，同时保留其余的非文本内容片段。
 fn message_with_replaced_text(mut message: Message, replacement: &str) -> Message {
     message.content = match message.content {
         MessageContent::Parts(parts) => {
@@ -707,16 +735,17 @@ fn message_with_replaced_text(mut message: Message, replacement: &str) -> Messag
     message
 }
 
-// ── AgentRunSnapshot: core loop driver ───────────────────────────────
+// ── AgentRunSnapshot：核心循环驱动器 ───────────────────────────────
 
 use crate::agent::snapshot::AgentRunSnapshot as AgentSnapshot;
 
-// Helper to create snapshot from agent (keeps the same API for rest of file)
+// 从 agent 创建快照的辅助函数（保持本文件其余部分的 API 不变）
 fn make_snapshot(agent: &ReactAgent) -> AgentSnapshot {
     AgentSnapshot::from_agent(agent)
 }
 
 impl AgentSnapshot {
+    /// 根据取消令牌当前是否已被取消，判断失败时应归为「已取消」还是「已失败」。
     fn failure_terminal(&self) -> crate::agent::AgentSteerTurnOutcome {
         if self
             .cancel_token
@@ -733,6 +762,7 @@ impl AgentSnapshot {
         }
     }
 
+    /// 在没有任何消费者观察到终止状态的情况下，落盘一次事务日志投影作为终止结算。
     async fn settle_unobserved_terminal(
         &self,
         context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -756,6 +786,8 @@ impl AgentSnapshot {
         }
     }
 
+    /// 把当前 turn 待处理的 steer（引导）输入消息排空并写入 context，
+    /// 返回实际写入的消息条数；若提供了 `assistant_draft`，会先写入这条草稿。
     async fn drain_steer_into_context(
         &self,
         context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -783,17 +815,17 @@ impl AgentSnapshot {
         count
     }
 
-    /// Unified ReAct core loop — shared by both streaming and non-streaming paths.
-    ///
-    /// The non-streaming path (`run_react_loop`) creates a channel and runs this
-    /// method, then collects `FinalAnswer` from the events. The streaming path
-    /// (`run_stream_channel`) spawns this in a `tokio::spawn` and returns the
-    /// receiver as a `BoxStream`.
-    ///
-    /// This body is intentionally thin: each block of work lives in
-    /// [`super::phases`]. The single iteration loop
-    /// is the project's only ReAct loop — phase functions are called from
-    /// here, never from a sibling driver.
+    /**
+     * 统一的 ReAct 核心循环——被流式路径和非流式路径共享。
+     *
+     * 非流式路径（`run_react_loop`）会创建一个 channel 并运行这个方法，
+     * 然后从事件中收集 `FinalAnswer`。流式路径（`run_stream_channel`）
+     * 则通过 `tokio::spawn` 来运行它，并把接收端包装成 `BoxStream` 返回。
+     *
+     * 这里的函数体刻意写得很薄：每一块具体工作都放在 [`super::phases`]
+     * 中。这一个迭代循环是本项目唯一的 ReAct 循环——各个 phase 函数
+     * 都从这里被调用，绝不会出现在另一个平行的驱动器里。
+     */
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_core_loop(
         self,
@@ -806,11 +838,13 @@ impl AgentSnapshot {
         user_prompt_hook_already_run: bool,
         tx: mpsc::Sender<Result<AgentEvent>>,
     ) -> Result<crate::agent::AgentSteerTurnOutcome> {
-        // NOTE: execution_mutex is already held by the spawned task
-        // (acquired in run_stream_channel via lock_owned()), so we don't
-        // need to lock again here.
+        /*
+         * 注意：execution_mutex 已经被 spawned task 持有了
+         * （在 run_stream_channel 中通过 lock_owned() 获取），
+         * 所以这里不需要再次加锁。
+         */
 
-        // ── Pre-loop preparation ─────────────────────────────────────
+        // ── 循环前的准备工作 ─────────────────────────────────────
         let mut state = match phases::prepare::prepare_turn(
             &self,
             &context,
@@ -845,9 +879,11 @@ impl AgentSnapshot {
 
         let agent_name = self.config.agent_name.clone();
 
-        // ── The single core ReAct loop ───────────────────────────────
-        // Builders reject zero. A directly constructed or restored invalid
-        // config still remains bounded here and reaches typed finalization.
+        // ── 唯一的核心 ReAct 循环 ───────────────────────────────
+        /*
+         * Builder 会拒绝零值。即便是直接构造或从存档恢复出来的非法 config，
+         * 在这里也仍然会被限制住，并最终走到有类型的收尾（finalization）流程。
+         */
         let max_iterations = self.config.max_iterations;
         for iteration in 0..max_iterations {
             for cb in self.config.callbacks.iter() {
@@ -905,10 +941,12 @@ impl AgentSnapshot {
                 .await;
             }
 
-            // Compact: PreCompact hook → (stage4 E1) pre_compaction_flush →
-            //          checkpoint → ContextManager.prepare → PostCompact hook.
-            // The flush itself lives inside `run_compact` so every compaction
-            // path benefits and it is gated on `should_compress()`.
+            /*
+             * Compact 流程：PreCompact hook → (stage4 E1) pre_compaction_flush →
+             *              checkpoint → ContextManager.prepare → PostCompact hook。
+             * flush 本身实现在 `run_compact` 内部，这样每一条压缩路径都能受益，
+             * 并且由 `should_compress()` 统一把关。
+             */
             let messages =
                 match phases::compact::run_compact(&self, &context, &tx, iteration).await? {
                     phases::CompactOutcome::Continue(m) => m,
@@ -939,7 +977,7 @@ impl AgentSnapshot {
                     }
                 };
 
-            // Think: callbacks + interventions + LLM stream → buffered output
+            // Think：callbacks + interventions + LLM 流式输出 → 缓冲输出
             let final_only = state.budget.final_only;
             let think =
                 match phases::think::run_think(&self, &context, &tx, messages, final_only).await? {
@@ -1002,7 +1040,7 @@ impl AgentSnapshot {
                 continue;
             }
 
-            // Branch: tool calls vs text answer vs no-response
+            // 分支：工具调用 vs 文本回答 vs 无响应
             let outcome = if !think.tool_call_map.is_empty() {
                 phases::tools::run_tools(&self, &context, &tx, &mut state, iteration, think, &label)
                     .await?
@@ -1076,11 +1114,12 @@ impl AgentSnapshot {
                         ControlFlow::Break(outcome) => return Ok(outcome),
                     }
                 }
-                // FinalText is only produced by verify_final_text and is
-                // already handled inline in the text branch above. Reaching
-                // it here would mean a phase returned an outcome out of band
-                // — guard against future refactors by treating it as a
-                // terminal text emission.
+                /*
+                 * FinalText 只会由 verify_final_text 产生，并且已经在上面的文本分支
+                 * 中就地处理过了。如果执行流程到了这里，说明某个 phase 返回了一个
+                 * 越界（out of band）的 outcome——为了防御未来的重构，这里仍然把它
+                 * 当作一次终止性的文本输出来处理。
+                 */
                 IterOutcome::FinalText {
                     answer,
                     reasoning_content,
@@ -1128,7 +1167,7 @@ impl AgentSnapshot {
             }
         }
 
-        // ── Post-loop: max iterations exceeded ───────────────────────
+        // ── 循环结束后：超过最大迭代次数 ───────────────────────────
         phases::finalize::finalize_max_iterations(&self, &context, tx).await?;
         Ok(crate::agent::AgentSteerTurnOutcome::Failed)
     }
@@ -1258,7 +1297,7 @@ mod tests {
         Ok(())
     }
 
-    /// A guard that blocks every input with a fixed reason.
+    /// 一个用固定理由拦截所有输入的 guard。
     struct BlockingGuard;
     impl Guard for BlockingGuard {
         fn name(&self) -> &str {
@@ -1432,7 +1471,7 @@ mod tests {
         }
     }
 
-    /// Build a minimal agent with a blocking input guard.
+    /// 构建一个带阻断型输入 guard 的最小 agent。
     fn agent_with_blocking_guard() -> ReactAgent {
         let mut agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
         let mut gm = echo_core::guard::GuardManager::new();
@@ -1453,7 +1492,7 @@ mod tests {
         }
     }
 
-    /// A blocked input guard preserves the unconfigured path's single terminal.
+    /// 被拦截的输入 guard 在未配置持久化的路径下也只应产生一个终止事件。
     #[tokio::test]
     async fn stream_guard_block_yields_single_final_answer() {
         let agent = agent_with_blocking_guard();
@@ -1929,15 +1968,17 @@ mod tests {
         Ok(())
     }
 
-    /// After a guard blocks one stream, the execution mutex must be released so
-    /// the very next call can proceed. This guards against the lock-leak
-    /// regression where a short-circuited branch forgets to drop the owned
-    /// `execution_guard` (the agent would then deadlock forever).
+    /*
+     * 一次 guard 拦截了某个 stream 之后，必须释放 execution mutex，
+     * 这样紧接着的下一次调用才能顺利进行。这个测试用来防止出现
+     * “锁泄漏”回归——即某个提前返回（short-circuit）的分支忘记
+     * drop 掉它持有的 `execution_guard`（这样 agent 就会永远死锁）。
+     */
     #[tokio::test]
     async fn stream_guard_block_releases_execution_mutex() {
         let agent = agent_with_blocking_guard();
 
-        // First call: blocked, must release the lock.
+        // 第一次调用：被拦截，必须释放锁。
         let s1 = agent
             .run_stream_channel(
                 StreamInit {
@@ -1952,8 +1993,10 @@ mod tests {
             .expect("first stream");
         let _: Vec<_> = s1.collect().await;
 
-        // Second call must not hang — if the lock leaked, this await never
-        // completes and the test times out.
+        /*
+         * 第二次调用不能被挂起——如果锁发生了泄漏，这个 await 永远不会
+         * 完成，测试就会超时。
+         */
         let s2 = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             agent.run_stream_channel(
@@ -1982,11 +2025,13 @@ mod tests {
         ));
     }
 
-    // ── End-to-end run_core_loop tests driven by MockLlmClient ─────────────
-    // These exercise the shared core loop (the one ReAct loop) through the
-    // public streaming entrypoint `run_stream_channel`, with a scripted mock
-    // LLM. No guard / no intent router on these agents, so the stream falls
-    // straight through to run_core_loop.
+    // ── 由 MockLlmClient 驱动的端到端 run_core_loop 测试 ─────────────
+    /*
+     * 这些测试通过公开的流式入口 `run_stream_channel`，配合一个脚本化的
+     * mock LLM，来验证共享的核心循环（唯一的那个 ReAct 循环）。这些 agent
+     * 既没有配置 guard 也没有配置 intent router，所以流程会直接落入
+     * run_core_loop。
+     */
 
     use crate::agent::react::builder::ReactAgentBuilder;
     use crate::error::{LlmError, ReactError};
@@ -2266,8 +2311,11 @@ mod tests {
         }
     }
 
-    /// Build a streaming-capable agent backed by a scripted mock LLM, with
-    /// no guard and no intent router (so requests reach run_core_loop).
+    /*
+     * 构建一个具备流式能力的 agent，底层使用脚本化的 mock LLM，
+     * 且不配置 guard、也不配置 intent router（这样请求才会到达
+     * run_core_loop）。
+     */
     fn agent_with_mock_llm(llm: MockLlmClient) -> ReactAgent {
         ReactAgentBuilder::new()
             .llm_client(Arc::new(llm))
@@ -2696,8 +2744,10 @@ mod tests {
             })?;
             Result::Ok(stream)
         })?;
-        // Releasing the consumer requests cancellation, but this injected
-        // projector ignores it. Runtime shutdown then drops the producer.
+        /*
+         * 释放消费者会请求取消，但这里注入的 projector 会忽略这个取消请求。
+         * 随后 runtime 关闭时会把 producer 一并 drop 掉。
+         */
         drop(stream);
         drop(runtime);
 
@@ -2997,7 +3047,7 @@ mod tests {
         Ok(())
     }
 
-    /// Collect the AgentEvents emitted by one streaming turn.
+    /// 收集一次流式 turn 所产生的全部 AgentEvent。
     async fn collect_events(agent: &ReactAgent, text: &str) -> Vec<AgentEvent> {
         let stream = agent
             .run_stream_channel(
@@ -3349,9 +3399,11 @@ mod tests {
         Ok(())
     }
 
-    /// A single-turn text answer: the mock LLM replies with plain content, so
-    /// the loop should emit a Token + a terminal FinalAnswer and stop (no tool
-    /// phase). Guards the core-loop text branch.
+    /*
+     * 单轮纯文本回答：mock LLM 回复纯文本内容，因此循环应当发出一个
+     * Token，再发出一个终止性的 FinalAnswer 然后停止（不进入工具
+     * 阶段）。用来保护核心循环里的文本分支。
+     */
     #[tokio::test]
     async fn run_core_loop_text_only_yields_final_answer() {
         let llm = MockLlmClient::new().with_response("Paris is the capital of France.");
@@ -3359,7 +3411,7 @@ mod tests {
 
         let events = collect_events(&agent, "What is the capital of France?").await;
 
-        // Must end with a FinalAnswer carrying the mock content.
+        // 必须以携带 mock 内容的 FinalAnswer 结束。
         let last = events.last().expect("at least one event");
         match last {
             AgentEvent::FinalAnswer(text) => {
@@ -3477,14 +3529,18 @@ mod tests {
         Ok(())
     }
 
-    /// A full ReAct cycle: the mock LLM first requests a tool call, the tool
-    /// returns a scripted result, then the LLM produces a final text answer.
-    /// Guards the core-loop tool-call branch (think → tools → think → finalize).
+    /*
+     * 一次完整的 ReAct 循环：mock LLM 先请求一次工具调用，工具返回一个
+     * 脚本化的结果，然后 LLM 产出最终的文本回答。用来保护核心循环里的
+     * 工具调用分支（think → tools → think → finalize）。
+     */
     #[tokio::test]
     async fn run_core_loop_tool_call_cycle_completes() {
-        // The mock tool returns a fixed result; the LLM script is:
-        //   1. request tool_call "mock_calc" with args {"x": 6, "y": 7}
-        //   2. after seeing the tool result, emit a final text answer.
+        /*
+         * mock 工具返回一个固定结果；LLM 的脚本流程是：
+         *   1. 请求调用 tool_call "mock_calc"，参数为 {"x": 6, "y": 7}
+         *   2. 看到工具结果之后，输出最终的文本回答。
+         */
         let llm = MockLlmClient::new()
             .then_tool_call("call_1", "mock_calc", r#"{"x":6,"y":7}"#)
             .with_response("The result is 42.");
@@ -3500,7 +3556,7 @@ mod tests {
 
         let events = collect_events(&agent, "What is 6 times 7?").await;
 
-        // The last event must be a FinalAnswer.
+        // 最后一个事件必须是 FinalAnswer。
         let last = events.last().expect("at least one event");
         assert!(
             matches!(last, AgentEvent::FinalAnswer(t) if t.contains("42")),
@@ -4673,17 +4729,21 @@ mod tests {
         }));
     }
 
-    /// When the mock LLM exhausts its response queue (returns EmptyResponse
-    /// error), the loop must terminate gracefully with an Error event rather
-    /// than hanging or panicking. Guards the empty-response / error branch.
+    /*
+     * 当 mock LLM 耗尽其响应队列（返回 EmptyResponse 错误）时，循环必须
+     * 以一个 Error 事件优雅终止，而不是挂起或 panic。用来保护
+     * empty-response / error 分支。
+     */
     #[tokio::test]
     async fn run_core_loop_empty_llm_response_terminates_gracefully() {
-        // No preset responses — first LLM call yields EmptyResponse error.
+        // 没有预设响应——第一次 LLM 调用就会产生 EmptyResponse 错误。
         let llm = MockLlmClient::new();
         let agent = agent_with_mock_llm(llm);
 
-        // Collect raw results (may include Err — the point of this test is
-        // graceful termination, not a specific event shape).
+        /*
+         * 收集原始结果（可能包含 Err——这个测试关心的是能否优雅终止，
+         * 而不是具体的事件形状）。
+         */
         let stream = agent
             .run_stream_channel(
                 StreamInit {
@@ -4702,45 +4762,49 @@ mod tests {
         )
         .await;
 
-        // The loop must TERMINATE within the timeout — not hang forever on
-        // repeated retries of an empty mock queue.
+        /*
+         * 循环必须在超时时间内终止——不能因为反复重试一个空的 mock
+         * 队列而永远挂起。
+         */
         assert!(
             results.is_ok(),
             "stream must terminate, not hang, on empty LLM response"
         );
     }
 
-    /// Phase 3: verify that a running LLM call responds to cancellation.
-    /// Uses `MockLlmClient::with_delay` to simulate a slow LLM (30s), then
-    /// cancels the agent's token mid-flight. The stream must terminate well
-    /// before the 30s delay — proving the cancel propagated to the LLM layer.
+    /*
+     * 阶段 3：验证正在进行中的 LLM 调用能够响应取消。
+     * 使用 `MockLlmClient::with_delay` 模拟一个很慢的 LLM（30 秒），
+     * 然后在中途取消 agent 的 token。这个 stream 必须远早于 30 秒
+     * 延迟就终止——这就证明了取消操作确实传播到了 LLM 层。
+     */
     #[tokio::test]
     async fn q_flt_v05_cancellation_stops_the_provider_without_final_success() {
         use std::time::Duration;
 
         use crate::agent::CancellationToken;
 
-        // A mock LLM that sleeps 30s before responding, but honors cancel.
+        // 一个会先睡眠 30 秒再响应的 mock LLM，但会遵从取消（cancel）。
         let llm = MockLlmClient::new()
             .with_response("slow answer")
             .with_delay(Duration::from_secs(30));
         let agent = agent_with_mock_llm(llm);
 
         let cancel = CancellationToken::new();
-        // Start streaming — the LLM call will block for 30s unless cancelled.
+        // 开始流式处理——除非被取消，否则这次 LLM 调用会阻塞 30 秒。
         let stream_fut = agent.chat_stream_with_cancel("hello", cancel.clone());
 
-        // Give the stream a moment to reach the LLM call.
+        // 给 stream 一点时间，让它先走到 LLM 调用那一步。
         let stream = tokio::time::timeout(Duration::from_secs(2), stream_fut)
             .await
             .expect("stream init should not hang")
             .expect("stream should start");
 
-        // Cancel after a short delay.
+        // 短暂延迟之后执行取消。
         tokio::time::sleep(Duration::from_millis(100)).await;
         cancel.cancel();
 
-        // Collect events with a short timeout — must terminate WAY before 30s.
+        // 用一个较短的超时来收集事件——必须远早于 30 秒就结束。
         let mut events = Vec::new();
         let collect_result = tokio::time::timeout(Duration::from_secs(5), async {
             let mut stream = stream;
@@ -4756,8 +4820,10 @@ mod tests {
             "stream must terminate within 5s after cancel (not wait for 30s delay)"
         );
 
-        // The stream should NOT have produced a FinalAnswer (it was cancelled
-        // before the LLM could respond).
+        /*
+         * 这个 stream 不应该产出 FinalAnswer（它在 LLM 来得及响应之前
+         * 就已经被取消了）。
+         */
         let has_final = events
             .iter()
             .any(|e| matches!(e, Ok(AgentEvent::FinalAnswer { .. })));
@@ -5540,17 +5606,22 @@ mod tests {
         Ok(())
     }
 
-    // ── M1: test-credibility re-basing (mock 隐身衣 removal) ────────────────
-    // New fixtures drive the mock through the real provider wire shape:
-    // content deltas followed by a separate terminal chunk carrying
-    // finish_reason and usage (F-TST-01-P1-01), and concurrent batch results
-    // emitted in call order (F-RCT-04-P1-01). Each fixture fails before its
-    // fix and passes after.
+    // ── M1：测试可信度再校准（去除 mock 的“隐身衣”）────────────────
+    /*
+     * 新增的 fixture 让 mock 严格按照真实 provider 的线上数据格式来
+     * 驱动：先是内容增量（content deltas），随后是携带 finish_reason
+     * 和 usage 的独立终止 chunk（F-TST-01-P1-01）；以及并发批量结果
+     * 按调用顺序（call order）而非完成顺序发出（F-RCT-04-P1-01）。
+     * 每个 fixture 在修复前会失败，修复后会通过。
+     */
 
     #[tokio::test]
     async fn stream_script_terminal_chunk_reports_usage() {
-        // Real providers report usage on a separate terminal chunk; the
-        // loop-level `usage_reported` must be true only in that shape.
+        /*
+         * 真实的 provider 会在一个单独的终止 chunk 中上报 usage；
+         * 只有在这种数据形状下，循环层面的 `usage_reported` 才应该为
+         * true。
+         */
         let usage = crate::llm::types::Usage {
             prompt_tokens: Some(11),
             completion_tokens: Some(7),
@@ -5595,10 +5666,12 @@ mod tests {
 
     #[tokio::test]
     async fn stream_script_without_usage_reports_false() {
-        // The provider streamed content but never reported usage — the loop
-        // must not fabricate a positive accounting (F-TST-01-P1-01's
-        // single-chunk mock certified the impossible; this fixture pins the
-        // honest negative).
+        /*
+         * provider 流式输出了内容，但从未上报 usage——循环不能凭空
+         * 捏造出一个“有值”的统计结果（F-TST-01-P1-01 里那个单 chunk
+         * 的 mock 曾经验证了这种不可能的情况；这个 fixture 用来钉住
+         * 诚实的否定结果）。
+         */
         let llm = MockLlmClient::new().with_stream_script(vec![
             StreamChunk::Delta(DeltaMessage {
                 role: Some("assistant".to_string()),
@@ -5629,11 +5702,13 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_batch_results_follow_call_order() {
-        // Two concurrent tool calls: call_1 is slow, call_2 is fast. Results
-        // must be emitted and inserted into context in CALL order (stream
-        // index order), not completion order — strict providers reject
-        // misordered tool results with HTTP 400 (F-RCT-04-P1-01). Before the
-        // fix the second request carried [call_2, call_1] results.
+        /*
+         * 两个并发的工具调用：call_1 慢，call_2 快。结果必须按照“调用
+         * 顺序”（CALL order，也就是 stream 里的下标顺序）而不是“完成
+         * 顺序”被发出并插入 context——比较严格的 provider 会因为工具
+         * 结果顺序错乱而返回 HTTP 400（F-RCT-04-P1-01）。修复之前，第二
+         * 次请求携带的结果是 [call_2, call_1] 这种错误顺序。
+         */
         let llm = MockLlmClient::new()
             .then_tool_calls(vec![
                 ToolCall {
@@ -5670,7 +5745,7 @@ mod tests {
 
         let events = collect_events(&agent, "Run both tools.").await;
 
-        // The ToolResult events must arrive in call order.
+        // ToolResult 事件必须按调用顺序（call order）到达。
         let result_ids: Vec<&str> = events
             .iter()
             .filter_map(|event| match event {
@@ -5683,7 +5758,7 @@ mod tests {
             vec!["call_1", "call_2"],
             "batch results must be emitted in call order, got {result_ids:?}"
         );
-        // And the final answer still arrives.
+        // 并且最终答案依然会到达。
         assert!(
             events
                 .iter()
@@ -5691,10 +5766,12 @@ mod tests {
         );
     }
 
-    // Truncated / clean-disconnect stream: the loop must NOT accept the
-    // partial output as a complete final answer (Q-FLT-01-P1-01). This
-    // fixture remains active in the mandatory suite so terminal regressions
-    // cannot be hidden behind an ignored test.
+    /*
+     * 被截断/正常断开的 stream：循环不能把这部分（部分）输出当作一个
+     * 完整的最终答案来接受（Q-FLT-01-P1-01）。这个 fixture 会一直保留
+     * 在强制运行的测试套件里，这样终止相关的回归就不会被隐藏在一个
+     * 被 ignore 的测试后面。
+     */
     #[tokio::test]
     async fn truncated_stream_is_not_accepted_as_complete() {
         let llm = MockLlmClient::new().with_stream_script(vec![

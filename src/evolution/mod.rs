@@ -1,28 +1,29 @@
-//! Self-evolution system — typed memory, change audit, security, and skill creation.
-//!
-//! This module provides the infrastructure for the agent to evolve its own
-//! capabilities over time through:
-//!
-//! - **Skill lifecycle**: [`SkillMutationAuthority`] durably applies approved
-//!   Curator + exact SKILL.md transitions (Candidate → Draft → Active → Stale → Deprecated → Archived)
-//! - **Typed memory**: Structured metadata (type, confidence, stability, risk) for every memory
-//! - **Change audit**: Append-only evidence for durable, generation-fenced
-//!   memory and Skill owner-applied rollback
-//! - **Security**: Secret scanning, untrusted input isolation, injection detection
-//! - **Memory review**: Staleness scoring, conflict detection, merge, and archival
-//! - **Skill creation**: Candidate detection from observed patterns, draft SKILL.md generation
-//!
-//! # Related Modules
-//!
-//! This module works closely with `trace` for execution evidence. Offline
-//! evaluation and prompt optimization remain separate optional capabilities.
-//!
-//! # Safety
-//!
-//! Layered memory mutations carry durable audit identities; skill and rule
-//! mutation coverage is tracked separately.
-//! High-risk changes (rule promotion, skill merges) require human review.
-//! Content from untrusted sources is never automatically promoted.
+/*!
+自我进化系统 —— 类型化记忆、变更审计、安全机制与技能创建。
+
+本模块为 Agent 随时间持续演化自身能力提供基础设施，具体包括：
+
+- **技能生命周期**：[`SkillMutationAuthority`] 持久化地应用经过批准的
+  Curator + 精确的 SKILL.md 状态转换（Candidate → Draft → Active → Stale → Deprecated → Archived）
+- **类型化记忆**：为每条记忆提供结构化元数据（类型、置信度、稳定性、风险）
+- **变更审计**：仅追加式证据记录，用于持久化、按代际隔离的
+  记忆变更以及技能所有者发起的回滚
+- **安全机制**：密钥扫描、不可信输入隔离、注入检测
+- **记忆复核**：陈旧度评分、冲突检测、合并与归档
+- **技能创建**：从观察到的模式中检测候选项、生成草稿 SKILL.md
+
+# 相关模块
+
+本模块与 `trace` 紧密协作以获取执行证据。离线评估与
+提示词优化仍作为独立的可选能力存在。
+
+# 安全性
+
+分层记忆变更携带持久化的审计身份；技能与规则的
+变更覆盖范围分别单独追踪。
+高风险变更（规则晋升、技能合并）需要人工复核。
+来自不可信来源的内容永远不会被自动晋升。
+*/
 
 pub mod audit;
 pub mod background_review;

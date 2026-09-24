@@ -43,6 +43,7 @@ use serde_json::json;
 
 // ── 模拟工具定义 ─────────────────────────────────────────────────────────────────
 
+/// 模拟工具：搜索网络信息，返回固定的模拟结果，不做真实网络请求。
 #[tool(name = "search_web", description = "搜索网络信息")]
 async fn search_web(#[arg(description = "搜索关键词")] query: String) -> Result<ToolResult> {
     Ok(ToolResult::success(format!(
@@ -51,6 +52,7 @@ async fn search_web(#[arg(description = "搜索关键词")] query: String) -> Re
     )))
 }
 
+/// 模拟工具：读取文档内容，返回固定的模拟文本，不做真实文件读取。
 #[tool(name = "read_document", description = "读取文档内容")]
 async fn read_document(#[arg(description = "文档路径")] path: String) -> Result<ToolResult> {
     Ok(ToolResult::success(format!(
@@ -59,11 +61,14 @@ async fn read_document(#[arg(description = "文档路径")] path: String) -> Res
     )))
 }
 
+/// 模拟工具：编写代码，直接回显传入的代码内容作为“已写入”的结果。
 #[tool(name = "write_code", description = "编写代码")]
 async fn write_code(#[arg(description = "代码内容")] code: String) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("代码已写入:\n{}", code)))
 }
 
+/// 模拟工具：执行代码，仅对几个内置的固定表达式（如 "1+1"、"2*3"）返回预设结果，
+/// 其余情况一律返回「执行成功」。
 #[tool(name = "execute_code", description = "执行代码")]
 async fn execute_code(#[arg(description = "代码")] code: String) -> Result<ToolResult> {
     // 简单计算示例
@@ -76,11 +81,13 @@ async fn execute_code(#[arg(description = "代码")] code: String) -> Result<Too
     Ok(ToolResult::success("执行成功".to_string()))
 }
 
+/// 模拟工具：部署服务，返回固定的模拟部署成功文本，不做真实部署。
 #[tool(name = "deploy_service", description = "部署服务")]
 async fn deploy_service(#[arg(description = "服务名")] name: String) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("服务 '{}' 已部署", name)))
 }
 
+/// 模拟工具：健康检查，返回固定的模拟健康状态 JSON。
 #[tool(name = "health_check", description = "健康检查")]
 async fn health_check() -> Result<ToolResult> {
     Ok(ToolResult::success(
@@ -88,6 +95,8 @@ async fn health_check() -> Result<ToolResult> {
     ))
 }
 
+/// demo35 主入口：依次演示动态工具 API 基础用法、边界情况处理，
+/// 以及在真实 Agent 中按阶段动态切换工具集的场景。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -115,6 +124,8 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: API 基础演示 ───────────────────────────────────────────────────────
 
+/// 演示 `add_tool` / `remove_tool` / `replace_tool` 的基础用法，
+/// 模拟一个 Agent 在研究、编码、替换、部署四个阶段依次调整工具集。
 fn demo_api_basics() {
     println!("─────────────────────────────────────────────");
     println!("Part 1: 动态工具 API 演示");
@@ -140,9 +151,9 @@ fn demo_api_basics() {
     let removed_search = agent.remove_tool("search_web");
     let removed_doc = agent.remove_tool("read_document");
 
-    // `Agent::remove_tool` (trait method, in scope via prelude::*) returns
-    // `bool`; the inherent `ReactAgent::remove_tool` returning an owned Arc
-    // generation is shadowed here. Both are equivalent for the assertion.
+    // `Agent::remove_tool`（trait 方法，通过 prelude::* 引入）返回 `bool`；
+    // 此处该方法遮蔽了返回持有的 Arc 世代的固有方法 `ReactAgent::remove_tool`。
+    // 二者对本处的断言而言是等价的。
     assert!(removed_search);
     assert!(removed_doc);
 
@@ -178,6 +189,8 @@ fn demo_api_basics() {
 
 // ── Part 2: 边界情况处理 ───────────────────────────────────────────────────────
 
+/// 演示动态工具 API 的边界情况：移除不存在的工具、`replace_tool` 在目标工具
+/// 不存在时自动注册、以及重复添加同名工具时的覆盖行为。
 fn demo_edge_cases() {
     println!("─────────────────────────────────────────────");
     println!("Part 2: 边界情况处理");
@@ -211,6 +224,8 @@ fn demo_edge_cases() {
 
 // ── Part 3: 实际 Agent 使用场景 ─────────────────────────────────────────────────
 
+/// 演示真实 Agent 场景下的动态工具切换：多阶段代码生成任务中按阶段切换工具集，
+/// 以及为同名工具执行安全升级式替换。
 async fn demo_agent_with_dynamic_tools() -> echo_agent::error::Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 3: 实际 Agent 使用场景");

@@ -1,12 +1,12 @@
-//! Session Manager — IM channel session management
+//! Session Manager —— IM 渠道会话管理
 //!
-//! Provides framework-level session lifecycle management:
-//! - Maintains independent sessions per user and conversation
-//!   (isolated by channel_id + chat_id + sender_id)
-//! - Auto-reset on timeout (after idle period, next message starts a new session)
-//! - Keyword/command reset (user can reset by sending a specific command)
+//! 提供框架级别的会话生命周期管理:
+//! - 按用户与会话维护相互独立的会话
+//!   (通过 channel_id + chat_id + sender_id 隔离)
+//! - 超时自动重置(空闲一段时间后,下一条消息会开启新会话)
+//! - 关键词/命令重置(用户可通过发送特定命令来重置会话)
 //!
-//! ## Usage
+//! ## 用法
 //!
 //! ```rust,no_run
 //! use async_trait::async_trait;
@@ -55,25 +55,26 @@ use tokio_util::sync::CancellationToken;
 
 // ── SessionConfig ────────────────────────────────────────────────────────────
 
-/// Session configuration
+/// 会话配置
 #[derive(Clone)]
 pub struct SessionConfig {
-    /// Session timeout duration (default: 60 minutes)
+    /// 会话超时时长(默认:60 分钟)
     pub timeout: Duration,
-    /// Reset keyword list (exact match, case-insensitive, Unicode-aware)
+    /// 重置关键词列表(精确匹配,忽略大小写,支持 Unicode)
     pub reset_keywords: Vec<String>,
-    /// Reset command prefix (messages starting with this are treated as commands, e.g. "/")
+    /// 重置命令前缀(以该前缀开头的消息会被视为命令,例如 "/")
     pub command_prefix: Option<String>,
-    /// Command name list (used with command_prefix, e.g. ["reset", "clear", "new"])
+    /// 命令名称列表(与 command_prefix 搭配使用,例如 ["reset", "clear", "new"])
     pub reset_commands: Vec<String>,
-    /// Reply text after reset
+    /// 重置后的回复文本
     pub reset_reply: String,
 }
 
 impl Default for SessionConfig {
+    /// 构造默认会话配置:超时 1 小时,内置一组默认重置关键词/命令与默认重置回复。
     fn default() -> Self {
         Self {
-            timeout: Duration::from_secs(60 * 60), // 1 hour
+            timeout: Duration::from_secs(60 * 60), // 1 小时
             reset_keywords: vec![
                 "reset chat".into(),
                 "new chat".into(),
@@ -88,57 +89,57 @@ impl Default for SessionConfig {
 }
 
 impl SessionConfig {
-    /// Set timeout in minutes
+    /// 以分钟为单位设置超时时长
     pub fn with_timeout_minutes(mut self, minutes: u64) -> Self {
         self.timeout = Duration::from_secs(minutes.saturating_mul(60));
         self
     }
 
-    /// Set timeout duration
+    /// 设置超时时长
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Set reset keywords (replaces defaults)
+    /// 设置重置关键词(覆盖默认值)
     pub fn with_reset_keywords(mut self, keywords: Vec<String>) -> Self {
         self.reset_keywords = keywords;
         self
     }
 
-    /// Add a reset keyword
+    /// 添加一个重置关键词
     pub fn add_reset_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.reset_keywords.push(keyword.into());
         self
     }
 
-    /// Set the command prefix (None disables command mode)
+    /// 设置命令前缀(传入 None 可关闭命令模式)
     pub fn with_command_prefix(mut self, prefix: Option<String>) -> Self {
         self.command_prefix = prefix;
         self
     }
 
-    /// Set reset command list (replaces defaults)
+    /// 设置重置命令列表(覆盖默认值)
     pub fn with_reset_commands(mut self, commands: Vec<String>) -> Self {
         self.reset_commands = commands;
         self
     }
 
-    /// Set the reply text after reset
+    /// 设置重置后的回复文本
     pub fn with_reset_reply(mut self, reply: impl Into<String>) -> Self {
         self.reset_reply = reply.into();
         self
     }
 
-    /// Check if the text is a reset command.
+    /// 检查给定文本是否为重置命令。
     ///
-    /// Uses `to_lowercase()` for Unicode-safe case-insensitive comparison,
-    /// correctly supporting non-ASCII keywords (`eq_ignore_ascii_case` does not apply to non-ASCII characters).
+    /// 使用 `to_lowercase()` 进行 Unicode 安全的大小写不敏感比较,
+    /// 从而正确支持非 ASCII 关键词(`eq_ignore_ascii_case` 对非 ASCII 字符不适用)。
     pub fn is_reset(&self, text: &str) -> bool {
         let trimmed = text.trim();
         let lower = trimmed.to_lowercase();
 
-        // Keyword match (Unicode-safe)
+        // 关键词匹配(Unicode 安全)
         if self
             .reset_keywords
             .iter()
@@ -147,7 +148,7 @@ impl SessionConfig {
             return true;
         }
 
-        // Command prefix match
+        // 命令前缀匹配
         if let Some(ref prefix) = self.command_prefix
             && let Some(cmd) = trimmed.strip_prefix(prefix.as_str())
         {
@@ -168,50 +169,62 @@ impl SessionConfig {
 
 // ── Session ──────────────────────────────────────────────────────────────────
 
-/// Stable identity for one user's session within one channel conversation.
+/// 某个渠道会话内、某个用户会话的稳定身份标识。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct SessionKey {
+    /// 渠道 ID。
     channel_id: String,
+    /// 会话(conversation)ID。
     conversation_id: String,
+    /// 发送者 ID。
     sender_id: String,
 }
 
-/// One concrete incarnation of a sender-scoped channel session.
+/// 某个发送者作用域下渠道会话的一个具体"世代(incarnation)"。
 ///
-/// The channel coordinates remain stable while `incarnation_id` changes every
-/// time [`SessionHandler`] creates or replaces the inner message handler. The
-/// opaque identifier lets consumers isolate ephemeral model/runtime state from
-/// product conversation history without reimplementing session lifecycle.
+/// 渠道坐标(channel/conversation/sender)保持稳定,而 `incarnation_id`
+/// 会在 [`SessionHandler`] 每次创建或替换内部消息处理器时发生变化。这个
+/// 不透明标识符使调用方无需重新实现会话生命周期,即可将临时的
+/// 模型/运行时状态与产品侧会话历史区分隔离。
 #[derive(Clone, Debug)]
 pub struct ChannelSessionInstance {
+    /// 渠道 ID。
     channel_id: String,
+    /// 会话(conversation)ID。
     conversation_id: String,
+    /// 发送者 ID。
     sender_id: String,
+    /// 当前世代所使用的投递围栏,用于限定该世代的输出投递。
     delivery_fence: Arc<StdMutex<ChannelDeliveryFence>>,
+    /// 上一个被替换掉的世代 ID(若存在)。
     previous_incarnation_id: Option<String>,
 }
 
-/// Atomic result of rotating one channel session to a new incarnation.
+/// 将一个渠道会话轮换到新世代后得到的原子性结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct ChannelSessionRotation {
+    /// 轮换前的旧世代 ID。
     previous_incarnation_id: String,
+    /// 轮换后生效的新世代 ID。
     incarnation_id: String,
 }
 
 impl ChannelSessionRotation {
-    /// Incarnation that must be settled and retired before new admission.
+    /// 在允许新投递之前必须先结算并退役的旧世代 ID。
     pub fn previous_incarnation_id(&self) -> &str {
         &self.previous_incarnation_id
     }
 
-    /// Newly-authoritative incarnation for subsequent runtime state.
+    /// 供后续运行时状态使用的、新生效的世代 ID。
     pub fn incarnation_id(&self) -> &str {
         &self.incarnation_id
     }
 }
 
 impl ChannelSessionInstance {
+    /// 依据会话 key 与可选的前一个世代 ID,构造一个全新的会话实例
+    /// (随机生成新的 incarnation_id)。
     fn from_key(key: &SessionKey, previous_incarnation_id: Option<String>) -> Self {
         let incarnation_id = uuid::Uuid::new_v4().to_string();
         Self {
@@ -223,6 +236,7 @@ impl ChannelSessionInstance {
         }
     }
 
+    /// 加锁获取当前投递围栏;若互斥锁被污染则记录错误日志后恢复使用。
     fn lock_delivery_fence(&self) -> StdMutexGuard<'_, ChannelDeliveryFence> {
         match self.delivery_fence.lock() {
             Ok(delivery_fence) => delivery_fence,
@@ -233,40 +247,39 @@ impl ChannelSessionInstance {
         }
     }
 
-    /// Stable channel identifier for this session scope.
+    /// 该会话作用域内稳定的渠道标识符。
     pub fn channel_id(&self) -> &str {
         &self.channel_id
     }
 
-    /// Stable channel conversation identifier for this session scope.
+    /// 该会话作用域内稳定的渠道会话标识符。
     pub fn conversation_id(&self) -> &str {
         &self.conversation_id
     }
 
-    /// Stable sender identifier for this session scope.
+    /// 该会话作用域内稳定的发送者标识符。
     pub fn sender_id(&self) -> &str {
         &self.sender_id
     }
 
-    /// Opaque identity for this concrete handler incarnation.
+    /// 当前具体 handler 世代的不透明身份标识。
     pub fn incarnation_id(&self) -> String {
         self.lock_delivery_fence().incarnation_id().to_string()
     }
 
-    /// Incarnation replaced directly by this factory-created instance.
+    /// 被本次工厂创建的实例直接替换掉的上一个世代 ID。
     ///
-    /// A pruned session has no immediate replacement; consumers should use
-    /// [`SessionEndInfo`] to retain any cleanup obligation until the sender
-    /// returns.
+    /// 被清理(prune)掉的会话没有直接的替代者;调用方应通过
+    /// [`SessionEndInfo`] 在发送者再次出现之前保留相应的清理义务。
     pub fn previous_incarnation_id(&self) -> Option<&str> {
         self.previous_incarnation_id.as_deref()
     }
 
-    /// Atomically rotate this validated sender scope to a new incarnation.
+    /// 将该已校验的发送者作用域原子性地轮换到一个新世代。
     ///
-    /// This is intended for application-owned reset commands that must settle
-    /// product work before rotating model/runtime state themselves. All clones
-    /// of this instance and the framework end callback observe the new value.
+    /// 用于应用自身拥有的重置命令场景:应用需要先结算产品侧工作,
+    /// 再自行轮换模型/运行时状态。此实例的所有克隆以及框架的结束
+    /// 回调都会观察到这个新值。
     pub fn rotate(&self) -> ChannelSessionRotation {
         let incarnation_id = uuid::Uuid::new_v4().to_string();
         let mut current = self.lock_delivery_fence();
@@ -278,12 +291,14 @@ impl ChannelSessionInstance {
         }
     }
 
+    /// 克隆并返回当前世代的投递围栏。
     fn current_delivery_fence(&self) -> ChannelDeliveryFence {
         self.lock_delivery_fence().clone()
     }
 }
 
 impl SessionKey {
+    /// 从入站消息中提取并校验渠道/会话/发送者标识,构造会话 key。
     fn from_message(msg: &InboundMessage) -> echo_core::error::Result<Self> {
         let channel_id = require_channel_id(Some(&msg.channel_id))?;
         let conversation_id = require_conversation_id(Some(msg.conversation_id()))?;
@@ -296,33 +311,51 @@ impl SessionKey {
     }
 }
 
-/// Single user session
+/// 单个用户会话
 struct Session {
+    /// 当前生效的消息处理器实例。
     handler: Arc<dyn MessageHandler>,
+    /// 该会话对应的渠道会话实例(身份与投递围栏)。
     instance: ChannelSessionInstance,
+    /// 该会话当前世代的生命周期状态。
     generation: Arc<SessionGeneration>,
 }
 
+/// 单个会话世代的生命周期状态:取消令牌、活跃流计数与延迟结算的结束回调。
 struct SessionGeneration {
+    /// 受互斥锁保护的可变生命周期状态。
     state: StdMutex<SessionGenerationState>,
+    /// 该世代所属的渠道会话实例。
     instance: ChannelSessionInstance,
+    /// 用于取消该世代下所有正在进行的流的取消令牌。
     cancellation: CancellationToken,
+    /// 在所有流结算完成时用于唤醒等待者的通知器。
     streams_settled: Notify,
 }
 
+/// `SessionGeneration` 的可变状态:活跃流数量、最后活跃时间与延迟的结束回调。
 struct SessionGenerationState {
+    /// 当前处于活跃状态(已被接纳但尚未结算)的流数量。
     active_streams: usize,
+    /// 当前处于活跃状态、且已进入"驱动"阶段的流数量。
     active_driven_streams: usize,
+    /// 最近一次活跃(收到消息或流状态变化)的时间点,用于判断空闲超时。
     last_active: Instant,
+    /// 因仍有活跃流而被延迟执行的会话结束回调(若存在)。
     deferred_end: Option<DeferredSessionEnd>,
 }
 
+/// 一个被延迟到所有活跃流结算完成后才执行的会话结束回调及其参数。
 struct DeferredSessionEnd {
+    /// 会话结束时要调用的回调函数。
     callback: Arc<dyn Fn(SessionEndInfo) + Send + Sync>,
+    /// 传给回调函数的会话结束信息。
     info: SessionEndInfo,
 }
 
 impl DeferredSessionEnd {
+    /// 执行延迟的会话结束回调;若回调发生 panic,则在此处捕获并记录日志,
+    /// 避免其穿透到流的清理路径中。
     fn settle(self) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.callback)(self.info);
@@ -334,6 +367,7 @@ impl DeferredSessionEnd {
 }
 
 impl SessionGeneration {
+    /// 以给定的渠道会话实例与取消令牌构造一个全新的会话世代(初始无活跃流)。
     fn new(instance: ChannelSessionInstance, cancellation: CancellationToken) -> Self {
         Self {
             state: StdMutex::new(SessionGenerationState {
@@ -348,6 +382,7 @@ impl SessionGeneration {
         }
     }
 
+    /// 加锁获取生命周期状态;若互斥锁被污染则记录错误日志后恢复使用。
     fn lock_state(&self) -> StdMutexGuard<'_, SessionGenerationState> {
         match self.state.lock() {
             Ok(state) => state,
@@ -358,6 +393,8 @@ impl SessionGeneration {
         }
     }
 
+    /// 尝试为一次新的流处理接纳一个活跃流名额:若该世代已被取消则返回
+    /// `None`;否则活跃流计数加一,刷新最后活跃时间,并返回对应的接收凭证。
     fn begin(self: &Arc<Self>) -> Option<SessionStreamReceipt> {
         let mut state = self.lock_state();
         if self.cancellation.is_cancelled() {
@@ -372,6 +409,7 @@ impl SessionGeneration {
         })
     }
 
+    /// 判断该世代是否处于空闲状态(无活跃流、无活跃投递)且已超过给定超时时长。
     fn is_idle_and_expired(&self, timeout: Duration) -> bool {
         let state = self.lock_state();
         state.active_streams == 0
@@ -382,10 +420,13 @@ impl SessionGeneration {
             && state.last_active.elapsed() >= timeout
     }
 
+    /// 将该世代的最后活跃时间刷新为当前时刻。
     fn touch(&self) {
         self.lock_state().last_active = Instant::now();
     }
 
+    /// 注册一个会话结束回调:若当前无活跃流则立即结算执行;否则延迟到
+    /// 所有活跃流结算完成后再执行。同一世代只允许有一个待结算的回调。
     fn defer_end(&self, callback: Arc<dyn Fn(SessionEndInfo) + Send + Sync>, info: SessionEndInfo) {
         let deferred = {
             let mut state = self.lock_state();
@@ -404,6 +445,8 @@ impl SessionGeneration {
         }
     }
 
+    /// 取消该世代、等待其投递围栏退役完成;当 `settle_driven_streams` 为真时,
+    /// 还会等待所有已进入"驱动"阶段的流结算完成。
     async fn retire(&self, settle_driven_streams: bool) {
         self.cancellation.cancel();
         self.instance
@@ -415,8 +458,8 @@ impl SessionGeneration {
         }
     }
 
-    /// Shutdown settlement waits for every accepted stream receipt, including
-    /// legacy/custom handlers that do not publish a driven Turn terminal.
+    /// 关闭时的结算会等待每一个已被接纳的流凭证结算完成,包括那些不会
+    /// 发布"驱动型 Turn 终止事件"的旧版/自定义 handler。
     async fn retire_all_streams(&self) {
         self.cancellation.cancel();
         self.instance
@@ -426,6 +469,8 @@ impl SessionGeneration {
         self.wait_for_streams(true).await;
     }
 
+    /// 阻塞等待流结算完成:`all_streams` 为真时等待所有活跃流归零,
+    /// 否则只等待处于"驱动"阶段的活跃流归零。
     async fn wait_for_streams(&self, all_streams: bool) {
         loop {
             let settled = self.streams_settled.notified();
@@ -447,16 +492,20 @@ impl SessionGeneration {
     }
 }
 
-/// Exact ownership for one inner stream setup/consumption lifetime.
+/// 单次内部流建立/消费生命周期的精确所有权凭证。
 ///
-/// The counter is independent of the async session mutex so dropping an
-/// unconsumed or partially-consumed stream releases admission synchronously.
+/// 该计数器独立于异步会话互斥锁,因此丢弃一个未被消费或只被部分消费的
+/// 流,也能同步地释放其接纳名额。
 struct SessionStreamReceipt {
+    /// 该凭证所属的会话世代。
     generation: Arc<SessionGeneration>,
+    /// 该凭证是否已进入"驱动"阶段(即已开始真正驱动流)。
     driving: bool,
 }
 
 impl SessionStreamReceipt {
+    /// 尝试将该凭证标记为"驱动中":若世代已被取消则返回 `false`;
+    /// 否则驱动流计数加一并返回 `true`。
     fn begin_driving(&mut self) -> bool {
         let mut state = self.generation.lock_state();
         if self.generation.cancellation.is_cancelled() {
@@ -472,6 +521,9 @@ impl SessionStreamReceipt {
 }
 
 impl Drop for SessionStreamReceipt {
+    /// 释放该流凭证:递减活跃流(以及必要时的驱动流)计数,刷新最后活跃
+    /// 时间;当计数归零时唤醒等待中的结算方,并在必要时结算延迟的
+    /// 会话结束回调。
     fn drop(&mut self) {
         let (deferred, streams_settled) = {
             let mut state = self.generation.lock_state();

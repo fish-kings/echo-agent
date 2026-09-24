@@ -24,12 +24,15 @@ struct TextProcessingSkill;
 /// 转大写工具
 struct ToUpperTool;
 impl Tool for ToUpperTool {
+    /// 返回工具名称 `to_upper`。
     fn name(&self) -> &str {
         "to_upper"
     }
+    /// 返回工具描述。
     fn description(&self) -> &str {
         "将文本转换为全大写"
     }
+    /// 返回工具入参的 JSON Schema：必填字符串参数 `text`。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -39,6 +42,7 @@ impl Tool for ToUpperTool {
             "required": ["text"]
         })
     }
+    /// 执行转大写：读取 `text` 参数（缺省为空字符串）并返回其全大写形式。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -56,12 +60,15 @@ impl Tool for ToUpperTool {
 /// 转小写工具
 struct ToLowerTool;
 impl Tool for ToLowerTool {
+    /// 返回工具名称 `to_lower`。
     fn name(&self) -> &str {
         "to_lower"
     }
+    /// 返回工具描述。
     fn description(&self) -> &str {
         "将文本转换为全小写"
     }
+    /// 返回工具入参的 JSON Schema：必填字符串参数 `text`。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -71,6 +78,7 @@ impl Tool for ToLowerTool {
             "required": ["text"]
         })
     }
+    /// 执行转小写：读取 `text` 参数（缺省为空字符串）并返回其全小写形式。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -87,15 +95,19 @@ impl Tool for ToLowerTool {
 
 /// 实现 Skill trait
 impl Skill for TextProcessingSkill {
+    /// 返回 Skill 名称 `text_processing`。
     fn name(&self) -> &str {
         "text_processing"
     }
+    /// 返回 Skill 描述。
     fn description(&self) -> &str {
         "文本大小写转换能力"
     }
+    /// 返回该 Skill 提供的工具集合：转大写和转小写工具。
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         vec![Box::new(ToUpperTool), Box::new(ToLowerTool)]
     }
+    /// 返回注入到 System Prompt 中的说明片段，告知 LLM 该 Skill 提供的能力及用法。
     fn system_prompt_injection(&self) -> Option<String> {
         Some("\n\n## 文本处理能力\n你可以对文本进行大小写转换：\n- `to_upper(text)`：将文本转为全大写\n- `to_lower(text)`：将文本转为全小写".to_string())
     }
@@ -103,6 +115,8 @@ impl Skill for TextProcessingSkill {
 
 // ── 主程序 ────────────────────────────────────────────────────────────────────
 
+/// demo07 主入口：依次演示 Skill 元数据查看、Skill 安装与查询，
+/// 以及通过 Skill 驱动 Agent 执行真实任务。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();

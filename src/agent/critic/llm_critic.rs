@@ -1,4 +1,4 @@
-//! LLM-driven Critic implementation
+//! 基于 LLM 的 Critic（评审者）实现。
 
 use crate::error::{ReactError, Result};
 use crate::llm::types::Message;
@@ -10,28 +10,38 @@ use futures::future::BoxFuture;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-/// LLM-driven evaluator
-///
-/// Uses a large language model to evaluate the quality of Agent output, returning structured `Critique`.
-/// Reuses the `LlmPlanner` pattern: LLM call + structured JSON output + auto-fix.
+/**
+基于 LLM 的评估器。
+
+使用大语言模型评估 Agent 输出的质量，返回结构化的 `Critique`。
+复用 `LlmPlanner` 的模式：LLM 调用 + 结构化 JSON 输出 + 自动修复。
+*/
 pub struct LlmCritic {
+    /// 用于评估调用的模型名称。
     model: String,
+    /// 已就绪的 LLM 客户端。
     client: Arc<dyn LlmClient>,
+    /// 评估用的系统 prompt。
     system_prompt: String,
+    /// 判定通过所需的最低分数。
     pass_threshold: f64,
+    /// provider 端用户 ID，用于隔离/缓存等场景。
     cache_user_id: Option<String>,
+    /// 瞬时性 provider 失败时使用的重试策略。
     retry_policy: RetryPolicy,
 }
 
 impl LlmCritic {
-    /// Create an LLM evaluator
-    ///
-    /// # Parameters
-    /// * `client` - The already-prepared client used by the owning Agent
-    ///
-    /// # Default configuration
-    /// * System prompt: multi-dimensional quality evaluation expert (accuracy, completeness, clarity, usefulness)
-    /// * Pass threshold: 7.0 (score >= 7.0 considered passing)
+    /**
+    创建一个 LLM 评估器。
+
+    # 参数
+    * `client` —— 由所属 Agent 提供的、已经准备好的客户端
+
+    # 默认配置
+    * 系统 prompt：多维度质量评估专家（准确性、完整性、清晰度、有用性）
+    * 通过阈值：7.0（分数 >= 7.0 视为通过）
+    */
     pub fn new(client: Arc<dyn LlmClient>) -> Self {
         Self {
             model: client.model_name().to_string(),
@@ -43,31 +53,32 @@ impl LlmCritic {
         }
     }
 
-    /// Custom system prompt
+    /// 自定义系统 prompt。
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
     }
 
-    /// Set pass threshold (0.0 - 10.0)
+    /// 设置通过阈值（0.0 - 10.0）。
     pub fn with_pass_threshold(mut self, threshold: f64) -> Self {
         self.pass_threshold = threshold;
         self
     }
 
-    /// Set provider-side user id for KVCache/content-safety/scheduling isolation
-    /// on providers that support it (for example DeepSeek).
+    /// 设置 provider 端用户 ID，用于在支持该特性的 provider（例如 DeepSeek）上
+    /// 实现 KVCache/内容安全/调度隔离。
     pub fn with_cache_user_id(mut self, user_id: impl Into<String>) -> Self {
         self.cache_user_id = Some(user_id.into());
         self
     }
 
-    /// Set the retry policy for transient provider failures during evaluation.
+    /// 设置评估过程中应对瞬时性 provider 失败所使用的重试策略。
     pub fn with_retry_policy(mut self, retry_policy: RetryPolicy) -> Self {
         self.retry_policy = retry_policy;
         self
     }
 
+    /// 返回默认的评估系统 prompt（英文原文，直接发送给模型）。
     fn default_system_prompt() -> &'static str {
         "You are a strict quality evaluation expert. You need to evaluate the quality of the given response.\n\n\
         Evaluation dimensions:\n\
@@ -83,23 +94,24 @@ impl LlmCritic {
         Please strictly return structured data according to the JSON Schema."
     }
 
-    /// Parse LLM response as CritiqueOutput
+    /// 将 LLM 响应解析为 CritiqueOutput。
     fn parse_critique_output(content: &str) -> Result<CritiqueOutput> {
-        // 1. Direct parse
+        // 1. 直接解析
         if let Ok(output) = serde_json::from_str::<CritiqueOutput>(content) {
             return Ok(output);
         }
 
-        // 2. Extract from markdown code block
+        // 2. 从 markdown 代码块中提取
         let json_str = crate::utils::json_parse::extract_json_from_markdown(content);
         if let Ok(output) = serde_json::from_str::<CritiqueOutput>(&json_str) {
             return Ok(output);
         }
 
-        // 3. Auto-fix
+        // 3. 自动修复
         Self::try_auto_fix(&json_str)
     }
 
+    /// 尝试清洗并修复格式不规范的 JSON，修复失败时兜底返回默认评估结果。
     fn try_auto_fix(json_str: &str) -> Result<CritiqueOutput> {
         let fixed = crate::utils::json_parse::clean_json(json_str);
 
@@ -110,7 +122,7 @@ impl LlmCritic {
             }
             Err(e) => {
                 warn!(error = %e, "Failed to parse critique output");
-                // Fallback: construct default non-passing evaluation
+                // 兜底：构造一个默认的未通过评估结果
                 Ok(CritiqueOutput {
                     score: 5.0,
                     passed: false,
@@ -123,14 +135,15 @@ impl LlmCritic {
 }
 
 impl LlmCritic {
-    /// Issue the critique LLM call with a given `response_format`.
-    ///
-    /// Extracted so the main `critique` flow can retry once without
-    /// `response_format` when the provider rejects structured output
-    /// (some OpenAI-compatible endpoints return HTTP 400 for
-    /// `response_format: json_schema`, e.g. "This response_format type is
-    /// unavailable now"). Returning the raw text here keeps the JSON parsing
-    /// concern in `parse_critique_output`.
+    /**
+    使用给定的 `response_format` 发起一次评审 LLM 调用。
+
+    之所以单独抽取出来，是为了让主 `critique` 流程能在 provider 拒绝
+    结构化输出时，去掉 `response_format` 重试一次（部分 OpenAI 兼容端点
+    会对 `response_format: json_schema` 返回 HTTP 400，例如
+    "This response_format type is unavailable now"）。这里只返回原始文本，
+    JSON 解析相关的处理仍然留在 `parse_critique_output` 中。
+    */
     async fn call_llm_once(
         &self,
         messages: &[Message],
@@ -151,9 +164,10 @@ impl LlmCritic {
         Ok(response.content().unwrap_or_default())
     }
 
-    /// Call the provider using the framework retry policy for transient LLM
-    /// failures. Permanent errors stay single-attempt so authentication and
-    /// request-shape problems surface immediately.
+    /**
+    使用框架的重试策略调用 provider，以应对瞬时性 LLM 失败。
+    永久性错误仍然只尝试一次，以便鉴权、请求格式等问题能立即暴露出来。
+    */
     async fn call_llm(
         &self,
         messages: &[Message],
@@ -167,13 +181,15 @@ impl LlmCritic {
         .await
     }
 
-    /// Whether an error message indicates the provider rejected the
-    /// `response_format` parameter (and thus a text fallback is worth trying).
-    ///
-    /// Matches on common phrasings from OpenAI-compatible endpoints that don't
-    /// support structured output (DeepSeek/Qwen/GLM/etc. return variants of
-    /// "response_format type is unavailable"). Conservative: only triggers
-    /// fallback on a clear signal, so unrelated API errors still surface.
+    /**
+    判断一条错误信息是否表明 provider 拒绝了 `response_format` 参数
+    （因此值得尝试文本兜底方案）。
+
+    匹配的是不支持结构化输出的 OpenAI 兼容端点常见措辞
+    （DeepSeek/Qwen/GLM 等会返回 "response_format type is unavailable"
+    的各种变体）。判定较为保守：只有信号明确时才触发兜底，
+    以免掩盖无关的 API 错误。
+    */
     fn is_response_format_unsupported(err: &str) -> bool {
         let lower = err.to_ascii_lowercase();
         lower.contains("response_format")
@@ -183,11 +199,13 @@ impl LlmCritic {
                 || lower.contains("invalid"))
     }
 
+    /// 判断当前模型是否应跳过结构化 `response_format`（例如 DeepSeek 系列）。
     fn should_skip_structured_response_format(&self) -> bool {
         let model = self.model.to_ascii_lowercase();
         model.starts_with("deepseek-")
     }
 
+    /// 构造不带 `response_format` 的兜底消息，显式要求模型仅输出 JSON。
     fn fallback_messages(&self, user_content: &str) -> Vec<Message> {
         vec![
             Message::system(self.system_prompt.clone()),
@@ -202,6 +220,7 @@ impl LlmCritic {
 }
 
 impl Critic for LlmCritic {
+    /// 调用 LLM 对给定任务与回答进行评估，返回结构化的 `Critique`。
     fn critique<'a>(
         &'a self,
         task: &'a str,
@@ -241,17 +260,16 @@ impl Critic for LlmCritic {
                     .await
                     .map_err(|e| ReactError::Other(format!("LLM critique call failed: {e}")))?
             } else {
-                // First attempt: structured output via json_schema (preferred —
-                // guarantees schema-conformant JSON when the provider supports it).
+                /* 首次尝试：通过 json_schema 使用结构化输出（更优——在
+                provider 支持时能保证输出符合 schema）。 */
                 match self.call_llm(&messages, response_format).await {
                     Ok(text) => text,
                     Err(e) if Self::is_response_format_unsupported(&e.to_string()) => {
-                        // Provider rejects structured output — retry once without
-                        // response_format. The system prompt already asks for JSON;
-                        // append an explicit instruction so the model emits parseable
-                        // JSON that `parse_critique_output` (markdown/autofix aware)
-                        // can still handle. Keeps critic functional on providers
-                        // that lack json_schema support.
+                        /* provider 拒绝了结构化输出——去掉 response_format 重试一次。
+                        系统 prompt 里已经要求输出 JSON；这里再追加一条明确指令，
+                        让模型输出 `parse_critique_output`（支持 markdown/自动修复）
+                        仍能处理的可解析 JSON。这样即便 provider 不支持
+                        json_schema，评审功能依然可用。 */
                         warn!(
                             error = %e,
                             "critique: structured output unsupported, retrying as plain text"
@@ -273,7 +291,7 @@ impl Critic for LlmCritic {
             let output = Self::parse_critique_output(&content)?;
             let mut critique: Critique = output.into();
 
-            // Override LLM's passed judgment with threshold
+            // 用阈值覆盖 LLM 自身给出的通过判断
             critique.passed = critique.score >= self.pass_threshold;
 
             info!(
@@ -286,6 +304,7 @@ impl Critic for LlmCritic {
         })
     }
 
+    /// 返回该 Critic 的名称。
     fn name(&self) -> &str {
         "llm_critic"
     }
@@ -333,16 +352,16 @@ mod tests {
     fn test_parse_critique_fallback() {
         let text = "Unparseable text";
         let output = LlmCritic::parse_critique_output(text).unwrap();
-        assert!(!output.passed); // Fallback: not passed
+        assert!(!output.passed); // 兜底结果：未通过
         assert_eq!(output.score, 5.0);
     }
 
     #[test]
     fn test_is_response_format_unsupported_matches_provider_phrasings() {
-        // Real phrasing from the user's bug report (国产 OpenAI 兼容端点).
+        // 来自用户 bug 报告的真实措辞（国产 OpenAI 兼容端点）。
         let real = "API error (status 400): This response_format type is unavailable now";
         assert!(LlmCritic::is_response_format_unsupported(real));
-        // Common variants across providers.
+        // 各 provider 之间常见的变体措辞。
         assert!(LlmCritic::is_response_format_unsupported(
             "response_format unsupported"
         ));
@@ -356,8 +375,8 @@ mod tests {
 
     #[test]
     fn test_is_response_format_unsupported_rejects_unrelated_errors() {
-        // Unrelated API errors must NOT trigger the fallback (would mask real
-        // failures like auth/quota/network issues).
+        /* 无关的 API 错误不应触发兜底逻辑（否则会掩盖鉴权/配额/网络等
+        真实故障）。 */
         assert!(!LlmCritic::is_response_format_unsupported(
             "401 unauthorized"
         ));

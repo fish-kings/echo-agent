@@ -1,36 +1,37 @@
-//! Shared agent type definitions
+//! 共享的 agent 类型定义
 
 use serde::{Deserialize, Serialize};
 
-/// Evaluation result
+/// 评估结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Critique {
-    /// Quality score (0.0 - 10.0)
+    /// 质量得分（0.0 - 10.0）
     pub score: f64,
-    /// Whether the quality threshold was passed
+    /// 是否通过了质量阈值
     pub passed: bool,
-    /// Detailed feedback
+    /// 详细反馈
     pub feedback: String,
-    /// Improvement suggestions
+    /// 改进建议
     #[serde(default)]
     pub suggestions: Vec<String>,
 }
 
-/// Structured output for evaluation results (for LLM JSON parsing)
+/// 评估结果的结构化输出（用于 LLM 的 JSON 解析）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CritiqueOutput {
-    /// Quality score (0.0 - 10.0)
+    /// 质量得分（0.0 - 10.0）
     pub score: f64,
-    /// Whether the quality threshold was passed
+    /// 是否通过了质量阈值
     pub passed: bool,
-    /// Detailed feedback
+    /// 详细反馈
     pub feedback: String,
-    /// Improvement suggestions
+    /// 改进建议
     #[serde(default)]
     pub suggestions: Vec<String>,
 }
 
 impl From<CritiqueOutput> for Critique {
+    /// 将 LLM 解析出的结构化输出转换为内部使用的 `Critique`。
     fn from(output: CritiqueOutput) -> Self {
         Self {
             score: output.score,
@@ -41,7 +42,7 @@ impl From<CritiqueOutput> for Critique {
     }
 }
 
-/// Return JSON Schema for Critique structure (for LLM structured output)
+/// 返回 `Critique` 结构对应的 JSON Schema（用于 LLM 结构化输出）
 pub fn critique_output_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -73,6 +74,7 @@ pub fn critique_output_schema() -> serde_json::Value {
 mod tests {
     use super::*;
 
+    // 验证从 JSON 字符串正确解析出 CritiqueOutput
     #[test]
     fn test_critique_output_parse() {
         let json = r#"{"score": 8.5, "passed": true, "feedback": "Accurate response", "suggestions": ["Could be more detailed"]}"#;
@@ -82,6 +84,7 @@ mod tests {
         assert_eq!(output.suggestions.len(), 1);
     }
 
+    // 验证缺少 suggestions 字段时使用默认空列表
     #[test]
     fn test_critique_output_default_suggestions() {
         let json = r#"{"score": 6.0, "passed": false, "feedback": "Incomplete"}"#;
@@ -89,6 +92,7 @@ mod tests {
         assert!(output.suggestions.is_empty());
     }
 
+    // 验证生成的 JSON Schema 结构与字段符合预期
     #[test]
     fn test_critique_schema() {
         let schema = critique_output_schema();

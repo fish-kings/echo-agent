@@ -1,37 +1,44 @@
-//! Structured Output support
-//!
-//! Provides a `StructuredAgent<T>` wrapper that automatically parses text output into type `T` after Agent execution.
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use echo_agent::prelude::*;
-//! use echo_agent::agent::react::structured::StructuredAgent;
-//! use serde::Deserialize;
-//!
-//! #[derive(Debug, Deserialize)]
-//! struct Sentiment { label: String, score: f64 }
-//!
-//! # async fn run() -> echo_agent::error::Result<()> {
-//! let agent = ReactAgentBuilder::simple("qwen3-max", "You are a sentiment analysis assistant, always output in JSON format")?;
-//! let mut sa = StructuredAgent::<Sentiment>::new(agent);
-//! let result = sa.execute("I love Rust!").await?;
-//! println!("{}: {}", result.label, result.score);
-//! # Ok(())
-//! # }
-//! ```
+/*!
+结构化输出（Structured Output）支持
+
+提供一个 `StructuredAgent<T>` 包装器，在 Agent 执行完成后，
+自动将文本输出解析为类型 `T`。
+
+# 用法
+
+```rust,no_run
+use echo_agent::prelude::*;
+use echo_agent::agent::react::structured::StructuredAgent;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+struct Sentiment { label: String, score: f64 }
+
+# async fn run() -> echo_agent::error::Result<()> {
+let agent = ReactAgentBuilder::simple("qwen3-max", "You are a sentiment analysis assistant, always output in JSON format")?;
+let mut sa = StructuredAgent::<Sentiment>::new(agent);
+let result = sa.execute("I love Rust!").await?;
+println!("{}: {}", result.label, result.score);
+# Ok(())
+# }
+```
+*/
 
 use crate::agent::Agent;
 use crate::error::{ReactError, Result};
 
 use super::ReactAgent;
 
-/// Wrapper that automatically parses Agent text output into type `T`
-///
-/// Requires the Agent to output valid JSON text (can be constrained via system prompt,
-/// or used with `ResponseFormat::JsonSchema`).
+/**
+自动将 Agent 文本输出解析为类型 `T` 的包装器。
+
+要求 Agent 输出合法的 JSON 文本（可以通过系统提示词约束，
+也可以配合 `ResponseFormat::JsonSchema` 使用）。
+*/
 pub struct StructuredAgent<T> {
+    /// 被包装的底层 Agent。
     inner: ReactAgent,
+    /// 用于携带目标类型 `T` 的占位标记。
     _phantom: std::marker::PhantomData<T>,
 }
 
@@ -39,7 +46,7 @@ impl<T> StructuredAgent<T>
 where
     T: serde::de::DeserializeOwned + Send + 'static,
 {
-    /// Wrap an existing ReactAgent
+    /// 包装一个已有的 ReactAgent。
     pub fn new(agent: ReactAgent) -> Self {
         Self {
             inner: agent,
@@ -47,43 +54,45 @@ where
         }
     }
 
-    /// Get a reference to the inner Agent
+    /// 获取内部 Agent 的不可变引用。
     pub fn inner(&self) -> &ReactAgent {
         &self.inner
     }
 
-    /// Get a mutable reference to the inner Agent
+    /// 获取内部 Agent 的可变引用。
     pub fn inner_mut(&mut self) -> &mut ReactAgent {
         &mut self.inner
     }
 
-    /// Execute a task and parse the result as type `T`
+    /// 执行一个任务，并将结果解析为类型 `T`。
     pub async fn execute(&mut self, task: &str) -> Result<T> {
         let text = self.inner.execute(task).await?;
         parse_json_output(&text)
     }
 
-    /// Chat and parse the result as type `T`
+    /// 进行一次对话，并将结果解析为类型 `T`。
     pub async fn chat(&mut self, message: &str) -> Result<T> {
         let text = self.inner.chat(message).await?;
         parse_json_output(&text)
     }
 }
 
-/// Extract and parse JSON from LLM output text
-///
-/// Supports two formats:
-/// 1. Pure JSON string
-/// 2. JSON wrapped in Markdown code block (```json ... ```)
+/**
+从 LLM 输出文本中提取并解析 JSON。
+
+支持两种格式：
+1. 纯 JSON 字符串
+2. 包裹在 Markdown 代码块中的 JSON（```json ... ```）
+*/
 fn parse_json_output<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
     let trimmed = text.trim();
 
-    // Try direct JSON parsing
+    // 尝试直接解析为 JSON
     if let Ok(v) = serde_json::from_str::<T>(trimmed) {
         return Ok(v);
     }
 
-    // Try extracting JSON from markdown code block
+    // 尝试从 markdown 代码块中提取 JSON
     if let Some(json_str) = extract_json_from_markdown(trimmed)
         && let Ok(v) = serde_json::from_str::<T>(json_str)
     {
@@ -95,9 +104,9 @@ fn parse_json_output<T: serde::de::DeserializeOwned>(text: &str) -> Result<T> {
     )))
 }
 
-/// Extract JSON content from a markdown code block
+/// 从 markdown 代码块中提取 JSON 内容。
 fn extract_json_from_markdown(text: &str) -> Option<&str> {
-    // Match ```json\n...\n``` or ```\n...\n```
+    // 匹配 ```json\n...\n``` 或 ```\n...\n```
     let start = if let Some(pos) = text.find("```json") {
         pos + 7
     } else {
@@ -105,11 +114,11 @@ fn extract_json_from_markdown(text: &str) -> Option<&str> {
     };
 
     let remaining = &text[start..];
-    // Skip newline
+    // 跳过换行符
     let content_start = remaining.find('\n').map(|p| p + 1).unwrap_or(0);
     let content = &remaining[content_start..];
 
-    // Find closing ```
+    // 查找结束的 ```
     content.find("```").map(|end| content[..end].trim())
 }
 

@@ -19,18 +19,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+/// Agent 回调实现：记录执行过程中依次被调用的工具名称，用于测试断言。
 #[derive(Default, Clone)]
 struct ToolRecorder {
+    /// 按调用顺序记录的工具名称列表。
     calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl ToolRecorder {
+    /// 返回目前已记录的工具名称列表（按调用顺序）。
     fn names(&self) -> Vec<String> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
 impl AgentCallback for ToolRecorder {
+    /// 工具调用开始时将其名称追加到记录列表中。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -46,6 +50,7 @@ impl AgentCallback for ToolRecorder {
     }
 }
 
+/// demo43 契约测试：依次演示 Excel、文本、CSV、Word（说明）以及综合数据处理任务的工具调用流程。
 #[tokio::test]
 async fn contract_demo43_data_tools() -> Result<()> {
     tracing_subscriber::fmt()
@@ -228,6 +233,8 @@ async fn contract_demo43_data_tools() -> Result<()> {
     Ok(())
 }
 
+/// 构建一个使用 `MockLlmClient` 按预设脚本依次调用工具的 Agent，执行任务后校验
+/// 每个预期工具都被调用过，并返回 Agent 最终给出的答案文本。
 async fn run_scripted_task(
     agent_name: &str,
     task: &str,
@@ -266,10 +273,15 @@ async fn run_scripted_task(
     Ok(result)
 }
 
+/// 测试过程中创建的临时数据文件集合。
 struct TestFiles {
+    /// 持有临时目录句柄，防止目录在测试结束前被提前清理。
     _dir: tempfile::TempDir,
+    /// 临时文本文件路径。
     text: PathBuf,
+    /// 临时 CSV 文件路径。
     csv: PathBuf,
+    /// 临时 Excel（.xlsx）文件路径。
     excel: PathBuf,
 }
 

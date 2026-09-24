@@ -1,7 +1,7 @@
-//! Subagent registry — discovery, registration, and lifecycle management
-//!
-//! Owns declarative definitions, lazy factories, and lifecycle events for
-//! registered Subagents.
+/*! 子智能体（Subagent）注册表 —— 负责发现、注册与生命周期管理
+
+保存已注册子智能体的声明式定义、延迟实例化的工厂，以及相应的生命周期事件。
+*/
 
 use crate::error::Result;
 use echo_core::agent::Agent;
@@ -15,56 +15,69 @@ use tracing::{debug, info, warn};
 use super::events::SubagentEventBus;
 use super::types::{RegisteredSubagent, SubagentDefinition};
 
+/// 单个子智能体在注册表中的内部记录。
 struct RegistryEntry {
+    /// 子智能体的声明式定义（名称、描述、标签等元信息）。
     definition: SubagentDefinition,
+    /// 已实例化的 Agent；在按工厂注册且尚未触发实例化前为空。
     agent: Arc<OnceCell<Arc<dyn Agent>>>,
+    /// 用于延迟构建 Agent 的工厂；仅当以工厂方式注册时存在。
     factory: Option<Arc<dyn AgentFactory>>,
+    /// 该记录的注册版本号，用于识别并丢弃过期的工厂实例化结果。
     revision: u64,
 }
 
+/// 注册表的内部可变状态，由读写锁保护。
 #[derive(Default)]
 struct RegistryState {
+    /// 按名称索引的全部注册记录。
     entries: HashMap<String, RegistryEntry>,
+    /// 下一次注册将分配的版本号计数器。
     next_revision: u64,
 }
 
+/// 测试专用：用于在工厂结果发布前后插入同步点，便于验证 single-flight（单飞）行为。
 #[cfg(test)]
 #[derive(Clone)]
 struct FactoryPublicationPause {
+    /// 工厂执行到达“发布边界”时释放许可的信号量。
     reached: Arc<tokio::sync::Semaphore>,
+    /// 测试代码用来放行、使发布得以继续的信号量。
     resume: Arc<tokio::sync::Semaphore>,
 }
 
 impl RegistryState {
+    /// 分配并返回下一个注册版本号（饱和递增，不会回绕溢出）。
     fn next_revision(&mut self) -> u64 {
         self.next_revision = self.next_revision.saturating_add(1);
         self.next_revision
     }
 }
 
-// ── Agent Factory ─────────────────────────────────────────────────────────────
+// ── Agent 工厂 ─────────────────────────────────────────────────────────────
 
-/// Factory trait for lazy agent instantiation.
-///
-/// Used when you want to register an agent definition but defer
-/// the actual agent construction until it's first dispatched.
+/** 用于延迟实例化 Agent 的工厂 trait。
+
+在希望先注册一个 Agent 定义、但把真正的 Agent 构建推迟到它首次被派发时使用。
+*/
 pub trait AgentFactory: Send + Sync {
-    /// Create an agent instance asynchronously.
-    ///
-    /// A factory must not recursively resolve its own registration through
-    /// [`SubagentRegistry::get_agent`]; async single initialization cannot
-    /// complete while waiting for itself. Callers own any required deadline.
-    ///
-    /// # Returns
-    /// A boxed future that resolves to a `Result<Box<dyn Agent>>`.
+    /** 异步创建一个 Agent 实例。
+
+    工厂不能通过 [`SubagentRegistry::get_agent`] 递归地解析自身所在的注册项；
+    异步的单次初始化无法在等待自身完成的同时完成。调用方需自行负责所需的超时/截止时间。
+
+    # 返回值
+    一个解析为 `Result<Box<dyn Agent>>` 的装箱 Future。
+    */
     fn create(&self) -> BoxFuture<'static, Result<Box<dyn Agent>>>;
 }
 
-/// Type-erased closure wrapper for `AgentFactory`.
+/// 对闭包做类型擦除包装，使其实现 `AgentFactory`。
 pub struct FnAgentFactory<F>
 where
     F: Fn() -> BoxFuture<'static, Result<Box<dyn Agent>>> + Send + Sync,
 {
+    /// 实际执行创建逻辑的闭包。
     f: F,
 }
 
@@ -72,10 +85,11 @@ impl<F> FnAgentFactory<F>
 where
     F: Fn() -> BoxFuture<'static, Result<Box<dyn Agent>>> + Send + Sync,
 {
-    /// Create a new function-based agent factory.
-    ///
-    /// # Parameters
-    /// * `f` - Async closure that creates an agent when invoked.
+    /** 创建一个基于函数的 Agent 工厂。
+
+    # 参数
+    * `f` - 被调用时用于创建 Agent 的异步闭包。
+    */
     pub fn new(f: F) -> Self {
         Self { f }
     }
@@ -85,41 +99,45 @@ impl<F> AgentFactory for FnAgentFactory<F>
 where
     F: Fn() -> BoxFuture<'static, Result<Box<dyn Agent>>> + Send + Sync,
 {
+    /// 调用内部闭包以创建 Agent 实例。
     fn create(&self) -> BoxFuture<'static, Result<Box<dyn Agent>>> {
         (self.f)()
     }
 }
 
-// ── Subagent Registry ─────────────────────────────────────────────────────────
+// ── 子智能体注册表 ─────────────────────────────────────────────────────────────
 
-/// Registry for subagent definitions and instances.
-///
-/// Owns the registered Subagent definitions and adds:
-/// - Definition-based lookup
-/// - Factory support for lazy instantiation
-/// - Lifecycle events
+/** 子智能体定义与实例的注册表。
+
+持有已注册的子智能体定义，并额外提供：
+- 基于定义的查找
+- 支持延迟实例化的工厂机制
+- 生命周期事件
+*/
 pub struct SubagentRegistry {
-    /// One atomic record per name keeps definition and executable generation aligned.
+    /// 每个名称对应一条原子记录，使定义与可执行生成版本保持一致。
     state: Arc<RwLock<RegistryState>>,
+    /// 已发布的可执行子智能体定义目录快照，供只读场景快速访问。
     executable_catalog: Arc<std::sync::RwLock<Vec<SubagentDefinition>>>,
+    /// 目录快照的版本号，每次重新发布目录时递增。
     catalog_revision: Arc<AtomicU64>,
+    /// 测试专用：用于在工厂结果发布前插入暂停点。
     #[cfg(test)]
     factory_publication_pause: Arc<RwLock<Option<FactoryPublicationPause>>>,
-    /// Event bus for lifecycle events.
+    /// 生命周期事件的事件总线。
     event_bus: SubagentEventBus,
-    /// Shared process-level execution control for dispatched attempts.
-    ///
-    /// One registry owns exactly one control plane so an `execution_id` is
-    /// addressable across every `SubagentExecutor` built on this registry —
-    /// without this, each executor would keep a private control registry and
-    /// sibling attempts dispatched by different executors could not see each
-    /// other (Subagent↔Subagent messaging and the default uplink both rely
-    /// on this unified lookup).
+    /** 供所有已派发尝试共享的、进程级别的执行控制面。
+
+    一个注册表只拥有一个控制面，从而使 `execution_id` 能够在基于该注册表构建的
+    每一个 `SubagentExecutor` 之间被寻址——如果没有这一点，每个执行器都会各自持有
+    私有的控制注册表，由不同执行器派发的兄弟尝试之间将无法互相感知
+    （子智能体之间的消息传递以及默认上行链路都依赖这一统一查找机制）。
+    */
     control: Arc<super::control::SubagentControlRegistry>,
 }
 
 impl SubagentRegistry {
-    /// Create an empty registry.
+    /// 创建一个空的注册表。
     pub fn new() -> Self {
         Self {
             state: Arc::new(RwLock::new(RegistryState::default())),
@@ -132,7 +150,7 @@ impl SubagentRegistry {
         }
     }
 
-    /// Create with a specific event bus.
+    /// 使用指定的事件总线创建注册表。
     pub fn with_event_bus(event_bus: SubagentEventBus) -> Self {
         Self {
             state: Arc::new(RwLock::new(RegistryState::default())),
@@ -145,11 +163,12 @@ impl SubagentRegistry {
         }
     }
 
-    /// Shared execution-control plane for all executors on this registry.
+    /// 返回该注册表上所有执行器共享的执行控制面。
     pub fn control_registry(&self) -> &Arc<super::control::SubagentControlRegistry> {
         &self.control
     }
 
+    /// 依据当前状态重新计算并发布可执行子智能体目录快照，同时递增目录版本号。
     fn publish_catalog(&self, state: &RegistryState) {
         let mut definitions = state
             .entries
@@ -165,16 +184,19 @@ impl SubagentRegistry {
         self.catalog_revision.fetch_add(1, Ordering::Release);
     }
 
+    /// 返回可执行目录快照的共享句柄。
     pub(crate) fn executable_catalog_handle(
         &self,
     ) -> Arc<std::sync::RwLock<Vec<SubagentDefinition>>> {
         Arc::clone(&self.executable_catalog)
     }
 
+    /// 返回目录版本号计数器的共享句柄。
     pub(crate) fn catalog_revision_handle(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.catalog_revision)
     }
 
+    /// 测试专用：若配置了暂停点，则在工厂结果发布前阻塞，等待测试代码放行。
     #[cfg(test)]
     async fn pause_before_factory_publication(&self) {
         let pause = self.factory_publication_pause.read().await.clone();
@@ -186,16 +208,15 @@ impl SubagentRegistry {
         }
     }
 
-    // ── Registration ──────────────────────────────────────────────────────
+    // ── 注册 ──────────────────────────────────────────────────────────────
 
-    /// Register a pre-built agent with its definition.
+    /// 使用给定定义注册一个预先构建好的 Agent。
     pub async fn register(&self, def: SubagentDefinition, agent: Box<dyn Agent>) {
         self.register_shared(def, Arc::from(agent)).await;
     }
 
-    /// Register a shared pre-built Agent without wrapping it in a second
-    /// execution container. This is the programmatic composition path used by
-    /// Team and agents-as-tools style integrations.
+    /// 注册一个共享的、预先构建好的 Agent，不会再包一层额外的执行容器。
+    /// 这是 Team 以及“Agent 即工具”风格集成所使用的编程式组合路径。
     pub async fn register_shared(&self, def: SubagentDefinition, agent: Arc<dyn Agent>) {
         let name = def.name.clone();
         info!(subagent = %name, mode = %def.execution_mode, "Registering subagent");
@@ -218,16 +239,16 @@ impl SubagentRegistry {
             .emit(super::events::SubagentEvent::Registered { name: name.clone() });
     }
 
-    /// Sync registration — uses `try_write` to avoid `block_on` deadlock.
+    /// 同步方式注册 —— 使用 `try_write` 以避免 `block_on` 导致的死锁。
     ///
-    /// Use this from synchronous contexts (e.g., builder pattern, `main()`).
-    /// Falls back to logging a warning if locks are contended.
+    /// 用于同步上下文（例如 builder 模式、`main()`）。
+    /// 若锁被占用，则退化为记录一条警告日志。
     pub fn register_sync(&self, def: SubagentDefinition, agent: Box<dyn Agent>) -> bool {
         self.register_shared_sync(def, Arc::from(agent))
     }
 
-    /// Synchronous counterpart to [`register_shared`](Self::register_shared).
-    /// Returns `false` rather than blocking when the registry is contended.
+    /// [`register_shared`](Self::register_shared) 的同步版本。
+    /// 当注册表被占用时返回 `false`，而不是阻塞等待。
     pub fn register_shared_sync(&self, def: SubagentDefinition, agent: Arc<dyn Agent>) -> bool {
         let name = def.name.clone();
 
@@ -260,7 +281,7 @@ impl SubagentRegistry {
         ok
     }
 
-    /// Register a definition with a factory for lazy instantiation.
+    /// 使用工厂注册一个定义，以便延迟实例化。
     pub async fn register_factory(&self, def: SubagentDefinition, factory: Arc<dyn AgentFactory>) {
         let name = def.name.clone();
         debug!(subagent = %name, "Registering subagent factory");
@@ -279,20 +300,20 @@ impl SubagentRegistry {
         self.publish_catalog(&state);
     }
 
-    /// Register a **definition only** — no agent instance and no factory.
-    ///
-    /// This is a low-level late-binding path: `get` and `contains` can inspect
-    /// the pending definition, but `list_available`, `list_by_tag`, `agent_names`,
-    /// and the model-facing dispatch catalog include only definitions backed
-    /// by an instance or factory. A later call to
-    /// [`register`](Self::register) / [`register_sync`](Self::register_sync)
-    /// / [`register_factory`](Self::register_factory) under the same name
-    /// supplies (or lazily produces) the instance, overwriting the definition.
-    ///
-    /// Explicit programmatic dispatch before hydration fails because there is
-    /// no agent to run. The model-facing catalog does not offer that target.
-    ///
-    /// Returns `true` if inserted (always, under uncontended locks).
+    /** 仅注册**定义**本身 —— 不携带 Agent 实例，也不携带工厂。
+
+    这是一条底层的延迟绑定路径：`get` 与 `contains` 可以查看这个待处理的定义，
+    但 `list_available`、`list_by_tag`、`agent_names` 以及面向模型的派发目录
+    只会包含由实例或工厂支撑的定义。之后在同一名称下调用
+    [`register`](Self::register) / [`register_sync`](Self::register_sync)
+    / [`register_factory`](Self::register_factory) 会提供（或延迟产出）实例，
+    并覆盖此定义。
+
+    在完成实例化之前显式发起编程式派发会失败，因为此时没有可运行的 Agent。
+    面向模型的目录也不会提供该派发目标。
+
+    在锁无竞争的情况下始终返回 `true`，表示已成功插入。
+    */
     pub async fn register_definition(&self, def: SubagentDefinition) -> bool {
         let name = def.name.clone();
         debug!(subagent = %name, "Registering subagent definition (no instance)");
@@ -311,11 +332,10 @@ impl SubagentRegistry {
         true
     }
 
-    /// Sync variant of [`register_definition`](Self::register_definition).
+    /// [`register_definition`](Self::register_definition) 的同步版本。
     ///
-    /// Uses `try_write` to avoid `block_on` deadlock from synchronous
-    /// contexts that cannot await this registry.
-    /// Logs a warning and returns `false` on lock contention.
+    /// 使用 `try_write` 避免在无法 await 该注册表的同步上下文中因 `block_on`
+    /// 而导致死锁。锁竞争时记录警告日志并返回 `false`。
     pub fn register_definition_sync(&self, def: SubagentDefinition) -> bool {
         let name = def.name.clone();
         match self.state.try_write() {
@@ -340,7 +360,7 @@ impl SubagentRegistry {
         }
     }
 
-    /// Register a definition factory while constructing an agent synchronously.
+    /// 以同步方式注册一个带工厂的定义（注册过程本身是同步的，Agent 仍按工厂延迟构建）。
     pub fn register_factory_sync(
         &self,
         def: SubagentDefinition,
@@ -369,7 +389,7 @@ impl SubagentRegistry {
         true
     }
 
-    /// Remove a subagent by name.
+    /// 按名称移除一个子智能体。
     pub async fn remove(&self, name: &str) {
         let mut state = self.state.write().await;
         state.entries.remove(name);
@@ -382,9 +402,9 @@ impl SubagentRegistry {
             });
     }
 
-    // ── Lookup ────────────────────────────────────────────────────────────
+    // ── 查找 ──────────────────────────────────────────────────────────────
 
-    /// Look up a registered subagent. Returns None if not found.
+    /// 查找一个已注册的子智能体。未找到时返回 None。
     pub async fn get(&self, name: &str) -> Option<RegisteredSubagent> {
         let state = self.state.read().await;
         let entry = state.entries.get(name)?;
@@ -395,14 +415,13 @@ impl SubagentRegistry {
         })
     }
 
-    /// Get the agent instance for immediate execution.
-    ///
-    /// If the agent was registered via factory and not yet instantiated,
-    /// this will create it on demand.
-    ///
-    /// Concurrent callers share one cancellation-safe initialization attempt
-    /// for the current registration revision. Callers own any deadline around
-    /// this operation; the registry does not impose a construction timeout.
+    /** 获取用于立即执行的 Agent 实例。
+
+    如果该 Agent 是通过工厂注册且尚未实例化，此方法会按需创建它。
+
+    并发调用方会为当前注册版本共享同一次具备取消安全性的初始化尝试。
+    调用方需自行负责本操作的超时/截止时间；注册表本身不会施加构建超时。
+    */
     pub async fn get_agent(&self, name: &str) -> Option<Arc<dyn Agent>> {
         let (agent_cell, factory, factory_revision) = {
             let state = self.state.read().await;
@@ -445,9 +464,9 @@ impl SubagentRegistry {
         }
     }
 
-    /// Create a fresh agent when a factory is registered for `name`.
+    /// 当 `name` 注册了工厂时，创建一个全新的 Agent。
     ///
-    /// Unlike `get_agent`, this never updates or reuses the cached agent.
+    /// 与 `get_agent` 不同，此方法从不更新或复用缓存的 Agent。
     pub async fn create_fresh_agent(&self, name: &str) -> Result<Option<Arc<dyn Agent>>> {
         let factory = {
             let state = self.state.read().await;
@@ -466,12 +485,12 @@ impl SubagentRegistry {
         }
     }
 
-    /// Check if a subagent is registered.
+    /// 检查某个子智能体是否已注册。
     pub async fn contains(&self, name: &str) -> bool {
         self.state.read().await.entries.contains_key(name)
     }
 
-    /// List definitions backed by a pre-built instance or a factory.
+    /// 列出由预构建实例或工厂支撑的全部定义。
     pub async fn list_available(&self) -> Vec<SubagentDefinition> {
         let state = self.state.read().await;
         state
@@ -482,7 +501,7 @@ impl SubagentRegistry {
             .collect()
     }
 
-    /// List executable definitions matching a tag.
+    /// 列出匹配指定标签的可执行定义。
     pub async fn list_by_tag(&self, tag: &str) -> Vec<SubagentDefinition> {
         let state = self.state.read().await;
         state
@@ -495,7 +514,7 @@ impl SubagentRegistry {
             .collect()
     }
 
-    /// Get executable agent names for tool descriptions (convenience).
+    /// 获取可执行 Agent 的名称列表，便于在工具描述中使用（便捷方法）。
     pub async fn agent_names(&self) -> Vec<String> {
         let state = self.state.read().await;
         state
@@ -506,19 +525,21 @@ impl SubagentRegistry {
             .collect()
     }
 
-    /// Get the event bus reference.
+    /// 获取事件总线的引用。
     pub fn event_bus(&self) -> &SubagentEventBus {
         &self.event_bus
     }
 }
 
 impl Default for SubagentRegistry {
+    /// 等价于 `SubagentRegistry::new()`。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Clone for SubagentRegistry {
+    /// 克隆注册表句柄；内部各字段均为共享引用（`Arc`/`RwLock`），克隆代价低廉。
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
@@ -670,7 +691,7 @@ mod tests {
                 .is_ok_and(|catalog| catalog.is_empty())
         );
 
-        // No instance: get_agent must return None (no factory to invoke).
+        // 没有实例：get_agent 必须返回 None（没有可调用的工厂）。
         let registered = registry.get("plugin_agent").await.unwrap();
         assert!(!registered.has_instance);
         assert!(registry.get_agent("plugin_agent").await.is_none());
@@ -678,9 +699,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_register_definition_then_promote_to_instance() {
-        // A later register() under the same name supplies the instance,
-        // overwriting the definition — this is how the application layer
-        // hydrates a plugin-discovered definition with a real agent.
+        /* 之后在同一名称下调用 register() 会提供实例并覆盖该定义——
+        应用层正是通过这种方式，用真实的 Agent 来填充由插件发现的定义。 */
         let registry = SubagentRegistry::new();
         registry
             .register_definition(SubagentDefinition::new("hydrated", "H"))
@@ -1014,20 +1034,20 @@ mod tests {
         let def = SubagentDefinition::new("lazy_agent", "Lazy agent");
         registry.register_factory(def, factory).await;
 
-        // Should be registered but not yet instantiated
+        // 应该已注册，但尚未实例化
         let registered = registry.get("lazy_agent").await.unwrap();
         assert_eq!(registered.definition.name, "lazy_agent");
         assert!(!registered.has_instance);
 
-        // get_agent should trigger factory instantiation
+        // get_agent 应该触发工厂实例化
         let handle = registry.get_agent("lazy_agent").await;
         assert!(handle.is_some());
 
-        // Now it should show as having an instance
+        // 现在应显示为已有实例
         let registered = registry.get("lazy_agent").await.unwrap();
         assert!(registered.has_instance);
 
-        // Verify the agent actually works
+        // 验证该 agent 确实可以正常工作
         let agent = handle.unwrap();
         let agent = agent.as_ref();
         let result = agent.execute("test").await.unwrap();

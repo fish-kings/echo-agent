@@ -11,6 +11,8 @@
 use echo_agent::prelude::*;
 use std::sync::Arc;
 
+/// 契约测试：验证 `with_memory_tools` / `set_memory_store` 能自动注册记忆相关工具，
+/// 并可通过 Store 完成写入与搜索。
 #[tokio::test]
 async fn contract_demo31_memory_tools() -> echo_agent::error::Result<()> {
     let _ = tracing_subscriber::fmt()

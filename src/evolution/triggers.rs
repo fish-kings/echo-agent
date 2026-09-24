@@ -1,17 +1,18 @@
-//! Write trigger detection — identifies when agent-learned memories should be persisted.
-//!
-//! The `TriggerDetector` scans conversational context for signals that indicate
-//! a memory-worthy moment has occurred. All detection methods are **synchronous**
-//! (pattern matching only); the caller is responsible for async persistence.
-//!
-//! ## Supported triggers
-//!
-//! | Trigger | Pattern | Default confidence | MemoryType |
-//! |---------|---------|-------------------|------------|
-//! | `UserCorrection` | "不是这样"/"不对"/"不要"/"wrong"/"actually"/"no," after assistant output | 0.90 | `UserPreference` or `DebuggingLesson` |
-//! | `ErrorResolution` | Tool failure → different-approach success | 0.85 | `ErrorResolution` |
-//! | `RepeatedWorkflow` | Same tool sequence ≥3 times | 0.75 | `WorkflowPattern` |
-//! | `ExplicitSave` | `/remember` command or `remember` tool | 1.00 | `UserPreference` |
+/*!
+写入触发器检测——识别 Agent 学习到的内存何时应当被持久化。
+
+`TriggerDetector` 会扫描对话上下文，寻找表明“出现了值得记录的时刻”的信号。
+所有检测方法都是**同步**的（仅做模式匹配）；调用方负责异步持久化。
+
+## 支持的触发器
+
+| 触发器 | 模式 | 默认置信度 | MemoryType |
+|---------|---------|-------------------|------------|
+| `UserCorrection` | 助手输出之后出现 "不是这样"/"不对"/"不要"/"wrong"/"actually"/"no," | 0.90 | `UserPreference` 或 `DebuggingLesson` |
+| `ErrorResolution` | 工具失败 → 换一种方式后成功 | 0.85 | `ErrorResolution` |
+| `RepeatedWorkflow` | 相同工具序列出现 ≥3 次 | 0.75 | `WorkflowPattern` |
+| `ExplicitSave` | `/remember` 命令或 `remember` 工具 | 1.00 | `UserPreference` |
+*/
 
 use echo_core::memory::types::{MemorySource, MemoryType};
 use futures::future::BoxFuture;
@@ -19,124 +20,124 @@ use std::collections::HashMap;
 
 use super::security::InputTrustLevel;
 
-// ── Trigger match ──────────────────────────────────────────────────────
+// ── 触发器匹配 ──────────────────────────────────────────────────────
 
-/// A detected write trigger with associated memory data.
+/// 一个已检测到的写入触发器，附带相关的内存数据。
 #[derive(Debug, Clone)]
 pub struct TriggerMatch {
-    /// The content to store as a memory.
+    /// 要存储为内存的内容。
     pub content: String,
-    /// The memory type inferred from the trigger.
+    /// 从触发器推断出的内存类型。
     pub memory_type: MemoryType,
-    /// The source that triggered this write.
+    /// 触发本次写入的来源。
     pub source: MemorySource,
-    /// Confidence from the source default.
+    /// 来自该来源默认值的置信度。
     pub confidence: f32,
-    /// Topic category inferred from context.
+    /// 从上下文推断出的主题分类。
     pub topic: String,
-    /// Trust level of the content source.
+    /// 内容来源的信任级别。
     pub trust_level: InputTrustLevel,
-    /// A suggested key for storage.
+    /// 建议使用的存储 key。
     pub suggested_key: String,
-    /// Exact source excerpts supporting this trigger.
+    /// 支持该触发器的精确原文摘录。
     pub evidence: Vec<TriggerEvidence>,
 }
 
-/// One exact excerpt supporting a detected trigger.
+/// 一条支持某个已检测触发器的精确摘录。
 #[derive(Debug, Clone)]
 pub struct TriggerEvidence {
-    /// Origin of the excerpt, such as `user`, `assistant`, or `tool_error`.
+    /// 摘录的来源，例如 `user`、`assistant` 或 `tool_error`。
     pub source_role: String,
-    /// Verbatim excerpt used by the detector.
+    /// 检测器使用的原文摘录。
     pub quote: String,
 }
 
-/// Result returned by an application-supplied trigger sink.
+/// 应用侧提供的触发器接收方所返回的处理结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryTriggerDisposition {
-    /// Continue with the framework's default durable-memory write.
+    /// 继续执行框架默认的持久化内存写入。
     Persist,
-    /// The sink captured the trigger and owns its subsequent lifecycle.
+    /// 接收方已捕获该触发器，并自行接管其后续生命周期。
     Captured,
 }
 
-/// Optional application hook for routing detected triggers before persistence.
+/// 可选的应用层钩子，用于在持久化之前对已检测的触发器进行路由。
 pub trait MemoryTriggerSink: Send + Sync {
-    /// Route one detected trigger.
+    /// 路由一个已检测到的触发器。
     fn on_trigger<'a>(
         &'a self,
         trigger: &'a TriggerMatch,
     ) -> BoxFuture<'a, std::result::Result<MemoryTriggerDisposition, String>>;
 }
 
-// ── Context records ────────────────────────────────────────────────────
+// ── 上下文记录 ────────────────────────────────────────────────────
 
-/// Record of a tool failure.
+/// 一次工具失败的记录。
 #[derive(Debug, Clone)]
 pub struct ToolFailureRecord {
-    /// Tool name that failed.
+    /// 失败的工具名称。
     pub tool_name: String,
-    /// Summary of the tool input.
+    /// 工具输入的摘要。
     pub input_summary: String,
-    /// Error message from the tool.
+    /// 工具返回的错误信息。
     pub error: String,
-    /// ISO 8601 timestamp.
+    /// ISO 8601 时间戳。
     pub timestamp: String,
 }
 
-/// Record of a successful tool use (after a previous failure).
+/// 一次成功的工具使用记录（发生在此前的一次失败之后）。
 #[derive(Debug, Clone)]
 pub struct ToolSuccessRecord {
-    /// Tool name that succeeded.
+    /// 成功的工具名称。
     pub tool_name: String,
-    /// Summary of the tool input (may differ from the failure's input).
+    /// 工具输入的摘要（可能与失败记录的输入不同）。
     pub input_summary: String,
-    /// Summary of the tool output.
+    /// 工具输出的摘要。
     pub output_summary: String,
-    /// ISO 8601 timestamp.
+    /// ISO 8601 时间戳。
     pub timestamp: String,
 }
 
-/// Record of an explicit save command.
+/// 一次显式保存命令的记录。
 #[derive(Debug, Clone)]
 pub struct ExplicitSaveRecord {
-    /// The content the user wants to remember.
+    /// 用户希望记住的内容。
     pub content: String,
-    /// Optional topic hint from the user.
+    /// 用户提供的可选主题提示。
     pub topic: Option<String>,
 }
 
-/// Record of a tool invocation for sequence tracking.
+/// 用于序列追踪的一次工具调用记录。
 #[derive(Debug, Clone)]
 pub struct ToolSequenceRecord {
-    /// Tool name that was invoked.
+    /// 被调用的工具名称。
     pub tool_name: String,
-    /// Session ID for cross-turn grouping.
+    /// 用于跨轮次分组的会话 ID。
     pub session_id: String,
-    /// ISO 8601 timestamp.
+    /// ISO 8601 时间戳。
     pub timestamp: String,
 }
 
-/// Detection context — the data needed to detect triggers.
+/// 检测上下文——检测触发器所需的数据。
 #[derive(Debug, Clone, Default)]
 pub struct TriggerContext {
-    /// The user's message in the current turn.
+    /// 当前轮次中用户的消息。
     pub user_message: Option<String>,
-    /// The assistant's last response (for correction detection).
+    /// 助手的最后一次回复（用于纠正检测）。
     pub assistant_message: Option<String>,
-    /// Most recent tool failure (for error resolution detection).
+    /// 最近一次工具失败（用于错误解决检测）。
     pub last_tool_failure: Option<ToolFailureRecord>,
-    /// Most recent tool success after a failure (for error resolution detection).
+    /// 失败之后最近一次工具成功（用于错误解决检测）。
     pub last_tool_success: Option<ToolSuccessRecord>,
-    /// Whether the user issued an explicit save command.
+    /// 用户是否发出了显式的保存命令。
     pub explicit_save: Option<ExplicitSaveRecord>,
-    /// Accumulated tool sequences for RepeatedWorkflow detection.
+    /// 用于 RepeatedWorkflow 检测所累积的工具序列。
     pub tool_sequences: Vec<ToolSequenceRecord>,
 }
 
-// ── Correction signal patterns ─────────────────────────────────────────
+// ── 纠正信号模式 ─────────────────────────────────────────────────
 
-/// Chinese correction signals — indicate the user is correcting the agent.
+/// 中文纠正信号——表明用户正在纠正 Agent。
 const CN_CORRECTION_SIGNALS: &[&str] = &[
     "不是这样",
     "不对",
@@ -148,7 +149,7 @@ const CN_CORRECTION_SIGNALS: &[&str] = &[
     "别这样",
 ];
 
-/// English correction signals — indicate the user is correcting the agent.
+/// 英文纠正信号——表明用户正在纠正 Agent。
 const EN_CORRECTION_SIGNALS: &[&str] = &[
     "wrong",
     "actually",
@@ -167,34 +168,38 @@ const EN_CORRECTION_SIGNALS: &[&str] = &[
 
 // ── TriggerDetector ────────────────────────────────────────────────────
 
-/// Detects write triggers from conversation context.
-///
-/// All detection methods are synchronous (pattern matching only).
-/// The caller is responsible for async persistence.
+/**
+从对话上下文中检测写入触发器。
+
+所有检测方法都是同步的（仅做模式匹配）。
+调用方负责异步持久化。
+*/
 pub struct TriggerDetector {
-    /// Maximum number of triggers to detect per turn.
+    /// 每轮次最多检测的触发器数量。
     max_per_turn: usize,
 }
 
 impl TriggerDetector {
-    /// Create a new trigger detector with default settings.
+    /// 使用默认设置创建一个新的触发器检测器。
     pub fn new() -> Self {
         Self { max_per_turn: 5 }
     }
 
-    /// Create a trigger detector with a custom max-per-turn limit.
+    /// 使用自定义的每轮次上限创建一个触发器检测器。
     pub fn with_max_per_turn(max_per_turn: usize) -> Self {
         Self { max_per_turn }
     }
 
-    /// Detect all triggers from the given context.
-    ///
-    /// Returns a list of `TriggerMatch` instances, each representing
-    /// a memory that should be persisted. Capped at `max_per_turn`.
+    /**
+    从给定上下文中检测全部触发器。
+
+    返回一组 `TriggerMatch` 实例，每一项代表一条应当被持久化的
+    内存。结果数量以 `max_per_turn` 为上限。
+    */
     pub fn detect(&self, ctx: &TriggerContext) -> Vec<TriggerMatch> {
         let mut matches = Vec::new();
 
-        // Priority order: ExplicitSave > UserCorrection > ErrorResolution > RepeatedWorkflow
+        // 优先级顺序：ExplicitSave > UserCorrection > ErrorResolution > RepeatedWorkflow
         if let Some(m) = self.detect_explicit_save(ctx) {
             matches.push(m);
         }
@@ -212,9 +217,11 @@ impl TriggerDetector {
         matches
     }
 
-    /// Detect explicit save commands.
-    ///
-    /// Triggered by `/remember` command or `remember` tool invocation.
+    /**
+    检测显式保存命令。
+
+    由 `/remember` 命令或 `remember` 工具调用触发。
+    */
     fn detect_explicit_save(&self, ctx: &TriggerContext) -> Option<TriggerMatch> {
         let save = ctx.explicit_save.as_ref()?;
         let content = save.content.clone();
@@ -236,14 +243,16 @@ impl TriggerDetector {
         })
     }
 
-    /// Detect user correction signals.
-    ///
-    /// Patterns: Chinese/English correction phrases that follow assistant output.
+    /**
+    检测用户纠正信号。
+
+    模式：出现在助手输出之后的中英文纠正短语。
+    */
     fn detect_user_correction(&self, ctx: &TriggerContext) -> Option<TriggerMatch> {
         let user_msg = ctx.user_message.as_deref()?;
         let assistant_msg = ctx.assistant_message.as_deref()?;
 
-        // Must have both messages and the user message must contain a correction signal
+        // 必须同时存在两条消息，且用户消息中必须包含纠正信号
         let user_lower = user_msg.to_lowercase();
         let has_signal = CN_CORRECTION_SIGNALS.iter().any(|s| user_msg.contains(s))
             || EN_CORRECTION_SIGNALS.iter().any(|s| user_lower.contains(s));
@@ -282,15 +291,17 @@ impl TriggerDetector {
         })
     }
 
-    /// Detect error resolution patterns.
-    ///
-    /// Pattern: tool failure followed by success with a different approach.
+    /**
+    检测错误解决模式。
+
+    模式：工具失败之后，换一种方式取得成功。
+    */
     fn detect_error_resolution(&self, ctx: &TriggerContext) -> Option<TriggerMatch> {
         let failure = ctx.last_tool_failure.as_ref()?;
         let success = ctx.last_tool_success.as_ref()?;
 
-        // The success must come after the failure and use a different approach
-        // (different tool or different input)
+        // 该成功必须发生在失败之后，并且使用了不同的方式
+        // （不同的工具或不同的输入）
         let different_approach = success.tool_name != failure.tool_name
             || success.input_summary != failure.input_summary;
 
@@ -337,21 +348,23 @@ impl TriggerDetector {
         })
     }
 
-    /// Detect repeated workflow patterns.
-    ///
-    /// Pattern: same tool sequence observed ≥3 times across sessions.
+    /**
+    检测重复的工作流模式。
+
+    模式：同一工具序列在跨会话场景中被观察到 ≥3 次。
+    */
     fn detect_repeated_workflow(&self, ctx: &TriggerContext) -> Option<TriggerMatch> {
         if ctx.tool_sequences.len() < 3 {
             return None;
         }
 
-        // Group sequences by (tool_name, session_id) to find repeated patterns
+        // 按 (tool_name, session_id) 对序列分组，寻找重复模式
         let mut tool_counts: HashMap<String, usize> = HashMap::new();
         for seq in &ctx.tool_sequences {
             *tool_counts.entry(seq.tool_name.clone()).or_insert(0) += 1;
         }
 
-        // Find the most repeated tool sequence (≥3 occurrences)
+        // 找出出现次数最多的重复工具序列（≥3 次）
         let most_repeated = tool_counts
             .iter()
             .filter(|&(_, &count)| count >= 3)
@@ -398,13 +411,13 @@ impl Default for TriggerDetector {
     }
 }
 
-// ── Helper functions ───────────────────────────────────────────────────
+// ── 辅助函数 ───────────────────────────────────────────────────
 
-/// Classify a user correction into a MemoryType based on content signals.
+/// 根据内容信号，将一次用户纠正分类为某个 MemoryType。
 fn classify_correction(user_msg: &str, _assistant_msg: &str) -> MemoryType {
     let lower = user_msg.to_lowercase();
 
-    // Debugging/error correction
+    // 调试/错误纠正
     if lower.contains("bug")
         || lower.contains("error")
         || lower.contains("fix")
@@ -417,7 +430,7 @@ fn classify_correction(user_msg: &str, _assistant_msg: &str) -> MemoryType {
         return MemoryType::DebuggingLesson;
     }
 
-    // Style/preference correction
+    // 风格/偏好纠正
     if lower.contains("prefer")
         || lower.contains("style")
         || lower.contains("format")
@@ -432,7 +445,7 @@ fn classify_correction(user_msg: &str, _assistant_msg: &str) -> MemoryType {
         return MemoryType::UserPreference;
     }
 
-    // Tool/command correction
+    // 工具/命令纠正
     if lower.contains("tool")
         || lower.contains("command")
         || lower.contains("utility")
@@ -442,11 +455,11 @@ fn classify_correction(user_msg: &str, _assistant_msg: &str) -> MemoryType {
         return MemoryType::ToolUsage;
     }
 
-    // Default: user preference (the correction itself is a preference signal)
+    // 默认：用户偏好（纠正本身就是一种偏好信号）
     MemoryType::UserPreference
 }
 
-/// Infer a topic from content using keyword heuristics.
+/// 使用关键词启发式方法，从内容中推断主题。
 fn infer_topic(content: &str) -> String {
     let lower = content.to_lowercase();
 
@@ -495,7 +508,7 @@ fn infer_topic(content: &str) -> String {
     "general".to_string()
 }
 
-/// Generate a deterministic key from source and content.
+/// 根据来源与内容生成一个确定性的 key。
 fn generate_key(source: MemorySource, content: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -512,7 +525,7 @@ fn generate_key(source: MemorySource, content: &str) -> String {
     format!("{prefix}_{hash:016x}")
 }
 
-/// Truncate content to a maximum length, appending "..." if truncated.
+/// 将内容截断到最大长度；若发生截断，则追加 "..."。
 fn truncate_content(s: &str, max_len: usize) -> String {
     let mut chars = s.chars();
     let prefix: String = chars.by_ref().take(max_len).collect();
@@ -649,7 +662,7 @@ mod tests {
             }),
             last_tool_success: Some(ToolSuccessRecord {
                 tool_name: "Bash".to_string(),
-                input_summary: "cargo test".to_string(), // same approach
+                input_summary: "cargo test".to_string(), // 相同方式
                 output_summary: "all tests passed".to_string(),
                 timestamp: "2026-06-15T10:01:00Z".to_string(),
             }),
@@ -789,7 +802,7 @@ mod tests {
         assert_eq!(key1, key2);
 
         let key3 = generate_key(MemorySource::ErrorResolution, "same content");
-        assert_ne!(key1, key3); // different prefix
+        assert_ne!(key1, key3); // 不同前缀
     }
 
     #[test]
@@ -814,7 +827,7 @@ mod tests {
     fn test_truncate_content_long() {
         let long = "a".repeat(300);
         let truncated = truncate_content(&long, 200);
-        assert!(truncated.len() <= 203); // 200 + "..."
+        assert!(truncated.len() <= 203); // 200 + "..." 的长度
         assert!(truncated.ends_with("..."));
     }
 }

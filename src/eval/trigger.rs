@@ -1,62 +1,63 @@
-//! Trigger accuracy evaluation — measures how well subagents activate.
+//! 触发准确率评估 —— 衡量子 Agent 的激活表现如何。
 //!
-//! Evaluates precision (does it trigger when it should?) and recall
-//! (does it NOT trigger when it shouldn't?) for subagent routing.
+//! 针对子 Agent 路由，评估精确率（precision，该触发时是否触发了？）
+//! 与召回率（recall，不该触发时是否没有触发？）。
 
 use serde::{Deserialize, Serialize};
 
-/// A test case for subagent trigger accuracy.
+/// 用于子 Agent 触发准确率评估的测试用例。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerTestCase {
-    /// The user query.
+    /// 用户查询内容。
     pub query: String,
-    /// Which subagent should handle this (expected).
+    /// 期望由哪个子 Agent 来处理该查询。
     pub expected_agent: String,
-    /// Whether this query should trigger ANY subagent (false = should not trigger).
+    /// 该查询是否应当触发任意子 Agent（false 表示不应触发）。
     pub should_trigger: bool,
-    /// Number of runs per query for computing trigger rate. Default: 1.
+    /// 每条查询用于计算触发率的运行次数，默认值为 1。
     #[serde(default = "default_runs")]
     pub runs_per_query: usize,
 }
 
+/// `runs_per_query` 的默认值。
 fn default_runs() -> usize {
     1
 }
 
-/// Result of a trigger accuracy evaluation.
+/// 触发准确率评估的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TriggerAccuracy {
-    /// Total test cases.
+    /// 测试用例总数。
     pub total: usize,
-    /// Correctly triggered cases (true positives).
+    /// 正确触发的用例数（真正例，true positives）。
     pub true_positives: usize,
-    /// Incorrectly triggered cases (false positives — triggered when it shouldn't).
+    /// 错误触发的用例数（假正例，false positives —— 不该触发却触发了）。
     pub false_positives: usize,
-    /// Correctly skipped cases (true negatives — didn't trigger when it shouldn't).
+    /// 正确跳过的用例数（真负例，true negatives —— 不该触发也确实没有触发）。
     pub true_negatives: usize,
-    /// Missed triggers (false negatives — should have triggered but didn't).
+    /// 漏掉的触发（假负例，false negatives —— 该触发却没有触发）。
     pub false_negatives: usize,
-    /// Precision: TP / (TP + FP).
+    /// 精确率：TP / (TP + FP)。
     pub precision: f64,
-    /// Recall: TP / (TP + FN).
+    /// 召回率：TP / (TP + FN)。
     pub recall: f64,
-    /// F1 score.
+    /// F1 分数。
     pub f1: f64,
-    /// Per-case trigger rates when runs_per_query > 1 (rate = triggered_count / total_runs).
+    /// 当 runs_per_query > 1 时，每个用例的触发率（触发率 = 触发次数 / 总运行次数）。
     #[serde(default)]
     pub trigger_rates: Vec<f64>,
 }
 
 impl TriggerAccuracy {
-    /// Evaluate trigger accuracy from test cases and actual triggers.
+    /// 根据测试用例与实际触发结果评估触发准确率。
     pub fn evaluate(
         cases: &[TriggerTestCase],
         actual_triggers: &[(String, Option<String>)],
     ) -> Self {
-        let mut tp = 0usize; // triggered correctly
-        let mut fp = 0usize; // triggered but shouldn't
-        let mut tn = 0usize; // correctly skipped
-        let mut fn_count = 0usize; // should trigger but didn't
+        let mut tp = 0usize; // 正确触发
+        let mut fp = 0usize; // 不该触发却触发了
+        let mut tn = 0usize; // 正确跳过
+        let mut fn_count = 0usize; // 该触发却没触发
 
         for (index, case) in cases.iter().enumerate() {
             let actual = actual_triggers.get(index);
@@ -66,18 +67,18 @@ impl TriggerAccuracy {
             let correct_agent = query_matches && actual_agent == Some(case.expected_agent.as_str());
 
             match (case.should_trigger, did_trigger, correct_agent) {
-                // Should trigger, did trigger, correct agent → TP
+                // 应触发、确实触发、Agent 正确 → TP
                 (true, true, true) => tp += 1,
-                // A wrong route is both a missed expected route and an unexpected route.
+                // 路由错误既是一次预期路由的缺失，也是一次意外路由。
                 (true, true, false) => {
                     fp += 1;
                     fn_count += 1;
                 }
-                // Should trigger, didn't trigger → FN
+                // 应触发、未触发 → FN
                 (true, false, _) => fn_count += 1,
-                // Shouldn't trigger, triggered anyway → FP
+                // 不应触发、却触发了 → FP
                 (false, true, _) => fp += 1,
-                // Shouldn't trigger, correctly skipped → TN
+                // 不应触发、正确跳过 → TN
                 (false, false, _) => tn += 1,
             }
         }
@@ -114,15 +115,17 @@ impl TriggerAccuracy {
         }
     }
 
-    /// Evaluate trigger accuracy from multi-run results.
-    ///
-    /// `multi_results` is a list where each entry corresponds to a test case and
-    /// contains the actual triggers from multiple runs (runs_per_query > 1).
+    /**
+    根据多次运行的结果评估触发准确率。
+
+    `multi_results` 是一个列表，其中每一项都对应一个测试用例，
+    包含该用例多次运行（runs_per_query > 1）的实际触发情况。
+    */
     pub fn evaluate_multi_run(
         cases: &[TriggerTestCase],
         multi_results: &[Vec<(String, Option<String>)>],
     ) -> Self {
-        // Flatten to single-run results for standard metrics
+        // 压平为单次运行结果，以便计算标准指标
         let flat_actuals: Vec<(String, Option<String>)> = cases
             .iter()
             .enumerate()
@@ -135,7 +138,7 @@ impl TriggerAccuracy {
             .collect();
         let mut result = Self::evaluate(cases, &flat_actuals);
 
-        // Compute per-case trigger rates
+        // 计算每个用例的触发率
         result.trigger_rates = cases
             .iter()
             .zip(multi_results.iter())
@@ -205,6 +208,6 @@ mod tests {
         }];
         let actuals = vec![("what is 2+2".into(), Some("code-explorer".into()))];
         let acc = TriggerAccuracy::evaluate(&cases, &actuals);
-        assert_eq!(acc.precision, 0.0); // triggered but shouldn't
+        assert_eq!(acc.precision, 0.0); // 不该触发却触发了
     }
 }

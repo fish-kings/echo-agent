@@ -1,49 +1,47 @@
-//! Typed memory metadata — structured classification and quality metrics for memory entries.
+//! 带类型的记忆元数据 —— 为记忆条目提供结构化分类与质量指标。
 //!
-//! Each memory entry in the evolution system carries a `MemoryMeta` struct that
-//! classifies its type, tracks confidence/importance/stability, and records its
-//! source and lifecycle status. `MemoryMeta` is serialized into `StoreItem.value`
-//! JSON alongside the `content` field, requiring no changes to the `Store` trait
-//! or `StoreItem` schema.
+//! 进化系统中的每一条记忆都携带一个 `MemoryMeta` 结构体，用于对其类型进行
+//! 分类、跟踪置信度/重要性/稳定性，并记录其来源与生命周期状态。`MemoryMeta`
+//! 会与 `content` 字段一起序列化进 `StoreItem.value` 的 JSON 中，无需改动
+//! `Store` trait 或 `StoreItem` 的结构。
 
 use serde::{Deserialize, Serialize};
 
 // ── MemoryType ──────────────────────────────────────────────────────────
 
-/// Classification of a memory entry.
+/// 记忆条目的分类。
 ///
-/// Every memory must be typed — untyped free-text entries are not allowed
-/// in the evolution system. The type determines how the memory is scored,
-/// reviewed, and potentially promoted.
+/// 每一条记忆都必须有类型 —— 进化系统中不允许存在未分类的自由文本条目。
+/// 类型决定了记忆如何被评分、审查，以及是否可能被提升。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {
-    /// A stable user preference (e.g., "user prefers concise answers").
+    /// 稳定的用户偏好（例如“用户偏好简洁的回答”）。
     UserPreference,
-    /// A fact about the project (e.g., "this project uses Maven with Java 8").
+    /// 关于项目的事实（例如“该项目使用 Maven 搭配 Java 8”）。
     ProjectFact,
-    /// An architecture or product decision (e.g., "we chose SQLite over Postgres").
+    /// 架构或产品决策（例如“我们选择了 SQLite 而非 Postgres”）。
     ArchitectureDecision,
-    /// A debugging lesson learned (e.g., "Maven compile fails if JAVA_HOME is wrong").
+    /// 习得的调试经验（例如“JAVA_HOME 配置错误会导致 Maven 编译失败”）。
     DebuggingLesson,
-    /// An error symptom, cause, and verified solution.
+    /// 一次错误的症状、原因及已验证的解决方案。
     ErrorResolution,
-    /// A commonly used command, environment variable, or build step.
+    /// 常用的命令、环境变量或构建步骤。
     CommandPattern,
-    /// Experience with a specific tool (e.g., "rg is faster than grep for this project").
+    /// 使用某个特定工具的经验（例如“在该项目中 rg 比 grep 更快”）。
     ToolUsage,
-    /// A repeated workflow pattern that may become a skill candidate.
+    /// 一种重复出现、可能成为技能候选的工作流模式。
     WorkflowPattern,
-    /// A workflow that has been identified as a potential skill.
+    /// 已被识别为潜在技能的工作流。
     SkillCandidate,
-    /// A note that has been superseded or is no longer accurate, kept for traceability.
+    /// 已被取代或不再准确的笔记，出于可追溯性而保留。
     DeprecatedNote,
 }
 
 impl MemoryType {
-    /// Default stability for this memory type (how resistant to becoming stale).
+    /// 该记忆类型的默认稳定性（抵抗过时的能力）。
     ///
-    /// Higher values mean the memory is less likely to become outdated quickly.
+    /// 数值越高，表示该记忆越不容易很快过时。
     pub fn default_stability(&self) -> f32 {
         match self {
             Self::UserPreference => 0.85,
@@ -59,7 +57,7 @@ impl MemoryType {
         }
     }
 
-    /// Whether this memory type is eligible for promotion to a skill.
+    /// 该记忆类型是否有资格被提升为技能。
     pub fn is_skill_eligible(&self) -> bool {
         matches!(
             self,
@@ -67,7 +65,7 @@ impl MemoryType {
         )
     }
 
-    /// Whether this memory type is eligible for rule promotion.
+    /// 该记忆类型是否有资格被提升为规则。
     pub fn is_rule_eligible(&self) -> bool {
         matches!(
             self,
@@ -78,65 +76,64 @@ impl MemoryType {
 
 // ── MemoryRisk ──────────────────────────────────────────────────────────
 
-/// Risk level of a memory entry.
+/// 记忆条目的风险等级。
 ///
-/// High-risk memories (from untrusted sources or containing sensitive content)
-/// require additional review before promotion to hot memory or rules.
+/// 高风险记忆（来自不可信来源或包含敏感内容）在提升为热记忆或规则之前
+/// 需要额外审查。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryRisk {
-    /// Low risk — can be automatically processed and promoted.
+    /// 低风险 —— 可自动处理并提升。
     #[default]
     Low,
-    /// Medium risk — may need review before promotion.
+    /// 中等风险 —— 提升前可能需要审查。
     Medium,
-    /// High risk — from untrusted source or containing sensitive content.
-    /// Must not be promoted to hot memory or rules without human approval.
+    /// 高风险 —— 来自不可信来源或包含敏感内容。
+    /// 未经人工批准，不得提升为热记忆或规则。
     High,
 }
 
 // ── MemoryStatus ────────────────────────────────────────────────────────
 
-/// Lifecycle status of a memory entry.
+/// 记忆条目的生命周期状态。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryStatus {
-    /// Newly created, not yet confirmed or stabilized.
+    /// 新创建，尚未被确认或稳定下来。
     Draft,
-    /// Confirmed and in active use.
+    /// 已确认，正在活跃使用中。
     #[default]
     Active,
-    /// Replaced by a newer memory entry. `superseded_by` in `MemoryMeta` points to the replacement.
+    /// 已被更新的记忆条目取代。`MemoryMeta` 中的 `superseded_by` 指向替代条目。
     Superseded,
-    /// Archived — no longer active, kept for traceability.
+    /// 已归档 —— 不再活跃，出于可追溯性而保留。
     Archived,
 }
 
 // ── MemorySource ────────────────────────────────────────────────────────
 
-/// How this memory entry was created.
+/// 该记忆条目的创建方式。
 ///
-/// The source determines the default confidence level and whether the memory
-/// can be automatically promoted.
+/// 来源决定了默认的置信度水平，以及该记忆是否可以被自动提升。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemorySource {
-    /// Extracted from a user correction signal (e.g., "不要这样做").
+    /// 从用户纠正信号中提取（例如“不要这样做”）。
     UserCorrection,
-    /// Extracted from a tool failure → success sequence.
+    /// 从一次“工具失败 → 成功”的序列中提取。
     ErrorResolution,
-    /// Detected from a repeated workflow pattern across sessions.
+    /// 从跨会话反复出现的工作流模式中检测得到。
     RepeatedWorkflow,
-    /// Explicitly saved by the user (e.g., `/remember` command).
+    /// 由用户显式保存（例如通过 `/remember` 命令）。
     ExplicitSave,
-    /// Automatically extracted by heuristic or LLM review.
+    /// 通过启发式规则或 LLM 审查自动提取。
     AutoExtracted,
-    /// Promoted from L3 context compression.
+    /// 从 L3 上下文压缩中提升而来。
     L3Promotion,
 }
 
 impl MemorySource {
-    /// Default confidence for memories from this source.
+    /// 该来源记忆的默认置信度。
     pub fn default_confidence(&self) -> f32 {
         match self {
             Self::ExplicitSave => 1.0,
@@ -148,8 +145,8 @@ impl MemorySource {
         }
     }
 
-    /// (stage4) Default recall weight for memories from this source (0.0–1.0).
-    /// Used by composite score for recall ranking.
+    /// （第4阶段）该来源记忆的默认召回权重（0.0–1.0）。
+    /// 由复合评分用于召回排序。
     pub fn default_recall_weight(&self) -> f32 {
         match self {
             Self::ExplicitSave => 0.8,
@@ -164,9 +161,9 @@ impl MemorySource {
 
 // ── MemoryMeta ──────────────────────────────────────────────────────────
 
-/// Structured metadata for a typed memory entry.
+/// 带类型记忆条目的结构化元数据。
 ///
-/// Serialized into `StoreItem.value` JSON as:
+/// 序列化进 `StoreItem.value` JSON 时的形式如下：
 /// ```json
 /// {
 ///   "content": "The actual memory text",
@@ -175,54 +172,54 @@ impl MemorySource {
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryMeta {
-    /// Classification of this memory.
+    /// 该记忆的分类。
     pub memory_type: MemoryType,
-    /// How confident we are that this memory is accurate (0.0–1.0).
+    /// 我们对该记忆准确性的置信程度（0.0–1.0）。
     pub confidence: f32,
-    /// How stable this memory is — resistance to becoming stale (0.0–1.0).
+    /// 该记忆的稳定性 —— 抵抗过时的能力（0.0–1.0）。
     pub stability: f32,
-    /// (stage4) Recall weight 0.0–1.0, by agent LLM at write time.
-    /// Used for composite-score recall ranking (hermes issue #677 calls it "importance").
-    /// Named `recall_weight` to avoid colliding with `StoreItem.importance`
-    /// (1.0–10.0, prune-resistance, store.rs:29) — same name, different
-    /// semantics/scale. Composite score MUST read this field, not StoreItem.importance.
+    /// （第4阶段）召回权重 0.0–1.0，由 agent LLM 在写入时给出。
+    /// 用于复合评分的召回排序（hermes issue #677 中称之为 "importance"）。
+    /// 之所以命名为 `recall_weight` 是为了避免与 `StoreItem.importance`
+    /// （1.0–10.0，抗剪枝权重，见 store.rs:29）冲突 —— 名字相似但语义/量纲
+    /// 不同。复合评分必须读取本字段，而不是 StoreItem.importance。
     #[serde(default = "default_recall_weight")]
     pub recall_weight: f32,
-    /// Risk level — determines review requirements.
+    /// 风险等级 —— 决定审查要求。
     pub risk: MemoryRisk,
-    /// Lifecycle status of this memory.
+    /// 该记忆的生命周期状态。
     pub status: MemoryStatus,
-    /// How this memory was created.
+    /// 该记忆的创建方式。
     pub source: MemorySource,
-    /// Topic category (e.g., "build", "debugging", "architecture").
+    /// 主题分类（例如 "build"、"debugging"、"architecture"）。
     pub topic: String,
-    /// Number of times this memory has been revised.
+    /// 该记忆被修订的次数。
     #[serde(default)]
     pub revision_count: u32,
-    /// (stage4) How many times this memory has been recalled. Drives Dreaming
-    /// self-evolution (recall-frequency-driven promotion).
+    /// （第4阶段）该记忆被召回的次数。驱动 Dreaming 自我进化
+    /// （由召回频率驱动的提升）。
     #[serde(default)]
     pub recall_count: u32,
-    /// Last successful recall timestamp (Unix seconds).
+    /// 上一次成功召回的时间戳（Unix 秒）。
     ///
-    /// Kept separately from `StoreItem::updated_at`: incrementing recall
-    /// telemetry rewrites metadata and would otherwise look like a semantic
-    /// content edit to staleness logic.
+    /// 与 `StoreItem::updated_at` 分开维护：如果召回遥测计数的递增也
+    /// 改写元数据的更新时间，在陈旧度逻辑看来就会误判为一次语义性的
+    /// 内容编辑。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_recalled_at: Option<u64>,
-    /// If this memory was superseded, key of the replacement memory.
+    /// 若该记忆已被取代，此字段为替代记忆的 key。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
 }
 
-/// Serde default for `MemoryMeta::recall_weight` (used when deserializing
-/// entries written before the field existed).
+/// `MemoryMeta::recall_weight` 的 serde 默认值（用于反序列化在该字段
+/// 出现之前写入的旧条目）。
 fn default_recall_weight() -> f32 {
     0.5
 }
 
 impl MemoryMeta {
-    /// Create a new MemoryMeta with type and source, using their default values.
+    /// 使用类型与来源各自的默认值创建一个新的 MemoryMeta。
     pub fn new(memory_type: MemoryType, source: MemorySource, topic: impl Into<String>) -> Self {
         Self {
             confidence: source.default_confidence(),
@@ -240,37 +237,37 @@ impl MemoryMeta {
         }
     }
 
-    /// Create a MemoryMeta with explicit confidence.
+    /// 创建一个带有显式置信度的 MemoryMeta。
     pub fn with_confidence(mut self, confidence: f32) -> Self {
         self.confidence = confidence.clamp(0.0, 1.0);
         self
     }
 
-    /// Create a MemoryMeta with explicit stability.
+    /// 创建一个带有显式稳定性的 MemoryMeta。
     pub fn with_stability(mut self, stability: f32) -> Self {
         self.stability = stability.clamp(0.0, 1.0);
         self
     }
 
-    /// (stage4) Create a MemoryMeta with explicit recall weight (0.0–1.0).
+    /// （第4阶段）创建一个带有显式召回权重（0.0–1.0）的 MemoryMeta。
     pub fn with_recall_weight(mut self, recall_weight: f32) -> Self {
         self.recall_weight = recall_weight.clamp(0.0, 1.0);
         self
     }
 
-    /// Create a MemoryMeta with explicit risk.
+    /// 创建一个带有显式风险等级的 MemoryMeta。
     pub fn with_risk(mut self, risk: MemoryRisk) -> Self {
         self.risk = risk;
         self
     }
 
-    /// Create a MemoryMeta with explicit status.
+    /// 创建一个带有显式生命周期状态的 MemoryMeta。
     pub fn with_status(mut self, status: MemoryStatus) -> Self {
         self.status = status;
         self
     }
 
-    /// Whether this memory is eligible for promotion to hot memory.
+    /// 该记忆是否有资格被提升为热记忆。
     pub fn is_hot_eligible(&self) -> bool {
         self.confidence >= 0.85
             && self.stability >= 0.70
@@ -278,7 +275,7 @@ impl MemoryMeta {
             && self.risk != MemoryRisk::High
     }
 
-    /// Whether this memory is eligible for rule promotion.
+    /// 该记忆是否有资格被提升为规则。
     pub fn is_rule_eligible(&self) -> bool {
         self.confidence >= 0.95
             && self.stability >= 0.90
@@ -288,16 +285,16 @@ impl MemoryMeta {
             && self.memory_type.is_rule_eligible()
     }
 
-    /// Compute a staleness score (0.0 = fresh, 1.0 = very stale).
+    /// 计算陈旧度评分（0.0 = 新鲜，1.0 = 非常陈旧）。
     ///
-    /// This is a simplified version; the full `StalenessScorer` in Phase 2
-    /// incorporates age, usage, and contradiction factors.
+    /// 这是一个简化版本；第二阶段完整的 `StalenessScorer` 还会综合考虑
+    /// 时效、使用情况以及矛盾因素。
     pub fn base_staleness(&self) -> f32 {
-        // Low stability → high staleness risk
+        // 稳定性低 → 陈旧风险高
         let instability = 1.0 - self.stability;
-        // Low confidence → higher staleness
+        // 置信度低 → 陈旧度更高
         let unconfidence = 1.0 - self.confidence;
-        // Deprecated status → high staleness
+        // 已弃用状态 → 陈旧度高
         let status_factor = match self.status {
             MemoryStatus::Active => 0.0,
             MemoryStatus::Draft => 0.1,
@@ -310,6 +307,8 @@ impl MemoryMeta {
 }
 
 impl Default for MemoryMeta {
+    /// 返回一组中性的默认元数据（`ProjectFact` / 置信度与稳定性均为 0.5 /
+    /// 低风险 / 活跃状态 / 自动提取来源）。
     fn default() -> Self {
         Self {
             memory_type: MemoryType::ProjectFact,
@@ -330,20 +329,20 @@ impl Default for MemoryMeta {
 
 // ── TypedMemoryValue ────────────────────────────────────────────────────
 
-/// The JSON structure stored in `StoreItem.value` for typed memories.
+/// 带类型记忆在 `StoreItem.value` 中存储的 JSON 结构。
 ///
-/// This is the serialization format: the `content` field holds the actual
-/// memory text, and `meta` holds the structured metadata.
+/// 这是它的序列化格式：`content` 字段保存实际的记忆文本，`meta` 字段
+/// 保存结构化的元数据。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypedMemoryValue {
-    /// The actual memory text content.
+    /// 实际的记忆文本内容。
     pub content: String,
-    /// Structured metadata for this memory.
+    /// 该记忆的结构化元数据。
     pub meta: MemoryMeta,
 }
 
 impl TypedMemoryValue {
-    /// Create a new typed memory value.
+    /// 创建一个新的带类型记忆值。
     pub fn new(content: impl Into<String>, meta: MemoryMeta) -> Self {
         Self {
             content: content.into(),
@@ -351,12 +350,12 @@ impl TypedMemoryValue {
         }
     }
 
-    /// Serialize to a `serde_json::Value` for storage in `StoreItem.value`.
+    /// 序列化为 `serde_json::Value`，以便存入 `StoreItem.value`。
     pub fn to_value(&self) -> serde_json::Result<serde_json::Value> {
         serde_json::to_value(self)
     }
 
-    /// Deserialize from a `serde_json::Value`.
+    /// 从 `serde_json::Value` 反序列化。
     pub fn from_value(value: &serde_json::Value) -> serde_json::Result<Self> {
         serde_json::from_value(value.clone())
     }
@@ -397,7 +396,7 @@ mod tests {
         assert_eq!(meta.memory_type, MemoryType::DebuggingLesson);
         assert_eq!(meta.source, MemorySource::ErrorResolution);
         assert_eq!(meta.topic, "build");
-        assert_eq!(meta.confidence, 0.85); // ErrorResolution default
+        assert_eq!(meta.confidence, 0.85); // ErrorResolution 的默认值
         assert_eq!(meta.status, MemoryStatus::Active);
         assert_eq!(meta.risk, MemoryRisk::Low);
     }
@@ -441,7 +440,7 @@ mod tests {
         .with_stability(0.95);
         assert!(meta.is_rule_eligible());
 
-        // Not eligible: wrong type
+        // 不符合资格：类型不对
         let bug_meta = MemoryMeta::new(
             MemoryType::DebuggingLesson,
             MemorySource::ErrorResolution,
@@ -451,7 +450,7 @@ mod tests {
         .with_stability(0.95);
         assert!(!bug_meta.is_rule_eligible());
 
-        // Not eligible: high risk
+        // 不符合资格：高风险
         let risky = MemoryMeta::new(
             MemoryType::UserPreference,
             MemorySource::ExplicitSave,
@@ -480,14 +479,14 @@ mod tests {
 
     #[test]
     fn test_typed_memory_value_backward_compat() {
-        // Old-format store items (no meta field) should be parseable with defaults
+        // 旧格式的 store item（没有 meta 字段）应该能用默认值成功解析
         let old_format = serde_json::json!({
             "content": "Some old memory"
         });
-        // This should still parse — meta will get serde defaults
+        // 这里应该仍能解析成功 —— meta 会使用 serde 默认值
         let _parsed: Result<TypedMemoryValue, _> = serde_json::from_value(old_format);
-        // If meta is required, this will fail — that's expected.
-        // The TypedMemoryStore handles backward compat by catching parse errors.
+        // 如果 meta 是必需字段，这里会解析失败 —— 那也是预期行为。
+        // TypedMemoryStore 通过捕获解析错误来处理向后兼容问题。
     }
 
     #[test]
@@ -517,7 +516,7 @@ mod tests {
 
     #[test]
     fn stage4_p1_memory_meta_has_recall_weight_and_recall_count() {
-        // ExplicitSave source defaults to recall_weight 0.8; AutoExtracted to 0.4.
+        // ExplicitSave 来源默认 recall_weight 为 0.8；AutoExtracted 为 0.4。
         let m = MemoryMeta::new(
             MemoryType::UserPreference,
             MemorySource::ExplicitSave,

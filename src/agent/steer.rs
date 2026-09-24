@@ -1,31 +1,45 @@
-//! Same-turn user steering for an active agent run.
+//! 针对活跃 Agent 运行的同一轮次（same-turn）用户引导（steering）。
 
 use crate::llm::types::Message;
 use echo_core::agent::{AgentSteerReceipt, AgentSteerState, AgentSteerTurnOutcome};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+/// 引导（steer）操作失败时返回的错误类型。
 pub type TurnSteerError = echo_core::agent::AgentSteerError;
 
+/// 当前正在进行的轮次的状态：轮次身份、是否可引导、
+/// 待处理的引导消息队列，以及所有已接受消息的生命周期句柄。
 #[derive(Default)]
 struct ActiveTurn {
+    /// 轮次 ID
     id: String,
+    /// 该轮次的不透明世代（incarnation）句柄，用于区分同名但不同代的轮次
     incarnation: Arc<()>,
+    /// 该轮次当前是否接受引导输入
     steerable: bool,
+    /// 已接受但尚未被消费（drain）的引导消息队列
     pending: VecDeque<TrackedSteer>,
+    /// 本轮次所有已接受引导消息的生命周期句柄
     lifecycles: Vec<Arc<SteerLifecycle>>,
 }
 
+/// 一条被跟踪的引导消息：消息内容及其生命周期句柄。
 struct TrackedSteer {
+    /// 引导消息内容
     message: Message,
+    /// 与该消息关联的生命周期句柄
     lifecycle: Arc<SteerLifecycle>,
 }
 
+/// 一条引导消息的生命周期状态广播器。
 struct SteerLifecycle {
+    /// 状态变化的广播发送端
     state: tokio::sync::watch::Sender<AgentSteerState>,
 }
 
 impl SteerLifecycle {
+    /// 将状态从 `Accepted` 推进为 `Drained`（若当前确实处于 `Accepted`）。
     fn mark_drained(&self) {
         self.state.send_if_modified(|state| {
             if matches!(state, AgentSteerState::Accepted) {
@@ -37,6 +51,7 @@ impl SteerLifecycle {
         });
     }
 
+    /// 将状态结算为终止态；若已经结算过则不做任何改动。
     fn settle(&self, outcome: AgentSteerTurnOutcome) {
         self.state.send_if_modified(|state| {
             if matches!(state, AgentSteerState::TurnSettled { .. }) {
@@ -50,25 +65,32 @@ impl SteerLifecycle {
     }
 }
 
+/// 从邮箱中取出的一批待处理引导消息。
 pub(crate) struct SteerDrainBatch {
+    /// 本批次的引导消息
     pending: Vec<TrackedSteer>,
 }
 
 impl SteerDrainBatch {
+    /// 该批次是否为空。
     pub(crate) fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
+    /// 该批次包含的消息数量。
     pub(crate) fn len(&self) -> usize {
         self.pending.len()
     }
 
+    /// 按 FIFO 顺序遍历本批次的消息内容。
     pub(crate) fn messages(&self) -> impl Iterator<Item = &Message> {
         self.pending.iter().map(|steer| &steer.message)
     }
 
-    /// Publish `Drained` only after the caller has synchronously inserted all
-    /// messages into the active turn context.
+    /**
+     * 只有在调用方已同步地将所有消息插入活跃轮次上下文之后，
+     * 才能发布 `Drained` 状态。
+     */
     pub(crate) fn mark_drained(self) {
         for steer in self.pending {
             steer.lifecycle.mark_drained();
@@ -76,12 +98,15 @@ impl SteerDrainBatch {
     }
 }
 
+/// 当前活跃轮次的引导消息邮箱，跨轮次复用同一个实例。
 #[derive(Default)]
 pub(crate) struct TurnSteerMailbox {
+    /// 当前活跃的轮次（若存在）
     active: Mutex<Option<ActiveTurn>>,
 }
 
 impl TurnSteerMailbox {
+    /// 开始一个新轮次，并结算（以 `Dropped` 结果）上一个未结算的轮次（若有）。
     pub(crate) fn begin(self: &Arc<Self>, turn_id: String) -> ActiveTurnLease {
         let incarnation = Arc::new(());
         let replaced = if let Ok(mut active) = self.active.lock() {
@@ -104,6 +129,7 @@ impl TurnSteerMailbox {
         }
     }
 
+    /// 设置指定轮次（按 ID 与世代匹配）当前是否可被引导。
     pub(crate) fn set_steerable(&self, turn_id: &str, incarnation: &Arc<()>, steerable: bool) {
         if let Ok(mut active) = self.active.lock()
             && let Some(turn) = active.as_mut()
@@ -114,6 +140,7 @@ impl TurnSteerMailbox {
         }
     }
 
+    /// 向当前活跃轮次注入一条引导消息，仅返回该轮次的 ID。
     pub(crate) fn steer(
         &self,
         expected_turn_id: Option<&str>,
@@ -123,6 +150,13 @@ impl TurnSteerMailbox {
             .map(|receipt| receipt.turn_id().to_string())
     }
 
+    /**
+     * 向当前活跃轮次注入一条引导消息，并返回一份可用于观察该消息
+     * 生命周期（Accepted -> Drained -> TurnSettled）的回执。
+     *
+     * 若消息内容为空、当前没有活跃轮次、轮次 ID 不匹配，或该轮次
+     * 当前不可引导，则会返回相应的错误。
+     */
     pub(crate) fn steer_tracked(
         &self,
         expected_turn_id: Option<&str>,
@@ -169,6 +203,10 @@ impl TurnSteerMailbox {
         Ok(AgentSteerReceipt::new(steer_id, turn_id, receiver))
     }
 
+    /**
+     * 取出指定轮次（按 ID 与世代匹配）当前所有待处理的引导消息。
+     * 若轮次不匹配或已不存在，则返回一个空批次。
+     */
     pub(crate) fn take_pending(&self, turn_id: &str, incarnation: &Arc<()>) -> SteerDrainBatch {
         let Ok(mut active) = self.active.lock() else {
             return SteerDrainBatch {
@@ -190,6 +228,7 @@ impl TurnSteerMailbox {
         }
     }
 
+    /// 结束指定轮次（按 ID 与世代匹配），并以给定结果结算其所有引导消息。
     fn finish(&self, turn_id: &str, incarnation: &Arc<()>, outcome: AgentSteerTurnOutcome) {
         let finished = if let Ok(mut active) = self.active.lock()
             && active.as_ref().is_some_and(|turn| {
@@ -203,6 +242,7 @@ impl TurnSteerMailbox {
     }
 }
 
+/// 以给定结果结算某个（可能不存在的）活跃轮次的所有引导消息。
 fn settle_active_turn(active: Option<ActiveTurn>, outcome: AgentSteerTurnOutcome) {
     let Some(active) = active else {
         return;
@@ -212,23 +252,35 @@ fn settle_active_turn(active: Option<ActiveTurn>, outcome: AgentSteerTurnOutcome
     }
 }
 
+/**
+ * 一个活跃轮次的作用域租约（lease）。持有者负责在轮次结束时
+ * 调用 [`ActiveTurnLease::settle`]；若在结算前被丢弃，则会自动
+ * 以 `Dropped` 结果结算（失败关闭语义）。
+ */
 pub(crate) struct ActiveTurnLease {
+    /// 所属的引导消息邮箱
     mailbox: Arc<TurnSteerMailbox>,
+    /// 该租约对应的轮次 ID
     turn_id: String,
+    /// 该轮次的世代句柄
     incarnation: Arc<()>,
+    /// 是否已经显式结算过
     settled: bool,
 }
 
 impl ActiveTurnLease {
+    /// 该租约对应轮次的世代句柄。
     pub(crate) fn incarnation(&self) -> Arc<()> {
         self.incarnation.clone()
     }
 
+    /// 设置该轮次当前是否可被引导。
     pub(crate) fn set_steerable(&self, steerable: bool) {
         self.mailbox
             .set_steerable(&self.turn_id, &self.incarnation, steerable);
     }
 
+    /// 以给定结果显式结算该轮次。
     pub(crate) fn settle(mut self, outcome: AgentSteerTurnOutcome) {
         self.mailbox
             .finish(&self.turn_id, &self.incarnation, outcome);
@@ -237,6 +289,7 @@ impl ActiveTurnLease {
 }
 
 impl Drop for ActiveTurnLease {
+    /// 失败关闭：若租约在显式结算之前被丢弃，则以 `Dropped` 结果结算。
     fn drop(&mut self) {
         if !self.settled {
             self.mailbox.finish(

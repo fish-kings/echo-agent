@@ -1,4 +1,4 @@
-//! Pre-iteration setup: audit user input and run `UserPromptSubmit` hooks.
+//! 每轮迭代前的准备工作：审计用户输入并运行 `UserPromptSubmit` 钩子。
 
 use super::super::stream_macros::{yield_event_or, yield_final_event_or};
 use super::super::types::StreamMode;
@@ -10,11 +10,13 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tracing::info;
 
-/// One-shot pre-loop preparation: emit `MemoryRecalled`, audit the user
-/// input, and run the `UserPromptSubmit` lifecycle hook.
-///
-/// On a closed receiver mid-prepare, returns `Ok(PrepareOutcome::Abandoned)`
-/// so the loop driver simply returns `Ok(())`.
+/**
+一次性的循环前准备工作：发出 `MemoryRecalled` 事件、审计用户输入，
+并运行 `UserPromptSubmit` 生命周期钩子。
+
+如果准备过程中接收端已关闭，则返回 `Ok(PrepareOutcome::Abandoned)`，
+循环驱动器直接返回 `Ok(())`。
+*/
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn prepare_turn(
     snap: &AgentRunSnapshot,
@@ -39,7 +41,7 @@ pub(crate) async fn prepare_turn(
         );
     }
 
-    // Audit: user input
+    // 审计：用户输入
     if snap.guard.audit_logger.is_some() {
         let event = crate::audit::AuditEvent::now(
             snap.config.session_id.clone(),
@@ -51,8 +53,8 @@ pub(crate) async fn prepare_turn(
         snap.record_audit_event(event).await;
     }
 
-    // Streaming preparation runs this hook before routing; the core receives
-    // that fact explicitly so lifecycle side effects remain exactly once.
+    /* 流式准备阶段会在路由之前运行该钩子；核心逻辑显式接收这一事实，
+    从而确保生命周期副作用只会发生一次。 */
     if !user_prompt_hook_already_run {
         let hook_ctx = crate::skills::hooks::HookContext::for_user_prompt_submit(
             text,
@@ -99,7 +101,7 @@ pub(crate) async fn prepare_turn(
     Ok(PrepareOutcome::Continue)
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -109,8 +111,10 @@ mod tests {
     use crate::audit::{AuditFilter, AuditLogger, InMemoryAuditLogger};
     use crate::skills::hooks::{HookAction, HookEvent, HookRegistry, HookRule, HooksDefinition};
 
-    /// No hook registered + no recall returns `Continue`, emits no event, and
-    /// records the user input in the audit log.
+    /**
+    未注册钩子且无记忆召回时返回 `Continue`，不发出任何事件，
+    并将用户输入记录到审计日志中。
+    */
     #[tokio::test]
     async fn prepare_turn_continue_audits_user_input() {
         let audit = Arc::new(InMemoryAuditLogger::new());
@@ -134,13 +138,13 @@ mod tests {
 
         assert!(matches!(outcome, PrepareOutcome::Continue));
 
-        // recalled = 0 → no MemoryRecalled event; no other event either.
+        // recalled = 0 → 没有 MemoryRecalled 事件；也没有其他事件。
         assert!(
             rx.try_recv().is_err(),
             "no events should have been yielded by prepare_turn on the happy path",
         );
 
-        // Audit logger should have exactly one UserInput row.
+        // 审计日志中应恰好有一条 UserInput 记录。
         let events = audit
             .query(AuditFilter::default())
             .await
@@ -155,8 +159,10 @@ mod tests {
         assert_eq!(user_inputs, vec!["hello agent"]);
     }
 
-    /// `recalled > 0` → a `MemoryRecalled { count }` event is yielded
-    /// before audit / hook work.
+    /**
+    `recalled > 0` 时，会在审计/钩子逻辑之前发出一个
+    `MemoryRecalled { count }` 事件。
+    */
     #[tokio::test]
     async fn prepare_turn_yields_memory_recalled_event() {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
@@ -225,8 +231,8 @@ mod tests {
             .iter()
             .filter(|message| matches!(message.role, echo_core::llm::types::Role::System))
             .count();
-        // CWD is now injected as runtime context (not system) so the system
-        // prefix stays cache-stable across workspace changes.
+        /* CWD 现在作为运行时上下文（而非系统消息）注入，
+        这样系统提示前缀在工作区变化时也能保持缓存稳定。 */
         let cwd_system_messages = messages
             .iter()
             .filter(|message| {
@@ -244,21 +250,23 @@ mod tests {
             cwd_system_messages, 0,
             "CWD must NOT be in system messages — it breaks prompt cache"
         );
-        // CWD is injected via runtime context by prepare_stream_context
-        // (tested separately). This test only verifies system message stability.
+        /* CWD 是通过 prepare_stream_context 以运行时上下文的形式注入的
+        （单独测试覆盖）。这里只验证系统消息保持稳定。 */
     }
 
-    /// `UserPromptSubmit` hook returns `block: true` (via a Permission
-    /// `deny` action) → `prepare_turn` yields a `FinalAnswer` event whose
-    /// body starts with `"Blocked by UserPromptSubmit hook:"` and returns
-    /// `BlockedAndDone`.
+    /**
+    `UserPromptSubmit` 钩子返回 `block: true`（通过 Permission 的
+    `deny` 动作）时，`prepare_turn` 会发出一个 `FinalAnswer` 事件，
+    其内容以 `"Blocked by UserPromptSubmit hook:"` 开头，
+    并返回 `BlockedAndDone`。
+    */
     #[tokio::test]
     async fn prepare_turn_user_prompt_submit_block_short_circuits() {
         let mut def = HooksDefinition::default();
         def.add_rules(
             HookEvent::UserPromptSubmit,
             vec![HookRule {
-                matcher: String::new(), // matches everything
+                matcher: String::new(), // 匹配所有情况
                 hooks: vec![HookAction::Permission {
                     decision: "deny".into(),
                     reason: Some("test-deny".into()),
@@ -270,8 +278,8 @@ mod tests {
         registry.register("test-blocker", "/tmp", def);
 
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
-        // Replace the registry with our blocking one. set_hook_registry
-        // takes an Arc<RwLock<...>>, so wrap before passing.
+        /* 用我们这个会阻断的 registry 替换默认的。set_hook_registry
+        接收 Arc<RwLock<...>>，所以在传入前需要先包装一层。 */
         let hr = Arc::new(tokio::sync::RwLock::new(registry));
         let mut agent = agent;
         agent.set_hook_registry(hr);
@@ -317,6 +325,7 @@ mod tests {
         }
     }
 
+    /// 将 `PrepareOutcome` 转成便于断言输出的字符串标签
     fn phase_outcome_label(o: &PrepareOutcome) -> &'static str {
         match o {
             PrepareOutcome::Continue => "Continue",
@@ -325,3 +334,4 @@ mod tests {
         }
     }
 }
+</content>

@@ -61,21 +61,29 @@ type ClientSenders = Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>
 /// }
 /// ```
 pub struct WebSocketHumanLoopProvider {
+    /// 等待响应的请求映射（request_id -> 用于唤醒等待方的 oneshot 发送端）
     pending: PendingMap,
+    /// 当前已连接客户端的消息发送端集合
     clients: ClientSenders,
+    /// 单次请求的超时时长
     timeout: Duration,
-    /// Authentication token that clients must send as their first message.
+    /// 客户端必须作为第一条消息发送的认证令牌。
     auth_token: String,
 }
 
 /// 推送给客户端的消息（统一格式，`kind` 字段区分场景）。
 #[derive(Serialize)]
 struct ServerMessage<'a> {
+    /// 场景类型："approval" | "input"
     kind: &'a str,
+    /// 请求 ID，用于匹配客户端响应
     request_id: &'a str,
+    /// 展示给用户的提示文本
     prompt: &'a str,
+    /// approval 场景：待审批的工具名
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_name: Option<&'a str>,
+    /// approval 场景：工具调用参数
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<&'a serde_json::Value>,
 }
@@ -83,11 +91,13 @@ struct ServerMessage<'a> {
 /// 客户端返回的响应（统一格式）。
 #[derive(Deserialize)]
 struct ClientResponse {
+    /// 对应服务端请求的 request_id
     request_id: String,
     /// approval 场景：`"approved"` | `"rejected"`
     decision: Option<String>,
     /// input 场景：用户输入的文本
     text: Option<String>,
+    /// 可选的说明信息（如拒绝原因）
     reason: Option<String>,
 }
 
@@ -102,8 +112,8 @@ impl WebSocketHumanLoopProvider {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
 
-        // Generate a random authentication token using UUID v4 (122 bits of randomness).
-        // Clients must send this token as their first WebSocket message to authenticate.
+        // 使用 UUID v4（122 位随机性）生成随机认证令牌。
+        // 客户端必须将此令牌作为第一条 WebSocket 消息发送以完成认证。
         let auth_token = Uuid::new_v4().to_string();
 
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -139,7 +149,7 @@ impl WebSocketHumanLoopProvider {
         })
     }
 
-    /// Get the authentication token that clients must send as their first message.
+    /// 获取客户端必须作为第一条消息发送的认证令牌。
     pub fn auth_token(&self) -> &str {
         &self.auth_token
     }
@@ -169,8 +179,8 @@ async fn handle_connection(
 
     let (mut write, mut read) = ws_stream.split();
 
-    // Authentication: client must send the correct token as the first message.
-    // Uses constant-time comparison to prevent timing-based token enumeration.
+    // 认证：客户端必须将正确的令牌作为第一条消息发送。
+    // 使用常量时间比较，防止基于时序的令牌枚举攻击。
     const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
     match tokio::time::timeout(AUTH_TIMEOUT, read.next()).await {
         Ok(Some(Ok(Message::Text(token)))) => {

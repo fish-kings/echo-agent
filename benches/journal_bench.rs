@@ -1,11 +1,11 @@
-//! Criterion benchmarks for the sequenced event journal primitives.
-//!
-//! Run with: `cargo bench -p echo_agent --bench journal_bench`
-//!
-//! These numbers back the Task-5 performance gates at the primitive level:
-//! append throughput, full replay throughput, and the checkpoint-compounded
-//! recovery ratio (the reason `CheckpointedReducer` exists is that a 100k
-//! recovery should replay only the tail, not the whole journal).
+/*! 序列化事件日志（journal）核心原语的 Criterion 基准测试。
+
+运行方式：`cargo bench -p echo_agent --bench journal_bench`
+
+这些数据支撑 Task-5 在原语层面的性能门槛：追加吞吐量、全量回放吞吐量，
+以及检查点复合（checkpoint-compounded）恢复比率（`CheckpointedReducer`
+存在的原因，就是让 10 万量级的恢复只重放尾部，而不是重放整个日志）。
+*/
 
 use criterion::{BenchmarkId, Criterion};
 use echo_agent::state::journal::{
@@ -17,10 +17,12 @@ use echo_agent::utils::fs::FileDurability;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+/// 封装基准测试过程中出现的失败信息的错误类型。
 #[derive(Clone, Debug)]
 struct BenchFailure(String);
 
 impl fmt::Display for BenchFailure {
+    /// 将失败信息原样写出。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&self.0)
     }
@@ -28,13 +30,17 @@ impl fmt::Display for BenchFailure {
 
 impl std::error::Error for BenchFailure {}
 
+/// 基准测试专用的 `Result` 别名，错误类型固定为 `BenchFailure`。
 type BenchResult<T> = std::result::Result<T, BenchFailure>;
 
+/// 为 `Result` 附加上下文信息，便于基准测试失败时定位问题。
 trait BenchContext<T> {
+    /// 用给定的上下文描述包装错误，转换为 `BenchResult`。
     fn bench_context(self, context: &str) -> BenchResult<T>;
 }
 
 impl<T, E: fmt::Debug> BenchContext<T> for std::result::Result<T, E> {
+    /// 将任意 `Result` 的错误格式化为带上下文的 `BenchFailure`。
     fn bench_context(self, context: &str) -> BenchResult<T> {
         match self {
             Ok(value) => Ok(value),
@@ -43,12 +49,15 @@ impl<T, E: fmt::Debug> BenchContext<T> for std::result::Result<T, E> {
     }
 }
 
+/// 记录基准测试迭代过程中出现的第一个失败，供收尾时统一上报。
 #[derive(Clone, Default)]
 struct BenchFailures {
+    /// 记录到的第一个失败（如果有的话）。
     first: Arc<Mutex<Option<BenchFailure>>>,
 }
 
 impl BenchFailures {
+    /// 记录一次迭代的结果；若已存在失败则保留最早的那一个。
     fn record<T>(&self, result: BenchResult<T>) -> BenchResult<T> {
         if let Err(error) = &result {
             let mut first = match self.first.lock() {
@@ -62,6 +71,7 @@ impl BenchFailures {
         result
     }
 
+    /// 取出并返回记录到的第一个失败；没有失败则返回 `Ok(())`。
     fn finish(&self) -> BenchResult<()> {
         let mut first = match self.first.lock() {
             Ok(first) => first,
@@ -74,22 +84,26 @@ impl BenchFailures {
     }
 }
 
-/// Reducer that folds counted events into a small state.
+/// 将计数事件折叠为一个小状态的归约器（reducer）。
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct BenchReducer {
+    /// 已应用的事件数量。
     applied: u64,
+    /// 所有事件值的累加校验和。
     checksum: u64,
 }
 
 impl EventReducer for BenchReducer {
     type Event = u64;
 
+    /// 应用一个事件：累加计数并更新校验和。
     fn apply(&mut self, event: &u64) {
         self.applied = self.applied.saturating_add(1);
         self.checksum = self.checksum.wrapping_add(*event);
     }
 }
 
+/// 生成 `total` 个事件，并按 `batch_size` 切分为若干预备好的写入批次。
 fn prepared_batches(
     total: usize,
     batch_size: usize,
@@ -112,6 +126,7 @@ fn prepared_batches(
         .collect()
 }
 
+/// 依次将若干批次追加到日志中，返回追加完成后的最新序列号。
 fn append_batches<J: EventJournal<u64>>(
     journal: &J,
     batches: Vec<PreparedJournalBatch<u64>>,
@@ -123,6 +138,7 @@ fn append_batches<J: EventJournal<u64>>(
     Ok(journal.last_sequence())
 }
 
+/// 构建一个内存日志，并按给定的检查点节奏写入 `size` 个事件。
 fn build_memory_journal(
     size: u64,
     checkpoint_cadence: u64,
@@ -139,6 +155,7 @@ fn build_memory_journal(
     Ok(journal)
 }
 
+/// 注册并运行本文件中的全部日志基准测试用例。
 fn try_bench_journal(c: &mut Criterion) -> BenchResult<()> {
     const RECOVERY_EVENTS: u64 = 105_321;
     const CHECKPOINT_CADENCE: u64 = 10_000;
@@ -323,9 +340,6 @@ fn try_bench_journal(c: &mut Criterion) -> BenchResult<()> {
         )
     });
 
-    // The compounded cases keep a non-zero 5,321-event tail after the last 10k
-    // checkpoint. This crosses multiple fixed recovery batches instead of
-    // measuring an exactly-on-cadence or single-batch tail.
     let case_failures = failures.clone();
     group.bench_function("recover_full_replay_105k", |b| {
         let iteration_failures = case_failures.clone();
@@ -355,9 +369,8 @@ fn try_bench_journal(c: &mut Criterion) -> BenchResult<()> {
         let iteration_failures = case_failures.clone();
         b.iter_batched(
             || -> BenchResult<_> {
-                // Real-world path: a writer compounded checkpoints every 10k
-                // events; recovery loads the latest frame and replays only
-                // the tail.
+                /* 真实场景路径：写入方每 10k 个事件压缩一次检查点；
+                恢复时只加载最新的快照帧，并只重放其后的尾部事件。 */
                 let journal = Arc::new(MemoryEventJournal::<u64>::new());
                 let checkpoints: Arc<dyn CheckpointStore<BenchReducer>> =
                     Arc::new(MemoryCheckpointStore::new());
@@ -399,9 +412,9 @@ fn try_bench_journal(c: &mut Criterion) -> BenchResult<()> {
         )
     });
 
-    // Persistent recovery is the production-relevant gate. FileEventJournal
-    // records byte offsets during its validated open and seeks directly to the
-    // checkpoint suffix instead of scanning/deserializing the complete JSONL.
+    /* 持久化恢复是生产环境中真正相关的性能门槛。FileEventJournal 会在
+    经过校验的打开过程中记录字节偏移量，从而直接跳转到检查点之后的
+    尾部数据，而不必扫描/反序列化完整的 JSONL 文件。 */
     let persistent_dir = tempfile::tempdir().bench_context("persistent tempdir")?;
     let persistent_journal = Arc::new(
         FileEventJournal::<u64>::open(
@@ -445,6 +458,7 @@ fn try_bench_journal(c: &mut Criterion) -> BenchResult<()> {
     failures.finish()
 }
 
+/// 基准测试入口：运行全部日志用例，并在完成后汇报首个失败（如有）。
 fn main() -> BenchResult<()> {
     let mut criterion = Criterion::default().configure_from_args();
     try_bench_journal(&mut criterion)?;

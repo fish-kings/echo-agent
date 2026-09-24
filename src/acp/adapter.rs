@@ -31,15 +31,14 @@ trait AcpCloseContext: Send + Sync {
     fn close(&self) -> BoxFuture<'_, agent_client_protocol::Result<()>>;
 }
 
-/// Retained owner of one ACP connection's framework Sessions and cleanup debt.
-///
-/// Obtain and keep this handle before moving an adapter into the official
-/// `ConnectTo` API. Connection setup rejects a caller that has not retained a
-/// handle, because the protocol trait consumes the adapter and cannot return
-/// its resource owner with a close error. A manual caller must keep the handle
-/// until close succeeds; dropping it after admission forfeits retry ownership.
-/// [`AcpAgentAdapter::connect_retaining_close_owner`] holds and returns it for
-/// direct connection callers.
+/** 一个 ACP 连接的框架 Session 与清理债务的持有者。
+
+在把 adapter 交给官方 `ConnectTo` API 之前，先获取并保留此句柄。连接建立会
+拒绝没有保留句柄的调用方，因为协议 trait 会消费掉 adapter，无法在关闭出错时
+把资源持有者再返还给调用方。手动调用方必须一直持有该句柄直到关闭成功；
+在被接纳后丢弃它会放弃重试的所有权。[`AcpAgentAdapter::connect_retaining_close_owner`]
+会为直接连接的调用方持有并返回该句柄。
+*/
 #[derive(Clone, Default)]
 pub struct AcpAdapterCloseHandle {
     context: Arc<StdMutex<Option<Arc<dyn AcpCloseContext>>>>,
@@ -62,7 +61,7 @@ impl AcpAdapterCloseHandle {
         Ok(())
     }
 
-    /// Retry cleanup on the same Session/Run owner after transport return.
+    /// 在传输层返回之后，对同一个 Session/Run 持有者重试清理。
     pub async fn close(&self) -> agent_client_protocol::Result<()> {
         let context = self
             .context
@@ -87,8 +86,8 @@ struct ConnectionCloseContext<P: AcpConnectionProfile> {
 impl<P: AcpConnectionProfile> AcpCloseContext for ConnectionCloseContext<P> {
     fn close(&self) -> BoxFuture<'_, agent_client_protocol::Result<()>> {
         Box::pin(async move {
-            // This gate serializes cleanup attempts only. Neither Session nor
-            // Run state is copied or locked across the resource awaits.
+            // 这个 gate 只用于串行化清理尝试。资源等待期间既不会复制也不会
+            // 锁定 Session 或 Run 的状态。
             let _attempt = self.gate.lock().await;
             if self.settled.load(Ordering::Acquire) {
                 return Ok(());
@@ -103,29 +102,28 @@ impl<P: AcpConnectionProfile> AcpCloseContext for ConnectionCloseContext<P> {
     }
 }
 
-/// Resource and implementation metadata for one ACP Agent adapter.
+/// 一个 ACP Agent adapter 的资源与实现元数据。
 #[derive(Debug, Clone)]
 pub struct AcpAdapterConfig {
-    /// Programmatic implementation name reported during `initialize`.
+    /// 在 `initialize` 中上报的程序化实现名称。
     pub name: String,
-    /// Human-readable implementation title reported during `initialize`.
+    /// 在 `initialize` 中上报的人类可读实现标题。
     pub title: String,
-    /// Implementation version reported during `initialize`.
+    /// 在 `initialize` 中上报的实现版本号。
     pub version: String,
-    /// Maximum live Sessions owned by one ACP connection.
+    /// 一个 ACP 连接持有的最大存活 Session 数量。
     pub max_sessions: usize,
-    /// Maximum Unicode scalar count accepted in one mapped Prompt.
+    /// 一次映射后的 Prompt 中允许接受的最大 Unicode 标量数。
     pub max_prompt_chars: usize,
-    /// Maximum Unicode scalar count emitted in one projected update payload.
+    /// 一次投影后的 update 负载中允许发出的最大 Unicode 标量数。
     pub max_update_chars: usize,
-    /// Maximum standard `session/update` notifications emitted by one Turn.
+    /// 一个 Turn 允许发出的最大标准 `session/update` 通知数量。
     pub max_updates_per_turn: usize,
-    /// Maximum cumulative serialized update characters emitted by one Turn.
+    /// 一个 Turn 允许发出的累计序列化 update 字符数上限。
     pub max_total_update_chars: usize,
-    /// Maximum concurrently in-flight extension (reverse-callback)
-    /// invocations per connection (design §12.3).
+    /// 每个连接允许同时在途的扩展（反向回调）调用数量上限（设计文档 §12.3）。
     pub max_extension_concurrency: usize,
-    /// Total time allowed for connection-level Agent shutdown.
+    /// 连接级别的 Agent 关闭所允许的总耗时。
     pub shutdown_timeout: Duration,
 }
 
@@ -147,7 +145,7 @@ impl Default for AcpAdapterConfig {
 }
 
 impl AcpAdapterConfig {
-    /// Validate non-empty implementation metadata and positive resource bounds.
+    /// 校验实现元数据非空，且资源上限均为正数。
     pub fn validate(&self) -> crate::error::Result<()> {
         if self.name.trim().is_empty()
             || self.title.trim().is_empty()
@@ -177,7 +175,7 @@ impl AcpAdapterConfig {
     }
 }
 
-/// Transport-neutral stable ACP v1 Agent role backed by framework Agents.
+/// 由框架 Agent 支撑的、与传输层无关的稳定 ACP v1 Agent 角色。
 pub struct AcpAgentAdapter {
     factory: Arc<dyn AcpSessionFactory>,
     config: AcpAdapterConfig,
@@ -185,7 +183,7 @@ pub struct AcpAgentAdapter {
 }
 
 impl AcpAgentAdapter {
-    /// Construct an adapter with default metadata and resource bounds.
+    /// 使用默认元数据和资源上限构造一个 adapter。
     pub fn new(factory: impl AcpSessionFactory) -> Self {
         Self {
             factory: Arc::new(factory),
@@ -194,7 +192,7 @@ impl AcpAgentAdapter {
         }
     }
 
-    /// Construct an adapter with explicitly validated metadata and bounds.
+    /// 使用经过显式校验的元数据与上限构造一个 adapter。
     pub fn with_config(
         factory: impl AcpSessionFactory,
         config: AcpAdapterConfig,
@@ -207,20 +205,20 @@ impl AcpAgentAdapter {
         })
     }
 
-    /// Return the immutable adapter configuration.
+    /// 返回不可变的 adapter 配置。
     pub fn config(&self) -> &AcpAdapterConfig {
         &self.config
     }
 
-    /// Retain the connection's retryable close owner before calling
-    /// `ConnectTo::connect_to` or passing this adapter to an official Client.
-    /// Keep the handle through connection return and until cleanup succeeds.
+    /// 在调用 `ConnectTo::connect_to` 或把此 adapter 交给官方 Client 之前，
+    /// 先保留该连接可重试的关闭持有者。要一直持有该句柄，直到连接返回，
+    /// 并且清理成功为止。
     pub fn close_owner(&self) -> AcpAdapterCloseHandle {
         self.close_owner.clone()
     }
 
-    /// Return the close owner before the connection future can be polled.
-    /// Dropping or aborting that future cannot discard the caller's handle.
+    /// 在连接 future 可被轮询之前就返回 close owner。
+    /// 丢弃或中止该 future 都不会导致调用方的句柄被丢弃。
     pub fn connect_retaining_close_owner(
         self,
         client: impl ConnectTo<AcpRole>,
@@ -234,10 +232,9 @@ impl AcpAgentAdapter {
         })
     }
 
-    /// Attach a negotiated extension profile. The profile contributes its
-    /// capability advertisement, hello decision, per-run observers, `_meta`
-    /// bridging and typed handlers, while the official connection, standard
-    /// handlers and close chain keep being built exactly once.
+    /// 挂载一个已协商的扩展 profile。该 profile 贡献能力声明、hello 决策、
+    /// 逐 run 的观察者、`_meta` 桥接以及类型化的处理器；而官方连接、标准
+    /// 处理器与关闭链路仍然只会被构建一次。
     pub fn with_profile<P: AcpConnectionProfile>(
         self,
         profile: P,
@@ -249,20 +246,20 @@ impl AcpAgentAdapter {
     }
 }
 
-/// [`AcpAgentAdapter`] with one concrete extension profile attached.
+/// 挂载了一个具体扩展 profile 的 [`AcpAgentAdapter`]。
 pub struct AcpAgentAdapterWithProfile<P: AcpConnectionProfile> {
     adapter: AcpAgentAdapter,
     profile: Arc<P>,
 }
 
 impl<P: AcpConnectionProfile> AcpAgentAdapterWithProfile<P> {
-    /// Retain the same close owner used by the standard ACP handlers.
-    /// Keep it through connection return and until cleanup succeeds.
+    /// 保留标准 ACP 处理器所使用的同一个 close owner。
+    /// 要一直持有它，直到连接返回，并且清理成功为止。
     pub fn close_owner(&self) -> AcpAdapterCloseHandle {
         self.adapter.close_owner()
     }
 
-    /// Return the profile's close owner before the connection future is polled.
+    /// 在连接 future 被轮询之前就返回该 profile 的 close owner。
     pub fn connect_retaining_close_owner(
         self,
         client: impl ConnectTo<AcpRole>,
@@ -295,9 +292,8 @@ impl ConnectTo<Client> for AcpAgentAdapter {
     }
 }
 
-/// Profile used by the standard-only path: never advertises, never
-/// negotiates, contributes no handlers or observers. It exists so both
-/// connection paths share one generic implementation.
+/// 仅标准路径所使用的 profile：从不声明能力、从不协商，也不贡献任何
+/// 处理器或观察者。它存在的意义在于让两条连接路径共享同一个泛型实现。
 #[derive(Clone, Copy, Default)]
 struct NoProfile;
 
@@ -347,21 +343,21 @@ async fn run_connection<P: AcpConnectionProfile>(
     });
     adapter.close_owner.bind(close_context.clone())?;
 
-    // `initialize`: single registration point. The profile's advertisement
-    // rides `agentCapabilities._meta`, and its hello decision promotes the
-    // whole connection to Extended mode. A plain Client (no `_meta` entry)
-    // and a failed negotiation both stay Standard without breaking the
-    // standard initialize.
+    // `initialize`：唯一的注册点。profile 的能力声明借助
+    // `agentCapabilities._meta` 传递，其 hello 决策会把整个连接升级为
+    // Extended 模式。普通 Client（没有 `_meta` 条目）以及协商失败的情况，
+    // 都会停留在 Standard 模式，且不会破坏标准的 initialize 流程。
     let initialize_services = services.clone();
     let initialize_profile = profile.clone();
     let initialize_registry = registry.clone();
     let initialize_config = config.clone();
-    // `new`: standard handler remains the only implementation of
-    // `session/new`; extension profiles bridge their handle through `_meta`.
+    // `new`：标准处理器始终是 `session/new` 的唯一实现；扩展 profile
+    // 通过 `_meta` 桥接自己的句柄。
     let new_session_services = services.clone();
     let new_session_profile = profile.clone();
-    // `session/prompt`: enters the shared run authority like any extension
-    // Run, so both profiles observe the same run ids and one-active-run.
+    // `session/prompt`：和任何扩展 Run 一样进入共享的 run authority，
+    // 因此两种 profile 观察到的都是相同的 run id 以及“同一时刻只有一个
+    // 活跃 run”的约束。
     let prompt_services = services.clone();
     let prompt_profile = profile.clone();
     let prompt_registry = registry.clone();
@@ -534,8 +530,8 @@ async fn close_connection<P: AcpConnectionProfile>(
             .await
             .unwrap_or_else(|_| Err("profile settlement timed out".to_string()));
         let flush = profile.flush_before_agents();
-        // Profile persistence failures must remain visible but cannot skip
-        // explicit Agent close once all invocations and receipts have drained.
+        // profile 持久化失败必须保持可见，但一旦所有调用和回执都已排空，
+        // 就不能跳过显式的 Agent 关闭。
         let agents = if leaked_extensions == 0 && unsettled_runs == 0 {
             tokio::time::timeout(stage, services.close_sessions())
                 .await

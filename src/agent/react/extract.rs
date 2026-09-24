@@ -1,9 +1,9 @@
-//! ReactAgent structured extraction
+//! ReactAgent 结构化抽取
 //!
-//! Provides two types of structured output capabilities:
+//! 提供两类结构化输出能力：
 //!
-//! - **One-shot extraction** (`extract_json` / `extract`): no ReAct loop, directly extracts from LLM
-//! - **Full execution extraction** (`execute_typed`): runs the full ReAct loop, requires `output_type`
+//! - **一次性抽取**（`extract_json` / `extract`）：不经过 ReAct 循环，直接从 LLM 抽取
+//! - **完整执行抽取**（`execute_typed`）：运行完整的 ReAct 循环，需要设置 `output_type`
 
 use super::ReactAgent;
 use crate::agent::Agent;
@@ -12,36 +12,38 @@ use crate::llm::types::Message;
 use crate::llm::{ChatRequest, ResponseFormat};
 
 impl ReactAgent {
-    /// One-shot structured JSON extraction, no ReAct loop.
-    ///
-    /// Sends a single request to the LLM, asking it to return JSON per `schema`,
-    /// returns the parsed [`serde_json::Value`].
-    ///
-    /// Suitable for "extraction / classification / format conversion" scenarios that don't need tool calls.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # async fn run() -> echo_agent::error::Result<()> {
-    /// use echo_agent::prelude::*;
-    /// use serde_json::json;
-    ///
-    /// # let config = AgentConfig::new("qwen3-max", "extractor", "You are an information extraction assistant");
-    /// # let agent = ReactAgent::new(config);
-    /// let result = agent.extract_json(
-    ///     "Zhang San, 28 years old",
-    ///     ResponseFormat::json_schema(
-    ///         "person",
-    ///         json!({ "type": "object",
-    ///                 "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
-    ///                 "required": ["name", "age"],
-    ///                 "additionalProperties": false }),
-    ///     ),
-    /// ).await?;
-    /// println!("{}", result["name"]);
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    一次性结构化 JSON 抽取，不经过 ReAct 循环。
+
+    向 LLM 发送单次请求，要求其按照 `schema` 返回 JSON，
+    并返回解析后的 [`serde_json::Value`]。
+
+    适用于不需要工具调用的“抽取 / 分类 / 格式转换”类场景。
+
+    # Example
+
+    ```rust,no_run
+    # async fn run() -> echo_agent::error::Result<()> {
+    use echo_agent::prelude::*;
+    use serde_json::json;
+
+    # let config = AgentConfig::new("qwen3-max", "extractor", "You are an information extraction assistant");
+    # let agent = ReactAgent::new(config);
+    let result = agent.extract_json(
+        "Zhang San, 28 years old",
+        ResponseFormat::json_schema(
+            "person",
+            json!({ "type": "object",
+                    "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
+                    "required": ["name", "age"],
+                    "additionalProperties": false }),
+        ),
+    ).await?;
+    println!("{}", result["name"]);
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn extract_json(
         &self,
         prompt: &str,
@@ -85,7 +87,7 @@ impl ReactAgent {
                         error = %e,
                         "JSON parse failed, feeding error back to LLM for retry"
                     );
-                    // Feed the error back to LLM for self-correction
+                    // 将错误信息反馈给 LLM，让其自我纠正
                     let correction = format!(
                         "Your previous response was not valid JSON.\n\
                          Parse error: {e}\n\
@@ -109,38 +111,40 @@ impl ReactAgent {
         )))
     }
 
-    /// One-shot structured extraction, automatically deserializes the JSON result into the specified type `T`.
-    ///
-    /// Same as [`extract_json`](Self::extract_json), but additionally performs `serde` deserialization.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_agent::llm::ResponseFormat;
-    /// use serde::{Deserialize, Serialize};
-    /// use serde_json::json;
-    ///
-    /// #[derive(Debug, Deserialize)]
-    /// struct Person { name: String, age: u32 }
-    ///
-    /// # async fn run() -> echo_agent::error::Result<()> {
-    /// # use echo_agent::prelude::*;
-    /// # let config = AgentConfig::new("qwen3-max", "extractor", "You are an extraction assistant");
-    /// # let agent = ReactAgent::new(config);
-    /// let person: Person = agent.extract(
-    ///     "Zhang San, 28 years old",
-    ///     ResponseFormat::json_schema(
-    ///         "person",
-    ///         json!({ "type": "object",
-    ///                 "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
-    ///                 "required": ["name", "age"],
-    ///                 "additionalProperties": false }),
-    ///     ),
-    /// ).await?;
-    /// println!("Name: {}, Age: {}", person.name, person.age);
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    一次性结构化抽取，自动将 JSON 结果反序列化为指定的类型 `T`。
+
+    与 [`extract_json`](Self::extract_json) 相同，但额外执行 `serde` 反序列化。
+
+    # Example
+
+    ```rust,no_run
+    use echo_agent::llm::ResponseFormat;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
+
+    #[derive(Debug, Deserialize)]
+    struct Person { name: String, age: u32 }
+
+    # async fn run() -> echo_agent::error::Result<()> {
+    # use echo_agent::prelude::*;
+    # let config = AgentConfig::new("qwen3-max", "extractor", "You are an extraction assistant");
+    # let agent = ReactAgent::new(config);
+    let person: Person = agent.extract(
+        "Zhang San, 28 years old",
+        ResponseFormat::json_schema(
+            "person",
+            json!({ "type": "object",
+                    "properties": { "name": { "type": "string" }, "age": { "type": "integer" } },
+                    "required": ["name", "age"],
+                    "additionalProperties": false }),
+        ),
+    ).await?;
+    println!("Name: {}, Age: {}", person.name, person.age);
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn extract<T>(&self, prompt: &str, schema: ResponseFormat) -> Result<T>
     where
         T: serde::de::DeserializeOwned,
@@ -150,33 +154,35 @@ impl ReactAgent {
             .map_err(|e| ReactError::Other(format!("Deserialization failed: {e}")))
     }
 
-    /// After full ReAct execution, deserialize the result as type `T`
-    ///
-    /// Requires declaring the output type via `ReactAgentBuilder::output_type` when building the Agent.
-    /// The framework automatically sets `response_format` to guide the LLM to return matching JSON.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_agent::prelude::*;
-    /// use schemars::JsonSchema;
-    /// use serde::Deserialize;
-    ///
-    /// #[derive(Debug, Deserialize, JsonSchema)]
-    /// struct Analysis { summary: String, score: f64 }
-    ///
-    /// # async fn run() -> echo_agent::error::Result<()> {
-    /// let mut agent = ReactAgentBuilder::new()
-    ///     .model("qwen3-max")
-    ///     .system_prompt("You are an analysis assistant, please return analysis results in JSON format")
-    ///     .output_type::<Analysis>()
-    ///     .build()?;
-    ///
-    /// let result: Analysis = agent.execute_typed("Analyze the pros and cons of the Rust language").await?;
-    /// println!("Score: {}", result.score);
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    完整执行 ReAct 循环后，将结果反序列化为类型 `T`。
+
+    需要在构建 Agent 时通过 `ReactAgentBuilder::output_type` 声明输出类型。
+    框架会自动设置 `response_format`，引导 LLM 返回匹配的 JSON。
+
+    # Example
+
+    ```rust,no_run
+    use echo_agent::prelude::*;
+    use schemars::JsonSchema;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct Analysis { summary: String, score: f64 }
+
+    # async fn run() -> echo_agent::error::Result<()> {
+    let mut agent = ReactAgentBuilder::new()
+        .model("qwen3-max")
+        .system_prompt("You are an analysis assistant, please return analysis results in JSON format")
+        .output_type::<Analysis>()
+        .build()?;
+
+    let result: Analysis = agent.execute_typed("Analyze the pros and cons of the Rust language").await?;
+    println!("Score: {}", result.score);
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn execute_typed<T>(&mut self, task: &str) -> Result<T>
     where
         T: serde::de::DeserializeOwned,

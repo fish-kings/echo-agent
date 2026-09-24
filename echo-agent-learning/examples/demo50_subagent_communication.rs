@@ -30,11 +30,14 @@ use tokio::sync::Notify;
 
 /// 可转向的阻塞 Subagent:stream 首个 poll 等待 release,steer 输入被记录。
 struct SteerableSubagent {
+    /// 用于阻塞 stream 首次 poll 的通知器；收到通知后才会产出最终事件。
     release: Arc<Notify>,
+    /// 记录通过 `steer_input_tracked` 收到的所有转向消息文本。
     steered: Arc<Mutex<Vec<String>>>,
 }
 
 impl SteerableSubagent {
+    /// 构造一个在首次 poll 时阻塞等待 `release` 通知、随后产出单个最终答案事件的流。
     fn blocking_stream<'a>(&'a self) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
         let release = self.release.clone();
         Box::pin(async move {
@@ -45,28 +48,34 @@ impl SteerableSubagent {
         })
     }
 
+    /// 创建一个新的 `SteerableSubagent`，共享给定的释放通知器和转向消息记录容器。
     fn new(release: Arc<Notify>, steered: Arc<Mutex<Vec<String>>>) -> Self {
         Self { release, steered }
     }
 }
 
 impl Agent for SteerableSubagent {
+    /// 返回固定的 Agent 名称 "subagent"。
     fn name(&self) -> &str {
         "subagent"
     }
 
+    /// 返回固定的演示用模型名 "demo"。
     fn model_name(&self) -> &str {
         "demo"
     }
 
+    /// 返回固定的演示用系统提示词。
     fn system_prompt(&self) -> &str {
         "demo subagent"
     }
 
+    /// 非流式执行：忽略任务内容，直接返回固定的 "done" 结果。
     fn execute<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async { Ok("done".to_string()) })
     }
 
+    /// 流式执行：委托给 `blocking_stream`，等待外部释放后才产出结果。
     fn execute_stream<'a>(
         &'a self,
         _task: &'a str,
@@ -74,6 +83,7 @@ impl Agent for SteerableSubagent {
         self.blocking_stream()
     }
 
+    /// 带取消令牌的消息流式执行：同样委托给 `blocking_stream`。
     fn execute_stream_message_with_cancel<'a>(
         &'a self,
         _message: Message,
@@ -82,6 +92,7 @@ impl Agent for SteerableSubagent {
         self.blocking_stream()
     }
 
+    /// 接收转向（steer）输入：将文本记录到 `steered` 列表中，并返回一个立即耗尽的回执。
     fn steer_input_tracked(
         &self,
         _expected_turn_id: Option<&str>,
@@ -107,6 +118,8 @@ impl Agent for SteerableSubagent {
     }
 }
 
+/// demo50 主入口：演示子智能体上行通信（uplink）与共享控制面，
+/// 包括精确身份派发、兄弟消息、父方向 escalate、事件可观测性以及 envelope 总线的顺序与恢复能力。
 #[tokio::main]
 async fn main() {
     println!("=== demo50: 子智能体上行通信(uplink + 共享控制面) ===\n");

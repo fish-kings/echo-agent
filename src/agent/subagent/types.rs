@@ -1,4 +1,4 @@
-//! Subagent core types — definitions, execution modes, and results
+//! 子 Agent 核心类型 —— 定义、执行模式与结果。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -7,24 +7,25 @@ use std::time::Duration;
 use super::usage::LlmUsageStats;
 use echo_core::agent::ExecutionUsage;
 
-// ── Execution Mode ────────────────────────────────────────────────────────────
+// ── 执行模式 ────────────────────────────────────────────────────────────
 
-/// How a subagent executes relative to its parent.
+/// 子 Agent 相对于父级的执行方式。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum ExecutionMode {
-    /// Sync/delegate: parent blocks until subagent returns.
-    /// Maps to the existing `AgentDispatchTool` behavior.
+    /** Sync/delegate（同步委派）：父级会阻塞，直到子 Agent 返回。
+     * 对应现有的 `AgentDispatchTool` 行为。
+     */
     #[default]
     Sync,
-    /// Fork: runs independently with optional timeout. It starts with the
-    /// registered role prompt and receives filtered history only when an
-    /// explicit context-transfer policy requests it.
+    /** Fork（分叉）：独立运行，可选超时。它以已注册的角色提示词起步，
+     * 只有在显式上下文传递策略要求时，才会接收经过过滤的历史。
+     */
     Fork,
-    /// Teammate: parallel independent agent with message-passing coordination.
+    /// Teammate（队友）：并行独立的 Agent，通过消息传递进行协调。
     Teammate,
-    /// Team intent compiled into the canonical revisioned task DAG runtime.
+    /// Team（团队）意图，被编译进权威的、带版本的任务 DAG 运行时。
     Team,
 }
 
@@ -39,12 +40,13 @@ impl std::fmt::Display for ExecutionMode {
     }
 }
 
-/// Product-neutral name of the isolation boundary established for a dispatch.
+/// 为一次派发建立的隔离边界的产品中立名称。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct ObservedIsolation(String);
 
 impl ObservedIsolation {
+    /// 从任意字符串构造，超长会按 `MAX_KIND_CHARS` 截断，空值回退为默认值。
     pub fn new(value: impl Into<String>) -> Self {
         let value = value.into();
         let value = value.trim();
@@ -55,6 +57,7 @@ impl ObservedIsolation {
         }
     }
 
+    /// 以字符串切片形式借出内部值。
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -66,100 +69,106 @@ impl Default for ObservedIsolation {
     }
 }
 
-// ── Subagent Kind ─────────────────────────────────────────────────────────────
+// ── 子 Agent 来源类型 ─────────────────────────────────────────────────────────────
 
-/// How the subagent definition is sourced.
+/// 子 Agent 定义的来源方式。
 #[derive(Debug, Clone, Default)]
 pub enum SubagentKind {
-    /// Hard-coded agent provided by the library or application.
+    /// 由库或应用硬编码提供的 Agent。
     #[default]
     BuiltIn,
-    /// Loaded from a `.md` definition file (similar to skills).
+    /// 从 `.md` 定义文件加载（类似于 skills）。
     Custom {
-        /// Path to the definition file.
+        /// 定义文件的路径。
         path: PathBuf,
     },
-    /// Loaded from a plugin or remote registry.
+    /// 从插件或远程注册表加载。
     Plugin {
-        /// Source identifier (e.g., plugin name or registry URL).
+        /// 来源标识（例如插件名或注册表 URL）。
         source: String,
     },
 }
 
-/// Mutation authority declared by a Subagent definition.
+/// 由子 Agent 定义声明的变更权限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentAccessMode {
+    /// 只读，不允许产生变更。
     ReadOnly,
+    /// 允许写入 / 产生变更。
     Write,
 }
 
-// ── Subagent Definition ───────────────────────────────────────────────────────
+// ── 子 Agent 定义 ───────────────────────────────────────────────────────
 
-/// Declarative specification of a subagent.
-///
-/// Describes *what* the subagent looks like (model, tools, prompt, constraints)
-/// without prescribing *how* to build it — that's the factory's job.
+/** 子 Agent 的声明式规格说明。
+ *
+ * 描述子 Agent “是什么样子”（模型、工具、提示词、约束），而不规定
+ * “如何构建它”——那是工厂（factory）的职责。
+ */
 #[derive(Debug, Clone)]
 pub struct SubagentDefinition {
-    /// Unique name for discovery and dispatch.
+    /// 用于发现和派发的唯一名称。
     pub name: String,
-    /// Human-readable description (exposed to the LLM in tool descriptions).
+    /// 人类可读的描述（在工具描述中暴露给 LLM）。
     pub description: String,
-    /// How this agent is sourced.
+    /// 该 Agent 的来源方式。
     pub kind: SubagentKind,
-    /// Typed mutation boundary. Tags are discovery metadata and must never be
-    /// decoded back into this authority.
+    /// 类型化的变更边界。标签（tags）仅是发现用的元数据，绝不能被
+    /// 反解码回这个权限本身。
     pub access_mode: SubagentAccessMode,
-    /// Default execution mode when dispatched.
+    /// 派发时使用的默认执行模式。
     pub execution_mode: ExecutionMode,
-    /// Model override (None = inherit from parent).
+    /// 模型覆盖项（`None` = 继承自父级）。
     pub model: Option<String>,
-    /// Reasoning-depth override for this subagent, in
-    /// `echo_core::llm::ThinkingConfig::parse_spec` syntax (`low`/`medium`/
-    /// `high`/`disabled`/budget number; `auto`/empty = model default).
-    /// `None` = inherit the parent generation's thinking. Used by cheap
-    /// long-running roles that intentionally use reduced reasoning depth.
+    /** 该子 Agent 的推理深度覆盖项，使用
+     * `echo_core::llm::ThinkingConfig::parse_spec` 的语法
+     * （`low`/`medium`/`high`/`disabled`/预算数字；`auto`/空 = 模型默认值）。
+     * `None` = 继承父级生成配置的推理设置。用于那些有意使用较低
+     * 推理深度的廉价、长时间运行角色。
+     */
     pub thinking: Option<String>,
-    /// System prompt override (None = inherit or auto-generate).
+    /// System prompt 覆盖项（`None` = 继承或自动生成）。
     pub system_prompt: Option<String>,
-    /// Restrict available tools by name (None = inherit all from parent).
+    /// 按名称限制可用工具（`None` = 继承父级全部工具）。
     pub tool_filter: Option<Vec<String>>,
-    /// Maximum agent iterations. `None` leaves the concrete factory's bounded
-    /// default in effect; a `ReactAgentBuilder` rejects an explicit zero.
+    /// 最大 Agent 迭代次数。`None` 会保留具体工厂自身的有界默认值；
+    /// `ReactAgentBuilder` 会拒绝显式传入的零值。
     pub max_iterations: Option<usize>,
-    /// Token limit for this subagent (None = use default).
+    /// 该子 Agent 的 token 限制（`None` = 使用默认值）。
     pub token_limit: Option<usize>,
-    /// How many recent messages to inherit from parent.
-    /// `None` = don't inherit, `Some(0)` = inherit all, `Some(n)` = last n messages.
+    /// 从父级继承多少条最近消息。
+    /// `None` = 不继承，`Some(0)` = 继承全部，`Some(n)` = 最近 n 条消息。
     pub inherit_history: Option<usize>,
-    /// Whether to inherit parent memory store.
+    /// 是否继承父级的记忆存储。
     pub inherit_memory: bool,
-    /// Timeout in seconds (0 = no timeout).
+    /// 超时时间（秒），`0` 表示不设超时。
     pub timeout_secs: u64,
-    /// Whether this subagent can itself dispatch to further subagents.
+    /// 该子 Agent 自身是否可以再向下派发更多子 Agent。
     pub can_delegate: bool,
-    /// Tags for discovery / filtering.
+    /// 用于发现 / 过滤的标签。
     pub tags: Vec<String>,
-    /// Whether this subagent uses the lightweight (infrastructure-sharing) mode.
-    ///
-    /// When `true`, the subagent shares the parent's LLM client, ToolManager,
-    /// and GuardManager instead of creating new instances.
+    /** 该子 Agent 是否使用轻量级（基础设施共享）模式。
+     *
+     * 为 `true` 时，子 Agent 会共享父级的 LLM 客户端、ToolManager
+     * 和 GuardManager，而不是创建新实例。
+     */
     pub lightweight: bool,
-    /// Optional product-owned isolation kind resolved by an injected provider.
+    /// 由注入的 provider 解析出的、可选的产品所属隔离种类。
     pub isolation: Option<String>,
-    /// Declarative Team intent compiled by the canonical task runtime.
+    /// 由权威任务运行时编译的声明式 Team 意图。
     pub team: Option<super::team::TeamSpec>,
-    /// When `true`, the role prefers background dispatch (Phase 2 schedules
-    /// asynchronously). Phase 1 only stores the flag from frontmatter.
+    /// 为 `true` 时，该角色偏好后台派发（第二阶段会进行异步调度）。
+    /// 第一阶段仅存储来自 frontmatter 的该标志位。
     pub is_background: bool,
 }
 
 impl SubagentDefinition {
-    /// Create a minimal Sync-mode built-in definition.
-    ///
-    /// # Parameters
-    /// * `name` - Unique name for discovery and dispatch.
-    /// * `description` - Human-readable description exposed to the LLM.
+    /** 创建一个最小化的 Sync 模式内置定义。
+     *
+     * # 参数
+     * * `name` - 用于发现和派发的唯一名称。
+     * * `description` - 暴露给 LLM 的人类可读描述。
+     */
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -185,43 +194,56 @@ impl SubagentDefinition {
         }
     }
 
-    /// Convenience: a Sync-mode definition for backward-compatible registration.
-    ///
-    /// # Parameters
-    /// * `name` - Unique name for discovery and dispatch.
-    ///
-    /// # Notes
-    /// Auto-generates description as "Subagent {name}".
+    /** 便捷方法：为向后兼容的注册场景创建一个 Sync 模式定义。
+     *
+     * # 参数
+     * * `name` - 用于发现和派发的唯一名称。
+     *
+     * # 说明
+     * 会自动生成形如 "Subagent {name}" 的描述文本。
+     */
     pub fn simple_sync(name: impl Into<String>) -> Self {
         let name = name.into();
         Self::new(name.clone(), format!("Subagent {}", name))
     }
 }
 
-// ── Subagent Result ───────────────────────────────────────────────────────────
+// ── 子 Agent 结果 ───────────────────────────────────────────────────────────
 
-/// Default char budget for parent-facing summary when no structured result exists.
+/// 当不存在结构化结果时，面向父级的摘要文本的默认字符预算。
 const DEFAULT_SUMMARY_CHARS: usize = 1200;
+/// 当前的子 Agent 结果契约版本号。
 pub const SUBAGENT_RESULT_CONTRACT_VERSION: u32 = 2;
+/// 结果列表（如 remaining_work）允许保留的最大条目数。
 const MAX_RESULT_ITEMS: usize = 64;
+/// 单条明细文本允许的最大字符数。
 const MAX_DETAIL_CHARS: usize = 500;
+/// 路径字符串允许的最大字符数。
 const MAX_PATH_CHARS: usize = 2048;
+/// kind 类字段允许的最大字符数。
 const MAX_KIND_CHARS: usize = 80;
+/// evidence 的 attributes 字段序列化后允许的最大字符数。
 const MAX_ATTRIBUTES_CHARS: usize = 4_000;
 
-/// Runtime-owned terminal status for one subagent dispatch.
+/// 由运行时权威判定的、某次子 Agent 派发的终态状态。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentStatus {
+    /// 正在运行中。
     Running,
+    /// 已成功完成。
     Completed,
+    /// 已失败。
     #[default]
     Failed,
+    /// 已被取消。
     Cancelled,
+    /// 已超时。
     TimedOut,
 }
 
 impl SubagentStatus {
+    /// 返回该状态对应的稳定字符串表示。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -236,7 +258,7 @@ impl SubagentStatus {
 impl std::str::FromStr for SubagentStatus {
     type Err = String;
 
-    /// Parse the stable wire spelling used by runtime projections.
+    /// 解析运行时投影所使用的稳定序列化拼写。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "running" => Ok(Self::Running),
@@ -249,89 +271,116 @@ impl std::str::FromStr for SubagentStatus {
     }
 }
 
-/// Availability and integrity facts for one artifact returned by a subagent.
+/// 子 Agent 返回的单个产物（artifact）的可用性与完整性事实。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentArtifact {
+    /// 产物路径。
     pub path: String,
+    /// 产物种类（由产品层定义）。
     #[serde(default)]
     pub kind: String,
+    /// 产物大小（字节），未知时为 `None`。
     #[serde(default)]
     pub bytes: Option<u64>,
+    /// 产物内容的 SHA-256 哈希，未知时为 `None`。
     #[serde(default)]
     pub sha256: Option<String>,
+    /// 产生该产物的执行 id，未知时为 `None`。
     #[serde(default)]
     pub producer_execution_id: Option<String>,
+    /// 该产物当前是否可用（已被运行时确认存在）。
     #[serde(default)]
     pub available: bool,
 }
 
-/// Whether evidence came from observed runtime behavior or subagent output.
+/// 证据（evidence）是来自观察到的运行时行为，还是来自子 Agent 的输出。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentEvidenceSource {
+    /// 由运行时观察到（更可信）。
     Observed,
+    /// 由子 Agent 自行报告。
     #[default]
     Reported,
 }
 
-/// Product-neutral evidence emitted or observed during a subagent dispatch.
+/// 在一次子 Agent 派发过程中产生或被观察到的、产品中立的证据。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentEvidence {
+    /// 证据种类（由产品层定义）。
     pub kind: String,
+    /// 被观察 / 报告的对象。
     pub subject: String,
+    /// 可选的、有界长度的结果描述。
     #[serde(default)]
     pub outcome: Option<String>,
+    /// 有界长度的证据明细。
     #[serde(default)]
     pub details: String,
+    /// 该证据的来源（观察 or 报告）。
     #[serde(default)]
     pub source: SubagentEvidenceSource,
+    /// 附加属性，结构由产品层自行约定。
     #[serde(default)]
     pub attributes: serde_json::Value,
 }
 
-/// Verification check derived from structured subagent evidence.
+/// 从结构化子 Agent 证据中派生出的验证检查项。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentVerification {
+    /// 该验证检查的名称。
     pub check: String,
+    /// 该验证检查的结果状态。
     pub status: SubagentVerificationStatus,
+    /// 有界长度的验证明细。
     pub details: String,
+    /// 该验证结果的来源（观察 or 报告）。
     pub source: SubagentEvidenceSource,
 }
 
-/// Outcome of a verification check observed or reported by a subagent.
+/// 由子 Agent 观察到或报告的验证检查的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentVerificationStatus {
+    /// 通过。
     Passed,
+    /// 未通过。
     Failed,
+    /// 未运行。
     NotRun,
 }
 
-/// Files referenced by observed subagent tool evidence.
+/// 由观察到的子 Agent 工具证据所引用的文件。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentTouchedFiles {
+    /// 被读取的文件路径列表。
     pub read: Vec<String>,
+    /// 被写入的文件路径列表。
     pub written: Vec<String>,
 }
 
-/// Parent-facing, serializable result contract for a subagent dispatch.
+/// 面向父级的、可序列化的子 Agent 派发结果契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentOutcome {
-    /// `1` for the explicit JSON contract; `0` for a legacy text fallback.
+    /// 显式 JSON 契约为 `1`；旧版文本回退为 `0`。
     pub contract_version: u32,
-    /// Runtime-owned terminal status. Model-provided status is always ignored.
+    /// 由运行时权威判定的终态状态。模型自行提供的状态一律被忽略。
     pub status: SubagentStatus,
+    /// 面向父级的摘要文本。
     pub summary: String,
+    /// 该次派发产生的产物列表。
     #[serde(default)]
     pub artifacts: Vec<SubagentArtifact>,
+    /// 该次派发产生的证据列表。
     #[serde(default)]
     pub evidence: Vec<SubagentEvidence>,
-    /// Verification views derived from the generic evidence stream.
+    /// 从通用证据流中派生出的验证视图。
     #[serde(default)]
     pub verification: Vec<SubagentVerification>,
+    /// 尚未完成的剩余工作项。
     #[serde(default)]
     pub remaining_work: Vec<String>,
-    /// Read/write paths derived from observed tool evidence.
+    /// 从观察到的工具证据中派生出的读写路径。
     #[serde(default)]
     pub touched_files: SubagentTouchedFiles,
 }
@@ -352,6 +401,7 @@ impl Default for SubagentOutcome {
 }
 
 impl SubagentOutcome {
+    /// 构造一个终态结果：裁剪摘要与剩余工作项长度，其余字段留空。
     pub fn terminal(
         status: SubagentStatus,
         summary: impl Into<String>,
@@ -371,11 +421,12 @@ impl SubagentOutcome {
         }
     }
 
+    /// 判断该结果是否为已成功完成状态。
     pub fn is_completed(&self) -> bool {
         self.status == SubagentStatus::Completed
     }
 
-    /// Refresh generic verification and file-access views from evidence.
+    /// 根据证据刷新通用的验证视图与文件访问视图。
     pub fn refresh_derived_views(&mut self) {
         self.verification = self
             .evidence
@@ -399,17 +450,18 @@ impl SubagentOutcome {
         self.touched_files = touched;
     }
 
-    /// Borrow the derived verification view without rebuilding it.
+    /// 借出派生出的验证视图，而不重新构建它。
     pub fn verification(&self) -> &[SubagentVerification] {
         &self.verification
     }
 
-    /// Borrow the derived read/write file view without rebuilding it.
+    /// 借出派生出的读写文件视图，而不重新构建它。
     pub fn touched_files(&self) -> &SubagentTouchedFiles {
         &self.touched_files
     }
 }
 
+/// 从一条证据中投影出一个验证检查项（若该证据可解释为验证检查的话）。
 fn project_verification_evidence(evidence: &SubagentEvidence) -> Option<SubagentVerification> {
     let check = if evidence.kind == "verification" {
         Some(evidence.subject.clone())
@@ -433,6 +485,7 @@ fn project_verification_evidence(evidence: &SubagentEvidence) -> Option<Subagent
     })
 }
 
+/// 若工具名属于命令执行类工具，则从其参数中提取被执行的命令文本。
 fn verification_check_from_tool(name: &str, args: &serde_json::Value) -> Option<String> {
     let normalized = name.to_ascii_lowercase().replace('-', "_");
     if !matches!(
@@ -449,6 +502,7 @@ fn verification_check_from_tool(name: &str, args: &serde_json::Value) -> Option<
         .map(str::to_string)
 }
 
+/// 从一条证据中投影出被读写的文件路径（若该证据可解释为文件访问的话）。
 fn project_tool_file_access(evidence: &SubagentEvidence) -> Option<(bool, String)> {
     let normalized = evidence.subject.to_ascii_lowercase().replace('-', "_");
     let write = normalized.contains("write")
@@ -471,9 +525,9 @@ fn project_tool_file_access(evidence: &SubagentEvidence) -> Option<(bool, String
         .map(|path| (write, path.to_string()))
 }
 
-/// Render the canonical model-facing result contract parsed by
-/// [`parse_subagent_outcome`]. Product layers may add optional sections before
-/// this block, but the final `## Result` envelope remains framework-owned.
+/// 渲染供 [`parse_subagent_outcome`] 解析的、面向模型的权威结果契约。
+/// 产品层可以在此区块之前追加可选章节，但最终的 `## Result` 信封部分
+/// 始终由框架自身负责。
 pub fn render_result_contract() -> String {
     format!(
         "## Result\nEnd the response with exactly one fenced JSON object using this shape:\n\
@@ -488,9 +542,9 @@ Runtime owns terminal status and observed evidence. Report only real artifacts a
     )
 }
 
-/// Parse fenced or standalone JSON objects embedded in a subagent response.
-/// Product layers may inspect named optional fields while the terminal
-/// `## Result` object remains parsed by [`parse_subagent_outcome`].
+/// 解析嵌入在子 Agent 响应中的、围栏包裹或独立存在的 JSON 对象。
+/// 产品层可以检查其中命名的可选字段，而终态的 `## Result` 对象仍由
+/// [`parse_subagent_outcome`] 负责解析。
 pub fn parse_json_objects(raw: &str) -> Vec<serde_json::Value> {
     let mut objects = Vec::new();
     for block in raw.split("```json").skip(1) {
@@ -511,24 +565,31 @@ pub fn parse_json_objects(raw: &str) -> Vec<serde_json::Value> {
     objects
 }
 
+/// 从 `## Result` JSON 块中反序列化出的、模型自行报告的原始结果。
 #[derive(Debug, Deserialize)]
 struct ReportedSubagentOutcome {
+    /// 模型自行报告的契约版本号。
     #[serde(default)]
     contract_version: u32,
+    /// 模型自行报告的摘要文本。
     summary: String,
+    /// 模型自行报告的产物列表。
     #[serde(default)]
     artifacts: Vec<SubagentArtifact>,
+    /// 模型自行报告的证据列表。
     #[serde(default)]
     evidence: Vec<SubagentEvidence>,
+    /// 模型自行报告的剩余工作项。
     #[serde(default)]
     remaining_work: Vec<String>,
 }
 
-/// Split raw subagent output into a parent-facing summary and artifact paths.
-///
-/// Looks for markdown headings `## Summary` and `## Artifacts`. If Summary is
-/// missing, falls back to a UTF-8-safe truncation of the full text (never
-/// panics on multi-byte characters).
+/** 将子 Agent 的原始输出拆分为面向父级的摘要和产物路径列表。
+ *
+ * 查找 `## Summary` 和 `## Artifacts` 这两个 markdown 标题。如果没有
+ * Summary 标题，则回退为对全文做 UTF-8 安全截断（对多字节字符绝不
+ * panic）。
+ */
 pub fn split_subagent_output(raw: &str) -> (String, Vec<String>) {
     let summary = extract_markdown_section(raw, "Summary")
         .map(|s| s.trim().to_string())
@@ -557,10 +618,11 @@ pub fn split_subagent_output(raw: &str) -> (String, Vec<String>) {
     (summary, artifacts)
 }
 
-/// Parse the explicit `## Result` JSON contract, falling back to a bounded summary.
-///
-/// The caller supplies the terminal status. A model cannot turn a failed, cancelled,
-/// or timed-out execution into `completed` by returning a different JSON value.
+/** 解析显式的 `## Result` JSON 契约，失败时回退为有界长度的摘要。
+ *
+ * 终态状态由调用方提供。模型无法通过返回不同的 JSON 值，把一次失败、
+ * 被取消或超时的执行伪装成 `completed`。
+ */
 pub fn parse_subagent_outcome(
     raw: &str,
     status: SubagentStatus,
@@ -587,7 +649,7 @@ pub fn parse_subagent_outcome(
                 .evidence
                 .into_iter()
                 .map(|mut evidence| {
-                    // Only runtime-observed tool events may create observed evidence.
+                    // 只有运行时观察到的工具事件才能产生“已观察”类型的证据。
                     evidence.source = SubagentEvidenceSource::Reported;
                     evidence
                 })
@@ -635,6 +697,7 @@ pub fn parse_subagent_outcome(
     outcome
 }
 
+/// 从一段文本中提取 ` ```json ` 围栏代码块内的内容。
 fn extract_fenced_json(section: &str) -> Option<&str> {
     let marker = "```json";
     let start = section.find(marker)?.saturating_add(marker.len());
@@ -643,6 +706,7 @@ fn extract_fenced_json(section: &str) -> Option<&str> {
     after.get(..end).map(str::trim)
 }
 
+/// 对字符串列表去重、裁剪单条长度并限制总条目数。
 fn bounded_unique(values: Vec<String>, max_items: usize, max_chars: usize) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     values
@@ -653,10 +717,12 @@ fn bounded_unique(values: Vec<String>, max_items: usize, max_chars: usize) -> Ve
         .collect()
 }
 
+/// 按字符数（而非字节数）截断文本，保证 UTF-8 安全。
 fn bounded_text(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+/// 只保留列表中最新的 `max_items` 项，丢弃更早的多余项。
 fn keep_latest<T>(values: &mut Vec<T>, max_items: usize) {
     let excess = values.len().saturating_sub(max_items);
     if excess > 0 {
@@ -664,6 +730,7 @@ fn keep_latest<T>(values: &mut Vec<T>, max_items: usize) {
     }
 }
 
+/// 对结果的各个字段做统一的长度裁剪与空值过滤，使其满足契约边界。
 pub(crate) fn normalize_outcome(outcome: &mut SubagentOutcome) {
     outcome.summary = bounded_text(outcome.summary.trim(), DEFAULT_SUMMARY_CHARS);
     keep_latest(&mut outcome.artifacts, MAX_RESULT_ITEMS);
@@ -700,6 +767,7 @@ pub(crate) fn normalize_outcome(outcome: &mut SubagentOutcome) {
     );
 }
 
+/// 提取指定 `## <heading>` 标题下、到下一个同级或更高级标题之前的正文内容。
 fn extract_markdown_section<'a>(raw: &'a str, heading: &str) -> Option<&'a str> {
     let needle = format!("## {heading}");
     let start = raw.find(&needle)?;
@@ -713,35 +781,36 @@ fn extract_markdown_section<'a>(raw: &'a str, heading: &str) -> Option<&'a str> 
     body.get(..end)
 }
 
-/// Result returned by a subagent execution.
+/// 一次子 Agent 执行返回的结果。
 #[derive(Debug, Clone)]
 pub struct SubagentResult {
-    /// Agent name that produced this result.
+    /// 产生该结果的 Agent 名称。
     pub agent_name: String,
-    /// Final output text (full detail for UI / storage).
+    /// 最终输出文本（供 UI / 存储使用的完整明细）。
     pub output: String,
-    /// Runtime-owned structured terminal outcome.
+    /// 由运行时权威判定的结构化终态结果。
     pub outcome: SubagentOutcome,
-    /// Execution duration.
+    /// 执行耗时。
     pub duration: Duration,
-    /// Number of iterations used.
+    /// 使用的迭代次数。
     pub iterations: usize,
-    /// Token usage (if available).
+    /// token 用量（如果可获取）。
     pub tokens_used: Option<usize>,
-    /// Whether the output was truncated due to token limits.
+    /// 输出是否因为 token 限制而被截断。
     pub was_truncated: bool,
-    /// Execution mode that was used.
+    /// 实际使用的执行模式。
     pub mode: ExecutionMode,
-    /// Isolation boundary actually established before model execution.
+    /// 在模型执行前实际建立的隔离边界。
     pub isolation_observed: ObservedIsolation,
-    /// Cumulative LLM usage across all calls in this dispatch.
-    /// `None` when the agent produced no `LlmUsage` events (e.g. cancelled
-    /// before first LLM call, or the provider never returned usage).
+    /** 本次派发中所有调用累计的 LLM 用量。
+     * 当该 Agent 没有产生任何 `LlmUsage` 事件时为 `None`（例如在首次
+     * LLM 调用之前就被取消，或 provider 从未返回用量信息）。
+     */
     pub llm_usage: Option<LlmUsageStats>,
 }
 
 impl SubagentResult {
-    /// Return the stable usage facts for persistence or reporting.
+    /// 返回用于持久化或上报的稳定用量事实。
     pub fn usage(&self) -> ExecutionUsage {
         let duration_ms = u64::try_from(self.duration.as_millis()).unwrap_or(u64::MAX);
         let iterations = u64::try_from(self.iterations).unwrap_or(u64::MAX);
@@ -755,12 +824,13 @@ impl SubagentResult {
         }
     }
 
-    /// Create a result for a synchronous (blocking) subagent execution.
-    ///
-    /// # Parameters
-    /// * `agent_name` - Name of the agent that produced the result.
-    /// * `output` - Final output text from the agent.
-    /// * `duration` - Execution duration.
+    /** 创建一个同步（阻塞）子 Agent 执行的结果。
+     *
+     * # 参数
+     * * `agent_name` - 产生该结果的 Agent 名称。
+     * * `output` - 该 Agent 的最终输出文本。
+     * * `duration` - 执行耗时。
+     */
     pub fn sync_result(agent_name: &str, output: String, duration: Duration) -> Self {
         Self {
             agent_name: agent_name.to_string(),
@@ -780,13 +850,14 @@ impl SubagentResult {
         .with_structured(None, None)
     }
 
-    /// Create a result for a forked (non-blocking) subagent execution.
-    ///
-    /// # Parameters
-    /// * `agent_name` - Name of the agent that produced the result.
-    /// * `output` - Final output text from the agent.
-    /// * `duration` - Execution duration.
-    /// * `iterations` - Number of iterations used by the agent.
+    /** 创建一个 fork（非阻塞）子 Agent 执行的结果。
+     *
+     * # 参数
+     * * `agent_name` - 产生该结果的 Agent 名称。
+     * * `output` - 该 Agent 的最终输出文本。
+     * * `duration` - 执行耗时。
+     * * `iterations` - 该 Agent 使用的迭代次数。
+     */
     pub fn fork_result(
         agent_name: &str,
         output: String,
@@ -811,7 +882,7 @@ impl SubagentResult {
         .with_structured(None, None)
     }
 
-    /// Fill the structured outcome from the explicit result contract or fallback text.
+    /// 根据显式结果契约（或回退文本）填充结构化的终态结果。
     pub fn with_structured(
         mut self,
         execution_id: Option<&str>,
@@ -822,6 +893,7 @@ impl SubagentResult {
         self
     }
 
+    /// 创建一个被取消的子 Agent 执行结果。
     pub fn cancelled(
         agent_name: impl Into<String>,
         output: impl Into<String>,
@@ -847,14 +919,14 @@ impl SubagentResult {
     }
 }
 
-// ── Registered Subagent (view type) ──────────────────────────────────────────
+// ── 已注册子 Agent（视图类型） ──────────────────────────────────────────
 
-/// A read-only snapshot of a registered subagent.
+/// 一个已注册子 Agent 的只读快照。
 #[derive(Debug, Clone)]
 pub struct RegisteredSubagent {
-    /// Subagent definition.
+    /// 子 Agent 定义。
     pub definition: SubagentDefinition,
-    /// Whether the agent instance is currently available (factory or pre-built).
+    /// Agent 实例当前是否可用（通过工厂或预先构建）。
     pub has_instance: bool,
 }
 
@@ -908,7 +980,7 @@ mod tests {
             .collect();
         let (summary, _) = split_subagent_output(&raw);
         assert_eq!(summary.chars().count(), DEFAULT_SUMMARY_CHARS);
-        // Must not panic and must start with the multi-byte prefix.
+        // 不能 panic，且必须以这段多字节前缀开头。
         assert!(summary.starts_with("中文"));
     }
 

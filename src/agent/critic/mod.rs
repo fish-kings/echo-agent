@@ -1,8 +1,8 @@
-//! Critic module — evaluation and feedback for agent outputs
+//! Critic 模块 —— 对 Agent 输出进行评估与反馈
 //!
-//! Provides tools and utilities for evaluating agent outputs and providing
-//! structured feedback. Aligns with industry patterns where reflection is
-//! a composable capability rather than a separate agent type.
+//! 提供用于评估 Agent 输出并给出结构化反馈的工具与实用函数。
+//! 与业界模式保持一致：反思（reflection）是一种可组合的能力，
+//! 而非一种独立的 Agent 类型。
 
 mod llm_critic;
 mod review_tool;
@@ -10,7 +10,7 @@ mod review_tool;
 pub use llm_critic::LlmCritic;
 pub use review_tool::ReviewTool;
 
-// Re-export core critic types for convenience
+// 为方便使用，重新导出核心 critic 类型
 pub use echo_core::agent::{
     CompositeCritic, CompositeStrategy, Critic, StaticCritic, ThresholdCritic,
 };

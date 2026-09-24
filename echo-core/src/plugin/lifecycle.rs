@@ -1,80 +1,88 @@
-//! Plugin lifecycle trait — hooks into plugin state transitions.
+//! 插件生命周期 trait —— 挂载到插件状态转换上的钩子。
 //!
-//! Plugins implement this trait to receive callbacks at key moments
-//! in their lifecycle: loading, activation, deactivation, and shutdown.
+//! 插件通过实现这个 trait 来在其生命周期的关键时刻接收回调：
+//! 加载、激活、停用和关闭。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// Lifecycle callbacks for a plugin.
+/// 插件的生命周期回调。
 ///
-/// The agent framework calls these methods at the appropriate times:
+/// agent 框架会在合适的时机调用这些方法：
 ///
 /// ```text
 /// load → init → activate ⇄ deactivate → shutdown
 ///                    ↑          ↓
-///                    └──────────┘  (can cycle on reload)
+///                    └──────────┘  (可在重新加载时循环)
 /// ```
 pub trait PluginLifecycle: Send + Sync {
-    /// Called once after the plugin is loaded and its components are registered.
+    /// 在插件加载完毕、其组件已注册之后调用一次。
     ///
-    /// Use this to perform one-time setup: start background processes,
-    /// open connections, initialize caches.
+    /// 用于执行一次性的初始化工作：启动后台进程、
+    /// 建立连接、初始化缓存等。
     fn init(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// Called when the plugin is enabled (or at startup if `default_enabled: true`).
+    /// 在插件被启用时调用（若 `default_enabled: true`，则启动时也会调用）。
     ///
-    /// Components are already wired at this point. Use this for
-    /// activation-specific logic like starting monitors.
+    /// 此时组件已经完成装配。用于执行激活相关的逻辑，
+    /// 例如启动监控器。
     fn activate(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// Called when the plugin is disabled.
+    /// 在插件被禁用时调用。
     ///
-    /// Use this to stop background processes and release resources.
-    /// Components will be unwired after this returns.
+    /// 用于停止后台进程并释放资源。
+    /// 该方法返回后，组件将被解除装配。
     fn deactivate(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// Called at agent shutdown.
+    /// 在 agent 关闭时调用。
     ///
-    /// Use this for final cleanup: flush buffers, close connections,
-    /// save state to `${ECHO_PLUGIN_DATA}`.
+    /// 用于执行最终清理：刷新缓冲区、关闭连接、
+    /// 将状态保存到 `${ECHO_PLUGIN_DATA}`。
     fn shutdown(&self) -> Result<(), String> {
         Ok(())
     }
 }
 
-/// A no-op lifecycle implementation for plugins that don't need callbacks.
+/// 面向不需要回调的插件的空实现。
 pub struct NoopLifecycle;
 
 impl PluginLifecycle for NoopLifecycle {}
 
+/// 单个插件的受管生命周期状态，记录其回调实例及各阶段的完成情况。
 struct ManagedLifecycle {
+    /// 该插件注册的生命周期回调实现。
     callbacks: Arc<dyn PluginLifecycle>,
+    /// 是否已成功执行过 `init`。
     initialized: bool,
+    /// 是否处于已激活状态。
     active: bool,
-    // Callback acquisition or deactivation may be partial; shutdown has its own settlement.
+    // 回调的获取（init/activate）或停用过程可能只完成一部分；shutdown 有自己独立的结算逻辑。
+    /// 是否存在尚未结算的停用（deactivate）债务，需要重试。
     cleanup_required: bool,
+    /// 是否存在尚未结算的关闭（shutdown）债务，需要重试。
     shutdown_required: bool,
 }
 
-/// Owns lifecycle callbacks and drives them from enabled plugin state.
+/// 持有生命周期回调，并根据已启用插件的集合驱动它们的状态转换。
 #[derive(Default)]
 pub struct PluginLifecycleManager {
+    /// 按插件 ID 索引的受管生命周期集合。
     plugins: HashMap<String, ManagedLifecycle>,
 }
 
 impl PluginLifecycleManager {
+    /// 创建一个空的生命周期管理器。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register callbacks for a plugin before the next reconciliation.
+    /// 在下一次协调（reconcile）之前，为某个插件注册回调。
     pub fn register(
         &mut self,
         plugin_id: impl Into<String>,
@@ -99,7 +107,7 @@ impl PluginLifecycleManager {
         Ok(())
     }
 
-    /// Initialize and activate a registered plugin exactly once per transition.
+    /// 初始化并激活一个已注册的插件；每次状态转换只会执行一次。
     pub fn activate(&mut self, plugin_id: &str) -> Result<(), String> {
         let lifecycle = self
             .plugins
@@ -108,7 +116,7 @@ impl PluginLifecycleManager {
         if lifecycle.active && !lifecycle.cleanup_required && !lifecycle.shutdown_required {
             return Ok(());
         }
-        // A failed callback may still own effects; no other generation may start until it settles.
+        // 失败的回调可能仍然持有副作用；在其结算完成之前，不允许开始任何其它代（generation）。
         if let Some(blocker) = self
             .plugins
             .iter()
@@ -146,7 +154,7 @@ impl PluginLifecycleManager {
         Ok(())
     }
 
-    /// Deactivate a registered plugin when it is currently active.
+    /// 在插件当前处于激活状态时将其停用。
     pub fn deactivate(&mut self, plugin_id: &str) -> Result<(), String> {
         let lifecycle = self
             .plugins
@@ -163,14 +171,14 @@ impl PluginLifecycleManager {
         Ok(())
     }
 
-    /// Deactivate every currently active callback before a runtime-wide rewire.
+    /// 在运行时范围的重新装配之前，停用所有当前处于激活状态的回调。
     pub fn deactivate_all(&mut self) -> Vec<String> {
         let mut ids = self.plugins.keys().cloned().collect::<Vec<_>>();
         ids.sort();
         self.deactivate_in_order(ids.iter().map(String::as_str))
     }
 
-    /// Deactivate callbacks in a caller-supplied dependency order.
+    /// 按调用方指定的依赖顺序停用回调。
     pub fn deactivate_in_order<'a>(
         &mut self,
         plugin_ids: impl IntoIterator<Item = &'a str>,
@@ -186,10 +194,10 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// Remove callbacks for an uninstalled plugin after releasing their resources.
+    /// 在释放已卸载插件的资源之后，移除其回调。
     ///
-    /// Failed cleanup retains ownership so callers can retry instead of
-    /// replacing callbacks that may still own live resources.
+    /// 清理失败时会保留所有权，以便调用方重试，
+    /// 而不是替换掉可能仍持有活跃资源的回调。
     pub fn unregister(&mut self, plugin_id: &str) -> Result<bool, String> {
         if !self.plugins.contains_key(plugin_id) {
             return Ok(false);
@@ -199,12 +207,12 @@ impl PluginLifecycleManager {
         Ok(true)
     }
 
-    /// Settle callback effects while retaining the registration for a retry.
+    /// 结算回调产生的副作用，同时保留该注册项以便重试。
     ///
-    /// A failed init or activation may have acquired resources even though the
-    /// callback never became active. The lifecycle authority performs the same
-    /// deactivate/shutdown settlement as unregister, but keeps the callback so
-    /// a coordinator can initialize the next actual generation.
+    /// 一次失败的 init 或 activate 可能已经获取了资源，即便回调
+    /// 从未真正变为激活状态。该生命周期权威方会执行与 unregister
+    /// 相同的 deactivate/shutdown 结算流程，但会保留回调本身，
+    /// 以便协调者之后能够初始化下一代真正的实例。
     pub fn reset_for_retry(&mut self, plugin_id: &str) -> Result<bool, String> {
         let Some(lifecycle) = self.plugins.get_mut(plugin_id) else {
             return Ok(false);
@@ -239,8 +247,8 @@ impl PluginLifecycleManager {
         }
     }
 
-    /// Reconcile registered callbacks with the registry's enabled plugin set.
-    /// An unresolved withdrawal blocks all new activations until cleanup succeeds.
+    /// 将已注册的回调与注册表中已启用插件的集合进行协调。
+    /// 未解决的下线（withdrawal）会阻塞所有新的激活，直到清理成功为止。
     pub fn reconcile<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -251,8 +259,8 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// Deactivate active callbacks whose plugins are absent from the next set.
-    /// Embedding runtimes call this before unwiring plugin components.
+    /// 停用那些插件不在下一个集合中的、当前处于激活状态的回调。
+    /// 内嵌运行时会在解除插件组件装配之前调用此方法。
     pub fn deactivate_not_in<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -261,8 +269,8 @@ impl PluginLifecycleManager {
         self.deactivate_not_in_set(&enabled)
     }
 
-    /// Initialize and activate callbacks present in the current enabled set.
-    /// Embedding runtimes call this after plugin components are wired.
+    /// 初始化并激活当前已启用集合中存在的回调。
+    /// 内嵌运行时会在插件组件完成装配之后调用此方法。
     pub fn activate_enabled<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -271,8 +279,7 @@ impl PluginLifecycleManager {
         self.activate_in_set(&enabled)
     }
 
-    /// Activate registered callbacks in dependency order, skipping plugins
-    /// that do not define lifecycle callbacks.
+    /// 按依赖顺序激活已注册的回调，跳过那些未定义生命周期回调的插件。
     pub fn activate_in_order<'a>(
         &mut self,
         plugin_ids: impl IntoIterator<Item = &'a str>,
@@ -288,7 +295,7 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// Unregister callbacks in a caller-supplied reverse dependency order.
+    /// 按调用方指定的反向依赖顺序注销回调。
     pub fn unregister_in_order<'a>(
         &mut self,
         plugin_ids: impl IntoIterator<Item = &'a str>,
@@ -302,6 +309,7 @@ impl PluginLifecycleManager {
         errors
     }
 
+    /// 停用所有不在 `enabled` 集合中的插件；内部辅助方法。
     fn deactivate_not_in_set(&mut self, enabled: &HashSet<&str>) -> Vec<String> {
         let mut ids = self.plugins.keys().cloned().collect::<Vec<_>>();
         ids.sort();
@@ -316,6 +324,7 @@ impl PluginLifecycleManager {
         errors
     }
 
+    /// 激活所有在 `enabled` 集合中的插件；内部辅助方法。
     fn activate_in_set(&mut self, enabled: &HashSet<&str>) -> Vec<String> {
         let mut ids = self.plugins.keys().cloned().collect::<Vec<_>>();
         ids.sort();
@@ -330,7 +339,7 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// Deactivate active plugins and invoke final shutdown callbacks.
+    /// 停用所有处于激活状态的插件，并调用它们最终的关闭回调。
     pub fn shutdown(&mut self) -> Vec<String> {
         let mut ids = self.plugins.keys().cloned().collect::<Vec<_>>();
         ids.sort();
@@ -345,6 +354,7 @@ impl PluginLifecycleManager {
 }
 
 impl Drop for PluginLifecycleManager {
+    /// 在管理器被丢弃时执行关闭流程，并对失败的回调记录警告日志。
     fn drop(&mut self) {
         for error in self.shutdown() {
             tracing::warn!(%error, "Plugin lifecycle shutdown callback failed");
@@ -357,30 +367,46 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 记录各生命周期回调被调用次数的计数器。
     #[derive(Default)]
     struct Counts {
+        /// `init` 被调用的次数。
         init: AtomicUsize,
+        /// `activate` 被调用的次数。
         activate: AtomicUsize,
+        /// `deactivate` 被调用的次数。
         deactivate: AtomicUsize,
+        /// `shutdown` 被调用的次数。
         shutdown: AtomicUsize,
     }
 
+    /// 对每个回调调用进行计数、不产生失败的测试用生命周期实现。
     struct CountingLifecycle(Arc<Counts>);
 
+    /// 停用和关闭均会失败的测试用生命周期实现。
     struct FailingCleanupLifecycle;
 
+    /// 激活会失败但会计数的测试用生命周期实现。
     struct FailingActivationLifecycle(Arc<Counts>);
 
+    /// 初始化会失败的测试用生命周期实现。
     struct FailingInitializationLifecycle(Arc<Counts>);
 
+    /// 停用是否失败可通过原子标志动态切换的测试用生命周期实现，用于验证重试逻辑。
     struct RetryingDeactivateLifecycle {
+        /// 调用计数器。
         counts: Arc<Counts>,
+        /// 控制 `deactivate` 是否应当失败的开关。
         fail_deactivate: Arc<std::sync::atomic::AtomicBool>,
     }
 
+    /// 停用与关闭是否失败均可通过原子标志动态切换的测试用生命周期实现，用于验证清理结算逻辑。
     struct RetryingCleanupLifecycle {
+        /// 调用计数器。
         counts: Arc<Counts>,
+        /// 控制 `deactivate` 是否应当失败的开关。
         fail_deactivate: Arc<std::sync::atomic::AtomicBool>,
+        /// 控制 `shutdown` 是否应当失败的开关。
         fail_shutdown: Arc<std::sync::atomic::AtomicBool>,
     }
 

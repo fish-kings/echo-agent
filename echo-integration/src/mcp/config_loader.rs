@@ -51,7 +51,7 @@ use super::server_config::{McpServerConfig, TransportConfig};
 use crate::redaction::{collection_is_redacted, url as redact_url};
 use echo_core::error::{McpError, ReactError, Result};
 
-/// Canonical Agent Plugins 1.0 MCP schema identifier.
+/// Agent Plugins 1.0 MCP schema 的规范标识符
 pub const AGENT_PLUGIN_MCP_SCHEMA_V1: &str =
     "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
 
@@ -62,8 +62,9 @@ pub const AGENT_PLUGIN_MCP_SCHEMA_V1: &str =
 /// 与 Claude Desktop / Cursor 的 `mcp.json` 格式完全兼容。
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct McpConfigFile {
-    /// Optional schema identifier. General EchoAgent MCP files do not require
-    /// it; Agent Plugin packages use [`McpConfigFile::parse_agent_plugin`].
+    /** 可选的 schema 标识符。普通的 EchoAgent MCP 文件不需要它；
+    Agent Plugin 包会使用 [`McpConfigFile::parse_agent_plugin`]。
+    */
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
 
@@ -89,7 +90,7 @@ impl fmt::Debug for McpConfigFile {
 /// - **HTTP**：提供 `url`，可选 `headers` 和 `transport`
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct McpServerEntry {
-    /// Explicit transport discriminator used by Agent Plugins 1.0.
+    /// Agent Plugins 1.0 使用的显式传输类型区分字段
     #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
     pub server_type: Option<String>,
 
@@ -106,7 +107,7 @@ pub struct McpServerEntry {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
 
-    /// Optional working directory for stdio processes.
+    /// stdio 进程的可选工作目录
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
 
@@ -214,11 +215,11 @@ impl McpConfigFile {
         })
     }
 
-    /// Parse the closed Agent Plugins 1.0 `mcp.json` format.
-    ///
-    /// Top-level errors disable MCP for the package. Invalid server entries
-    /// are omitted and reported in `diagnostics`, preserving the standard's
-    /// per-entry failure isolation.
+    /** 解析封闭的 Agent Plugins 1.0 `mcp.json` 格式。
+
+    顶层错误会为整个插件包禁用 MCP；无效的服务端条目会被跳过并记录到
+    `diagnostics` 中，从而保留该标准要求的“按条目隔离失败”语义。
+    */
     pub fn parse_agent_plugin(
         s: &str,
         plugin_root: &Path,
@@ -300,60 +301,82 @@ impl McpConfigFile {
     }
 }
 
-/// Result of parsing an Agent Plugin's fixed root `mcp.json` component.
+/// 解析 Agent Plugin 固定根目录下 `mcp.json` 组件的结果
 #[derive(Debug, Clone)]
 pub struct AgentPluginMcpLoad {
+    /// 解析成功、已归一化的 MCP 配置
     pub config: McpConfigFile,
+    /// 被跳过的无效服务端条目的诊断信息列表
     pub diagnostics: Vec<String>,
 }
 
+/// Agent Plugin `mcp.json` 文件的顶层原始结构（反序列化用）
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentPluginMcpDocument {
+    /// schema 标识符，必须等于 [`AGENT_PLUGIN_MCP_SCHEMA_V1`]
     #[serde(rename = "$schema")]
     schema: String,
+    /// 服务端配置映射（值先保留为原始 JSON，稍后按类型分发解析）
     #[serde(rename = "mcpServers")]
     mcp_servers: HashMap<String, serde_json::Value>,
 }
 
+/// Agent Plugin stdio 类型服务端的原始配置
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentPluginStdioServer {
+    /// 传输类型标记，固定为 `stdio`
     #[serde(rename = "type")]
     server_type: AgentPluginStdioType,
+    /// 启动命令
     command: String,
+    /// 命令参数列表
     #[serde(default)]
     args: Vec<String>,
+    /// 注入子进程的环境变量
     #[serde(default)]
     env: HashMap<String, String>,
+    /// 子进程的工作目录
     #[serde(default)]
     cwd: Option<String>,
 }
 
+/// Agent Plugin stdio 服务端的传输类型标记
 #[derive(Debug, Deserialize)]
 enum AgentPluginStdioType {
+    /// stdio 传输
     #[serde(rename = "stdio")]
     Stdio,
 }
 
+/// Agent Plugin 远程（HTTP）类型服务端的原始配置
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentPluginRemoteServer {
+    /// 传输类型标记：`streamable-http` 或 `sse`
     #[serde(rename = "type")]
     server_type: AgentPluginRemoteType,
+    /// 服务端 URL
     url: String,
+    /// HTTP 请求头
     #[serde(default)]
     headers: HashMap<String, String>,
 }
 
+/// Agent Plugin 远程服务端的传输类型标记
 #[derive(Debug, Clone, Copy, Deserialize)]
 enum AgentPluginRemoteType {
+    /// MCP Streamable HTTP 传输
     #[serde(rename = "streamable-http")]
     StreamableHttp,
+    /// 旧版 HTTP+SSE 传输
     #[serde(rename = "sse")]
     Sse,
 }
 
+/// 根据 `type` 字段将一个原始 JSON 服务端条目解析并转换为 [`McpServerEntry`]，
+/// 同时展开 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 变量、校验命令与 URL 的安全性。
 fn parse_agent_plugin_server(
     name: &str,
     value: serde_json::Value,
@@ -435,6 +458,7 @@ fn parse_agent_plugin_server(
     .map_err(|error| format!("{name}: {error}"))
 }
 
+/// 将给定路径解析为绝对规范路径，并确认它是一个存在的目录；`label` 用于错误信息中标识该路径的用途
 fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
     let canonical = std::fs::canonicalize(path).map_err(|error| {
         protocol_error(format!(
@@ -451,6 +475,8 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// 对输入字符串做单遍扫描，将其中的 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 占位符
+/// 替换为对应的实际路径（按 Unicode 字符边界安全处理，不做递归展开）
 fn expand_agent_plugin_variables(input: &str, plugin_root: &Path, plugin_data: &Path) -> String {
     let source = input.chars().collect::<Vec<_>>();
     let root_marker = "${PLUGIN_ROOT}".chars().collect::<Vec<_>>();
@@ -474,6 +500,7 @@ fn expand_agent_plugin_variables(input: &str, plugin_root: &Path, plugin_data: &
     output
 }
 
+/// 判断 `pattern` 是否从 `source` 的 `position` 位置开始完全匹配
 fn chars_match_at(source: &[char], position: usize, pattern: &[char]) -> bool {
     pattern.iter().enumerate().all(|(offset, expected)| {
         position
@@ -483,6 +510,12 @@ fn chars_match_at(source: &[char], position: usize, pattern: &[char]) -> bool {
     })
 }
 
+/** 解析并校验 Agent Plugin 服务端声明的工作目录。
+
+`cwd` 必须为空、`${PLUGIN_ROOT}`/`${PLUGIN_DATA}`（可带子路径）或以 `./` 开头的
+相对路径；解析结果必须是插件根目录或数据目录内实际存在的目录，防止通过 `..`
+或绝对路径逃逸出插件的沙箱边界。
+*/
 fn resolve_agent_plugin_cwd(
     cwd: Option<&str>,
     plugin_root: &Path,
@@ -525,6 +558,8 @@ fn resolve_agent_plugin_cwd(
     Ok(canonical)
 }
 
+/// 校验 Agent Plugin 服务端命令的形式：不能为空、不能包含插件变量占位符，
+/// 且必须是裸可执行文件名或以 `./` 开头且不逃出插件根目录的相对路径
 fn validate_agent_plugin_command(command: &str) -> std::result::Result<(), String> {
     if command.is_empty() {
         return Err("command must not be empty".to_string());
@@ -549,6 +584,8 @@ fn validate_agent_plugin_command(command: &str) -> std::result::Result<(), Strin
     Ok(())
 }
 
+/// 校验 Agent Plugin 远程服务端 URL 的安全性：必须是合法的 http/https URL，
+/// 不含用户信息或 URL fragment，且非回环地址必须使用 https
 fn validate_agent_plugin_url(value: &str) -> std::result::Result<(), String> {
     let url = url::Url::parse(value).map_err(|error| format!("invalid URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -572,15 +609,16 @@ fn validate_agent_plugin_url(value: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// 将错误信息包装为 [`ReactError::Mcp`] 中的协议错误（[`McpError::ProtocolError`]）
 fn protocol_error(message: String) -> ReactError {
     ReactError::Mcp(Box::new(McpError::ProtocolError(message)))
 }
 
-/// Validate the general MCP command shape.
-///
-/// Commands are spawned directly, without a shell. The framework therefore
-/// validates only that an executable token exists and leaves trust policy to
-/// the embedding local application.
+/** 校验通用 MCP 命令的基本形式。
+
+命令会被直接启动，不经过 shell。因此该框架只校验存在一个可执行文件标记，
+具体的信任策略交由嵌入该框架的本地应用自行决定。
+*/
 pub fn validate_stdio_command(command: &str) -> Result<()> {
     if command.trim().is_empty() {
         return Err(protocol_error("MCP stdio command is empty".to_string()));
@@ -592,6 +630,7 @@ pub fn validate_stdio_command(command: &str) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// 创建一对临时的插件根目录与数据目录，供测试使用
     fn plugin_directories() -> std::result::Result<(tempfile::TempDir, PathBuf, PathBuf), String> {
         let temporary = tempfile::tempdir().map_err(|error| error.to_string())?;
         let root = temporary.path().join("plugin");
@@ -601,6 +640,7 @@ mod tests {
         Ok((temporary, root, data))
     }
 
+    /// 验证 Agent Plugin mcp.json 能被正确解析，且变量展开仅作用于 stdio 服务端的字段
     #[test]
     fn parses_agent_plugin_mcp_and_expands_only_stdio_values() -> std::result::Result<(), String> {
         let (_temporary, root, data) = plugin_directories()?;
@@ -656,6 +696,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证无效的服务端条目会被单独跳过并记录诊断信息，不影响其他有效条目
     #[test]
     fn isolates_invalid_agent_plugin_mcp_entries() -> std::result::Result<(), String> {
         let (_temporary, root, data) = plugin_directories()?;
@@ -676,6 +717,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证顶层结构不合法（存在未知字段）时整体解析会返回错误
     #[test]
     fn rejects_invalid_agent_plugin_mcp_top_level() -> std::result::Result<(), String> {
         let (_temporary, root, data) = plugin_directories()?;
@@ -688,6 +730,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证变量展开是单遍扫描（不会对展开结果递归再展开）且对 Unicode 字符安全
     #[test]
     fn variable_expansion_is_single_pass_and_unicode_safe() {
         let root = Path::new("/tmp/${PLUGIN_DATA}/插件");
@@ -698,6 +741,7 @@ mod tests {
         );
     }
 
+    /// 验证配置的 Debug 输出会对环境变量和请求头中的敏感值做脱敏处理
     #[test]
     fn parsed_config_debug_redacts_environment_and_headers() -> std::result::Result<(), String> {
         let config = McpConfigFile::parse(

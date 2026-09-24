@@ -23,15 +23,19 @@ use std::sync::Arc;
 
 // ── 示例工具 ────────────────────────────────────────────────────────────────
 
+/// 示例工具：查询指定城市的天气（返回固定的模拟数据，不做真实网络请求）。
 struct WeatherTool;
 
 impl Tool for WeatherTool {
+    /// 返回工具名称 `get_weather`，供 MCP 客户端识别和调用。
     fn name(&self) -> &str {
         "get_weather"
     }
+    /// 返回工具的人类可读描述。
     fn description(&self) -> &str {
         "Get current weather for a city"
     }
+    /// 返回工具入参的 JSON Schema：必填字符串参数 `city`（城市名）。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -41,6 +45,7 @@ impl Tool for WeatherTool {
             "required": ["city"]
         })
     }
+    /// 执行天气查询：读取 `city` 参数（缺省为 "unknown"），返回一段模拟的天气描述文本。
     fn execute(&self, params: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let city = params
@@ -52,15 +57,19 @@ impl Tool for WeatherTool {
     }
 }
 
+/// 示例工具：对两个数字执行 `a op b` 形式的四则运算。
 struct CalculatorTool;
 
 impl Tool for CalculatorTool {
+    /// 返回工具名称 `calculate`，供 MCP 客户端识别和调用。
     fn name(&self) -> &str {
         "calculate"
     }
+    /// 返回工具的人类可读描述。
     fn description(&self) -> &str {
         "Evaluate a math expression (a op b)"
     }
+    /// 返回工具入参的 JSON Schema：数字 `a`、`b` 和运算符 `op`（`+ - * /` 之一），均为必填。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -72,6 +81,7 @@ impl Tool for CalculatorTool {
             "required": ["a", "op", "b"]
         })
     }
+    /// 执行四则运算：按 `op` 对 `a`、`b` 求值；除零时返回错误结果，未知运算符同样返回错误结果。
     fn execute(&self, params: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let a = params.get("a").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -92,6 +102,8 @@ impl Tool for CalculatorTool {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+/// demo30 契约测试：完整走一遍 MCP Server 的构建、握手、协议版本协商、
+/// `tools/list`、`tools/call`、`ping` 以及各类错误路径，验证行为符合预期契约。
 #[tokio::test]
 async fn contract_demo30_mcp_server() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
@@ -345,18 +357,21 @@ async fn contract_demo30_mcp_server() -> Result<()> {
     Ok(())
 }
 
+/// 将一个 JSON-RPC 请求序列化后发送给 MCP Server，并把响应反序列化为 `Value` 返回。
 async fn send(server: &McpServer, req: &Value) -> Result<Value> {
     let resp_str = server.handle_json_rpc(&req.to_string()).await;
     let resp = serde_json::from_str(&resp_str)?;
     Ok(resp)
 }
 
+/// 按 JSON Pointer 从响应中取出必需字段；缺失时返回带 `context` 说明的验收失败错误。
 fn required_value<'a>(value: &'a Value, pointer: &str, context: &str) -> Result<&'a Value> {
     value
         .pointer(pointer)
         .ok_or_else(|| echo_agent::error::ReactError::Other(format!("demo30 验收失败：{context}")))
 }
 
+/// 取出必需的字符串字段；字段缺失或类型不是字符串都会返回验收失败错误。
 fn required_str<'a>(value: &'a Value, pointer: &str, context: &str) -> Result<&'a str> {
     required_value(value, pointer, context)?
         .as_str()
@@ -367,6 +382,7 @@ fn required_str<'a>(value: &'a Value, pointer: &str, context: &str) -> Result<&'
         })
 }
 
+/// 取出必需的布尔字段；字段缺失或类型不是布尔值都会返回验收失败错误。
 fn required_bool(value: &Value, pointer: &str, context: &str) -> Result<bool> {
     required_value(value, pointer, context)?
         .as_bool()
@@ -377,6 +393,7 @@ fn required_bool(value: &Value, pointer: &str, context: &str) -> Result<bool> {
         })
 }
 
+/// 取出必需的数组字段；字段缺失或类型不是数组都会返回验收失败错误。
 fn required_array<'a>(value: &'a Value, pointer: &str, context: &str) -> Result<&'a Vec<Value>> {
     required_value(value, pointer, context)?
         .as_array()

@@ -1,9 +1,9 @@
-//! Task scheduler — cron-based and interval-based task scheduling.
+//! 任务调度器 —— 基于 Cron 和基于间隔的任务调度。
 //!
-//! Provides [`CronTask`] definitions, [`CronTaskStore`] for persistence,
-//! and [`SchedulerRunner`] for periodic execution.
+//! 提供 [`CronTask`] 定义、用于持久化的 [`CronTaskStore`]，
+//! 以及用于周期性执行的 [`SchedulerRunner`]。
 //!
-//! # Example
+//! # 示例
 //!
 //! ```rust,ignore
 //! use echo_orchestration::scheduler::{
@@ -18,7 +18,7 @@
 //! let cancel = CancellationToken::new();
 //! let fire: OccurrenceFireFn = Arc::new(|invocation| {
 //!     Box::pin(async move {
-//!         // Use occurrence_id as the idempotency key for external effects.
+//!         // 将 occurrence_id 作为外部副作用的幂等键使用。
 //!         println!("Firing: {}", invocation.occurrence_id);
 //!         Ok(format!("Executed: {}", invocation.task.name))
 //!     })

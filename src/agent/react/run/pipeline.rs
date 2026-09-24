@@ -1,7 +1,9 @@
-//! Tool execution pipeline — composable stages for tool call processing.
-//!
-//! Replaces the monolithic `execute_tool_feedback_raw` with a configurable
-//! pipeline of discrete internal stages coordinated by `ToolExecutionPipeline`.
+/*!
+ * 工具执行流水线 —— 用于处理工具调用的可组合阶段。
+ *
+ * 用 `ToolExecutionPipeline` 协调的一组离散内部阶段构成的可配置流水线，
+ * 取代了原先单体式的 `execute_tool_feedback_raw`。
+ */
 
 use super::context::HookMessageBatches;
 use crate::agent::{ToolInvocation, ToolInvocationRewrite};
@@ -13,72 +15,81 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-// Complete tool results stay inline so the pipeline preserves the same typed
-// stream event without adding an allocation to every streamed item.
+// 完整的工具结果保持内联存放，这样流水线可以复用同一个带类型的流事件，
+// 而不必为每个流式条目额外分配内存。
 #[allow(clippy::large_enum_variant)]
+/** 工具流水线内部事件：既承载“调用已发出”的标准事件，也承载工具执行期间的流式增量事件。 */
 pub(crate) enum ToolPipelineEvent {
+    /// 一次工具调用的规范化调用事件（模型请求名/参数与实际执行名/参数）。
     Invocation {
+        /// 本次调用的唯一 ID。
         call_id: String,
+        /// 规范化后的调用信息（请求值与生效值、改写记录等）。
         invocation: ToolInvocation,
     },
+    /// 工具执行期间产生的增量流事件（例如流式输出片段）。
     Stream {
+        /// 所属调用的唯一 ID。
         call_id: String,
+        /// 工具名称。
         name: String,
+        /// 具体的流事件内容。
         event: ToolStreamEvent,
     },
 }
 
 // ── ToolExecutionContext ────────────────────────────────────────────
 
-/// Mutable context that flows through the pipeline stages.
+/// 在流水线各阶段间流转的可变上下文。
 pub(crate) struct ToolExecutionContext {
-    /// Unique call ID linking the canonical ToolCall and typed ToolResult.
+    /// 唯一调用 ID，用于关联规范化的 ToolCall 与带类型的 ToolResult。
     pub call_id: String,
-    /// Original model-requested tool name.
+    /// 模型最初请求的工具名。
     pub requested_tool_name: String,
-    /// Original model-requested arguments.
+    /// 模型最初请求的参数。
     pub requested_input: Value,
-    /// Name of the tool being executed.
+    /// 实际正在执行的工具名称。
     pub tool_name: String,
-    /// Parsed tool parameters.
+    /// 解析后的工具参数。
     pub params: ToolParameters,
-    /// Raw JSON input from the LLM.
+    /// 来自 LLM 的原始 JSON 输入。
     pub input: Value,
-    /// Messages accumulated by hooks (pre/post).
+    /// 由钩子（pre/post）累积的消息。
     pub hook_messages: HookMessageBatches,
-    /// Filled by the Execute stage.
+    /// 由 Execute 阶段填充。
     pub result: Option<ToolResult>,
-    /// Final output string (after output guard + truncation).
+    /// 最终输出字符串（经过输出防护与截断处理后）。
     pub output: Option<String>,
-    /// Guarded diagnostic for audit when a failure has no tool output.
+    /// 当失败且没有工具输出时，用于审计的经防护处理的诊断信息。
     pub audit_error_output: Option<String>,
-    /// Whether a stage has blocked execution.
+    /// 是否有某个阶段阻止了本次执行。
     pub blocked: bool,
-    /// Reason for blocking (if blocked).
+    /// 阻止原因（若被阻止）。
     pub block_reason: Option<String>,
-    /// Structured terminal facts when execution is blocked before the tool starts.
+    /// 工具尚未开始执行前即被阻止时的结构化终态事实。
     pub block_failure: Option<crate::tools::ToolFailure>,
-    /// Execution duration in milliseconds.
+    /// 执行耗时（毫秒）。
     pub duration_ms: u64,
-    /// Whether the agent is in plan mode (read-only tools only).
+    /// 是否处于计划模式（仅允许只读工具）。
     pub plan_mode: bool,
-    /// Permission decision returned by PreToolUse hooks for this call only.
+    /// 仅对本次调用生效的、由 PreToolUse 钩子返回的权限决策。
     pub permission_decision: Option<PermissionDecision>,
-    /// Permission mode override returned by hooks for this call only.
+    /// 仅对本次调用生效的、由钩子返回的权限模式覆盖值。
     pub permission_mode_override: Option<PermissionMode>,
-    /// Ordered provenance for policy rewrites applied before execution.
+    /// 执行前应用的策略改写记录（按顺序保留来源）。
     pub rewrites: Vec<ToolInvocationRewrite>,
-    /// Whether the canonical invocation event has been emitted.
+    /// 规范化的调用事件是否已经发出。
     pub invocation_emitted: bool,
-    /// Whether callbacks observed the start of this invocation.
+    /// 回调是否已经观察到本次调用的开始。
     pub callback_started: bool,
-    /// An execution error that interrupted a tool before it returned a result.
+    /// 在工具返回结果之前使执行中断的执行错误。
     pub interrupted_execution_error: Option<ReactError>,
-    /// Incremental tool events, tagged with their stable invocation identity.
+    /// 增量工具事件通道，事件均带有稳定的调用身份标记。
     pub stream_tx: Option<mpsc::Sender<ToolPipelineEvent>>,
 }
 
 impl ToolExecutionContext {
+    /// 将本次执行标记为已阻止，记录阻止原因与结构化失败信息，并把输出设为阻止原因文本。
     fn block(&mut self, category: crate::tools::ToolFailureCategory, reason: String) {
         self.blocked = true;
         self.block_reason = Some(reason.clone());
@@ -86,6 +97,7 @@ impl ToolExecutionContext {
         self.output = Some(reason);
     }
 
+    /// 用改写后的参数替换当前输入；仅当输入确有变化时才记录一条改写来源。
     fn replace_input(&mut self, input: Value, rewrite: ToolInvocationRewrite) -> Result<()> {
         let Value::Object(map) = &input else {
             return Err(ReactError::Other(format!(
@@ -104,6 +116,7 @@ impl ToolExecutionContext {
         Ok(())
     }
 
+    /// 发出规范化的调用事件（若尚未发出）；必要时先补全 call_id。
     async fn emit_invocation(&mut self) -> Result<()> {
         if self.call_id.is_empty() {
             self.call_id = format!("call_{}", uuid::Uuid::new_v4());
@@ -133,28 +146,30 @@ impl ToolExecutionContext {
 
 // ── PipelineStage trait ────────────────────────────────────────────
 
-/// A single stage in the tool execution pipeline.
-///
-/// Each stage receives a mutable [`ToolExecutionContext`] and may modify it.
-/// Returning `Err` short-circuits the pipeline (tool execution failure).
-/// Setting `ctx.blocked = true` causes subsequent stages to be skipped.
+/**
+ * 工具执行流水线中的单个阶段。
+ *
+ * 每个阶段接收一个可变的 [`ToolExecutionContext`] 并可以修改它。
+ * 返回 `Err` 会使流水线短路（视为工具执行失败）。
+ * 设置 `ctx.blocked = true` 会导致后续阶段被跳过。
+ */
 #[async_trait]
 pub(crate) trait PipelineStage: Send + Sync {
-    /// Human-readable name for logging and debugging.
+    /// 用于日志和调试的可读名称。
     fn name(&self) -> &str;
 
-    /// Execute this stage.
+    /// 执行该阶段。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()>;
 
-    /// Whether this stage must still run after `ctx.blocked` is set.
+    /// 该阶段在 `ctx.blocked` 被设置之后是否仍需运行。
     ///
-    /// Execution-gating stages stop the pipeline as before, but observation
-    /// stages that record what already happened (trace, terminal callbacks)
-    /// opt in so a blocked call still leaves a faithful record (#102).
+    /// 执行门控类阶段一如既往会终止流水线，但记录“已发生事实”的观察类阶段
+    /// （如追踪、终态回调）可以选择继续运行，从而让被阻止的调用也留下如实的
+    /// 记录（#102）。
     fn runs_after_block(&self) -> bool {
         false
     }
@@ -162,10 +177,12 @@ pub(crate) trait PipelineStage: Send + Sync {
 
 // ── Stage implementations ──────────────────────────────────────────
 
-/// Intervention callback stage — checks intervention callbacks before all other stages.
-///
-/// This is the highest-priority decision point. Intervention callbacks can
-/// block, cancel, redirect, modify arguments, or inject context.
+/**
+ * 干预回调阶段 —— 在所有其他阶段之前检查干预回调。
+ *
+ * 这是优先级最高的决策点。干预回调可以阻止、取消、重定向、修改参数，
+ * 或注入上下文。
+ */
 pub struct InterventionStage;
 
 #[async_trait]
@@ -217,7 +234,7 @@ impl PipelineStage for InterventionStage {
     }
 }
 
-/// Enforces the invocation-scoped tool surface at execution time.
+/// 在执行时强制生效本次调用范围内的工具可见性约束。
 pub struct ToolVisibilityStage;
 
 #[async_trait]
@@ -259,7 +276,7 @@ impl PipelineStage for ToolVisibilityStage {
     }
 }
 
-/// Runs PreToolUse hooks.
+/// 运行 PreToolUse 钩子。
 pub struct PreToolUseHookStage;
 
 #[async_trait]
@@ -321,6 +338,7 @@ impl PipelineStage for PreToolUseHookStage {
 }
 
 impl crate::agent::snapshot::AgentRunSnapshot {
+    /// 将一次权限决策记录为追踪事件，携带工具名、决策结果与来源说明。
     pub(crate) async fn record_permission_decision(
         &self,
         tool: &str,
@@ -342,7 +360,7 @@ impl crate::agent::snapshot::AgentRunSnapshot {
     }
 }
 
-/// Checks tool approval (PermissionService).
+/// 检查工具审批（PermissionService）。
 pub struct PermissionStage;
 
 #[async_trait]
@@ -443,7 +461,7 @@ impl PipelineStage for PermissionStage {
     }
 }
 
-/// Enforces read-before-edit policy.
+/// 强制执行“先读后写”策略。
 pub struct ReadBeforeEditStage;
 
 #[async_trait]
@@ -490,7 +508,7 @@ impl PipelineStage for ReadBeforeEditStage {
     }
 }
 
-/// Checks skill-based tool permissions (skill_allowed_tools whitelist).
+/// 检查基于技能的工具权限（skill_allowed_tools 白名单）。
 pub struct SkillPermissionStage;
 
 #[async_trait]
@@ -504,7 +522,7 @@ impl PipelineStage for SkillPermissionStage {
         ctx: &mut ToolExecutionContext,
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()> {
-        // Check if a skill is activated and has tool restrictions
+        // 检查是否有已激活的技能对工具做了限制
         if !snapshot.tools.is_skill_tool_allowed(&ctx.tool_name) {
             let reason = format!(
                 "Tool '{}' is not permitted by the activated skill's allowed_tools whitelist",
@@ -525,7 +543,7 @@ impl PipelineStage for SkillPermissionStage {
     }
 }
 
-/// Records the settled tool outcome in the configured audit logger.
+/// 将已落定的工具结果记录到配置的审计日志中。
 pub struct AuditStage;
 
 #[async_trait]
@@ -544,8 +562,8 @@ impl PipelineStage for AuditStage {
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()> {
         if let (Some(_), Some(result)) = (&snapshot.guard.audit_logger, &ctx.result) {
-            // A post-use hook can reject an effect that has already happened.
-            // Retain that output while reporting the final failure status.
+            // post-use 钩子可能会拒绝一个已经发生的效果。
+            // 这里保留该输出，同时上报最终的失败状态。
             let output = if !result.success && result.output.is_empty() {
                 ctx.audit_error_output.as_deref().unwrap_or("")
             } else {
@@ -569,7 +587,7 @@ impl PipelineStage for AuditStage {
     }
 }
 
-/// Publishes the one canonical requested/effective invocation before execution.
+/// 在执行前发布唯一规范化的“请求/生效”调用记录。
 pub struct InvocationStage;
 
 #[async_trait]
@@ -587,7 +605,7 @@ impl PipelineStage for InvocationStage {
     }
 }
 
-/// Executes the tool via ToolManager.
+/// 通过 ToolManager 执行工具。
 pub struct ExecuteStage;
 
 #[async_trait]
@@ -607,7 +625,7 @@ impl PipelineStage for ExecuteStage {
             ctx.call_id = format!("call_{}", uuid::Uuid::new_v4());
         }
         snapshot.mark_tool_execution_started(&ctx.call_id);
-        // Record ToolCall trace event (redaction handled by new_tool_call)
+        // 记录 ToolCall 追踪事件（脱敏处理由 new_tool_call 负责）
         snapshot
             .record_event(crate::trace::RunEvent::new_tool_call(
                 ctx.call_id.clone(),
@@ -618,12 +636,12 @@ impl PipelineStage for ExecuteStage {
             ))
             .await;
 
-        // Execute tool; on infrastructure error, convert to ToolResult{success:false}
-        // so downstream stages (trace, post-hook, callback) still execute.
+        // 执行工具；若发生基础设施层面的错误，转换为 ToolResult{success:false}，
+        // 这样下游阶段（追踪、post-hook、回调）依然能够正常运行。
         //
-        // Build a per-agent ToolContext from the snapshot's RuntimeConfig so
-        // the (shared, stateless) ToolManager receives the correct working_dir
-        // for THIS agent/session — avoiding cross-session cwd contamination.
+        // 从 snapshot 的 RuntimeConfig 为本次调用构建专属的 ToolContext，
+        // 使（共享、无状态的）ToolManager 拿到的是“这一个” agent/session 对应的
+        // working_dir —— 避免跨会话的当前目录污染。
         let effect_sink: Option<echo_core::tools::ToolEffectSinkFn> =
             if snapshot.run_store.is_some() && snapshot.trace_run_id.is_some() {
                 let invocation = snapshot.clone();
@@ -792,16 +810,16 @@ impl PipelineStage for ExecuteStage {
         }
         ctx.result = Some(result.clone());
 
-        // Confirmed effects belong to the tool, not post-use presentation.
-        // Persist them before a hook can stall or reject the returned result.
+        // 已确认的效果属于工具本身，而非 post-use 呈现阶段的产物。
+        // 必须在钩子有机会卡住或拒绝返回结果之前先把它们持久化。
         for effect in &result.effects {
             snapshot
                 .record_tool_effect(effect, &ctx.tool_name, &ctx.call_id)
                 .await;
         }
 
-        // The resolved path is a tool-owned fact; model arguments may be
-        // relative or rewritten and cannot establish a successful read.
+        // 解析后的路径是工具自身确认的事实；模型给出的参数可能是相对路径
+        // 或经过改写，不能单凭它来断定一次成功的读取。
         if result.success {
             for effect in &result.effects {
                 if let echo_core::tools::ToolEffect::FileRead { path } = effect {
@@ -814,7 +832,7 @@ impl PipelineStage for ExecuteStage {
     }
 }
 
-/// Runs PostToolUse or PostToolUseFailure hooks according to the tool result.
+/// 根据工具结果运行 PostToolUse 或 PostToolUseFailure 钩子。
 pub struct PostToolUseHookStage;
 
 #[async_trait]
@@ -867,8 +885,8 @@ impl PipelineStage for PostToolUseHookStage {
             let reason = post_result.block_reason.unwrap_or_else(|| {
                 format!("Tool {} output blocked by post-use hook", ctx.tool_name)
             });
-            // The policy rejected an already executed call, not the execution
-            // itself. Keep its output/artifact and recovery facts for settlement.
+            // 策略拒绝的是一次已经执行完毕的调用，而不是执行过程本身。
+            // 结算时保留其输出/产物以及可恢复性相关的事实。
             let mut failure = tool_result.failure.clone().unwrap_or_else(|| {
                 crate::tools::ToolFailure::new(crate::tools::ToolFailureCategory::PartialSideEffect)
             });
@@ -890,7 +908,7 @@ impl PipelineStage for PostToolUseHookStage {
     }
 }
 
-/// Runs output guard checks.
+/// 运行输出防护检查。
 pub struct OutputGuardStage;
 
 #[async_trait]
@@ -932,7 +950,7 @@ impl PipelineStage for OutputGuardStage {
     }
 }
 
-/// Truncates tool output based on token budget.
+/// 根据 token 预算截断工具输出。
 pub struct TruncationStage;
 
 #[async_trait]
@@ -981,20 +999,26 @@ impl PipelineStage for TruncationStage {
     }
 }
 
-/// Fires callbacks (on_tool_start, on_tool_end, on_tool_error).
+/// 触发回调（on_tool_start、on_tool_end、on_tool_error）。
 pub struct CallbackStage {
+    /// 本实例对应触发的回调阶段（开始或结束）。
     phase: CallbackPhase,
 }
 
+/// 回调触发的时机：开始阶段还是结束阶段。
 pub enum CallbackPhase {
+    /// 工具调用开始时触发。
     Start,
+    /// 工具调用结束（成功、失败或中断）时触发。
     End,
 }
 
 impl CallbackStage {
+    /// 触发“开始”回调的阶段实例。
     pub const START: Self = Self {
         phase: CallbackPhase::Start,
     };
+    /// 触发“结束”回调的阶段实例。
     pub const END: Self = Self {
         phase: CallbackPhase::End,
     };
@@ -1009,8 +1033,8 @@ impl PipelineStage for CallbackStage {
         }
     }
 
-    // CallbackEnd is the caller's terminal observation: it must fire with the
-    // real outcome even when a post-effect block occurred (#102).
+    // CallbackEnd 是调用方观察到的终态：即便发生了 post-effect 阻止（#102），
+    // 它也必须携带真实结果被触发。
     fn runs_after_block(&self) -> bool {
         matches!(self.phase, CallbackPhase::End)
     }
@@ -1033,8 +1057,8 @@ impl PipelineStage for CallbackStage {
                         .as_deref()
                         .or_else(|| ctx.result.as_ref().map(|r| r.output.as_str()))
                         .unwrap_or("");
-                    // A typed cancellation/timeout before a tool result is an
-                    // interrupted attempt, not a completed tool failure.
+                    // 在拿到工具结果之前发生的、带类型的取消/超时属于“被中断的
+                    // 尝试”，而不是一次已完成的工具失败。
                     let failure = ctx.result.as_ref().filter(|result| !result.success);
                     if let Some(result) = failure {
                         if let Some(interruption) = ctx.interrupted_execution_error.as_ref() {
@@ -1076,7 +1100,7 @@ impl PipelineStage for CallbackStage {
     }
 }
 
-/// Records trace events for tool results/errors.
+/// 为工具结果/错误记录追踪事件。
 pub struct TraceRecordingStage;
 
 #[async_trait]
@@ -1085,8 +1109,8 @@ impl PipelineStage for TraceRecordingStage {
         "trace_recording"
     }
 
-    // A blocked call may already have produced an external effect; the trace
-    // must still record the actual result (and ToolError for failures).
+    // 被阻止的调用也可能已经产生了外部效果；追踪记录必须如实反映实际结果
+    // （失败时还需记录 ToolError）。
     fn runs_after_block(&self) -> bool {
         true
     }
@@ -1097,8 +1121,8 @@ impl PipelineStage for TraceRecordingStage {
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()> {
         if let Some(ref result) = ctx.result {
-            // Always record ToolResult — success determines the outcome.
-            // ToolError is additionally recorded for failure details.
+            // 始终记录 ToolResult —— 由 success 字段决定最终结果。
+            // 失败时额外记录 ToolError 以保留失败细节。
             snapshot
                 .record_event(crate::trace::RunEvent::ToolResult {
                     call_id: ctx.call_id.clone(),
@@ -1136,6 +1160,7 @@ impl PipelineStage for TraceRecordingStage {
     }
 }
 
+/// 从工具结果的 metadata 中读取指定键并解析为 u64，缺失或解析失败时返回 0。
 fn metadata_u64(result: &crate::tools::ToolResult, key: &str) -> u64 {
     result
         .metadata
@@ -1144,6 +1169,7 @@ fn metadata_u64(result: &crate::tools::ToolResult, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// 从工具结果的 metadata 中读取指定键并解析为 usize，缺失或解析失败时返回 0。
 fn metadata_usize(result: &crate::tools::ToolResult, key: &str) -> usize {
     result
         .metadata
@@ -1154,21 +1180,24 @@ fn metadata_usize(result: &crate::tools::ToolResult, key: &str) -> usize {
 
 // ── ToolExecutionPipeline ──────────────────────────────────────────
 
-/// Composable pipeline for tool execution stages.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// let pipeline = ToolExecutionPipeline::default();
-/// let mut ctx = ToolExecutionContext { ... };
-/// pipeline.run(&mut ctx, &agent).await?;
-/// ```
+/**
+ * 由多个工具执行阶段组成的可组合流水线。
+ *
+ * # 示例
+ *
+ * ```rust,ignore
+ * let pipeline = ToolExecutionPipeline::default();
+ * let mut ctx = ToolExecutionContext { ... };
+ * pipeline.run(&mut ctx, &agent).await?;
+ * ```
+ */
 pub struct ToolExecutionPipeline {
+    /// 按执行顺序排列的各个阶段。
     stages: Vec<Box<dyn PipelineStage>>,
 }
 
 impl ToolExecutionPipeline {
-    /// Build a pipeline with all standard stages in the correct order.
+    /// 按正确顺序构建包含全部标准阶段的流水线。
     pub fn default_pipeline() -> Self {
         Self {
             stages: vec![
@@ -1192,7 +1221,7 @@ impl ToolExecutionPipeline {
         }
     }
 
-    /// Run all stages in order. Short-circuits if `ctx.blocked` is set.
+    /// 按顺序运行所有阶段；一旦 `ctx.blocked` 被设置则短路跳过后续非观察类阶段。
     pub(crate) async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -1262,7 +1291,7 @@ impl ToolExecutionPipeline {
 
 // ── PlanModeStage ──────────────────────────────────────────────────
 
-/// In plan mode, only locally classified read-only tools may execute.
+/// 计划模式下，只允许执行本地分类为只读的工具。
 pub struct PlanModeStage;
 
 #[async_trait]
@@ -1307,6 +1336,7 @@ impl Default for ToolExecutionPipeline {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
+/// 从工具参数中提取涉及的文件路径列表，用于“先读后写”策略等场景。
 fn extract_path_params(tool_name: &str, params: &ToolParameters) -> Vec<String> {
     if tool_name == "apply_patch" {
         #[cfg(feature = "files")]
@@ -1326,6 +1356,7 @@ fn extract_path_params(tool_name: &str, params: &ToolParameters) -> Vec<String> 
         .unwrap_or_default()
 }
 
+/// 将路径解析为用于“已读文件”跟踪表的规范化字符串（相对路径会先拼接工作目录，再尽量规范化）。
 fn resolve_tracking_path(path: &str, working_dir: Option<&std::path::Path>) -> String {
     let path = std::path::Path::new(path);
     let resolved = if path.is_absolute() {
@@ -2336,13 +2367,11 @@ mod tests {
         Ok(())
     }
 
-    /// Two single-tool ExecuteStage instances run concurrently; this test
-    /// pins per-stream identity and that terminal events reflect actual
-    /// completion order (execution fact). This is NOT the batch-contract
-    /// test: the concurrent batch path (multiple tool calls in one turn)
-    /// emits results in CALL order and is covered by
-    /// `concurrent_batch_results_follow_call_order` in stream_channel.rs
-    /// (F-RCT-04-P1-01).
+    /// 并发运行两个单工具的 ExecuteStage 实例；本测试锁定“按流区分身份”，
+    /// 并验证终态事件确实反映了真实的完成顺序（执行事实）。这不是批处理契约
+    /// 测试：并发批处理路径（一轮内多次工具调用）按调用顺序发出结果，由
+    /// stream_channel.rs 中的 `concurrent_batch_results_follow_call_order`
+    /// 覆盖（F-RCT-04-P1-01）。
     #[tokio::test]
     async fn multiplexed_streams_preserve_identity_and_terminal_order() -> crate::error::Result<()>
     {
@@ -2435,7 +2464,7 @@ mod tests {
         Ok(())
     }
 
-    /// Records which terminal callback methods fire for one pipeline run.
+    /// 记录一次流水线运行中触发了哪些终态回调方法。
     #[derive(Default)]
     struct RecordingCallback {
         tool_end_calls: std::sync::atomic::AtomicUsize,
@@ -2708,8 +2737,8 @@ mod tests {
         Ok(())
     }
 
-    /// Deterministic success tool so the pipeline exercises the success
-    /// PostToolUse path without touching the filesystem or shell.
+    /// 确定性成功的工具，使流水线能够在不接触文件系统或 shell 的情况下
+    /// 演练成功路径下的 PostToolUse。
     struct EffectTool;
 
     struct TypedEffectTool;
@@ -3093,7 +3122,7 @@ mod tests {
         Ok(())
     }
 
-    /// #102: a failed ToolResult must reach on_tool_error, not on_tool_end.
+    /// #102：失败的 ToolResult 必须到达 on_tool_error，而不是 on_tool_end。
     #[tokio::test]
     async fn failed_tool_result_routes_to_on_tool_error_not_on_tool_end() -> Result<()> {
         let callback = Arc::new(RecordingCallback::default());
@@ -3146,9 +3175,9 @@ mod tests {
         Ok(())
     }
 
-    /// #102: a PostToolUse block after a real effect must not short-circuit
-    /// the remaining observation stages (OutputGuard/Truncation/Trace/End).
-    /// Uses the exit-code-2 block convention implemented in hooks.rs:1428.
+    /// #102：真实效果发生之后的 PostToolUse 阻止，不能使剩余的观察类阶段
+    /// （OutputGuard/Truncation/Trace/End）短路跳过。
+    /// 使用 hooks.rs:1428 中实现的“退出码 2 表示阻止”约定。
     #[tokio::test]
     async fn post_hook_block_after_effect_still_records_full_observations() -> Result<()> {
         use crate::skills::hooks::{HookAction, HookEvent, HookRule, HooksDefinition};
@@ -3188,8 +3217,8 @@ mod tests {
             .build()?;
         let mut snapshot = crate::agent::snapshot::AgentRunSnapshot::from_agent(&agent);
         snapshot.trace_run_id = Some("post-block".to_string());
-        // Drain the hook context before exiting so stdin delivery cannot race
-        // the explicit block signal and turn it into a sandbox error.
+        // 退出前先把钩子上下文读干净，避免 stdin 的写入与显式阻止信号发生
+        // 竞态，从而被误判成沙箱错误。
         let (command, shell) = if cfg!(target_os = "windows") {
             (
                 "[Console]::In.ReadToEnd() | Out-Null; exit 2",

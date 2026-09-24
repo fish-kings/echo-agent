@@ -9,17 +9,21 @@ use std::sync::RwLock;
 
 /// 内存审计日志记录器
 pub struct InMemoryAuditLogger {
+    /// 已记录的审计事件列表
     events: RwLock<Vec<AuditEvent>>,
+    /// 应用于每个事件的内容保留策略
     retention: echo_core::utils::retention::ContentRetentionPolicy,
 }
 
 impl Default for InMemoryAuditLogger {
+    /// 创建一个使用默认保留策略的空日志记录器
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl InMemoryAuditLogger {
+    /// 创建一个空的内存审计日志记录器，使用默认的保留策略
     pub fn new() -> Self {
         Self {
             events: RwLock::new(Vec::new()),
@@ -27,6 +31,7 @@ impl InMemoryAuditLogger {
         }
     }
 
+    /// 设置内容保留策略，并对已存在的事件重新应用该策略
     pub fn with_retention_policy(
         mut self,
         retention: echo_core::utils::retention::ContentRetentionPolicy,
@@ -51,6 +56,7 @@ impl InMemoryAuditLogger {
         self.events.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
+    /// 是否没有任何事件
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -63,6 +69,7 @@ impl InMemoryAuditLogger {
 }
 
 impl AuditLogger for InMemoryAuditLogger {
+    /// 对事件应用保留策略后追加写入内存事件列表
     fn log<'a>(&'a self, mut event: AuditEvent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             event.apply_retention(&self.retention);
@@ -72,6 +79,7 @@ impl AuditLogger for InMemoryAuditLogger {
         })
     }
 
+    /// 按会话 ID、agent 名称、时间范围以及条数上限过滤查询已记录的事件
     fn query<'a>(&'a self, filter: AuditFilter) -> BoxFuture<'a, Result<Vec<AuditEvent>>> {
         Box::pin(async move {
             let all = self.events.read().unwrap_or_else(|e| e.into_inner());
@@ -116,6 +124,7 @@ mod tests {
     use super::*;
     use echo_core::audit::AuditEventType;
 
+    /// 验证写锁被污染（panic 导致中毒）后，log/query/snapshot/clear 仍能通过 `unwrap_or_else` 恢复正常工作
     #[tokio::test]
     async fn poisoned_write_lock_recovers_log_query_snapshot_and_clear() -> Result<()> {
         let logger = InMemoryAuditLogger::new();

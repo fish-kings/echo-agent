@@ -1,13 +1,13 @@
-//! JSON parsing utility functions
+//! JSON 解析工具函数
 //!
-//! Provides common functions for extracting and fixing JSON from LLM output.
+//! 提供从 LLM 输出中提取和修复 JSON 的常用函数。
 
-/// Extract JSON from markdown code blocks or bare text
+/// 从 Markdown 代码块或纯文本中提取 JSON
 ///
-/// Supports the following formats:
+/// 支持以下格式：
 /// - ````json ... ````
 /// - ```` ... ````
-/// - Bare JSON text
+/// - 纯 JSON 文本
 pub fn extract_json_from_markdown(content: &str) -> String {
     if let Some(start) = content.find("```json") {
         let rest = &content[start + 7..];
@@ -24,12 +24,12 @@ pub fn extract_json_from_markdown(content: &str) -> String {
     content.trim().to_string()
 }
 
-/// Clean common JSON formatting issues
+/// 清理常见的 JSON 格式问题
 ///
-/// - Fix trailing commas before `}` or `]`, but only outside quoted strings.
+/// - 修复 `}` 或 `]` 之前的多余逗号，但仅在引号字符串之外生效。
 ///
-/// Single-quoted pseudo-JSON is intentionally not rewritten: a lexical global
-/// replacement cannot distinguish delimiters from apostrophes in content.
+/// 有意不处理单引号伪 JSON：纯词法层面的全局替换无法区分内容中的
+/// 分隔符与撇号。
 pub fn clean_json(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut cleaned = String::with_capacity(s.len());
@@ -78,41 +78,48 @@ pub fn clean_json(s: &str) -> String {
 mod tests {
     use super::*;
 
+    // 验证从带 ```json 标记的代码块中提取 JSON
     #[test]
     fn test_extract_from_json_block() {
         let input = "Here is the result:\n```json\n{\"key\": \"value\"}\n```\nDone.";
         assert_eq!(extract_json_from_markdown(input), "{\"key\": \"value\"}");
     }
 
+    // 验证从不带语言标记的普通代码块中提取 JSON
     #[test]
     fn test_extract_from_plain_block() {
         let input = "```\n{\"key\": \"value\"}\n```";
         assert_eq!(extract_json_from_markdown(input), "{\"key\": \"value\"}");
     }
 
+    // 验证对没有代码块包裹的纯 JSON 文本直接返回
     #[test]
     fn test_extract_bare_json() {
         let input = r#"{"steps": [{"description": "hello"}]}"#;
         assert_eq!(extract_json_from_markdown(input), input.trim());
     }
 
+    // 验证能正确清除对象和数组中的尾随逗号
     #[test]
     fn test_clean_trailing_commas() {
         assert_eq!(clean_json(r#"{"a": 1,}"#), r#"{"a": 1}"#);
         assert_eq!(clean_json(r#"[1, 2,]"#), r#"[1, 2]"#);
     }
 
+    // 验证单引号伪 JSON 不会被误改写
     #[test]
     fn test_clean_does_not_rewrite_single_quotes() {
         assert_eq!(clean_json("{'a': 'don\'t'}"), "{'a': 'don\'t'}");
     }
 
+    // 验证双引号字符串内容保持不变
     #[test]
     fn test_clean_preserves_double_quotes() {
         let input = r#"{"a": "it's fine"}"#;
         assert_eq!(clean_json(input), input);
     }
 
+    // 验证字符串内部形似结构字符（逗号加括号）的文本不会被误清除
     #[test]
     fn test_clean_preserves_structural_text_inside_strings() {
         let input = r#"{"text":"keep ,} and ,] literal","escaped":"\\\" ,}",}"#;
@@ -122,6 +129,7 @@ mod tests {
         );
     }
 
+    // 验证尾随逗号前存在 Unicode 空白字符时依然能被正确清除
     #[test]
     fn test_clean_trailing_comma_with_unicode_whitespace() {
         assert_eq!(clean_json("{\"中文\": 1, \n}"), "{\"中文\": 1 \n}");

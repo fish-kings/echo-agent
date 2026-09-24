@@ -1,5 +1,7 @@
-//! Per-iteration compaction: fire `PreCompact`, save runtime checkpoint,
-//! run `ContextManager::prepare`, fire `PostCompact`, return prepared messages.
+/*!
+ * 单次迭代的压缩流程：触发 `PreCompact`、保存运行时检查点、
+ * 运行 `ContextManager::prepare`、触发 `PostCompact`，并返回准备好的消息。
+ */
 
 use super::super::stream_macros::{try_send_or, yield_event_or};
 use super::CompactOutcome;
@@ -10,15 +12,17 @@ use echo_core::tokenizer::Tokenizer;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-/// Run the compact phase for a single iteration.
-///
-/// Fires `PreCompact`, takes a runtime checkpoint, runs
-/// `ContextManager::prepare`, and on a successful compression yields a
-/// `ContextCompressed` event and runs the `PostCompact` hook (whose
-/// `injected_context` / `messages` are pushed back onto the context).
-///
-/// Returns prepared LLM messages on success, or `CompactOutcome::Abandoned`
-/// when the channel is closed.
+/**
+ * 执行单次迭代的压缩阶段。
+ *
+ * 触发 `PreCompact`，获取一次运行时检查点，运行
+ * `ContextManager::prepare`；若压缩成功，则产出一个
+ * `ContextCompressed` 事件，并运行 `PostCompact` 钩子
+ * （其 `injected_context` / `messages` 会被重新推回上下文）。
+ *
+ * 成功时返回准备好的 LLM 消息；当通道已关闭时返回
+ * `CompactOutcome::Abandoned`。
+ */
 pub(crate) async fn run_compact(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -27,13 +31,15 @@ pub(crate) async fn run_compact(
 ) -> Result<CompactOutcome> {
     snap.fire_hook(crate::skills::hooks::HookEvent::PreCompact, Some("auto"))
         .await;
-    // (stage4 E1) Flush durable facts to memory BEFORE compression runs.
-    // Best-effort: errors/timeouts never block compaction. Internally gated by
-    // `ContextManager::should_compress()` so it only fires when compaction is
-    // actually imminent (not every ReAct iteration).
+    /* (stage4 E1) 在压缩执行之前，将持久化事实预先刷写到内存中。
+     * 尽力而为：错误/超时不会阻塞压缩流程。该逻辑由
+     * `ContextManager::should_compress()` 内部把关，因此只有在
+     * 压缩确实迫在眉睫时才会触发（不是每次 ReAct 迭代都触发）。
+     */
     let _ = snap.pre_compaction_flush(context).await;
-    // A complete transcript batch must be acknowledged before active context
-    // can cross the compaction horizon or realign its generation cursor.
+    /* 必须先确认一整批完整的会话记录（transcript batch），
+     * 活跃上下文才能跨越压缩边界或重新对齐其生成游标。
+     */
     let settlement = snap.save_transcript_projection(context, None).await?;
     if snap.conversation_store.is_some() {
         snap.mark_transcript_settlement_observed();
@@ -138,7 +144,7 @@ pub(crate) async fn run_compact(
     Ok(CompactOutcome::Continue(prepare_result.messages))
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -203,14 +209,16 @@ mod tests {
         }
     }
 
-    /// Default `ReactAgent` has no compressor configured, so
-    /// `ContextManager::prepare` returns `compressed: None` → no
-    /// `ContextCompressed` event is yielded, and the user message we pushed
-    /// passes through to the returned `messages`.
+    /**
+     * 默认的 `ReactAgent` 未配置压缩器，因此
+     * `ContextManager::prepare` 返回 `compressed: None` —— 不会产出
+     * `ContextCompressed` 事件，我们推入的用户消息会原样
+     * 透传到返回的 `messages` 中。
+     */
     #[tokio::test]
     async fn run_compact_no_compression_yields_no_event() {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
-        // Seed one user message so the prepared messages aren't empty.
+        // 播种一条用户消息，确保准备好的消息不为空。
         agent
             .memory
             .context
@@ -237,15 +245,17 @@ mod tests {
             "the seeded user message must survive ContextManager::prepare",
         );
 
-        // No compression → no ContextCompressed (or any other) event.
+        // 未发生压缩 → 不会产出 ContextCompressed（或任何其他）事件。
         assert!(
             rx.try_recv().is_err(),
             "compact phase must not yield events when no compression occurred",
         );
     }
 
-    /// `iteration` is opaque to the no-compression branch — just verify the
-    /// fn doesn't panic when called with a non-zero iteration index.
+    /**
+     * 对于无压缩分支而言，`iteration` 是不透明的 —— 这里只是验证
+     * 使用非零迭代索引调用该函数时不会 panic。
+     */
     #[tokio::test]
     async fn run_compact_accepts_arbitrary_iteration_index() {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
@@ -263,9 +273,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_compact_records_auto_compression_in_durable_trace() -> Result<()> {
-        // Rule injection stays off: a large rules file (AGENTS.md et al.) in
-        // the checkout would inflate the system prompt past this test's tiny
-        // token limit, which sliding-window compaction can never shrink.
+        /* 关闭规则注入：检出目录中的大型规则文件（AGENTS.md 等）
+         * 会把系统提示词撑爆，超过本测试极小的 token 限制，
+         * 而滑动窗口压缩永远无法把它压缩回去。
+         */
         let mut config = AgentConfig::new("test-model", "agent", "sys").auto_project_rules(false);
         config.token_limit = 4_096;
         config.enable_tool = false;
@@ -315,9 +326,10 @@ mod tests {
         let runtime_store = Arc::new(crate::state::FileRuntimeStateStore::new(
             runtime_root.path(),
         )?);
-        // Rule injection stays off for the same reason as the trace test
-        // above: injected workspace rules would exceed the tiny token limit
-        // and turn the expected Continue outcome into Failed.
+        /* 出于与上面 trace 测试相同的原因关闭规则注入：注入的工作区
+         * 规则会超出极小的 token 限制，导致预期的 Continue 结果
+         * 变成 Failed。
+         */
         let mut config = AgentConfig::new("test-model", "agent", "sys")
             .conversation_id("pre-compact-transcript")
             .auto_project_rules(false);
@@ -464,7 +476,7 @@ mod tests {
     }
 }
 
-// ── stage4 E1: pre_compaction_flush ────────────────────────────────────
+// ── stage4 E1：pre_compaction_flush ────────────────────────────────────
 
 #[cfg(test)]
 mod stage4_e1_tests {
@@ -479,10 +491,13 @@ mod stage4_e1_tests {
     use echo_state::memory::store::InMemoryStore;
     use std::sync::Arc;
 
-    /// Build an agent with a mock LLM + a shared `MemoryLayerManager` backed by
-    /// an `InMemoryStore`. Returns `(agent, store_handle, layer_manager)` so
-    /// tests can assert what landed in the unified `["agent","memories"]` ns.
-    /// `token_limit` controls whether `should_compress()` returns true.
+    /**
+     * 构建一个使用 mock LLM、并搭配一个由 `InMemoryStore` 支撑的
+     * 共享 `MemoryLayerManager` 的 agent。返回
+     * `(agent, store_handle, layer_manager)`，以便测试可以断言
+     * 统一命名空间 `["agent","memories"]` 中落地了什么内容。
+     * `token_limit` 控制 `should_compress()` 是否返回 true。
+     */
     fn agent_with_layer(
         llm: MockLlmClient,
         token_limit: usize,
@@ -501,8 +516,10 @@ mod stage4_e1_tests {
         (agent, store_dyn, lm)
     }
 
-    /// Push `n` user messages into the agent's context so it exceeds the token
-    /// limit (each carries enough text for the tokenizer to register).
+    /**
+     * 向 agent 的上下文中推入 `n` 条用户消息，使其超出 token 限制
+     * （每条消息都携带足够多的文本，以便分词器能够计入）。
+     */
     async fn push_messages(agent: &ReactAgent, n: usize) {
         let mut ctx = agent.memory.context.lock().await;
         for i in 0..n {
@@ -512,14 +529,16 @@ mod stage4_e1_tests {
         }
     }
 
-    /// When compression is imminent (low token_limit + messages), the flush
-    /// LLM call runs and durable facts land in the unified store (割裂点 1/7).
+    /**
+     * 当压缩迫在眉睫时（token_limit 较低 + 消息较多），刷写用的
+     * LLM 调用会执行，持久化事实会落地到统一存储中（割裂点 1/7）。
+     */
     #[tokio::test]
     async fn pre_compaction_flush_writes_durable_facts_when_compression_imminent() {
         let llm = MockLlmClient::new().with_response(
             r#"[{"content":"user prefers Rust over Python","type":"user_preference","recall_weight":0.9}]"#,
         );
-        // token_limit=1 → ReactAgent installs SlidingWindow + should_compress()=true.
+        // token_limit=1 → ReactAgent 会安装 SlidingWindow，且 should_compress()=true。
         let (agent, store, _lm) = agent_with_layer(llm, 1);
         push_messages(&agent, 8).await;
         let snap = AgentRunSnapshot::from_agent(&agent);
@@ -539,14 +558,17 @@ mod stage4_e1_tests {
         );
     }
 
-    /// When compression is NOT imminent (no compressor / tokens under limit),
-    /// the flush is skipped — no LLM call, no memory written. Guards the
-    /// `should_compress()` gate so flush doesn't fire every ReAct iteration.
+    /**
+     * 当压缩并不迫在眉睫时（未安装压缩器 / token 数在限制之内），
+     * 刷写会被跳过 —— 不会有 LLM 调用，也不会写入任何记忆。
+     * 用于守护 `should_compress()` 这道关卡，确保刷写不会在
+     * 每次 ReAct 迭代中都触发。
+     */
     #[tokio::test]
     async fn pre_compaction_flush_noops_when_compression_not_imminent() {
         let llm = MockLlmClient::new()
             .with_response(r#"[{"content":"x","type":"project_fact","recall_weight":0.5}]"#);
-        // token_limit=MAX → no compressor installed → should_compress()=false.
+        // token_limit=MAX → 未安装压缩器 → should_compress()=false。
         let (agent, store, _lm) = agent_with_layer(llm, usize::MAX);
         push_messages(&agent, 8).await;
         let snap = AgentRunSnapshot::from_agent(&agent);
@@ -564,16 +586,18 @@ mod stage4_e1_tests {
         );
     }
 
-    /// Best-effort: an LLM error (empty mock queue → EmptyResponse) must not
-    /// panic or block — no memory is written.
+    /**
+     * 尽力而为：LLM 出错（mock 队列为空 → EmptyResponse）时不能
+     * panic 或阻塞 —— 不会写入任何记忆。
+     */
     #[tokio::test]
     async fn pre_compaction_flush_best_effort_on_llm_error() {
-        let llm = MockLlmClient::new(); // empty queue → chat returns error
+        let llm = MockLlmClient::new(); // 空队列 → chat 返回错误
         let (agent, store, _lm) = agent_with_layer(llm, 1);
         push_messages(&agent, 8).await;
         let snap = AgentRunSnapshot::from_agent(&agent);
 
-        // Must not panic / block:
+        // 必须不能 panic / 阻塞：
         snap.pre_compaction_flush(&agent.memory.context).await;
 
         let results = store

@@ -34,32 +34,49 @@ use std::sync::Arc;
 // 结构化输出类型
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 销售数据结构化分析结果，由 Agent 通过 `extract` 生成。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct SalesAnalysis {
+    /// 分析所覆盖的时间周期，例如 "2024 Q1"。
     period: String,
+    /// 该周期的总销售额。
     total_revenue: f64,
+    /// 同比/环比增长率，使用小数表示（如 0.18 代表 18%）。
     growth_rate: f64,
+    /// 销售额排名靠前的产品列表。
     top_products: Vec<ProductSale>,
+    /// 从数据中提取的关键洞察。
     insights: Vec<String>,
+    /// 针对分析结果给出的改进建议。
     recommendations: Vec<String>,
 }
 
+/// 单个产品的销售情况。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ProductSale {
+    /// 产品名称。
     name: String,
+    /// 销售数量。
     quantity: i32,
+    /// 销售额。
     revenue: f64,
 }
 
+/// 数据质量检查结果，由 Agent 通过 `extract` 生成。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct DataQualityReport {
+    /// 数据集总行数。
     total_rows: i32,
+    /// 空值总数量。
     null_count: i32,
+    /// 重复记录数量。
     duplicate_count: i32,
+    /// 综合质量评分（0 到 100）。
     quality_score: f64,
+    /// 发现的主要问题列表。
     issues: Vec<String>,
 }
 
@@ -67,6 +84,8 @@ struct DataQualityReport {
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：依次演示语义搜索存储、结构化数据分析、数据质量检查、
+/// 数据处理流水线与历史分析检索五个部分。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -113,6 +132,7 @@ async fn main() -> Result<()> {
 // Part 1: 语义搜索存储
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 1 演示：将中英文混合的分析报告写入 SqliteStore，并验证语义检索能否正确命中。
 async fn demo_semantic_storage(db_path: &Path) -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 1: 语义搜索存储");
@@ -220,6 +240,7 @@ async fn demo_semantic_storage(db_path: &Path) -> Result<()> {
 // Part 2: 结构化数据分析
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 2 演示：让 Agent 使用 `extract` 从销售数据文本中提取结构化的 `SalesAnalysis`。
 async fn demo_structured_analysis() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 2: 结构化数据分析");
@@ -293,6 +314,7 @@ async fn demo_structured_analysis() -> Result<()> {
 // Part 3: 数据质量检查
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 3 演示：让 Agent 使用 `extract` 从数据集描述中提取结构化的 `DataQualityReport`。
 async fn demo_data_quality_check() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 3: 数据质量检查");
@@ -352,6 +374,7 @@ async fn demo_data_quality_check() -> Result<()> {
 // Part 4: 数据处理流水线
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 4 演示：使用 `GraphBuilder` 构建一个包含验证、清洗、转换、聚合四个节点的 ETL 数据处理流水线并执行。
 async fn demo_processing_pipeline() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 4: 数据处理流水线");
@@ -421,6 +444,7 @@ async fn demo_processing_pipeline() -> Result<()> {
 // Part 5: 历史分析检索
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 5 演示：存储多条月度历史分析记录，并使用混合检索（关键词 + 语义）查询相关历史。
 async fn demo_history_retrieval(db_path: &Path) -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 5: 历史分析检索");
@@ -507,6 +531,7 @@ async fn demo_history_retrieval(db_path: &Path) -> Result<()> {
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Echo Agent 智能数据分析助手 - 综合示例            ║");
@@ -517,26 +542,31 @@ fn print_banner() {
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 }
 
+/// 根据给定类型 `T` 的 JSON Schema 构建一个命名的 `ResponseFormat`，用于结构化输出约束。
 fn typed_response_format<T: JsonSchema>(name: &str) -> Result<ResponseFormat> {
     let schema = schema_for!(T);
     let schema_value = serde_json::to_value(schema)?;
     Ok(ResponseFormat::json_schema(name, schema_value))
 }
 
+/// 生成本次演示使用的临时 SQLite 数据库文件路径（按进程 ID 区分）。
 fn data_analyst_db_path() -> PathBuf {
     std::env::temp_dir().join(format!("echo_agent_data_analyst_{}.db", std::process::id()))
 }
 
+/// 删除 SQLite 主数据库文件及其 WAL / SHM 辅助文件。
 fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
+/// 根据环境变量配置构建一个 HTTP 嵌入模型客户端。
 fn load_embedder_from_config() -> Result<Arc<dyn Embedder>> {
     Ok(Arc::new(HttpEmbedder::from_env()))
 }
 
+/// 构建嵌入模型客户端，并通过一次健康检查请求验证其可用性。
 async fn load_verified_embedder_from_config() -> Result<Arc<dyn Embedder>> {
     let embedder = load_embedder_from_config()?;
     embedder

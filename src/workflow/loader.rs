@@ -1,50 +1,52 @@
-//! Declarative workflow loader
-//!
-//! Supports loading graph workflow definitions from YAML / JSON files, lowering
-//! the entry barrier for non-Rust users.
-//!
-//! # YAML Format Example
-//!
-//! ```yaml
-//! name: my_workflow
-//! nodes:
-//!   - name: researcher
-//!     type: agent
-//!     model: qwen3-max
-//!     system_prompt: "You are a research assistant"
-//!     input_key: task
-//!     output_key: research
-//!   - name: writer
-//!     type: agent
-//!     model: qwen3-max
-//!     system_prompt: "You are a writing assistant"
-//!     input_key: research
-//!     output_key: result
-//! edges:
-//!   - from: researcher
-//!     to: writer
-//! entry: researcher
-//! finish:
-//!   - writer
-//! max_steps: 50
-//! ```
-//!
-//! # JSON format example
-//!
-//! ```json
-//! {
-//!   "name": "my_workflow",
-//!   "nodes": [
-//!     { "name": "researcher", "type": "agent", "model": "qwen3-max",
-//!       "system_prompt": "...", "input_key": "task", "output_key": "research" }
-//!   ],
-//!   "edges": [
-//!     { "from": "researcher", "to": "writer" }
-//!   ],
-//!   "entry": "researcher",
-//!   "finish": ["writer"]
-//! }
-//! ```
+/*!
+ * 声明式工作流加载器
+ *
+ * 支持从 YAML / JSON 文件加载图（graph）工作流定义，降低
+ * 非 Rust 用户的使用门槛。
+ *
+ * # YAML 格式示例
+ *
+ * ```yaml
+ * name: my_workflow
+ * nodes:
+ *   - name: researcher
+ *     type: agent
+ *     model: qwen3-max
+ *     system_prompt: "You are a research assistant"
+ *     input_key: task
+ *     output_key: research
+ *   - name: writer
+ *     type: agent
+ *     model: qwen3-max
+ *     system_prompt: "You are a writing assistant"
+ *     input_key: research
+ *     output_key: result
+ * edges:
+ *   - from: researcher
+ *     to: writer
+ * entry: researcher
+ * finish:
+ *   - writer
+ * max_steps: 50
+ * ```
+ *
+ * # JSON 格式示例
+ *
+ * ```json
+ * {
+ *   "name": "my_workflow",
+ *   "nodes": [
+ *     { "name": "researcher", "type": "agent", "model": "qwen3-max",
+ *       "system_prompt": "...", "input_key": "task", "output_key": "research" }
+ *   ],
+ *   "edges": [
+ *     { "from": "researcher", "to": "writer" }
+ *   ],
+ *   "entry": "researcher",
+ *   "finish": ["writer"]
+ * }
+ * ```
+ */
 
 use crate::agent::react::builder::ReactAgentBuilder;
 use crate::error::{AgentError, ReactError, Result};
@@ -55,96 +57,98 @@ use crate::workflow::SharedState;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Workflow declarative definition
+/// 工作流的声明式定义
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct WorkflowDefinition {
-    /// Workflow name
+    /// 工作流名称
     pub name: String,
-    /// List of node definitions
+    /// 节点定义列表
     pub nodes: Vec<NodeDefinition>,
-    /// List of edge definitions
+    /// 边定义列表
     pub edges: Vec<EdgeDefinition>,
-    /// Entry node name
+    /// 入口节点名称
     pub entry: String,
-    /// List of finish node names
+    /// 终止节点名称列表
     #[serde(default)]
     pub finish: Vec<String>,
-    /// Pause before entering these nodes (`*` = all); enables
-    /// `run_until_interrupt` + `resume` over the built graph.
+    /// 在进入这些节点之前暂停（`*` 表示全部）；启用在已构建图上
+    /// 使用 `run_until_interrupt` + `resume`。
     #[serde(default)]
     pub interrupt_before: Vec<String>,
-    /// Pause after these nodes execute (`*` = all).
+    /// 在这些节点执行之后暂停（`*` 表示全部）。
     #[serde(default)]
     pub interrupt_after: Vec<String>,
-    /// Maximum execution steps (optional, default 100)
+    /// 最大执行步数（可选，默认 100）
     #[serde(default)]
     pub max_steps: Option<usize>,
 }
 
-/// Node definition
+/// 节点定义
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NodeDefinition {
-    /// Node name
+    /// 节点名称
     pub name: String,
-    /// Node type: "agent" | "function" | "router"
+    /// 节点类型："agent" | "function" | "router"
     #[serde(rename = "type")]
     pub node_type: String,
-    /// Agent model name (only for type=agent)
+    /// Agent 模型名称（仅在 type=agent 时使用）
     #[serde(default)]
     pub model: Option<String>,
-    /// Agent system prompt (only for type=agent)
+    /// Agent 系统提示词（仅在 type=agent 时使用）
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// Key to read input from state (only for type=agent, default "input")
+    /// 从 state 中读取输入的键（仅在 type=agent 时使用，默认为 "input"）
     #[serde(default = "default_input_key")]
     pub input_key: String,
-    /// Key to write output to state (only for type=agent, default "output")
+    /// 将输出写入 state 的键（仅在 type=agent 时使用，默认为 "output"）
     #[serde(default = "default_output_key")]
     pub output_key: String,
 }
 
+/// 默认的输入键
 fn default_input_key() -> String {
     "input".to_string()
 }
+/// 默认的输出键
 fn default_output_key() -> String {
     "output".to_string()
 }
 
-/// Edge definition
+/// 边定义
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EdgeDefinition {
-    /// Source node
+    /// 源节点
     pub from: String,
-    /// Target node (fixed edge)
+    /// 目标节点（固定边）
     #[serde(default)]
     pub to: Option<String>,
-    /// Conditional expression (conditional edge) — simple state key check
+    /// 条件表达式（条件边）—— 基于 state 键的简单比较
     #[serde(default)]
     pub condition: Option<ConditionDefinition>,
-    /// Parallel target node list (fan-out edge)
+    /// 并行目标节点列表（扇出边）
     #[serde(default)]
     pub parallel: Option<Vec<String>>,
-    /// Next node after parallel convergence
+    /// 并行汇聚后的下一个节点
     #[serde(default)]
     pub then: Option<String>,
 }
 
-/// Condition definition (simplified: value comparison based on state key)
+/// 条件定义（简化版：基于 state 键的值比较）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ConditionDefinition {
-    /// Key in state
+    /// state 中的键
     pub key: String,
-    /// Expected value
+    /// 期望的值
     pub equals: serde_json::Value,
-    /// Node to go to on match
+    /// 匹配时跳转到的节点
     pub then: String,
-    /// Node to go to on mismatch
+    /// 不匹配时跳转到的节点
     #[serde(rename = "else")]
     pub else_node: String,
 }
 
 impl WorkflowDefinition {
-    /// Load from a YAML file
+    /// 从 YAML 文件加载
     pub fn from_yaml(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
             ReactError::Agent(Box::new(AgentError::InitializationFailed(format!(
@@ -154,7 +158,7 @@ impl WorkflowDefinition {
         Self::from_yaml_str(&content)
     }
 
-    /// Parse from a YAML string
+    /// 从 YAML 字符串解析
     pub fn from_yaml_str(yaml: &str) -> Result<Self> {
         serde_yaml_ng::from_str(yaml).map_err(|e| {
             ReactError::Agent(Box::new(AgentError::InitializationFailed(format!(
@@ -163,7 +167,7 @@ impl WorkflowDefinition {
         })
     }
 
-    /// Load from a JSON file
+    /// 从 JSON 文件加载
     pub fn from_json(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref()).map_err(|e| {
             ReactError::Agent(Box::new(AgentError::InitializationFailed(format!(
@@ -173,7 +177,7 @@ impl WorkflowDefinition {
         Self::from_json_str(&content)
     }
 
-    /// Parse from a JSON string
+    /// 从 JSON 字符串解析
     pub fn from_json_str(json: &str) -> Result<Self> {
         serde_json::from_str(json).map_err(|e| {
             ReactError::Agent(Box::new(AgentError::InitializationFailed(format!(
@@ -182,19 +186,21 @@ impl WorkflowDefinition {
         })
     }
 
-    /// Build Graph (without LLM config, Agent uses environment variable configuration)
+    /// 构建 Graph（不注入 LLM 配置，Agent 使用环境变量配置）
     pub fn build_graph(self) -> Result<Graph> {
         self.build_graph_with_llm_config(None)
     }
 
-    /// Build Graph (optional LLM configuration injection)
+    /// 构建 Graph（可选地注入 LLM 配置）
     pub fn build_graph_with_llm_config(self, llm_config: Option<&LlmConfig>) -> Result<Graph> {
         self.build_graph_with(llm_config, None)
     }
 
-    /// Build Graph with an explicit [`LlmClient`] injection: agent nodes
-    /// reuse a caller-owned client (for example the Session Agent's own
-    /// provider) instead of constructing one from configuration.
+    /**
+     * 使用显式注入的 [`LlmClient`] 构建 Graph：agent 节点会复用
+     * 调用方持有的 client（例如 Session Agent 自身的 provider），
+     * 而不是从配置中重新构造一个。
+     */
     pub fn build_graph_with_client(
         self,
         llm_client: Option<std::sync::Arc<dyn crate::llm::LlmClient>>,
@@ -202,6 +208,7 @@ impl WorkflowDefinition {
         self.build_graph_with(None, llm_client)
     }
 
+    /// 根据可选的 LLM 配置或 client 构建 Graph 的共享实现
     fn build_graph_with(
         self,
         llm_config: Option<&LlmConfig>,
@@ -315,33 +322,35 @@ impl WorkflowDefinition {
     }
 }
 
-/// Load a graph workflow from a YAML file
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_agent::workflow::loader::load_graph_from_yaml;
-///
-/// # fn main() -> echo_agent::error::Result<()> {
-/// let graph = load_graph_from_yaml("workflow.yaml")?;
-/// # Ok(())
-/// # }
-/// ```
+/**
+ * 从 YAML 文件加载图工作流
+ *
+ * # 示例
+ *
+ * ```rust,no_run
+ * use echo_agent::workflow::loader::load_graph_from_yaml;
+ *
+ * # fn main() -> echo_agent::error::Result<()> {
+ * let graph = load_graph_from_yaml("workflow.yaml")?;
+ * # Ok(())
+ * # }
+ * ```
+ */
 pub fn load_graph_from_yaml(path: impl AsRef<Path>) -> Result<crate::workflow::Graph> {
     WorkflowDefinition::from_yaml(path)?.build_graph()
 }
 
-/// Load a graph workflow from a JSON file
+/// 从 JSON 文件加载图工作流
 pub fn load_graph_from_json(path: impl AsRef<Path>) -> Result<crate::workflow::Graph> {
     WorkflowDefinition::from_json(path)?.build_graph()
 }
 
-/// Load a graph workflow from a YAML string
+/// 从 YAML 字符串加载图工作流
 pub fn load_graph_from_yaml_str(yaml: &str) -> Result<crate::workflow::Graph> {
     WorkflowDefinition::from_yaml_str(yaml)?.build_graph()
 }
 
-/// Load a graph workflow from a JSON string
+/// 从 JSON 字符串加载图工作流
 pub fn load_graph_from_json_str(json: &str) -> Result<crate::workflow::Graph> {
     WorkflowDefinition::from_json_str(json)?.build_graph()
 }
@@ -367,7 +376,7 @@ mod tests {
         assert_eq!(def.interrupt_before, vec!["b".to_string()]);
         assert!(def.interrupt_after.is_empty());
         let graph = def.build_graph().unwrap();
-        // The interrupt reaches the compiled graph: the run suspends before b.
+        // 中断会传递到已编译的图：运行会在 b 之前暂停。
         let state = SharedState::new();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()

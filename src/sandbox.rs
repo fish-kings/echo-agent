@@ -1,17 +1,17 @@
-//! Multi-layer code execution sandbox.
+//! 多层级代码执行沙箱。
 //!
-//! Three isolation levels, unified behind the [`SandboxExecutor`] trait.
-//! The [`SandboxManager`] automatically selects the best available layer.
+//! 提供三种隔离级别，统一封装在 [`SandboxExecutor`] trait 之下。
+//! [`SandboxManager`] 会自动选择当前可用的最佳层级。
 //!
-//! # Isolation Levels
+//! # 隔离级别
 //!
-//! | Level | Backend | Use Case |
+//! | 级别 | 后端 | 使用场景 |
 //! |-------|---------|----------|
-//! | [`LocalSandbox`] | Direct process spawn | Development, trusted code |
-//! | [`DockerSandbox`] | Docker container | CI/CD, untrusted code |
-//! | [`K8sSandbox`] | Kubernetes pod | Production, multi-tenant |
+//! | [`LocalSandbox`] | 直接进程启动 | 开发环境、可信代码 |
+//! | [`DockerSandbox`] | Docker 容器 | CI/CD、不可信代码 |
+//! | [`K8sSandbox`] | Kubernetes Pod | 生产环境、多租户 |
 //!
-//! # Quick Start
+//! # 快速开始
 //!
 //! ```rust,ignore
 //! use echo_agent::prelude::*;

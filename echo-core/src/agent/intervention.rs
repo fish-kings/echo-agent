@@ -1,41 +1,39 @@
-//! Intervention callback interface for influencing agent behavior
+//! 用于影响 agent 行为的干预回调接口
 //!
-//! Unlike `AgentCallback` (which is observational), `InterventionCallback`
-//! can *influence* agent behavior: block tool calls, inject context,
-//! redirect execution, or cancel operations.
+//! 与只做观察的 `AgentCallback` 不同，`InterventionCallback` 可以*主动影响*
+//! agent 的行为：阻断工具调用、注入上下文、重定向执行、或取消操作。
 //!
-//! A `CallbackBridge` adapter converts plain `AgentCallback` instances
-//! into neutral `InterventionCallback` implementations for backward
-//! compatibility.
+//! `CallbackBridge` 适配器可以将普通的 `AgentCallback` 实例转换为
+//! 中立的 `InterventionCallback` 实现，以保持向后兼容。
 
 use crate::llm::types::Message;
 use futures::future::BoxFuture;
 use serde_json::Value;
 
-/// Result of an intervention check, indicating how the agent should proceed.
+/// 干预检查的结果，指示 agent 接下来应当如何处理。
 #[derive(Debug, Clone, Default)]
 pub struct InterventionResult {
-    /// Whether to block the current action.
+    /// 是否阻断当前动作。
     pub block: bool,
-    /// Reason for blocking (shown to user / logged).
+    /// 阻断原因（展示给用户 / 记录日志）。
     pub block_reason: Option<String>,
-    /// Context to inject into the agent's next LLM call.
+    /// 需要注入到 agent 下一次 LLM 调用中的上下文。
     pub injected_context: Option<String>,
-    /// Redirect to a different tool name (replaces the original tool call).
+    /// 重定向到另一个工具名称（替换原本的工具调用）。
     pub redirect_to: Option<String>,
-    /// Whether to cancel the entire agent execution.
+    /// 是否取消整个 agent 的执行。
     pub cancel: bool,
-    /// Modified tool arguments (replaces original args if present).
+    /// 修改后的工具参数（若存在则替换原始参数）。
     pub modified_args: Option<Value>,
 }
 
 impl InterventionResult {
-    /// Allow the action to proceed normally.
+    /// 允许该动作正常继续执行。
     pub fn allow() -> Self {
         Self::default()
     }
 
-    /// Block the action with a reason.
+    /// 附带原因阻断该动作。
     pub fn block(reason: impl Into<String>) -> Self {
         Self {
             block: true,
@@ -44,7 +42,7 @@ impl InterventionResult {
         }
     }
 
-    /// Inject additional context into the agent's reasoning.
+    /// 向 agent 的推理过程注入额外上下文。
     pub fn inject(context: impl Into<String>) -> Self {
         Self {
             injected_context: Some(context.into()),
@@ -52,7 +50,7 @@ impl InterventionResult {
         }
     }
 
-    /// Cancel the entire agent execution.
+    /// 取消整个 agent 的执行。
     pub fn cancel() -> Self {
         Self {
             cancel: true,
@@ -60,7 +58,7 @@ impl InterventionResult {
         }
     }
 
-    /// Modify the tool arguments before execution.
+    /// 在执行前修改工具参数。
     pub fn modify_args(args: Value) -> Self {
         Self {
             modified_args: Some(args),
@@ -69,12 +67,12 @@ impl InterventionResult {
     }
 }
 
-/// Trait for intervention callbacks that can influence agent behavior.
+/// 可以影响 agent 行为的干预回调 trait。
 ///
-/// All methods have default implementations that return `InterventionResult::allow()`,
-/// so implementors only need to override the methods they care about.
+/// 所有方法都提供了返回 `InterventionResult::allow()` 的默认实现，
+/// 因此实现者只需要覆盖自己关心的方法即可。
 pub trait InterventionCallback: Send + Sync {
-    /// Inspect (and potentially block/modify) a tool call before execution.
+    /// 在工具调用执行前进行检查（可能阻断/修改该调用）。
     fn on_tool_call<'a>(
         &'a self,
         _agent: &'a str,
@@ -84,7 +82,7 @@ pub trait InterventionCallback: Send + Sync {
         Box::pin(async { InterventionResult::allow() })
     }
 
-    /// Inspect (and potentially inject context or cancel) before LLM reasoning.
+    /// 在 LLM 推理开始前进行检查（可能注入上下文或取消执行）。
     fn on_think_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -93,7 +91,7 @@ pub trait InterventionCallback: Send + Sync {
         Box::pin(async { InterventionResult::allow() })
     }
 
-    /// Inspect (and potentially block) the agent's final answer.
+    /// 在返回最终答案前进行检查（可能阻断该答案）。
     fn on_final_answer<'a>(
         &'a self,
         _agent: &'a str,
@@ -103,22 +101,22 @@ pub trait InterventionCallback: Send + Sync {
     }
 }
 
-/// Bridge adapter that wraps an `AgentCallback` as a neutral `InterventionCallback`.
+/// 将 `AgentCallback` 包装为中立 `InterventionCallback` 的桥接适配器。
 ///
-/// All intervention checks return `InterventionResult::allow()`, preserving
-/// the observational-only behavior of `AgentCallback` while satisfying the
-/// `InterventionCallback` interface.
+/// 所有干预检查都返回 `InterventionResult::allow()`，从而在满足
+/// `InterventionCallback` 接口的同时，保留 `AgentCallback` 纯观察的行为。
 ///
-/// Note: This struct is defined here but references `AgentCallback` which is
-/// in the facade crate's `agent` module. The bridge is re-exported from the
-/// facade, where it has access to `AgentCallback`. This file provides the
-/// trait-level definition; the concrete `CallbackBridge` impl is in the facade.
+/// 注意：该结构体定义在此处，但引用了位于门面 crate 的 `agent` 模块中的
+/// `AgentCallback`。桥接实现从门面 crate 重新导出，因为只有在那里才能访问
+/// 到 `AgentCallback`。本文件只提供 trait 层面的定义；具体的
+/// `CallbackBridge` 实现位于门面 crate 中。
 pub struct CallbackBridge;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // 验证 allow 结果不阻断、不取消，也不携带额外信息
     #[test]
     fn test_intervention_result_allow() {
         let result = InterventionResult::allow();
@@ -128,6 +126,7 @@ mod tests {
         assert!(result.injected_context.is_none());
     }
 
+    // 验证 block 结果正确设置阻断标志与原因
     #[test]
     fn test_intervention_result_block() {
         let result = InterventionResult::block("dangerous operation");
@@ -136,6 +135,7 @@ mod tests {
         assert!(!result.cancel);
     }
 
+    // 验证 inject 结果携带注入的上下文且不阻断
     #[test]
     fn test_intervention_result_inject() {
         let result = InterventionResult::inject("additional context");
@@ -143,6 +143,7 @@ mod tests {
         assert!(!result.block);
     }
 
+    // 验证 cancel 结果设置了取消标志且不阻断
     #[test]
     fn test_intervention_result_cancel() {
         let result = InterventionResult::cancel();

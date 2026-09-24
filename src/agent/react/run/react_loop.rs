@@ -1,4 +1,4 @@
-//! ReAct loop core
+//! ReAct 循环核心
 
 use super::super::ReactAgent;
 use super::types::StreamMode;
@@ -11,10 +11,11 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 impl ReactAgent {
-    /// Prepare non-streaming execution context: guard check, turn tracking,
-    /// memory recall, push user message, start trace run.
-    ///
-    /// Returns recalled memory count and the guard-approved input.
+    /** 准备非流式执行上下文：guard 检查、轮次（turn）追踪、记忆召回、
+    推入用户消息、启动 trace run。
+
+    返回召回的记忆数量以及经过 guard 批准后的输入内容。
+    */
     async fn prepare_react_context(
         &self,
         message: &str,
@@ -23,10 +24,10 @@ impl ReactAgent {
         let agent = self.config.agent_name.clone();
         let mut effective_message = message.to_string();
 
-        // Clear read-before-edit tracking for the new conversation turn
+        // 为新的对话轮次清空“编辑前须读取”跟踪状态
         self.clear_read_files();
 
-        // Input guard check
+        // 输入 guard 检查
         if let Some(gm) = &self.guard.guard_manager {
             info!(agent = %agent, direction = "input", "🛡️ Guard check started");
             let result = gm.check_all(message, GuardDirection::Input).await?;
@@ -56,22 +57,22 @@ impl ReactAgent {
             }
         }
 
-        // Trace identity is independent from the product run identity and is
-        // established before the first observable execution phase.
+        // Trace 身份标识独立于产品层的 run 身份标识，会在第一个可观察的
+        // 执行阶段之前建立。
         self.start_legacy_trace_run(&effective_message, legacy)
             .await;
 
-        // Phase: Recall
+        // 阶段：Recall（召回）
         self.record_trace_event(crate::trace::RunEvent::PhaseTransition {
             phase: "recall".into(),
             iteration: 0,
         })
         .await;
-        // Persist memory-worthy triggers before recall injection mutates context.
+        // 在召回注入修改上下文之前，先持久化值得记忆的触发内容。
         self.detect_and_write_memory_triggers(&effective_message)
             .await;
 
-        // Inject relevant long-term memories
+        // 注入相关的长期记忆
         let mut recalled = 0usize;
         let mut memory_context = None;
         match self.recall_long_term_memories(&effective_message).await {
@@ -104,10 +105,11 @@ impl ReactAgent {
         Ok((recalled, effective_message))
     }
 
-    /// Core ReAct loop — thin wrapper that delegates to the shared `run_core_loop`.
-    ///
-    /// Creates a snapshot + channel, runs the unified core loop in a spawned task,
-    /// then collects `FinalAnswer` from the event stream.
+    /** ReAct 核心循环 —— 委托给共享的 `run_core_loop` 的薄包装。
+
+    创建一个快照 + 通道，在派生（spawn）出的任务中运行统一的核心循环，
+    然后从事件流中收集 `FinalAnswer`。
+    */
     #[tracing::instrument(skip(self, message), fields(agent = %self.config.agent_name, model = %self.config.model_name))]
     #[cfg(test)]
     pub(crate) async fn run_react_loop(&self, message: &str) -> Result<String> {
@@ -119,15 +121,15 @@ impl ReactAgent {
         message: &str,
         mode: StreamMode,
     ) -> Result<String> {
-        // Capture legacy mutable context before queueing. A later caller may
-        // update or clear the shared setters while this invocation waits for
-        // the execution mutex, but cannot change this invocation's ownership.
+        // 在排队之前先捕获旧版可变上下文。后续的调用方可能会在本次调用
+        // 等待执行互斥锁期间更新或清除共享的 setter，但无法改变本次
+        // 调用所持有的所有权。
         let mut legacy_runtime = self.capture_legacy_external_context();
         let (mut turn_lease, lifecycle_cancel) = self
             .close_authority
             .admit(legacy_runtime.cancel.as_deref().cloned())?;
         legacy_runtime.cancel = Some(std::sync::Arc::new(lifecycle_cancel.clone()));
-        // ★ Serialize all execution on this agent — only one run at a time.
+        // ★ 将该 agent 上的所有执行串行化 —— 同一时刻只允许一次运行。
         let _execution_guard = self.execution_mutex.lock().await;
         if lifecycle_cancel.is_cancelled() {
             return Err(ReactError::Agent(Box::new(
@@ -136,9 +138,9 @@ impl ReactAgent {
                 ),
             )));
         }
-        // From this point, cancellation of the caller future can abandon
-        // observable preparation work. Only explicit return paths may settle
-        // the close lease without recording debt.
+        // 从这一点开始，调用方 future 的取消可能会中止已经可观察到的准备
+        // 工作。只有显式的返回路径才能在不留下债务记录的情况下结算
+        // close lease。
         turn_lease.mark_started();
 
         let admission_snapshot =
@@ -177,12 +179,12 @@ impl ReactAgent {
             return Err(error);
         }
 
-        // Prepare context (guard check, memory recall, push message, start trace)
+        // 准备上下文（guard 检查、记忆召回、推入消息、启动 trace）
         let (recalled, effective_message) =
             match self.prepare_react_context(message, &legacy_runtime).await {
                 Ok(prepared) => prepared,
                 Err(e) => {
-                    // Guard blocked — return the message directly (not an error)
+                    // Guard 拦截 —— 直接返回该消息（不是错误）
                     let msg = e.to_string();
                     if msg.starts_with("Request blocked by safety guard:") {
                         let trace_run_id = self
@@ -247,8 +249,8 @@ impl ReactAgent {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let active_turn_lease = self.turn_steer_mailbox.begin(turn_id.clone());
 
-        // Intent routing may activate a skill. Direct answers still use the
-        // canonical ReAct lifecycle so they share terminal and persistence semantics.
+        // 意图路由（Intent routing）可能会激活一个技能。直接回答仍然走
+        // 标准的 ReAct 生命周期，从而共享相同的终止与持久化语义。
         if let Some(ref router) = self.intent_router {
             let messages = self.memory.context.lock().await.messages().to_vec();
             let cancel = legacy_runtime
@@ -287,7 +289,7 @@ impl ReactAgent {
             }
         }
 
-        // Create channel + snapshot
+        // 创建通道 + 快照
         active_turn_lease.set_steerable(true);
         let (tx, mut rx) = mpsc::channel::<Result<AgentEvent>>(self.config.stream_buffer_size);
         let mut snap = AgentRunSnapshot::from_agent_with_legacy_context(self, &legacy_runtime);
@@ -299,8 +301,8 @@ impl ReactAgent {
             .map(|cancel| cancel.as_ref().clone());
         let failure_snapshot = snap.clone();
 
-        // The core task owns the close lease. If the caller drops this outer
-        // future, Agent::close can still cancel the task and await lease release.
+        // 核心任务持有 close lease。即使调用方丢弃了这个外层 future，
+        // Agent::close 仍然可以取消该任务并等待 lease 释放。
         let context = self.memory.context.clone();
         let text = effective_message;
         let core = tokio::spawn(async move {
@@ -319,7 +321,7 @@ impl ReactAgent {
             (result, turn_lease)
         });
 
-        // Collect events, extract FinalAnswer
+        // 收集事件，提取 FinalAnswer
         let mut terminal = None;
         while let Some(event) = rx.recv().await {
             match event {

@@ -1,4 +1,4 @@
-//! Tool system core trait and types
+//! 工具系统的核心 trait 与类型定义
 
 pub mod artifact;
 pub mod cell;
@@ -16,20 +16,28 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 
-/// Stable failure category shared by tool execution, traces, checkpoints, and UIs.
+/// 工具执行失败的稳定分类，被工具执行、trace、checkpoint 和 UI 共用。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolFailureCategory {
+    /// 参数无效，需要先修正参数再重试。
     InvalidArguments,
+    /// 工具当前不可用（例如依赖服务尚未就绪）。
     Unavailable,
+    /// 执行超时。
     Timeout,
+    /// 执行被取消。
     Cancelled,
+    /// 瞬时性错误，通常可直接重试。
     Transient,
+    /// 永久性失败，重试无意义。
     Permanent,
+    /// 失败前可能已经产生了部分副作用。
     PartialSideEffect,
 }
 
 impl ToolFailureCategory {
+    /// 返回该分类的稳定字符串标识，用于序列化和日志。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InvalidArguments => "invalid_arguments",
@@ -43,18 +51,24 @@ impl ToolFailureCategory {
     }
 }
 
-/// What must happen before the same logical tool operation can continue.
+/// 同一个逻辑工具操作要继续执行之前，必须先发生的动作。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolRecoveryAction {
+    /// 需要先修正参数，再重新调用。
     CorrectArguments,
+    /// 可以直接重试。
     Retry,
+    /// 需要先恢复到已知状态，再重试。
     RestoreThenRetry,
+    /// 需要先校验当前实际状态，再决定是否重试。
     VerifyThenRetry,
+    /// 应当停止，不要再重试。
     Stop,
 }
 
 impl ToolRecoveryAction {
+    /// 返回该恢复动作的稳定字符串标识，用于序列化和日志。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::CorrectArguments => "correct_arguments",
@@ -66,30 +80,40 @@ impl ToolRecoveryAction {
     }
 }
 
-/// Whether an unsuccessful attempt may already have changed external state.
+/// 一次未成功的尝试是否可能已经改变了外部状态。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolSideEffect {
+    /// 确定没有产生副作用。
     None,
+    /// 可能已产生副作用，但无法确定。
     Possible,
+    /// 已确认产生了副作用。
     Confirmed,
 }
 
-/// Structured recovery facts for an unsuccessful tool result.
+/// 一次未成功工具结果的结构化恢复信息。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolFailure {
+    /// 失败分类。
     pub category: ToolFailureCategory,
+    /// 建议采取的恢复动作。
     pub recovery: ToolRecoveryAction,
+    /// 是否可能已产生副作用。
     pub side_effect: ToolSideEffect,
+    /// 建议的重试等待时间（毫秒）。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retry_after_ms: Option<u64>,
+    /// 幂等键；存在时即使有副作用也可安全地自动重试。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub idempotency_key: Option<String>,
+    /// 重试前用于校验操作是否已生效的后置条件描述。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub postcondition: Option<String>,
 }
 
 impl ToolFailure {
+    /// 根据失败分类构造一个带默认恢复策略的 `ToolFailure`。
     pub fn new(category: ToolFailureCategory) -> Self {
         let recovery = match category {
             ToolFailureCategory::InvalidArguments => ToolRecoveryAction::CorrectArguments,
@@ -117,6 +141,7 @@ impl ToolFailure {
         }
     }
 
+    /// 对可重试的失败分类，把恢复动作强制改为 `Retry`。
     pub fn retryable(mut self) -> Self {
         if matches!(
             self.category,
@@ -129,11 +154,13 @@ impl ToolFailure {
         self
     }
 
+    /// 设置建议的重试等待时间。
     pub fn with_retry_after(mut self, retry_after_ms: u64) -> Self {
         self.retry_after_ms = Some(retry_after_ms);
         self
     }
 
+    /// 设置副作用状态；若存在副作用且尚无幂等键，恢复动作会被调整为先校验再重试。
     pub fn with_side_effect(mut self, side_effect: ToolSideEffect) -> Self {
         self.side_effect = side_effect;
         if side_effect != ToolSideEffect::None && self.idempotency_key.is_none() {
@@ -142,17 +169,19 @@ impl ToolFailure {
         self
     }
 
+    /// 设置幂等键，使带副作用的失败也能安全地自动重试。
     pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
         self
     }
 
+    /// 设置后置条件描述，供重试前校验操作是否已生效。
     pub fn with_postcondition(mut self, postcondition: impl Into<String>) -> Self {
         self.postcondition = Some(postcondition.into());
         self
     }
 
-    /// Automatic replay is deliberately narrower than "might recover".
+    /// 判定标准刻意比"也许能恢复"更严格：只有确定安全时才允许自动重放。
     pub fn allows_automatic_retry(&self) -> bool {
         matches!(
             self.category,
@@ -163,7 +192,7 @@ impl ToolFailure {
             && (self.side_effect == ToolSideEffect::None || self.idempotency_key.is_some())
     }
 
-    /// Conservatively classify framework execution errors.
+    /// 保守地对框架执行错误进行分类（不确定时倾向于更谨慎的分类）。
     pub fn from_error(error: &ReactError, may_have_side_effects: bool) -> Self {
         let possible_side_effect = |mut failure: Self| {
             if may_have_side_effects {
@@ -260,76 +289,114 @@ impl ToolFailure {
     }
 }
 
-/// Classifies the kind of result a tool produced.
-///
-/// This enriches [`ToolResult`] so downstream consumers (CLI rendering,
-/// trace analysis, eval scoring) can handle results appropriately without
-/// parsing the raw output string.
+/**
+对工具产生的结果种类进行分类。
+
+这为 [`ToolResult`] 提供了额外信息，使下游消费者（CLI 渲染、trace 分析、
+评测打分等）可以按类型正确处理结果，而不必解析原始的 output 字符串。
+*/
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind_type", rename_all = "snake_case")]
 pub enum ToolResultKind {
-    /// Plain text output.
+    /// 纯文本输出。
     #[default]
     Text,
-    /// Structured JSON data (also available in `ToolResult.data`).
+    /// 结构化 JSON 数据（也可在 `ToolResult.data` 中获取）。
     Json,
-    /// An image (MIME type in `ToolResult.mime_type`).
-    Image { mime_type: String },
-    /// Tabular data with column headers and row data.
+    /// 图片（MIME 类型记录在 `ToolResult.mime_type` 中）。
+    Image {
+        /// 图片的 MIME 类型，例如 `image/png`。
+        mime_type: String,
+    },
+    /// 带列标题和行数据的表格数据。
     Table {
+        /// 列标题。
         columns: Vec<String>,
+        /// 每一行的数据。
         rows: Vec<Vec<String>>,
     },
-    /// A unified diff (e.g., from `apply_patch`).
-    Diff { unified_diff: String },
-    /// A reference to a file (path in metadata).
-    FileReference { path: String },
-    /// Command execution output with exit code.
-    CommandOutput { exit_code: Option<i32> },
-    /// A skill prompt block that must become the canonical activation projection.
-    SkillActivation { name: String },
-    /// A structured error with an error code.
-    StructuredError { error_code: String },
+    /// 统一格式的 diff（例如来自 `apply_patch`）。
+    Diff {
+        /// 统一 diff 文本。
+        unified_diff: String,
+    },
+    /// 指向某个文件的引用（路径记录在 metadata 中）。
+    FileReference {
+        /// 文件路径。
+        path: String,
+    },
+    /// 命令执行输出，附带退出码。
+    CommandOutput {
+        /// 进程退出码；未知时为 `None`。
+        exit_code: Option<i32>,
+    },
+    /// 必须成为规范激活投影的 skill 提示块。
+    SkillActivation {
+        /// skill 名称。
+        name: String,
+    },
+    /// 带错误码的结构化错误。
+    StructuredError {
+        /// 错误码。
+        error_code: String,
+    },
 }
 
-/// Provider-visible rich content produced by a tool.
-///
-/// This payload is intentionally excluded from serialized tool events and
-/// logs. The ReAct runtime projects it into the model conversation after the
-/// matching text tool result, so binary data reaches multimodal models without
-/// leaking large data URLs into UI events, traces, or audit output.
+/**
+工具产生的、对模型 provider 可见的富内容。
+
+该 payload 故意不参与序列化的工具事件和日志。ReAct 运行时会在对应的文本
+工具结果之后，把它投影进模型对话中，使二进制数据能够到达多模态模型，同时
+不会把体积巨大的 data URL 泄漏进 UI 事件、trace 或审计输出。
+*/
 #[derive(Clone, PartialEq, Eq)]
 pub enum ToolResultContent {
-    /// Image data represented as an HTTPS URL or a Base64 data URL.
-    ImageUrl { url: String, detail: Option<String> },
+    /// 以 HTTPS URL 或 Base64 data URL 形式表示的图片数据。
+    ImageUrl {
+        /// 图片的 URL（HTTPS 链接或 Base64 data URL）。
+        url: String,
+        /// 可选的细节等级提示（provider 相关，如 `"low"` / `"high"`）。
+        detail: Option<String>,
+    },
 }
 
-/// Authoritative execution facts produced by the tool implementation.
+/// 由工具实现产生的、权威的执行事实。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 pub enum ToolEffect {
+    /// 读取了某个文件。
     FileRead {
+        /// 被读取文件的路径。
         path: String,
     },
+    /// 编辑了某个文件。
     FileEdit {
+        /// 被编辑文件的路径。
         path: String,
     },
+    /// 执行了一次测试命令。
     TestRun {
+        /// 执行的命令。
         command: String,
+        /// 测试是否通过。
         passed: bool,
-        /// Exact count from a structured test report; absent when unknown.
+        /// 来自结构化测试报告的精确失败数；未知时为空。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_count: Option<usize>,
     },
+    /// 派发并运行了一个 subagent。
     SubagentRun {
+        /// subagent 的角色名。
         agent_name: String,
+        /// 交给 subagent 的任务描述。
         task: String,
+        /// subagent 的执行结果概述。
         outcome: String,
     },
 }
 
-/// Invocation-scoped continuation for effects whose producer settles after
-/// the tool call has returned (for example, a background Subagent dispatch).
+/// 针对"生产者在工具调用返回之后才最终确定"的效果（例如后台 subagent 派发）
+/// 的、绑定到单次调用范围的延续回调。
 pub type ToolEffectSinkFn = Arc<dyn Fn(ToolEffect) -> BoxFuture<'static, ()> + Send + Sync>;
 
 impl std::fmt::Debug for ToolResultContent {
@@ -350,47 +417,49 @@ impl std::fmt::Debug for ToolResultContent {
 /// 工具执行结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
-    /// The kind of result (enables type-aware downstream handling).
+    /// 结果的种类（使下游可以按类型感知地处理）。
     #[serde(default)]
     pub kind: ToolResultKind,
-    /// Whether the tool completed successfully.
+    /// 工具是否执行成功。
     pub success: bool,
-    /// Text output returned to the caller.
+    /// 返回给调用方的文本输出。
     pub output: String,
-    /// Error message when `success` is false.
+    /// `success` 为 false 时的错误信息。
     pub error: Option<String>,
-    /// Structured failure and recovery facts when `success` is false.
+    /// `success` 为 false 时的结构化失败与恢复信息。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub failure: Option<ToolFailure>,
-    /// Optional structured data (JSON). When present, callers can render it
-    /// directly instead of parsing the `output` string.
+    /// 可选的结构化数据（JSON）。存在时调用方可直接渲染它，
+    /// 而无需解析 `output` 字符串。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub data: Option<serde_json::Value>,
-    /// Whether the output was truncated to fit within a length limit.
+    /// 输出是否因超出长度限制而被截断。
     #[serde(default)]
     pub truncated: bool,
-    /// MIME type of the output content, when known (e.g. `text/html`, `image/png`).
+    /// 输出内容的 MIME 类型（已知时），例如 `text/html`、`image/png`。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub mime_type: Option<String>,
-    /// Complete output artifact when the result was spilled from inline output.
-    ///
-    /// This is a typed terminal fact. Consumers must not reconstruct artifact
-    /// identity or integrity from the open-ended `metadata` map.
+    /**
+    当结果从内联输出溢出（spilled）时，保存完整输出的 artifact。
+
+    这是一个带类型的终态事实。消费者不得从开放式的 `metadata` map 中
+    重新构造 artifact 的身份或完整性。
+    */
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub artifact: Option<artifact::ToolOutputArtifactRef>,
-    /// Arbitrary key-value metadata (e.g. source URL, file path, duration, token count).
+    /// 任意键值对形式的 metadata（例如来源 URL、文件路径、耗时、token 数）。
     #[serde(default)]
     pub metadata: HashMap<String, String>,
-    /// Confirmed execution facts emitted by their owning tool implementation.
+    /// 由所属工具实现产生的、已确认的执行事实。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<ToolEffect>,
-    /// Rich content projected only into the live model conversation.
+    /// 仅投影进实时模型对话中的富内容。
     #[serde(skip)]
     pub model_content: Vec<ToolResultContent>,
 }
 
 impl ToolResult {
-    /// Construct a successful text result.
+    /// 构造一个成功的纯文本结果。
     pub fn success(output: impl Into<String>) -> Self {
         Self {
             kind: ToolResultKind::Text,
@@ -408,10 +477,12 @@ impl ToolResult {
         }
     }
 
-    /// Construct a successful result with structured JSON data.
-    ///
-    /// The `output` field is set to a compact JSON representation so
-    /// plain-text consumers still see something useful.
+    /**
+    构造一个带结构化 JSON 数据的成功结果。
+
+    `output` 字段会被设置为该数据的紧凑 JSON 表示，
+    这样纯文本消费者依然能看到有意义的内容。
+    */
     pub fn success_json(data: serde_json::Value) -> Self {
         let output = serde_json::to_string(&data).unwrap_or_default();
         Self {
@@ -430,7 +501,7 @@ impl ToolResult {
         }
     }
 
-    /// Construct a successful result with a specific [`ToolResultKind`].
+    /// 构造一个带指定 [`ToolResultKind`] 的成功结果。
     pub fn success_with_kind(kind: ToolResultKind, output: impl Into<String>) -> Self {
         Self {
             kind,
@@ -448,7 +519,7 @@ impl ToolResult {
         }
     }
 
-    /// Construct a failed result with an error message.
+    /// 构造一个带错误信息的失败结果。
     pub fn error(error: impl Into<String>) -> Self {
         Self {
             kind: ToolResultKind::StructuredError {
@@ -468,13 +539,13 @@ impl ToolResult {
         }
     }
 
-    /// Override the text output on an existing result.
+    /// 覆盖已有结果上的文本输出。
     pub fn with_output(mut self, output: impl Into<String>) -> Self {
         self.output = output.into();
         self
     }
 
-    /// Override the error text on an existing result.
+    /// 覆盖已有结果上的错误文本。
     pub fn with_error(mut self, error: impl Into<String>) -> Self {
         self.success = false;
         self.error = Some(error.into());
@@ -484,133 +555,136 @@ impl ToolResult {
         self
     }
 
-    /// Construct a failed result with an explicit category.
+    /// 构造一个带明确失败分类的失败结果。
     pub fn failure(category: ToolFailureCategory, error: impl Into<String>) -> Self {
         let mut result = Self::error(error);
         result.failure = Some(ToolFailure::new(category));
         result
     }
 
-    /// Construct a failed result that requires corrected arguments.
+    /// 构造一个需要修正参数的失败结果。
     pub fn invalid_arguments(error: impl Into<String>) -> Self {
         Self::failure(ToolFailureCategory::InvalidArguments, error)
     }
 
-    /// Replace structured recovery facts on an unsuccessful result.
+    /// 替换未成功结果上的结构化恢复信息。
     pub fn with_failure(mut self, failure: ToolFailure) -> Self {
         self.success = false;
         self.failure = Some(failure);
         self
     }
 
+    /// 追加一条已确认的执行事实。
     pub fn with_effect(mut self, effect: ToolEffect) -> Self {
         self.effects.push(effect);
         self
     }
 
-    /// Attach structured data to an existing result.
+    /// 给已有结果附加结构化数据。
     pub fn with_data(mut self, data: serde_json::Value) -> Self {
         self.data = Some(data);
         self
     }
 
-    /// Mark the output as truncated.
+    /// 标记该输出是否被截断。
     pub fn with_truncated(mut self, truncated: bool) -> Self {
         self.truncated = truncated;
         self
     }
 
-    /// Set the MIME type for the output content.
+    /// 设置输出内容的 MIME 类型。
     pub fn with_mime_type(mut self, mime_type: impl Into<String>) -> Self {
         self.mime_type = Some(mime_type.into());
         self
     }
 
-    /// Attach the complete typed artifact descriptor to this result.
+    /// 给该结果附加完整的类型化 artifact 描述符。
     pub fn with_artifact(mut self, artifact: artifact::ToolOutputArtifactRef) -> Self {
         self.artifact = Some(artifact);
         self
     }
 
-    /// Insert a key-value metadata entry.
+    /// 插入一条键值对形式的 metadata。
     pub fn with_meta(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }
 
-    /// Bulk-insert metadata entries.
+    /// 批量插入 metadata 条目。
     pub fn with_metadata(mut self, meta: HashMap<String, String>) -> Self {
         self.metadata = meta;
         self
     }
 
-    /// Attach rich content that should be visible to the model but omitted
-    /// from serialized tool events and logs.
+    /// 附加应对模型可见、但不进入序列化工具事件和日志的富内容。
     pub fn with_model_content(mut self, content: ToolResultContent) -> Self {
         self.model_content.push(content);
         self
     }
 }
 
-/// Logical channel for incremental tool output.
-///
-/// Tools such as shell map process pipes onto these channels; other tools may
-/// use [`ToolOutputChannel::Log`] for unstructured progress text.
+/**
+工具增量输出所属的逻辑通道。
+
+像 shell 这样的工具会把进程管道映射到这些通道上；其他工具可以用
+[`ToolOutputChannel::Log`] 来表示非结构化的进度文本。
+*/
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutputChannel {
-    /// Primary process / command stdout.
+    /// 主进程/命令的 stdout。
     Stdout,
-    /// Process stderr or equivalent error stream.
+    /// 进程 stderr 或等价的错误流。
     Stderr,
-    /// Tool-defined log / diagnostic stream.
+    /// 工具自定义的日志/诊断流。
     Log,
 }
 
-/// Streaming tool output event
-///
-/// When a tool implements [`Tool::execute_stream_with_context`] and
-/// [`Tool::supports_streaming`], it produces a sequence of these events during
-/// execution, enabling real-time progress reporting and incremental output
-/// delivery to the UI / caller.
+/**
+流式工具输出事件
+
+当一个工具实现了 [`Tool::execute_stream_with_context`] 和
+[`Tool::supports_streaming`] 时，它会在执行期间产生一系列这样的事件，
+从而支持实时进度上报，以及向 UI / 调用方增量交付输出。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
-// Complete stays inline to preserve the public stream event API.
+// Complete 保持内联，以维持公开的 stream 事件 API 不变。
 #[allow(clippy::large_enum_variant)]
 pub enum ToolStreamEvent {
-    /// Progress notification with optional percentage (0-100).
+    /// 带可选百分比（0-100）的进度通知。
     Progress {
-        /// Human-readable progress description.
+        /// 人类可读的进度描述。
         message: String,
-        /// Optional completion percentage (0-100).
+        /// 可选的完成百分比（0-100）。
         percent: Option<u8>,
     },
-    /// Incremental output chunk on a named channel.
+    /// 某个命名通道上的增量输出片段。
     Output {
-        /// Which logical stream the chunk belongs to.
+        /// 该片段所属的逻辑流。
         channel: ToolOutputChannel,
-        /// Output fragment (UTF-8 text; may be a partial line).
+        /// 输出片段（UTF-8 文本；可能是不完整的一行）。
         chunk: String,
     },
-    /// Terminal event carrying the final [`ToolResult`].
-    /// The stream ends after this event is emitted.
+    /// 携带最终 [`ToolResult`] 的终止事件。
+    /// 该事件发出后 stream 结束。
     Complete(ToolResult),
 }
 
-/// Tool execution config: timeout, retry, concurrency
+/// 工具执行配置：超时、重试、并发
 #[derive(Debug, Clone)]
 pub struct ToolExecutionConfig {
-    /// Maximum execution time for a single attempt.
+    /// 单次尝试的最大执行时间。
     pub timeout_ms: u64,
-    /// Whether failed executions should be retried automatically.
+    /// 失败的执行是否应自动重试。
     pub retry_on_fail: bool,
-    /// Maximum number of retry attempts.
+    /// 最大重试次数。
     pub max_retries: u32,
-    /// Delay between retry attempts.
+    /// 重试之间的延迟。
     pub retry_delay_ms: u64,
-    /// Optional concurrency cap shared by the tool manager (write/execute tools).
+    /// 由工具管理器共享的可选并发上限（写入/执行类工具）。
     pub max_concurrency: Option<usize>,
-    /// Optional concurrency cap for read-only tools (higher limit, default 32).
+    /// 只读工具的可选并发上限（更高的限制，默认 32）。
     pub max_read_concurrency: Option<usize>,
 }
 
@@ -627,22 +701,28 @@ impl Default for ToolExecutionConfig {
     }
 }
 
-/// Tool parameter type (simple key-value from LLM).
+/// 工具参数类型（来自 LLM 的简单键值对）。
 pub type ToolParameters = HashMap<String, serde_json::Value>;
 
-/// A type-safe parameter value extracted from raw JSON.
+/// 从原始 JSON 中提取出的、带类型安全保证的参数值。
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParamValue {
+    /// 字符串值。
     String(String),
+    /// 数值。
     Number(f64),
+    /// 布尔值。
     Bool(bool),
+    /// 数组值。
     Array(Vec<ParamValue>),
+    /// 对象值。
     Object(HashMap<String, ParamValue>),
+    /// 空值。
     Null,
 }
 
 impl ParamValue {
-    /// Extract from a JSON value.
+    /// 从一个 JSON 值中提取。
     pub fn from_json(v: &serde_json::Value) -> Self {
         match v {
             serde_json::Value::String(s) => Self::String(s.clone()),
@@ -658,7 +738,7 @@ impl ParamValue {
         }
     }
 
-    /// Get as string, if this is a String variant.
+    /// 若为 String 变体，返回其字符串值。
     pub fn as_str(&self) -> Option<&str> {
         match self {
             Self::String(s) => Some(s.as_str()),
@@ -666,7 +746,7 @@ impl ParamValue {
         }
     }
 
-    /// Get as number, if this is a Number variant.
+    /// 若为 Number 变体，返回其数值。
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Self::Number(n) => Some(*n),
@@ -674,7 +754,7 @@ impl ParamValue {
         }
     }
 
-    /// Get as bool, if this is a Bool variant.
+    /// 若为 Bool 变体，返回其布尔值。
     pub fn as_bool(&self) -> Option<bool> {
         match self {
             Self::Bool(b) => Some(*b),
@@ -682,7 +762,7 @@ impl ParamValue {
         }
     }
 
-    /// Type name for error messages.
+    /// 用于错误信息的类型名称。
     pub fn type_name(&self) -> &str {
         match self {
             Self::String(_) => "string",
@@ -695,17 +775,17 @@ impl ParamValue {
     }
 }
 
-/// Type-safe tool call parameters with validation support.
+/// 带校验支持的、类型安全的工具调用参数。
 #[derive(Debug, Clone)]
 pub struct ToolCallParams {
-    /// Original raw JSON from the LLM.
+    /// 来自 LLM 的原始 JSON。
     pub raw: serde_json::Value,
-    /// Parsed type-safe values.
+    /// 解析后的类型安全值。
     parsed: HashMap<String, ParamValue>,
 }
 
 impl ToolCallParams {
-    /// Create from a raw JSON value.
+    /// 从一个原始 JSON 值创建。
     pub fn from_value(value: &serde_json::Value) -> Self {
         let parsed = if let serde_json::Value::Object(map) = value {
             map.iter()
@@ -720,7 +800,7 @@ impl ToolCallParams {
         }
     }
 
-    /// Create from a ToolParameters map.
+    /// 从一个 ToolParameters map 创建。
     pub fn from_params(params: &ToolParameters) -> Self {
         let mut map = serde_json::Map::new();
         for (k, v) in params {
@@ -729,28 +809,31 @@ impl ToolCallParams {
         Self::from_value(&serde_json::Value::Object(map))
     }
 
-    /// Get a string parameter.
+    /// 获取一个字符串参数。
     pub fn get_str(&self, key: &str) -> Option<&str> {
         self.parsed.get(key).and_then(|v| v.as_str())
     }
 
-    /// Get a numeric parameter.
+    /// 获取一个数值参数。
     pub fn get_number(&self, key: &str) -> Option<f64> {
         self.parsed.get(key).and_then(|v| v.as_f64())
     }
 
-    /// Get a boolean parameter.
+    /// 获取一个布尔参数。
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         self.parsed.get(key).and_then(|v| v.as_bool())
     }
 
-    /// Get a parameter value by key.
+    /// 按 key 获取一个参数值。
     pub fn get(&self, key: &str) -> Option<&ParamValue> {
         self.parsed.get(key)
     }
 
-    /// Validate that a required parameter exists and has the expected type.
-    /// Returns `Ok(())` or `Err(error_message)`.
+    /**
+    校验某个必需参数是否存在且类型符合预期。
+
+    返回 `Ok(())` 或 `Err(error_message)`。
+    */
     pub fn validate_required(
         &self,
         key: &str,
@@ -766,57 +849,62 @@ impl ToolCallParams {
         }
     }
 
-    /// Check if a parameter exists.
+    /// 检查某个参数是否存在。
     pub fn has(&self, key: &str) -> bool {
         self.parsed.contains_key(key)
     }
 
-    /// Number of parameters.
+    /// 参数数量。
     pub fn len(&self) -> usize {
         self.parsed.len()
     }
 
-    /// Whether there are no parameters.
+    /// 是否没有任何参数。
     pub fn is_empty(&self) -> bool {
         self.parsed.is_empty()
     }
 }
 
-/// Tool risk level
+/// 工具风险等级
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum ToolRiskLevel {
-    /// Read-only operation, no side effects (e.g. search, read file)
+    /// 只读操作，无副作用（例如搜索、读文件）
     ReadOnly,
-    /// Standard operation, limited side effects (e.g. write file, call API)
+    /// 标准操作，有限的副作用（例如写文件、调用 API）
     #[default]
     Standard,
-    /// Dangerous operation, irreversible side effects (e.g. execute shell command, delete data, SQL write)
+    /// 危险操作，不可逆的副作用（例如执行 shell 命令、删除数据、SQL 写操作）
     Dangerous,
 }
 
-/// Whether a tool can change state outside the current model invocation.
+/// 工具是否可以改变当前模型调用之外的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolAccess {
-    /// The tool only observes state.
+    /// 该工具仅观察状态。
     ReadOnly,
-    /// The tool may create, update, or delete state.
+    /// 该工具可能创建、更新或删除状态。
     #[default]
     Mutating,
 }
 
-/// Stable capability metadata used to compose and filter tool surfaces.
-///
-/// Capabilities describe what a tool can do. Approval policy remains a
-/// separate runtime concern, so applications can expose the same pack under
-/// different interaction policies without maintaining name-based allowlists.
+/**
+用于组合和过滤工具集合的稳定能力元数据。
+
+Capabilities 描述一个工具能做什么。审批策略仍是一个独立的运行时关注点，
+因此应用可以在不维护基于名称的白名单的情况下，为同一个工具包暴露不同的交互策略。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCapabilities {
+    /// 该工具的访问类型（只读 / 可变更）。
     pub access: ToolAccess,
+    /// 该工具的风险等级。
     pub risk: ToolRiskLevel,
+    /// 调用该工具所需的权限列表。
     pub permissions: Vec<permission::ToolPermission>,
 }
 
 impl ToolCapabilities {
+    /// 构造一组只读能力元数据。
     pub fn read_only(permissions: Vec<permission::ToolPermission>) -> Self {
         Self {
             access: ToolAccess::ReadOnly,
@@ -825,6 +913,7 @@ impl ToolCapabilities {
         }
     }
 
+    /// 构造一组带指定风险等级的可变更能力元数据。
     pub fn mutating(risk: ToolRiskLevel, permissions: Vec<permission::ToolPermission>) -> Self {
         Self {
             access: ToolAccess::Mutating,
@@ -833,23 +922,28 @@ impl ToolCapabilities {
         }
     }
 
+    /// 该能力是否为只读。
     pub fn is_read_only(&self) -> bool {
         self.access == ToolAccess::ReadOnly
     }
 }
 
-/// One concrete tool plus the capability facts used by a [`ToolPack`].
+/// 一个具体的工具及其被 [`ToolPack`] 使用的能力事实。
 pub struct ToolPackEntry {
+    /// 具体工具实例。
     pub tool: Box<dyn Tool>,
+    /// 该工具的能力元数据。
     pub capabilities: ToolCapabilities,
 }
 
 impl ToolPackEntry {
+    /// 由工具自身的 `capabilities()` 推导构造一个条目。
     pub fn new(tool: Box<dyn Tool>) -> Self {
         let capabilities = tool.capabilities();
         Self { tool, capabilities }
     }
 
+    /// 构造一个只读条目（强制标记为只读能力）。
     pub fn read_only(tool: Box<dyn Tool>) -> Self {
         let permissions = tool.permissions();
         Self {
@@ -859,17 +953,21 @@ impl ToolPackEntry {
     }
 }
 
-/// A reusable, named composition of tools.
+/// 一组可复用的、具名的工具组合。
 pub trait ToolPack: Send + Sync {
+    /// 该工具包的名称。
     fn name(&self) -> &str;
+    /// 该工具包包含的工具条目列表。
     fn tools(&self) -> Vec<ToolPackEntry>;
 
+    /// 把工具包中所有工具注册到给定的注册器。
     fn install(&self, registrar: &mut dyn ToolRegistrar) {
         for entry in self.tools() {
             registrar.register(entry.tool);
         }
     }
 
+    /// 只把工具包中只读的工具注册到给定的注册器。
     fn install_read_only(&self, registrar: &mut dyn ToolRegistrar) {
         for entry in self
             .tools()
@@ -881,95 +979,109 @@ pub trait ToolPack: Send + Sync {
     }
 }
 
-/// Result of applying a command policy before process execution.
+/// 在进程执行之前应用命令策略所得到的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandPolicyDecision {
+    /// 安全，可直接执行。
     Safe,
+    /// 需要审批，原因见附带字符串。
     RequiresApproval(String),
+    /// 危险，原因见附带字符串。
     Dangerous(String),
 }
 
-/// Policy contract for tools that execute local commands.
+/// 供执行本地命令的工具遵循的策略契约。
 pub trait CommandPolicy: Send + Sync {
+    /// 对给定命令做出策略判定。
     fn evaluate(&self, command: &str) -> CommandPolicyDecision;
 }
 
-/// Trait for types that can register tools.
-///
-/// Decouples tool registration from any concrete tool-manager implementation.
+/**
+可注册工具的类型所实现的 trait。
+
+把工具注册这一行为，与任何具体的工具管理器实现解耦。
+*/
 pub trait ToolRegistrar {
+    /// 注册一个工具。
     fn register(&mut self, tool: Box<dyn Tool>);
 }
 
-/// Helper trait for `#[derive(Tool)]` — provides a typed `run` method that
-/// the derive macro's generated `execute()` delegates to.
-///
-/// Users override `run()` with their tool's business logic; the derive macro
-/// handles JSON Schema generation, parameter deserialization, and `Tool` trait
-/// boilerplate automatically.
+/**
+供 `#[derive(Tool)]` 使用的辅助 trait —— 提供一个带类型的 `run` 方法，
+派生宏生成的 `execute()` 会委托给它。
+
+使用者用自己工具的业务逻辑覆盖 `run()`；派生宏会自动处理 JSON Schema
+生成、参数反序列化，以及 `Tool` trait 的样板代码。
+*/
 pub trait ToolRunner<P = ToolParameters>: Tool + Sized {
-    /// Execute the tool with typed, deserialized parameters.
+    /// 用已反序列化的类型化参数执行该工具。
     fn run(&self, params: P) -> impl std::future::Future<Output = Result<ToolResult>> + Send;
 }
 
-/// Tool interface trait
+/// 工具接口 trait
 pub trait Tool: Send + Sync {
-    /// Stable tool identifier exposed to the model.
+    /// 暴露给模型的稳定工具标识符。
     fn name(&self) -> &str;
-    /// Human-readable tool description.
+    /// 人类可读的工具描述。
     fn description(&self) -> &str;
-    /// JSON Schema describing accepted parameters.
+    /// 描述所接受参数的 JSON Schema。
     fn parameters(&self) -> serde_json::Value;
-    /// Monotonic revision for tools whose schema depends on runtime metadata.
+    /// 对于 schema 依赖运行时元数据的工具，单调递增的版本号。
     fn schema_revision(&self) -> u64 {
         0
     }
-    /// Model input modalities required to consume this tool's result.
-    ///
-    /// Runtimes omit incompatible tools from model-visible schemas when an
-    /// explicit model capability contract is available.
+
+    /**
+    消费该工具结果所需要的模型输入模态。
+
+    当存在明确的模型能力契约时，运行时会从模型可见的 schema 中
+    省略掉不兼容的工具。
+    */
     fn required_input_modalities(&self) -> &'static [crate::llm::ModelInputModality] {
         &[]
     }
 
-    /// Owned modality projection for runtime-defined tools whose required
-    /// modalities are negotiated over a wire connection. Static tool
-    /// implementations keep using [`Self::required_input_modalities`].
+    /// 供运行时定义的工具使用的、拥有所有权的模态投影；这类工具所需的模态
+    /// 是通过某条连接协商得到的。静态工具实现继续使用
+    /// [`Self::required_input_modalities`]。
     #[doc(hidden)]
     fn required_input_modalities_owned(&self) -> Vec<crate::llm::ModelInputModality> {
         self.required_input_modalities().to_vec()
     }
-    /// Execute the tool with untyped JSON parameters.
-    ///
-    /// **Default implementation** delegates to [`Self::execute_with_context`]
-    /// with an empty [`ToolContext`] — so tools that override
-    /// `execute_with_context` need NOT also implement `execute`. Legacy tools
-    /// that only implement `execute` keep working because the default
-    /// `execute_with_context` delegates back to `execute` (no infinite
-    /// recursion: a concrete `impl Tool` must override at least one of the two).
+
+    /**
+    用未类型化的 JSON 参数执行该工具。
+
+    **默认实现**会委托给 [`Self::execute_with_context`]，并传入一个空的
+    [`ToolContext`] —— 因此 override 了 `execute_with_context` 的工具无需
+    同时实现 `execute`。只实现了 `execute` 的旧式工具依然可以正常工作，
+    因为默认的 `execute_with_context` 会委托回 `execute`（不会无限递归：
+    一个具体的 `impl Tool` 必须至少覆盖这两者之一）。
+    */
     fn execute<'a>(&'a self, parameters: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
-        // Cannot delegate to execute_with_context directly because its ctx
-        // borrow is tied to 'a (self's lifetime) and a default() temporary
-        // would not live that long. Inline a default ctx owned by the future.
+        // 不能直接委托给 execute_with_context，因为它的 ctx 借用与 'a
+        // （self 的生命周期）绑定，而一个 default() 临时值活不了那么久。
+        // 因此把一个由该 future 拥有的默认 ctx 内联在这里。
         Box::pin(async move {
             let ctx = ToolContext::default();
             self.execute_with_context(parameters, &ctx).await
         })
     }
 
-    /// Execute the tool with a runtime [`ToolContext`].
-    ///
-    /// **Default implementation** ignores `ctx` and delegates to
-    /// [`Self::execute`] — therefore existing `impl Tool` blocks need no
-    /// changes to keep working. Tools that care about `working_dir`
-    /// (ShellTool, file tools, git, worktree_tool) override this method to
-    /// honor `ctx.working_dir` / `ctx.resolve_path` when building
-    /// `SandboxCommand`s or resolving file paths.
-    ///
-    /// The framework's `ToolManager::execute_tool_with_context` always
-    /// routes through this method, so a per-agent `working_dir` is naturally
-    /// delivered to tools without the (shared, stateless) ToolManager holding
-    /// any session state — avoiding cross-session cwd contamination.
+    /**
+    用运行时 [`ToolContext`] 执行该工具。
+
+    **默认实现**忽略 `ctx`，委托给 [`Self::execute`] —— 因此已有的
+    `impl Tool` 代码块无需任何改动即可继续工作。关心 `working_dir` 的工具
+    （ShellTool、文件类工具、git、worktree_tool）会覆盖此方法，
+    在构造 `SandboxCommand` 或解析文件路径时遵循
+    `ctx.working_dir` / `ctx.resolve_path`。
+
+    框架的 `ToolManager::execute_tool_with_context` 总是通过该方法路由，
+    因此每个 agent 各自的 `working_dir` 能够自然地传递给工具，
+    而无需让（共享、无状态的）ToolManager 持有任何会话状态 ——
+    从而避免跨会话的 cwd 污染。
+    */
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -978,17 +1090,19 @@ pub trait Tool: Send + Sync {
         self.execute(parameters)
     }
 
-    /// Optional sandbox injection (P2: run_code 真沙箱).
-    ///
-    /// Tools that hold a sandbox (`ShellTool`/`RunCodeTool`) override this to
-    /// receive the executor at agent-setup time (via `set_sandbox_manager` →
-    /// `ToolManager::apply_sandbox`). Returns `true` if the tool accepted the
-    /// sandbox, `false` (default) for tools that don't use one.
+    /**
+    可选的沙箱注入（P2：run_code 真沙箱）。
+
+    持有沙箱的工具（`ShellTool`/`RunCodeTool`）会覆盖此方法，
+    在 agent 建立时（经由 `set_sandbox_manager` → `ToolManager::apply_sandbox`）
+    接收执行器。若工具接受了该沙箱返回 `true`；不使用沙箱的工具
+    保持默认的 `false`。
+    */
     fn set_sandbox(&self, _sandbox: Arc<dyn SandboxExecutor>) -> bool {
         false
     }
 
-    /// Inject an application-owned persisted-script runtime resolver.
+    /// 注入一个由应用层拥有的、持久化脚本运行时解析器。
     fn set_script_execution_profile_resolver(
         &self,
         _resolver: Arc<dyn ScriptExecutionProfileResolver>,
@@ -996,51 +1110,54 @@ pub trait Tool: Send + Sync {
         false
     }
 
-    /// Whether this tool is exempt from the parallel batch timeout.
-    ///
-    /// Long-running tools (subagent dispatch such as `agent_tool` /
-    /// `delegate_readonly`, web research) that internally run their own
-    /// multi-step ReAct should override this to return `true`. Such tools are
-    /// separated out of the concurrent batch's total timeout (see
-    /// `react_loop.rs`) and instead run with their own per-execution timeout
-    /// (e.g. the subagent 600s default in `SubagentExecutor`), because their
-    /// latency is inherently far higher than typical file/shell tools and would
-    /// otherwise dominate the batch budget, prematurely cancelling peers.
-    ///
-    /// Default: `false` (subject to the batch timeout like all other tools).
+    /**
+    该工具是否豁免并行批处理超时。
+
+    内部自行运行多步 ReAct 的长耗时工具（subagent 派发类，如 `agent_tool` /
+    `delegate_readonly`，以及网络调研类）应覆盖此方法返回 `true`。
+    此类工具会从并发批次的总超时中被单独分离出来（见 `react_loop.rs`），
+    转而使用自己的单次执行超时（例如 `SubagentExecutor` 中 subagent 的
+    默认 600 秒），因为它们的延迟天然远高于典型的文件/shell 工具，
+    否则会主导批次预算，过早取消同批次的其他工具。
+
+    默认值：`false`（与其他所有工具一样受批处理超时约束）。
+    */
     fn exempt_from_batch_timeout(&self) -> bool {
         false
     }
 
-    /// Whether calls to this tool may run concurrently with peer calls from
-    /// the same model response.
-    ///
-    /// Stateful tools whose inputs depend on a revision, cursor, or result of
-    /// another call should return `false`.
+    /**
+    对该工具的调用是否可以与同一次模型响应中的其他调用并发执行。
+
+    输入依赖某个版本号、游标，或另一次调用结果的有状态工具应返回 `false`。
+    */
     fn allows_parallel_batch_execution(&self) -> bool {
         true
     }
 
-    /// Whether this tool enforces its own execution deadline.
-    ///
-    /// Tools that opt out of the outer batch timeout are long-running by
-    /// design and normally own a more appropriate deadline (for example, a
-    /// Subagent dispatch timeout). Keep that established behavior as the
-    /// default while exposing the decision explicitly to `ToolManager`,
-    /// which otherwise applies the ordinary per-tool timeout as well.
+    /**
+    该工具是否自行强制执行截止时间。
+
+    选择退出外层批处理超时的工具，按设计就是长耗时的，通常自己持有更
+    合适的截止时间（例如 Subagent 派发超时）。默认保持这一既有行为，
+    同时把该决策显式暴露给 `ToolManager`，否则它还会额外施加普通的
+    单工具超时。
+    */
     fn manages_own_timeout(&self) -> bool {
         self.exempt_from_batch_timeout()
     }
 
-    /// Stream tool execution with full [`ToolContext`].
-    ///
-    /// Prefer this over [`Self::execute_stream`]. The default implementation
-    /// calls [`Self::execute_with_context`] and yields a single
-    /// [`ToolStreamEvent::Complete`]. Override together with
-    /// [`Self::supports_streaming`] when the tool can emit real-time
-    /// [`ToolStreamEvent::Progress`] / [`ToolStreamEvent::Output`].
-    ///
-    /// The returned stream MUST end with [`ToolStreamEvent::Complete`].
+    /**
+    以完整的 [`ToolContext`] 流式执行该工具。
+
+    优先使用它而不是 [`Self::execute_stream`]。默认实现调用
+    [`Self::execute_with_context`]，并产出单个
+    [`ToolStreamEvent::Complete`]。当工具能够实时发出
+    [`ToolStreamEvent::Progress`] / [`ToolStreamEvent::Output`] 时，
+    应与 [`Self::supports_streaming`] 一并覆盖此方法。
+
+    返回的 stream 必须以 [`ToolStreamEvent::Complete`] 结束。
+    */
     fn execute_stream_with_context<'a>(
         &'a self,
         params: ToolParameters,
@@ -1056,11 +1173,12 @@ pub trait Tool: Send + Sync {
         })
     }
 
-    /// Stream tool execution with an empty [`ToolContext`].
-    ///
-    /// Compatibility entry point — delegates to
-    /// [`Self::execute_stream_with_context`]. New call sites should pass a
-    /// real context instead.
+    /**
+    以空的 [`ToolContext`] 流式执行该工具。
+
+    兼容性入口 —— 委托给 [`Self::execute_stream_with_context`]。
+    新的调用点应改为传入一个真实的 context。
+    */
     fn execute_stream<'a>(
         &'a self,
         params: ToolParameters,
@@ -1071,32 +1189,33 @@ pub trait Tool: Send + Sync {
         })
     }
 
-    /// Whether this tool supports streaming execution.
-    ///
-    /// Return `true` only if [`Self::execute_stream_with_context`] emits
-    /// meaningful intermediate events (`Progress` / `Output`). The default is
-    /// `false` so that non-streaming tools are not inadvertently routed
-    /// through the stream path.
+    /**
+    该工具是否支持流式执行。
+
+    只有当 [`Self::execute_stream_with_context`] 会发出有实际意义的中间
+    事件（`Progress` / `Output`）时才返回 `true`。默认是 `false`，
+    以避免不支持流式的工具被误路由到 stream 路径。
+    */
     fn supports_streaming(&self) -> bool {
         false
     }
 
-    /// Validate parameters before execution.
+    /// 在执行前校验参数。
     fn validate_parameters<'a>(&'a self, _params: &'a ToolParameters) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
 
-    /// Permissions required to invoke this tool.
+    /// 调用该工具所需的权限。
     fn permissions(&self) -> Vec<permission::ToolPermission> {
         vec![]
     }
 
-    /// Risk level of this tool. Dangerous tools require explicit approval.
+    /// 该工具的风险等级。危险工具需要显式审批。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Standard
     }
 
-    /// Capability metadata used by tool packs and surface filters.
+    /// 供工具包和过滤器使用的能力元数据。
     fn capabilities(&self) -> ToolCapabilities {
         match self.risk_level() {
             ToolRiskLevel::ReadOnly => ToolCapabilities::read_only(self.permissions()),
@@ -1104,7 +1223,7 @@ pub trait Tool: Send + Sync {
         }
     }
 
-    /// Human-readable capability declaration (e.g. "Reads files", "Executes shell commands").
+    /// 人类可读的能力声明（例如 "Reads files"、"Executes shell commands"）。
     fn capability_description(&self) -> &str {
         match self.risk_level() {
             ToolRiskLevel::ReadOnly => "Read-only: no side effects",
@@ -1128,25 +1247,28 @@ pub trait Tool: Send + Sync {
 /// 应用层类型——应用层在填入时把自己的事件序列化成 Value。
 pub type TraceSinkFn = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
-/// Opaque ownership token retained for the lifetime of one Agent invocation.
-///
-/// Applications can wrap a permit, lease, temporary-directory owner, or any
-/// other `Send + Sync + 'static` resource whose destructor releases ownership.
-/// The framework only clones and retains the token while an invocation, its
-/// subagents, and their tools are running. The wrapped value cannot be read or
-/// downcast through this API, keeping application policy out of the framework.
-///
-/// Debug output contains only the Rust type name and never formats the wrapped
-/// value.
+/**
+在一次 Agent 调用的生命周期内保留的、不透明的所有权令牌。
+
+应用层可以用它包裹一个 permit、租约、临时目录持有者，或任何其他
+`Send + Sync + 'static` 资源，其析构函数负责释放所有权。框架只在
+一次调用及其 subagent、工具运行期间克隆并保留这个令牌。包裹的值
+无法通过该 API 被读取或向下转型，从而把应用层策略挡在框架之外。
+
+Debug 输出只包含 Rust 类型名，绝不会格式化包裹的值。
+*/
 #[derive(Clone)]
 pub struct InvocationResourceGuard {
+    /// 被包裹资源的类型名（仅用于 Debug 输出）。
     resource_type: &'static str,
+    /// 被保留的不透明资源。
     _resource: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+    /// 可选的、不可变的类型化身份描述符。
     identity: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 impl InvocationResourceGuard {
-    /// Retain `resource` until the last clone of this guard is dropped.
+    /// 保留 `resource`，直到该 guard 的最后一个克隆被丢弃。
     pub fn new<T>(resource: T) -> Self
     where
         T: Send + Sync + 'static,
@@ -1158,11 +1280,12 @@ impl InvocationResourceGuard {
         }
     }
 
-    /// Retain `resource` with one immutable, typed identity descriptor.
-    ///
-    /// The descriptor can only be compared through [`Self::matches_identity`].
-    /// Neither the resource nor its identity can be read or downcast through
-    /// the public API.
+    /**
+    保留 `resource`，并附带一个不可变的、类型化的身份描述符。
+
+    该描述符只能通过 [`Self::matches_identity`] 进行比较。资源本身和它的
+    身份都无法通过公开 API 被读取或向下转型。
+    */
     pub fn new_identified<T, I>(resource: T, identity: I) -> Self
     where
         T: Send + Sync + 'static,
@@ -1175,12 +1298,13 @@ impl InvocationResourceGuard {
         }
     }
 
-    /// Whether this guard retains exactly `T`.
-    ///
-    /// This predicate supports typed filtering when one invocation carries
-    /// several independent resources. It never returns or downcasts the
-    /// wrapped value. If the guard was constructed with `Arc<T>`, query
-    /// `retains::<Arc<T>>()`, because the exact wrapped type is `Arc<T>`.
+    /**
+    该 guard 是否恰好保留了类型 `T`。
+
+    这个判定支持在一次调用携带多个独立资源时按类型过滤。它绝不会
+    返回或向下转型出包裹的值。如果该 guard 是用 `Arc<T>` 构造的，
+    应查询 `retains::<Arc<T>>()`，因为其真实的包裹类型是 `Arc<T>`。
+    */
     pub fn retains<T>(&self) -> bool
     where
         T: Send + Sync + 'static,
@@ -1188,10 +1312,12 @@ impl InvocationResourceGuard {
         self._resource.is::<T>()
     }
 
-    /// Whether the optional identity has exactly type `I` and equals `expected`.
-    ///
-    /// A missing identity or a descriptor with a different concrete type
-    /// returns `false`. This method never exposes the stored descriptor.
+    /**
+    可选身份是否恰好为类型 `I` 且等于 `expected`。
+
+    缺失身份或类型不匹配的描述符都会返回 `false`。该方法绝不会
+    暴露所存储的描述符本身。
+    */
     pub fn matches_identity<I>(&self, expected: &I) -> bool
     where
         I: PartialEq + Send + Sync + 'static,
@@ -1212,17 +1338,19 @@ impl std::fmt::Debug for InvocationResourceGuard {
     }
 }
 
-/// Nested delegation policy for agents and subagents.
-///
-/// Lives in `echo_core` because [`ToolContext`] is the cross-spawn channel used
-/// by `agent_tool`; higher-level task/runtime crates may re-export this type.
+/**
+Agent 与 subagent 的嵌套委派策略。
+
+之所以放在 `echo_core` 中，是因为 [`ToolContext`] 是 `agent_tool` 使用的跨 spawn
+通道；更高层的 task/runtime crate 可以重新导出该类型。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NestedDelegationPolicy {
-    /// Whether this subagent role may spawn child subagents.
+    /// 该 subagent 角色是否可以派生子 subagent。
     pub can_spawn_subagents: bool,
-    /// Current delegation depth for this subagent.
+    /// 该 subagent 当前的委派深度。
     pub delegate_depth: u8,
-    /// Maximum permitted delegation depth.
+    /// 允许的最大委派深度。
     pub max_delegate_depth: u8,
 }
 
@@ -1237,12 +1365,12 @@ impl Default for NestedDelegationPolicy {
 }
 
 impl NestedDelegationPolicy {
-    /// Whether a child subagent can be created under this policy.
+    /// 在此策略下是否可以创建子 subagent。
     pub fn can_delegate(&self) -> bool {
         self.can_spawn_subagents && self.delegate_depth < self.max_delegate_depth
     }
 
-    /// Policy to pass to a child subagent, if delegation is allowed.
+    /// 若允许委派，返回要传给子 subagent 的策略。
     pub fn child_policy(&self) -> Option<Self> {
         if !self.can_delegate() {
             return None;
@@ -1256,25 +1384,26 @@ impl NestedDelegationPolicy {
     }
 }
 
-/// A caller-resolved runtime for executing one persisted script.
-///
-/// This is an execution mechanism rather than a model-visible parameter. An
-/// application can prepare a deterministic language environment, then inject
-/// the resolved executable through [`ToolContext`]. Tools must not expose the
-/// executable or environment map in their JSON schema.
+/**
+调用方解析好的、用于执行一次持久化脚本的运行时。
+
+这是一种执行机制，而不是模型可见的参数。应用层可以准备一个确定性的
+语言环境，再通过 [`ToolContext`] 注入解析好的可执行文件。工具不得在其
+JSON schema 中暴露该可执行文件或环境变量 map。
+*/
 #[derive(Clone, PartialEq, Eq)]
 pub struct ScriptExecutionProfile {
-    /// Stable, content-derived identity recorded in tool metadata.
+    /// 记录在工具 metadata 中的、由内容派生的稳定身份标识。
     pub id: String,
-    /// Normalized language this profile can execute, such as `python`.
+    /// 该 profile 可执行的规范化语言名，例如 `python`。
     pub language: String,
-    /// Resolved executable path or backend-visible executable name.
+    /// 解析后的可执行文件路径，或后端可见的可执行文件名。
     pub program: std::path::PathBuf,
-    /// Arguments inserted before the relative script path.
+    /// 插入在相对脚本路径之前的参数。
     pub args_prefix: Vec<String>,
-    /// Environment supplied only to the sandboxed child process.
+    /// 仅提供给沙箱化子进程的环境变量。
     pub env: HashMap<String, String>,
-    /// Runtime files that the sandbox must be allowed to read.
+    /// 沙箱必须被允许读取的运行时文件。
     pub read_only_paths: Vec<std::path::PathBuf>,
 }
 
@@ -1323,122 +1452,127 @@ impl ScriptExecutionProfile {
     }
 }
 
-/// Resolves an application-owned runtime for persisted scripts.
-///
-/// Implementations may lazily provision a locked environment. The framework
-/// owns invocation and sandboxing; applications own interpreter and package
-/// policy. Returning `None` preserves the built-in language executable.
+/**
+为持久化脚本解析一个由应用层拥有的运行时。
+
+实现可以惰性地准备一个受锁定的环境。框架拥有调用和沙箱化的所有权；
+应用层拥有解释器和包策略的所有权。返回 `None` 会保留内置的语言可执行文件。
+*/
 pub trait ScriptExecutionProfileResolver: Send + Sync {
+    /// 为给定语言解析出一个脚本执行 profile。
     fn resolve<'a>(
         &'a self,
         language: &'a str,
     ) -> BoxFuture<'a, Result<Option<Arc<ScriptExecutionProfile>>>>;
 }
 
-/// Identity and lineage of one dispatched Subagent attempt.
-///
-/// Value-carried through [`ExternalRunContext`] so tools executing inside a
-/// Subagent know who they are, who dispatched them, and where they sit in the
-/// dispatch tree — without holding agent handles. All fields are `Option`;
-/// a context with `subagent_lineage: None` belongs to a primary agent.
+/**
+一次已派发 Subagent 尝试的身份与谱系信息。
+
+通过 [`ExternalRunContext`] 以值的形式携带，使得在 Subagent 内部执行的工具
+能够知道自己是谁、是谁派发了自己，以及自己在派发树中的位置 ——
+而无需持有 agent 句柄。所有字段均为 `Option`；`subagent_lineage: None`
+的上下文属于主 agent。
+*/
 #[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct SubagentLineage {
-    /// Role name of this Subagent (own identity).
+    /// 该 Subagent 的角色名（自身身份）。
     pub agent_name: Option<String>,
-    /// Own execution id for this attempt (self-contained addressing).
+    /// 本次尝试自身的 execution id（可自我寻址）。
     pub execution_id: Option<String>,
-    /// Own application run id, when dispatched inside a formal run.
+    /// 若在一次正式 run 内被派发，则为对应的应用层 run id。
     pub run_id: Option<String>,
-    /// Name of the dispatching parent agent.
+    /// 派发方父 agent 的名称。
     pub parent_agent: Option<String>,
-    /// Execution id of the parent's current attempt, when the parent is
-    /// itself a dispatched Subagent. Lets the default uplink steer the
-    /// parent's active turn instead of only emitting an event.
+    /// 当父级本身也是被派发的 Subagent 时，父级当前尝试的 execution id。
+    /// 使默认 uplink 能够引导父级的活跃 turn，而不只是发出一个事件。
     pub parent_execution_id: Option<String>,
-    /// Stable framework event id of the parent tool-start event that created
-    /// this child dispatch, when the parent is itself envelope-observed.
+    /// 当父级本身也被 envelope 观测时，创建此子派发的父级工具启动事件的
+    /// 稳定框架事件 id。
     pub parent_event_id: Option<String>,
-    /// Canonical dispatch-tree path (`root/<child>/<grandchild>`). Stable
-    /// across attempts of one logical tree; assigned at dispatch time.
+    /// 规范的派发树路径（`root/<child>/<grandchild>`）。在同一逻辑树的多次
+    /// 尝试之间保持稳定；在派发时分配。
     pub agent_path: Option<String>,
-    /// Task-graph task id this attempt executes, when dispatched by a
-    /// revisioned task runtime.
+    /// 当由带修订版本的任务运行时派发时，本次尝试执行的任务图任务 id。
     pub task_id: Option<String>,
-    /// Attempt number within the task (1-based).
+    /// 该任务内的尝试序号（从 1 开始）。
     pub attempt: Option<u32>,
-    /// Revision of the task-graph plan this attempt belongs to.
+    /// 本次尝试所属的任务图计划修订版本。
     pub plan_revision: Option<u64>,
 }
 
-/// Where one uplink message is heading.
+/// 一条 uplink 消息的去向。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubagentUplinkTarget {
-    /// The dispatching parent (an agent, or an application run driver).
+    /// 派发方父级（一个 agent，或一个应用层 run driver）。
     Parent {
-        /// Intent: informational report vs blocking clarification request.
+        /// 意图：信息性报告 vs. 阻塞式澄清请求。
         kind: SubagentUplinkKind,
-        /// Message body (already bounded by the calling tool).
+        /// 消息正文（已由调用方工具限定长度）。
         text: String,
     },
-    /// A sibling in the same dispatch graph. Delivery is queue-only: the
-    /// message steers the sibling's active turn at its next model boundary
-    /// and never starts a new one.
+    /// 同一派发图中的一个兄弟节点。投递方式仅为入队：该消息会在兄弟节点
+    /// 下一个模型边界处引导其活跃 turn，绝不会另起一个新 turn。
     Sibling {
+        /// 目标兄弟节点的地址。
         to: SubagentPeerAddress,
+        /// 消息正文。
         text: String,
     },
 }
 
-/// How a sibling peer is addressed.
+/// 如何寻址一个兄弟 peer。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubagentPeerAddress {
-    /// A currently active attempt — deliverable by the shared control plane
-    /// (live steer).
+    /// 一次当前活跃的尝试 —— 可通过共享控制面（实时引导）投递。
     ByExecutionId(String),
-    /// A task in the same graph that has no live attempt yet. The framework
-    /// default sink cannot resolve the next attempt number, so delivery
-    /// requires an application sink that owns attempt scheduling (e.g.
-    /// queue-for-next-attempt).
+    /// 同一派发图中尚无活跃尝试的任务。框架的默认 sink 无法解析出下一次
+    /// 尝试的编号，因此投递需要一个拥有尝试调度权的应用层 sink（例如
+    /// 排队等待下一次尝试）。
     ByTaskId(String),
 }
 
-/// Intent of a parent-directed uplink message.
+/// 一条面向父级的 uplink 消息的意图。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubagentUplinkKind {
-    /// Non-blocking informational report; the sending attempt keeps running.
+    /// 非阻塞的信息性报告；发送方的尝试继续运行。
     Report,
-    /// Blocking request for clarification. The sender does NOT wait — the
-    /// host decides (pause the run, answer via guidance, or ignore) while
-    /// the attempt continues with its best-effort work.
+    /// 阻塞式的澄清请求。发送方并不等待 —— 由宿主决定（暂停该 run、
+    /// 通过引导回答，或忽略），与此同时该尝试继续尽力而为地工作。
     Escalate,
 }
 
-/// One message from a running Subagent toward its parent or a sibling.
+/// 一条从运行中的 Subagent 发往其父级或兄弟节点的消息。
 #[derive(Clone, Debug)]
 pub struct SubagentUplinkMessage {
-    /// Sender identity captured from the dispatching runtime context.
+    /// 从派发运行时上下文中捕获到的发送方身份。
     pub from: SubagentLineage,
-    /// Where the message goes and what it says.
+    /// 消息的去向及内容。
     pub target: SubagentUplinkTarget,
 }
 
-/// Bounded acknowledgment for one uplink message. Infallible by design:
-/// delivery problems are reported through `accepted`/`status` so calling
-/// tools can turn them into model-visible results instead of errors.
+/**
+一条 uplink 消息的有界确认回执。按设计是不可失败的：
+投递问题通过 `accepted`/`status` 上报，使调用方工具能够把它们转化为
+模型可见的结果，而不是错误。
+*/
 #[derive(Clone, Debug)]
 pub struct SubagentUplinkReceipt {
+    /// 该消息是否被接受。
     pub accepted: bool,
-    /// Machine-readable disposition, e.g. `event_emitted`, `parent_steered`,
-    /// `delivered_to_sibling`, `no_parent`, `sibling_not_active`, `rejected`.
+    /// 机器可读的处置结果，例如 `event_emitted`、`parent_steered`、
+    /// `delivered_to_sibling`、`no_parent`、`sibling_not_active`、`rejected`。
     pub status: String,
+    /// 人类可读的详情说明。
     pub detail: String,
 }
 
-/// Uplink channel installed by the dispatcher into a Subagent's
-/// [`ExternalRunContext`]. Mirrors the `TraceSinkFn` injection pattern: the
-/// framework provides a default sink (event bus + control-registry steer) and
-/// applications may install their own (journal, pause policy, surface
-/// notification) before dispatch.
+/**
+由派发方安装进 Subagent 的 [`ExternalRunContext`] 中的 uplink 通道。
+沿用与 `TraceSinkFn` 相同的注入模式：框架提供一个默认 sink（事件总线 +
+control-registry 引导），应用层可以在派发前安装自己的实现（日志、暂停策略、
+界面通知）。
+*/
 pub type SubagentUplinkFn = std::sync::Arc<
     dyn Fn(SubagentUplinkMessage) -> futures::future::BoxFuture<'static, SubagentUplinkReceipt>
         + Send
@@ -1470,16 +1604,16 @@ pub struct ExternalRunContext {
     pub cancel: Option<std::sync::Arc<tokio_util::sync::CancellationToken>>,
     /// Subagent trace 事件回传通道。
     pub trace_sink: Option<TraceSinkFn>,
-    /// Nested delegation policy to propagate into tools such as `agent_tool`.
+    /// 要传播进 `agent_tool` 等工具的嵌套委派策略。
     pub delegation_policy: Option<NestedDelegationPolicy>,
-    /// Opaque resources retained across main Agent, subagent, and tool spawns.
+    /// 在主 Agent、subagent 与工具 spawn 之间保留的不透明资源。
     pub resource_guards: Vec<InvocationResourceGuard>,
-    /// Identity/lineage of the dispatched Subagent attempt this context
-    /// belongs to. `None` for primary agent invocations.
+    /// 该上下文所属的、已派发 Subagent 尝试的身份/谱系信息。
+    /// 主 agent 调用时为 `None`。
     pub subagent_lineage: Option<SubagentLineage>,
-    /// Uplink channel for Subagent→parent / Subagent→sibling messaging,
-    /// installed by the dispatcher. `None` means no uplink is wired; message
-    /// tools must report unavailable instead of silently dropping.
+    /// 由派发方安装的 Subagent→父级 / Subagent→兄弟节点 消息通道。
+    /// `None` 表示未接入任何 uplink；消息类工具必须上报不可用，
+    /// 而不是静默丢弃消息。
     pub uplink: Option<SubagentUplinkFn>,
 }
 
@@ -1530,40 +1664,40 @@ pub struct ToolContext {
     pub message_id: Option<String>,
     /// 当前 run 内的一次具体执行标识。
     pub execution_id: Option<String>,
-    /// Stable identity for this logical tool call and all of its retry attempts.
+    /// 该逻辑工具调用及其所有重试尝试共用的稳定身份标识。
     pub call_id: Option<String>,
-    /// Optional effect observer bound by the caller to this exact trace run
-    /// and tool call. A shared tool must not retain it across invocations.
+    /// 由调用方绑定到这一次具体 trace run 和工具调用的可选效果观察者。
+    /// 共享工具不得跨调用保留它。
     pub effect_sink: Option<ToolEffectSinkFn>,
-    /// User message that triggered the current turn. Delegation tools forward
-    /// this typed value so binary attachments remain intact.
+    /// 触发当前 turn 的用户消息。委派类工具会转发这个带类型的值，
+    /// 以保持二进制附件完整。
     pub active_message: Option<crate::llm::types::Message>,
-    /// Optional application-selected root and retention policy for complete
-    /// tool-output artifacts. Streaming tools should use this instead of
-    /// retaining unbounded output in memory.
+    /// 应用层为完整工具输出 artifact 选定的可选根路径与保留策略。
+    /// 流式工具应使用它，而不是在内存中无限保留输出。
     pub output_artifacts: Option<artifact::ToolOutputArtifactConfig>,
-    /// Invocation-scoped schema visibility shared with `tool_search`.
+    /// 与 `tool_search` 共享的、限定于本次调用的 schema 可见性。
     pub tool_visibility: Option<std::sync::Arc<ToolVisibilityState>>,
-    /// Application-resolved runtime for a persisted script execution.
-    ///
-    /// This value is intentionally absent from model-visible tool parameters.
-    /// `run_code` applies it only when `script_path` is used and its normalized
-    /// language matches the tool call.
+    /**
+    应用层为一次持久化脚本执行解析出的运行时。
+
+    该值刻意不出现在模型可见的工具参数中。`run_code` 只有在使用了
+    `script_path` 且其规范化语言与本次工具调用匹配时，才会应用它。
+    */
     pub script_execution_profile: Option<std::sync::Arc<ScriptExecutionProfile>>,
     /// 跨 spawn 安全的取消令牌（值传递，非 task_local）。
     pub cancel: Option<std::sync::Arc<tokio_util::sync::CancellationToken>>,
     /// 跨 spawn 安全的 trace 回传（值传递）。
     pub trace_sink: Option<TraceSinkFn>,
-    /// Nested delegation policy for LLM-callable dispatch tools.
+    /// 供 LLM 可调用的派发类工具使用的嵌套委派策略。
     pub delegation_policy: Option<NestedDelegationPolicy>,
-    /// Opaque invocation resources. Tools may clone and retain these guards
-    /// when work crosses an internal spawn or blocking boundary.
+    /// 不透明的调用资源。当工作跨越内部 spawn 或阻塞边界时，
+    /// 工具可以克隆并保留这些 guard。
     pub resource_guards: Vec<InvocationResourceGuard>,
-    /// Identity/lineage of the Subagent attempt invoking this tool.
-    /// `None` when a primary agent invokes the tool.
+    /// 调用该工具的 Subagent 尝试的身份/谱系信息。
+    /// 主 agent 调用该工具时为 `None`。
     pub subagent_lineage: Option<SubagentLineage>,
-    /// Uplink channel for Subagent→parent / Subagent→sibling messaging.
-    /// `None` when the invocation has no uplink wired.
+    /// Subagent→父级 / Subagent→兄弟节点 消息通道。
+    /// 本次调用未接入 uplink 时为 `None`。
     pub uplink: Option<SubagentUplinkFn>,
 }
 
@@ -1608,15 +1742,20 @@ impl std::fmt::Debug for ToolContext {
     }
 }
 
-/// Mutable per-invocation tool visibility without duplicating the tool registry.
+/// 每次调用可变的工具可见性状态，不重复维护一份完整的工具注册表。
 #[derive(Debug)]
 pub struct ToolVisibilityState {
+    /// 该次调用可激活的完整工具名目录。
     available: std::collections::HashSet<String>,
+    /// 当前策略允许的工具名集合。
     eligible: std::sync::RwLock<std::collections::HashSet<String>>,
+    /// 当前已对模型可见的工具名集合。
     visible: std::sync::RwLock<std::collections::HashSet<String>>,
 }
 
 impl ToolVisibilityState {
+    /// 用一份 eligible 策略集合和初始可见集合构造状态
+    /// （`available` 与 `eligible` 相同）。
     pub fn new(
         eligible: std::collections::HashSet<String>,
         initial: std::collections::HashSet<String>,
@@ -1624,9 +1763,9 @@ impl ToolVisibilityState {
         Self::with_available(eligible.clone(), eligible, initial)
     }
 
-    /// Build visibility with a wider activation catalog than the currently
-    /// eligible policy surface. Product policy and skills may later promote
-    /// names from `available` through [`Self::extend_eligibility_and_activate`].
+    /// 用比当前 eligible 策略集合更大的可激活目录构建可见性状态。
+    /// 产品策略和 skill 之后可以通过 [`Self::extend_eligibility_and_activate`]
+    /// 从 `available` 中提升更多名称。
     pub fn with_available(
         available: std::collections::HashSet<String>,
         eligible: std::collections::HashSet<String>,
@@ -1645,6 +1784,7 @@ impl ToolVisibilityState {
         state
     }
 
+    /// 给定名称当前是否属于策略允许（eligible）的集合。
     pub fn is_eligible(&self, name: &str) -> bool {
         self.eligible
             .read()
@@ -1652,6 +1792,7 @@ impl ToolVisibilityState {
             .contains(name)
     }
 
+    /// 给定名称当前是否对模型可见。
     pub fn is_visible(&self, name: &str) -> bool {
         self.visible
             .read()
@@ -1659,6 +1800,7 @@ impl ToolVisibilityState {
             .contains(name)
     }
 
+    /// 激活给定名称中所有 eligible 的工具，返回新激活（此前不可见）的名称列表。
     pub fn activate<I>(&self, names: I) -> Vec<String>
     where
         I: IntoIterator<Item = String>,
@@ -1681,7 +1823,7 @@ impl ToolVisibilityState {
         activated
     }
 
-    /// Extend the invocation policy and expose the promoted schemas together.
+    /// 扩展本次调用的策略，并一并暴露被提升的 schema。
     pub fn extend_eligibility_and_activate<I>(&self, names: I) -> Vec<String>
     where
         I: IntoIterator<Item = String>,
@@ -1702,12 +1844,14 @@ impl ToolVisibilityState {
         self.activate(promoted)
     }
 
+    /// 返回排序后的、完整可激活目录中的所有工具名。
     pub fn available_names(&self) -> Vec<String> {
         let mut names = self.available.iter().cloned().collect::<Vec<_>>();
         names.sort();
         names
     }
 
+    /// 返回排序后的、当前对模型可见的所有工具名。
     pub fn visible_names(&self) -> Vec<String> {
         let mut names = self
             .visible
@@ -1881,11 +2025,11 @@ mod tool_context_tests {
         assert!(!partial.allows_automatic_retry());
     }
 
-    // ── stage4 P4.1: cache_user_id single-source ────────────────────────────
-    // The external cache_user_id channel (ExternalRunContext.cache_user_id +
-    // ToolContext.cache_user_id) was dead — no tool ever read ToolContext's
-    // field. Removed in favor of the single config source. These compile-time
-    // assertions guard the removal: both structs must construct without it.
+    // ── stage4 P4.1: cache_user_id 单一来源 ────────────────────────────
+    // 原先的外部 cache_user_id 通道（ExternalRunContext.cache_user_id +
+    // ToolContext.cache_user_id）已经是死代码 —— 从没有工具读取过
+    // ToolContext 的该字段。现已移除，改用单一的配置来源。以下编译期
+    // 断言用于守护这次移除：两个结构体都必须能在没有该字段的情况下构造。
 
     #[test]
     fn external_run_context_constructs_without_cache_user_id() {
@@ -1902,7 +2046,7 @@ mod tool_context_tests {
             resource_guards: Vec::new(),
             subagent_lineage: None,
             uplink: None,
-            // No cache_user_id field — if it still exists, this fails to compile.
+            // 不再有 cache_user_id 字段——若它仍然存在，这里会编译失败。
         };
     }
 
@@ -1927,7 +2071,7 @@ mod tool_context_tests {
             resource_guards: Vec::new(),
             subagent_lineage: None,
             uplink: None,
-            // No cache_user_id field — if it still exists, this fails to compile.
+            // 不再有 cache_user_id 字段——若它仍然存在，这里会编译失败。
         };
     }
 
@@ -2020,9 +2164,8 @@ mod tool_context_tests {
 mod exempt_from_batch_timeout_tests {
     use super::*;
 
-    /// A tool that does NOT override `exempt_from_batch_timeout`. Verifies the
-    /// trait default is `false` (subject to the batch timeout like all ordinary
-    /// tools). Guards against accidental default flip.
+    /// 一个不覆盖 `exempt_from_batch_timeout` 的工具。用于验证该 trait 的默认值
+    /// 是 `false`（与所有普通工具一样受批处理超时约束）。防止默认值被意外改动。
     struct OrdinaryTool;
 
     impl Tool for OrdinaryTool {
@@ -2037,8 +2180,8 @@ mod exempt_from_batch_timeout_tests {
         }
     }
 
-    /// A tool that DOES override `exempt_from_batch_timeout -> true`, modeling
-    /// long-running dispatch tools (agent_tool / delegate_readonly).
+    /// 一个覆盖 `exempt_from_batch_timeout -> true` 的工具，模拟长耗时的
+    /// 派发类工具（agent_tool / delegate_readonly）。
     struct LongRunningTool;
 
     impl Tool for LongRunningTool {
@@ -2074,8 +2217,8 @@ mod exempt_from_batch_timeout_tests {
         );
     }
 
-    /// Trait-object dispatch: the exemption must be observable through
-    /// `dyn Tool` (this is how `react_loop` reads it via `ToolManager::get_tool`).
+    /// trait 对象派发：该豁免标记必须能通过 `dyn Tool` 被观察到
+    /// （`react_loop` 正是通过 `ToolManager::get_tool` 以这种方式读取它的）。
     #[test]
     fn exemption_visible_through_dyn_trait_object() {
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(OrdinaryTool), Box::new(LongRunningTool)];
@@ -2097,9 +2240,8 @@ mod exempt_from_batch_timeout_tests {
 mod execute_with_context_tests {
     use super::*;
 
-    /// A "legacy-style" tool that only implements `execute`. Verifies the
-    /// trait's default `execute_with_context` delegates to `execute`
-    /// regardless of the supplied context.
+    /// 一个"旧式"的工具，只实现了 `execute`。用于验证该 trait 默认的
+    /// `execute_with_context` 无论传入什么 context，都会委托给 `execute`。
     struct LegacyTool;
 
     impl Tool for LegacyTool {
@@ -2126,7 +2268,7 @@ mod execute_with_context_tests {
     #[tokio::test]
     async fn test_default_delegates_to_execute_ignoring_ctx() {
         let tool = LegacyTool;
-        // A non-default ctx that the default impl must ignore.
+        // 一个非默认的 ctx，默认实现必须忽略它。
         let ctx = ToolContext {
             working_dir: Some(std::path::PathBuf::from("/wt")),
             conversation_id: Some("c".into()),

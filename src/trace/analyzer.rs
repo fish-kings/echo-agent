@@ -1,9 +1,10 @@
-//! TraceAnalyzer — observability over stored runs.
-//!
-//! Provides session-level summarization, tool usage statistics, token
-//! breakdowns, slow-tool detection, and error-pattern analysis. All methods
-//! operate on a shared [`RunStore`] backend, making them independent of the
-//! storage implementation (in-memory, JSONL, etc.).
+/*!
+ * TraceAnalyzer —— 面向已存储运行记录（run）的可观测性分析器。
+ *
+ * 提供会话级汇总、工具使用统计、token 用量拆分、慢工具检测以及错误
+ * 模式分析。所有方法都基于共享的 [`RunStore`] 后端运行，因此与具体的
+ * 存储实现（内存、JSONL 等）无关。
+ */
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -13,161 +14,170 @@ use std::sync::Arc;
 
 use crate::trace::{RunEvent, RunStatus, RunStore, TokenUsage};
 
-// ── Analysis result structs ────────────────────────────────────────────
+// ── 分析结果结构体 ────────────────────────────────────────────
 
-/// Summary for a single session (aggregation of all runs in that session).
+/// 单个会话的汇总信息（对该会话下所有运行记录的聚合）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionSummary {
-    /// Session identifier.
+    /// 会话标识。
     pub session_id: String,
-    /// Number of runs in the session.
+    /// 该会话中的运行次数。
     pub run_count: usize,
-    /// Number of completed runs.
+    /// 已完成的运行次数。
     pub completed_count: usize,
-    /// Number of failed runs.
+    /// 失败的运行次数。
     pub failed_count: usize,
-    /// Number of cancelled runs.
+    /// 被取消的运行次数。
     pub cancelled_count: usize,
-    /// Total prompt tokens across all runs.
+    /// 所有运行的 prompt token 总数。
     pub total_prompt_tokens: u32,
-    /// Total completion tokens across all runs.
+    /// 所有运行的 completion token 总数。
     pub total_completion_tokens: u32,
-    /// Total tokens across all runs.
+    /// 所有运行的 token 总数。
     pub total_tokens: u32,
-    /// Cumulative wall-clock duration (ms) across all runs.
+    /// 所有运行累计的墙钟（wall-clock）耗时（毫秒）。
     pub total_duration_ms: u64,
-    /// Cumulative LLM call duration (ms).
+    /// 累计的 LLM 调用耗时（毫秒）。
     pub total_llm_duration_ms: u64,
-    /// Cumulative tool execution duration (ms).
+    /// 累计的工具执行耗时（毫秒）。
     pub total_tool_duration_ms: u64,
-    /// Earliest `started_at` in the session.
+    /// 该会话中最早的 `started_at`。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub first_started_at: Option<DateTime<Utc>>,
-    /// Latest `finished_at` in the session.
+    /// 该会话中最晚的 `finished_at`。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub last_finished_at: Option<DateTime<Utc>>,
-    /// Tool names used across all runs in this session.
+    /// 该会话所有运行中使用过的工具名称。
     pub tools_used: Vec<String>,
-    /// Number of LLM calls across all runs.
+    /// 所有运行的 LLM 调用次数。
     pub llm_call_count: usize,
 }
 
-/// Per-tool usage statistics.
+/// 单个工具的使用统计信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolUsageStats {
-    /// Tool name.
+    /// 工具名称。
     pub name: String,
-    /// Number of times the tool was called.
+    /// 该工具被调用的次数。
     pub call_count: usize,
-    /// Number of successful calls.
+    /// 调用成功的次数。
     pub success_count: usize,
-    /// Number of failed calls.
+    /// 调用失败的次数。
     pub failure_count: usize,
-    /// Average duration per call (ms).
+    /// 单次调用的平均耗时（毫秒）。
     pub avg_duration_ms: u64,
-    /// Minimum duration (ms).
+    /// 最短耗时（毫秒）。
     pub min_duration_ms: u64,
-    /// Maximum duration (ms).
+    /// 最长耗时（毫秒）。
     pub max_duration_ms: u64,
-    /// Total duration (ms).
+    /// 总耗时（毫秒）。
     pub total_duration_ms: u64,
-    /// Percentage of total tool time (relative to all tools).
+    /// 占全部工具总耗时的百分比。
     pub pct_of_total_time: f64,
 }
 
-/// Token usage breakdown across runs.
+/// 跨运行记录的 token 用量拆分。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenBreakdown {
-    /// Total prompt tokens.
+    /// prompt token 总数。
     pub prompt_tokens: u32,
-    /// Total completion tokens.
+    /// completion token 总数。
     pub completion_tokens: u32,
-    /// Total tokens (prompt + completion).
+    /// token 总数（prompt + completion）。
     pub total_tokens: u32,
-    /// Per-run breakdown (run_id -> TokenUsage).
+    /// 按运行拆分的明细（run_id -> TokenUsage）。
     pub per_run: HashMap<String, TokenUsage>,
-    /// Per-LLM-call breakdown (run_id -> list of (prompt, completion)).
+    /// 按每次 LLM 调用拆分的明细（run_id -> (prompt, completion) 列表）。
     pub per_llm_call: HashMap<String, Vec<(u32, u32)>>,
 }
 
-/// A recurring error pattern identified across runs.
+/// 在多次运行中识别出的一个重复出现的错误模式。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorPattern {
-    /// Normalized error message (grouped by similarity).
+    /// 归一化后的错误信息（按相似度分组）。
     pub pattern: String,
-    /// Number of occurrences.
+    /// 出现次数。
     pub occurrence_count: usize,
-    /// Run IDs where this pattern was seen.
+    /// 出现该模式的运行 ID 列表。
     pub run_ids: Vec<String>,
-    /// Tool names most frequently associated with this error.
+    /// 与该错误关联最频繁的工具名称。
     pub associated_tools: Vec<String>,
-    /// First occurrence timestamp.
+    /// 首次出现的时间戳。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub first_seen: Option<DateTime<Utc>>,
-    /// Last occurrence timestamp.
+    /// 最近一次出现的时间戳。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub last_seen: Option<DateTime<Utc>>,
 }
 
-/// Backward-compatible name for the runtime tool failure category.
+/// 运行时工具失败分类的向后兼容别名。
 pub type ToolFailureClass = crate::tools::ToolFailureCategory;
 
-/// A recurring tool failure grouped without exposing raw tool arguments.
+/// 在多次运行中重复出现的工具失败分组，不暴露原始工具参数。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolFailurePattern {
-    /// Tool that failed.
+    /// 发生失败的工具。
     pub tool_name: String,
-    /// Deterministic failure class.
+    /// 确定性的失败分类。
     pub error_class: ToolFailureClass,
-    /// Normalized error preview used for grouping.
+    /// 用于分组的归一化错误预览。
     pub pattern: String,
-    /// Structural shape of the input, excluding argument values.
+    /// 输入的结构形状（不含具体参数取值）。
     pub input_shape: String,
-    /// Number of failure occurrences.
+    /// 失败发生的次数。
     pub occurrence_count: usize,
-    /// Number of distinct runs containing the failure.
+    /// 出现该失败的不同运行数量。
     pub distinct_run_count: usize,
-    /// Run IDs containing the failure.
+    /// 出现该失败的运行 ID 列表。
     pub run_ids: Vec<String>,
-    /// Repeated identical attempts after the first failure in the same run.
+    /// 同一运行中，首次失败之后重复的相同尝试次数。
     pub ineffective_retry_count: usize,
-    /// First run start containing the pattern.
+    /// 出现该模式的最早运行起始时间。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub first_seen: Option<DateTime<Utc>>,
-    /// Last run finish containing the pattern.
+    /// 出现该模式的最近运行结束时间。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub last_seen: Option<DateTime<Utc>>,
 }
 
-/// Tool reliability summary across a bounded set of stored runs.
+/// 在一批有限数量的已存储运行记录上得到的工具可靠性汇总。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolReliabilityReport {
+    /// 参与统计的运行记录数量。
     pub run_count: usize,
+    /// 工具调用总次数。
     pub total_calls: usize,
+    /// 调用成功的次数。
     pub success_count: usize,
+    /// 调用失败的次数。
     pub failure_count: usize,
+    /// 无效重试（同参数重复失败）的次数。
     pub ineffective_retry_count: usize,
+    /// 归纳出的失败模式列表。
     pub failure_patterns: Vec<ToolFailurePattern>,
 }
 
 // ── TraceAnalyzer ──────────────────────────────────────────────────────
 
-/// Observability analyzer for execution traces.
-///
-/// Wraps a [`RunStore`] and provides analytics methods that aggregate data
-/// across runs, sessions, and events. All methods are async to accommodate
-/// potentially slow storage backends (e.g. disk I/O for JSONL stores).
+/**
+ * 面向执行轨迹（trace）的可观测性分析器。
+ *
+ * 包装一个 [`RunStore`]，提供跨运行、跨会话、跨事件聚合数据的分析方法。
+ * 所有方法都是异步的，以适应可能较慢的存储后端（例如 JSONL 存储的磁盘
+ * I/O）。
+ */
 pub struct TraceAnalyzer {
+    /// 底层的运行记录存储后端。
     run_store: Arc<dyn RunStore>,
 }
 
 impl TraceAnalyzer {
-    /// Create a new analyzer backed by the given [`RunStore`].
+    /// 创建一个基于给定 [`RunStore`] 的新分析器。
     pub fn new(run_store: Arc<dyn RunStore>) -> Self {
         Self { run_store }
     }
 
-    /// Produce a summary for a single session by aggregating all its runs.
+    /// 通过聚合某个会话下的所有运行记录，生成该会话的汇总信息。
     pub async fn summarize_session(
         &self,
         session_id: &str,
@@ -214,7 +224,7 @@ impl TraceAnalyzer {
                 last_finished_at = Some(fa);
             }
 
-            // Load full run to extract tool names and LLM call count
+            // 加载完整的运行记录，以提取工具名称和 LLM 调用次数
             if let Some(run) = self.run_store.load(&summary.run_id).await? {
                 total_llm_duration_ms += run.timings.llm_duration_ms;
                 total_tool_duration_ms += run.timings.tool_duration_ms;
@@ -254,14 +264,14 @@ impl TraceAnalyzer {
         })
     }
 
-    /// Compute per-tool usage statistics across all runs (up to `limit`).
+    /// 计算所有运行记录（最多 `limit` 条）中各工具的使用统计信息。
     pub async fn tool_usage_stats(
         &self,
         limit: usize,
     ) -> crate::error::Result<Vec<ToolUsageStats>> {
         let summaries = self.run_store.list_all(limit).await?;
 
-        // Accumulate per-tool data
+        // 按工具累加数据
         let mut tool_data: HashMap<String, ToolAccumulator> = HashMap::new();
 
         for summary in &summaries {
@@ -315,7 +325,7 @@ impl TraceAnalyzer {
             }
         }
 
-        // Compute total tool time for percentage calculation
+        // 计算工具总耗时，用于后续百分比计算
         let grand_total_ms: u64 = tool_data.values().map(|a| a.total_duration_ms).sum();
 
         let mut stats: Vec<ToolUsageStats> = tool_data
@@ -345,12 +355,12 @@ impl TraceAnalyzer {
             })
             .collect();
 
-        // Sort by total_duration descending
+        // 按 total_duration 降序排序
         stats.sort_by_key(|b| std::cmp::Reverse(b.total_duration_ms));
         Ok(stats)
     }
 
-    /// Compute token usage breakdown across all runs (up to `limit`).
+    /// 计算所有运行记录（最多 `limit` 条）的 token 用量拆分。
     pub async fn token_usage_breakdown(
         &self,
         limit: usize,
@@ -397,7 +407,7 @@ impl TraceAnalyzer {
         })
     }
 
-    /// Find tools whose average duration exceeds `threshold_ms`.
+    /// 查找平均耗时超过 `threshold_ms` 的工具。
     pub async fn find_slow_tools(
         &self,
         threshold_ms: u64,
@@ -410,22 +420,23 @@ impl TraceAnalyzer {
             .collect())
     }
 
-    /// Analyze error patterns across runs. Groups errors by normalized
-    /// message (lowercased, trimmed) and reports occurrence counts, associated
-    /// tools, and timing.
+    /**
+     * 分析各次运行中的错误模式。按归一化后的消息（转小写、去空白）对
+     * 错误进行分组，并报告出现次数、关联工具及时间信息。
+     */
     pub async fn error_pattern_analysis(
         &self,
         limit: usize,
     ) -> crate::error::Result<Vec<ErrorPattern>> {
         let summaries = self.run_store.list_all(limit).await?;
 
-        // pattern_key -> accumulator
+        // pattern_key -> 累加器
         let mut patterns: HashMap<String, ErrorAccumulator> = HashMap::new();
 
         for summary in &summaries {
             if let Some(run) = self.run_store.load(&summary.run_id).await? {
                 let skipped = super::skipped_tool_call_ids(&run.events);
-                // Run-level error
+                // 运行级别的错误
                 if run.status == RunStatus::Failed
                     && let Some(ref error_msg) = run.error
                 {
@@ -436,7 +447,7 @@ impl TraceAnalyzer {
                     acc.update_time(run.started_at, run.finished_at);
                 }
 
-                // Event-level errors
+                // 事件级别的错误
                 for event in &run.events {
                     match event {
                         RunEvent::ToolError {
@@ -477,15 +488,17 @@ impl TraceAnalyzer {
             })
             .collect();
 
-        // Sort by occurrence count descending
+        // 按出现次数降序排序
         result.sort_by_key(|b| std::cmp::Reverse(b.occurrence_count));
         Ok(result)
     }
 
-    /// Analyze tool reliability for runs at or after `after`.
-    ///
-    /// Tool arguments are used only to detect repeated identical attempts in one
-    /// run. Returned patterns expose a structural input shape, never raw values.
+    /**
+     * 分析发生在 `after`（含）之后的运行记录的工具可靠性。
+     *
+     * 工具参数仅用于检测同一运行内重复出现的相同尝试；返回的模式只
+     * 暴露结构化的输入形状，绝不暴露原始参数值。
+     */
     pub async fn tool_reliability_report(
         &self,
         limit: usize,
@@ -570,7 +583,7 @@ impl TraceAnalyzer {
         Ok(report)
     }
 
-    /// List all sessions (unique session IDs from stored runs).
+    /// 列出所有会话（从已存储的运行记录中提取去重后的会话 ID）。
     pub async fn list_sessions(&self, limit: usize) -> crate::error::Result<Vec<String>> {
         let summaries = self.run_store.list_all(limit).await?;
         let mut session_ids: Vec<String> = summaries.iter().map(|s| s.session_id.clone()).collect();
@@ -580,9 +593,9 @@ impl TraceAnalyzer {
     }
 }
 
-// ── Internal accumulators ──────────────────────────────────────────────
+// ── 内部累加器 ──────────────────────────────────────────────
 
-/// Accumulator for per-tool duration counts.
+/// 用于统计单个工具耗时数据的累加器。
 struct ToolAccumulator {
     call_count: usize,
     success_count: usize,
@@ -605,7 +618,7 @@ impl Default for ToolAccumulator {
     }
 }
 
-/// Accumulator for error pattern grouping.
+/// 用于错误模式分组的累加器。
 #[derive(Default)]
 struct ErrorAccumulator {
     occurrence_count: usize,
@@ -671,11 +684,10 @@ impl ErrorAccumulator {
     }
 }
 
-/// Normalize an error message for pattern grouping: lowercase, trim, collapse
-/// repeated whitespace.
+/// 为模式分组归一化错误信息：转小写、去首尾空白、合并连续空白。
 fn normalize_error(msg: &str) -> String {
     let lower = msg.to_lowercase();
-    // Collapse runs of whitespace into a single space
+    // 将连续的空白字符合并为一个空格
     let mut result = String::with_capacity(lower.len());
     let mut prev_was_space = false;
     for ch in lower.trim().chars() {
@@ -692,6 +704,7 @@ fn normalize_error(msg: &str) -> String {
     result
 }
 
+/// 在没有结构化失败分类时，根据错误信息的关键字启发式地分类失败原因。
 fn classify_tool_failure(message: &str) -> ToolFailureClass {
     let normalized = message.to_lowercase();
     if normalized.contains("timeout")
@@ -742,10 +755,12 @@ fn classify_tool_failure(message: &str) -> ToolFailureClass {
     }
 }
 
+/// 计算 JSON 值的结构形状（不含具体取值），用于分组时避免暴露原始参数。
 fn json_shape(value: Option<&serde_json::Value>) -> String {
     json_shape_at(value, 0)
 }
 
+/// `json_shape` 的递归实现，`depth` 用于限制递归深度，避免无界嵌套。
 fn json_shape_at(value: Option<&serde_json::Value>, depth: usize) -> String {
     if depth >= 4 {
         return "nested".to_string();
@@ -779,12 +794,14 @@ fn json_shape_at(value: Option<&serde_json::Value>, depth: usize) -> String {
     }
 }
 
+/// 计算 JSON 值的稳定哈希标识，用于识别“同一次工具调用参数”的重复出现。
 fn json_identity(value: Option<&serde_json::Value>) -> String {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     hash_json_value(value, 0, &mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
+/// 递归地将 JSON 值写入哈希器，`depth` 用于限制递归深度。
 fn hash_json_value<H: Hasher>(value: Option<&serde_json::Value>, depth: usize, hasher: &mut H) {
     if depth >= 8 {
         "nested".hash(hasher);
@@ -815,6 +832,7 @@ fn hash_json_value<H: Hasher>(value: Option<&serde_json::Value>, depth: usize, h
     }
 }
 
+/// 将一次工具失败记录归并进对应的失败模式累加器，并统计是否属于无效重试。
 fn record_tool_failure(
     patterns: &mut HashMap<String, ToolFailureAccumulator>,
     attempts: &mut HashMap<String, usize>,
@@ -866,7 +884,7 @@ fn record_tool_failure(
     };
 }
 
-// ── Unit tests ─────────────────────────────────────────────────────────
+// ── 单元测试 ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1111,11 +1129,11 @@ mod tests {
             .unwrap();
 
         let analyzer = TraceAnalyzer::new(store);
-        // read_file avg duration is 50ms, so threshold=40 should include it
+        // read_file 的平均耗时为 50ms，所以 threshold=40 时应该包含它
         let slow = analyzer.find_slow_tools(40, 100).await.unwrap();
         assert!(slow.iter().any(|s| s.name == "read_file"));
 
-        // threshold=100 should exclude read_file (avg=50)
+        // threshold=100 时应该排除 read_file（平均耗时=50）
         let not_slow = analyzer.find_slow_tools(100, 100).await.unwrap();
         assert!(not_slow.is_empty());
     }
@@ -1132,8 +1150,8 @@ mod tests {
         let patterns = analyzer.error_pattern_analysis(100).await.unwrap();
         assert!(!patterns.is_empty());
 
-        // "permission denied" only appears in the ToolError event, not in the
-        // run-level error message ("something went wrong"), so count is 1.
+        /* "permission denied" 只出现在 ToolError 事件中，不在运行级别的
+         * 错误信息（"something went wrong"）里，所以次数为 1。 */
         let perm_pattern = patterns
             .iter()
             .find(|p| p.pattern.contains("permission denied"))

@@ -1,11 +1,12 @@
-//! Background command cell tools — `wait` / `stop_cell` / `list_cells`.
-//!
-//! Companion surface to `shell(background=true)`: the shell tool launches a
-//! long-running command as a cell and returns a `cell_id` immediately; these
-//! tools long-poll, stop, and list cells through a shared
-//! [`CommandCellRegistry`]. Registered whenever a registry is injected into
-//! the agent (one process-wide registry shared by the main agent and its
-//! subagents).
+/*!
+后台命令 cell 工具集 —— `wait` / `stop_cell` / `list_cells`。
+
+与 `shell(background=true)` 配套使用的能力面：shell 工具将长时间运行的
+命令作为一个 cell 启动，并立即返回 `cell_id`；这些工具则通过共享的
+[`CommandCellRegistry`] 对 cell 进行长轮询、停止和列举。只要向 agent
+注入了 registry，这些工具就会被注册（主 agent 与其子 agent 共享同一个
+进程级 registry）。
+*/
 
 use echo_core::tools::cell::CommandCellRegistry;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
@@ -14,32 +15,38 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tracing::debug;
 
-/// Default long-poll yield budget (30s).
+/// 默认的长轮询让出时间预算（30 秒）。
 const DEFAULT_YIELD_MS: u64 = 30_000;
-/// Upper bound for one wait round (1h), matching Codex
-/// `background_terminal_max_timeout = 3600000`.
+/// 单轮 wait 的耗时上限（1 小时），与 Codex 的
+/// `background_terminal_max_timeout = 3600000` 保持一致。
 const MAX_YIELD_MS: u64 = 3_600_000;
 
-/// Long-poll a background command cell.
-///
-/// Returns when the cell reaches a terminal phase, when new output appears
-/// after the caller's cursor, or when `yield_time_ms` elapses — whichever
-/// comes first. Retry-safe: re-call with the returned `next_cursor`.
+/**
+长轮询一个后台命令 cell。
+
+当 cell 到达终态、在调用方游标之后出现新输出、或者 `yield_time_ms`
+超时时返回——以先满足者为准。该调用是重试安全的：可以用返回的
+`next_cursor` 再次调用。
+*/
 pub struct WaitCellTool {
+    /// 底层共享的命令 cell 注册表。
     registry: Arc<dyn CommandCellRegistry>,
 }
 
 impl WaitCellTool {
+    /// 使用给定的注册表创建 `wait` 工具。
     pub fn new(registry: Arc<dyn CommandCellRegistry>) -> Self {
         Self { registry }
     }
 }
 
 impl Tool for WaitCellTool {
+    /// 返回该工具的名称："wait"。
     fn name(&self) -> &str {
         "wait"
     }
 
+    /// 返回展示给模型的工具描述文本。
     fn description(&self) -> &str {
         "Long-poll a background command cell (from shell with background=true). Returns when the command \
          finishes, produces new output, or the yield budget expires. Pass the previously returned \
@@ -48,6 +55,7 @@ impl Tool for WaitCellTool {
          yield_time_ms=0 is a non-blocking status check."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -69,6 +77,7 @@ impl Tool for WaitCellTool {
         })
     }
 
+    /// 解析参数并对指定 cell 发起一次长轮询等待。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -99,35 +108,42 @@ impl Tool for WaitCellTool {
         })
     }
 
-    /// Hour-scale long-polls are the whole point of this tool: opt out of the
-    /// per-tool/batch timeout (same exemption as `agent_tool`/`task_execute`)
-    /// and let the explicit `yield_time_ms` be the only deadline.
+    /**
+    这个工具存在的意义就是支持小时级的长轮询：因此它选择不受单工具/批次
+    超时约束（与 `agent_tool`/`task_execute` 享有相同的豁免），只由显式的
+    `yield_time_ms` 作为唯一的截止时间。
+    */
     fn exempt_from_batch_timeout(&self) -> bool {
         true
     }
 }
 
-/// Stop (kill) a background command cell by ID.
+/// 通过 ID 停止（杀死）一个后台命令 cell。
 pub struct StopCellTool {
+    /// 底层共享的命令 cell 注册表。
     registry: Arc<dyn CommandCellRegistry>,
 }
 
 impl StopCellTool {
+    /// 使用给定的注册表创建 `stop_cell` 工具。
     pub fn new(registry: Arc<dyn CommandCellRegistry>) -> Self {
         Self { registry }
     }
 }
 
 impl Tool for StopCellTool {
+    /// 返回该工具的名称："stop_cell"。
     fn name(&self) -> &str {
         "stop_cell"
     }
 
+    /// 返回展示给模型的工具描述文本。
     fn description(&self) -> &str {
         "Stop a background command cell: kills its process group. The cell transitions to the \
          cancelled phase and its captured output stays readable via wait."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -141,6 +157,7 @@ impl Tool for StopCellTool {
         })
     }
 
+    /// 解析参数并停止指定的 cell。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -167,26 +184,31 @@ impl Tool for StopCellTool {
     }
 }
 
-/// List every tracked background command cell (running and terminal).
+/// 列出所有被追踪的后台命令 cell（运行中与已终止的）。
 pub struct ListCellsTool {
+    /// 底层共享的命令 cell 注册表。
     registry: Arc<dyn CommandCellRegistry>,
 }
 
 impl ListCellsTool {
+    /// 使用给定的注册表创建 `list_cells` 工具。
     pub fn new(registry: Arc<dyn CommandCellRegistry>) -> Self {
         Self { registry }
     }
 }
 
 impl Tool for ListCellsTool {
+    /// 返回该工具的名称："list_cells"。
     fn name(&self) -> &str {
         "list_cells"
     }
 
+    /// 返回展示给模型的工具描述文本。
     fn description(&self) -> &str {
         "List all background command cells with their phase, exit code, and output size."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义（无参数）。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -194,6 +216,7 @@ impl Tool for ListCellsTool {
         })
     }
 
+    /// 列出所有已追踪的 cell 及其状态摘要。
     fn execute(
         &self,
         _parameters: ToolParameters,
@@ -245,10 +268,12 @@ mod tests {
     use echo_orchestration::tasks::BackgroundCommandManager;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Registry wrapper that counts wait calls so tests can assert the wait
-    /// tool actually consulted the shared registry.
+    /// 会统计 wait 调用次数的 registry 包装器，便于测试断言 wait 工具
+    /// 确实查询过共享的 registry。
     struct CountingRegistry {
+        /// 被包装的底层后台命令管理器。
         inner: BackgroundCommandManager,
+        /// wait 被调用的次数。
         wait_calls: AtomicU64,
     }
 

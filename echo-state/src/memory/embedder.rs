@@ -1,7 +1,7 @@
-//! HTTP embedding client (OpenAI-compatible)
+//! HTTP 向量嵌入客户端（兼容 OpenAI 接口）
 //!
-//! The [`Embedder`] trait is defined in [`echo_core::memory::embedder`].
-//! This module provides the [`HttpEmbedder`] implementation.
+//! [`Embedder`] trait 定义于 [`echo_core::memory::embedder`]。
+//! 本模块提供其 [`HttpEmbedder`] 实现。
 
 use echo_core::error::{MemoryError, Result};
 pub use echo_core::memory::embedder::Embedder;
@@ -10,49 +10,61 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::debug;
 
-// ── HTTP embedding client ────────────────────────────────────────────────────
+// ── HTTP 向量嵌入客户端 ────────────────────────────────────────────────────
 
+/// 向嵌入服务发起请求的请求体。
 #[derive(Serialize)]
 struct EmbedRequest<'a> {
+    /// 使用的嵌入模型名称。
     model: &'a str,
+    /// 待生成向量嵌入的输入文本。
     input: &'a str,
 }
 
+/// 嵌入服务返回的响应体。
 #[derive(Deserialize)]
 struct EmbedResponse {
+    /// 返回的嵌入结果列表。
     data: Vec<EmbedData>,
 }
 
+/// 单条嵌入结果。
 #[derive(Deserialize)]
 struct EmbedData {
+    /// 生成的向量嵌入数值。
     embedding: Vec<f32>,
 }
 
-/// OpenAI-compatible HTTP embedding client
+/// 兼容 OpenAI 接口的 HTTP 向量嵌入客户端
 ///
-/// Supports OpenAI, Qwen (DashScope), and other services compatible with the `/v1/embeddings` interface.
+/// 支持 OpenAI、通义千问（DashScope）以及其他兼容 `/v1/embeddings` 接口的服务。
 ///
-/// # Environment variables
+/// # 环境变量
 ///
-/// | Purpose | Priority 1 | Priority 2 | Priority 3 |
+/// | 用途 | 优先级 1 | 优先级 2 | 优先级 3 |
 /// |---------|------------|------------|-------------|
-/// | Full endpoint URL | `EMBEDDING_BASEURL` | — | — |
-/// | Base URL (auto-append `/v1/embeddings`) | `EMBEDDING_API_URL` | — | `https://api.openai.com` |
+/// | 完整端点 URL | `EMBEDDING_BASEURL` | — | — |
+/// | 基础 URL（自动拼接 `/v1/embeddings`） | `EMBEDDING_API_URL` | — | `https://api.openai.com` |
 /// | API key | `EMBEDDING_APIKEY` | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` |
-/// | Model name | `EMBEDDING_MODEL` | — | `text-embedding-3-small` |
+/// | 模型名称 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` |
 pub struct HttpEmbedder {
+    /// 底层 HTTP 客户端。
     client: reqwest::Client,
+    /// 嵌入服务的完整请求 URL。
     url: String,
+    /// 鉴权用的 API key。
     api_key: String,
+    /// 使用的嵌入模型名称。
     model: String,
-    /// Request timeout (default 30s)
+    /// 请求超时时间（默认 30 秒）
     timeout: Duration,
 }
 
 impl HttpEmbedder {
+    /// 默认请求超时时间（30 秒）。
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
-    /// Base URL constructor: auto-appends `/v1/embeddings`
+    /// 基础 URL 构造函数：自动拼接 `/v1/embeddings`
     pub fn new(
         api_url: impl Into<String>,
         api_key: impl Into<String>,
@@ -72,7 +84,7 @@ impl HttpEmbedder {
         }
     }
 
-    /// Full endpoint URL constructor: uses the URL as-is
+    /// 完整端点 URL 构造函数：直接使用传入的 URL
     pub fn with_endpoint(
         url: impl Into<String>,
         api_key: impl Into<String>,
@@ -90,7 +102,7 @@ impl HttpEmbedder {
         }
     }
 
-    /// Set request timeout
+    /// 设置请求超时时间
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self.client = reqwest::ClientBuilder::new()
@@ -100,7 +112,7 @@ impl HttpEmbedder {
         self
     }
 
-    /// Construct from environment variables
+    /// 从环境变量构造
     pub fn from_env() -> Self {
         let (url, is_full_url) = if let Ok(u) = std::env::var("EMBEDDING_BASEURL") {
             (u, true)
@@ -134,6 +146,7 @@ impl HttpEmbedder {
 }
 
 impl Embedder for HttpEmbedder {
+    /// 调用远程接口，为给定文本计算向量嵌入。
     fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>>> {
         Box::pin(async move {
             debug!(model = %self.model, chars = text.len(), "Computing text embedding");

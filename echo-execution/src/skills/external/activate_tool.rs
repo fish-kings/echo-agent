@@ -1,12 +1,12 @@
-//! ActivateSkillTool -- model-driven skill activation (Tier 2).
+//! ActivateSkillTool —— 由模型驱动的技能激活（第二层）。
 //!
-//! When the LLM determines a task matches a skill's description, it calls this tool
-//! to load the skill's full instructions into the conversation context.
-//! The tool returns a structured XML-tagged block containing:
+//! 当 LLM 判断某个任务匹配某个技能的描述时，会调用此工具
+//! 将该技能的完整指令加载到对话上下文中。
+//! 该工具返回一个带 XML 标签的结构化文本块，其中包含：
 //!
-//! 1. The skill's Markdown instructions (SKILL.md body)
-//! 2. A listing of bundled resource files (scripts, references, assets)
-//! 3. The skill directory path for resolving relative references
+//! 1. 技能的 Markdown 指令内容（SKILL.md 正文）
+//! 2. 随附资源文件（脚本、参考资料、素材）的清单
+//! 3. 用于解析相对引用的技能目录路径
 
 use std::sync::Arc;
 
@@ -18,6 +18,8 @@ use crate::skills::registry::SkillRegistry;
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolContext, ToolParameters, ToolResult, ToolResultKind};
 
+/// 根据技能声明的 `allowed_tools` 匹配规则，在工具可见性状态中放开对应工具的可见性，
+/// 返回被实际激活（放开可见）的工具名称列表。若上下文中没有工具可见性状态，则返回空列表。
 fn activate_allowed_tools(ctx: &ToolContext, allowed_tools: &[String]) -> Vec<String> {
     let Some(visibility) = ctx.tool_visibility.as_ref() else {
         return Vec::new();
@@ -34,17 +36,19 @@ fn activate_allowed_tools(ctx: &ToolContext, allowed_tools: &[String]) -> Vec<St
     visibility.extend_eligibility_and_activate(matches)
 }
 
-/// Tool for model-driven skill activation.
+/// 用于模型驱动技能激活的工具。
 ///
-/// Registered automatically when file-based skills are discovered.
-/// The LLM calls this when a task matches a skill's catalog description.
+/// 在发现基于文件的技能时会自动注册。
+/// 当某个任务匹配技能目录中的描述时，LLM 会调用此工具。
 pub struct ActivateSkillTool {
+    /// 技能注册表，用于查找技能描述符并执行激活逻辑。
     registry: Arc<RwLock<SkillRegistry>>,
-    /// Cached list of available skill names for the parameter description.
+    /// 缓存的可用技能名称列表，用于生成参数描述文本。
     available_names: Vec<String>,
 }
 
 impl ActivateSkillTool {
+    /// 使用给定的技能注册表和可用技能名称列表构造一个新的 `ActivateSkillTool`。
     pub fn new(registry: Arc<RwLock<SkillRegistry>>, available_names: Vec<String>) -> Self {
         Self {
             registry,
@@ -54,16 +58,19 @@ impl ActivateSkillTool {
 }
 
 impl Tool for ActivateSkillTool {
+    /// 返回该工具在工具调用协议中使用的名称：`"activate_skill"`。
     fn name(&self) -> &str {
         "activate_skill"
     }
 
+    /// 返回该工具的自然语言描述，用于告知模型何时调用它。
     fn description(&self) -> &str {
         "Activate a skill to load its full instructions and available resources. \
          Call this when a task matches one of the available skills listed in the system prompt. \
          For skills with `paths` constraints, also provide `context_path` for the touched file."
     }
 
+    /// 返回该工具调用参数的 JSON Schema，包含技能名称、可选参数和上下文路径。
     fn parameters(&self) -> serde_json::Value {
         let names_desc = if self.available_names.is_empty() {
             "(no skills available)".to_string()
@@ -93,6 +100,8 @@ impl Tool for ActivateSkillTool {
         })
     }
 
+    /// 执行技能激活：校验 `context_path` 是否满足技能声明的路径约束，
+    /// 激活技能并将其内容渲染为提示词文本块，同时放开该技能允许使用的工具的可见性。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -181,6 +190,7 @@ mod tests {
     use super::*;
     use crate::skills::external::SkillLoader;
 
+    /// 验证激活技能时，匹配 `allowed_tools` 规则的工具会被放开可见，其余工具保持隐藏。
     #[tokio::test]
     async fn activation_promotes_matching_tool_schemas() -> Result<()> {
         let root = std::env::temp_dir().join(format!(

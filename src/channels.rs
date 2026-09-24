@@ -1,74 +1,75 @@
-//! IM channel integration module.
-//!
-//! Two layers:
-//! - Direct façade re-exports of `echo_integration::channels`
-//! - Crate-local `AgentChannelHandler` adapter for connecting `ReactAgent`
-//!   to the IM channel session model
-//!
-//! # Capability Inheritance
-//!
-//! Agents created via `AgentChannelHandler` automatically inherit all framework
-//! capabilities:
-//! - Built-in tools (think, memory, answer)
-//! - External tools (MCP, Skill, web, media, data)
-//! - Long-term memory (remember/recall/forget)
-//! - Context compression
-//! - Guards
-//! - Permission policies
-//!
-//! # Quick Start
-//!
-//! ```rust,no_run
-//! use echo_agent::prelude::*;
-//! use echo_agent::channels::*;
-//! use std::sync::Arc;
-//!
-//! # async fn example() -> echo_agent::error::Result<()> {
-//! // 1. Create ChannelManager
-//! let mut manager = ChannelManager::new();
-//!
-//! // 2. Register channel
-//! manager.register(Box::new(QqChannel::new(QqConfig {
-//!     app_id: "your-app-id".into(),
-//!     client_secret: "your-secret".into(),
-//! })?))?;
-//!
-//! // 3. Build one explicit client and share it across channel sessions.
-//! let llm_config = LlmConfig::for_provider(
-//!     "openai",
-//!     "https://api.openai.com/v1",
-//!     "sk-...",
-//!     "gpt-5.5",
-//!     LlmApiProtocol::Responses,
-//! )?;
-//! let llm_client: Arc<dyn LlmClient> = Arc::from(llm_config.build_client()?);
-//! let session_config = SessionConfig::default();
-//! let handler_factory = move |_channel_id: &str| -> Arc<dyn MessageHandler> {
-//!     let llm_client = Arc::clone(&llm_client);
-//!     Arc::new(SessionHandler::new(
-//!         session_config.clone(),
-//!         move |instance: &ChannelSessionInstance| -> Box<dyn MessageHandler> {
-//!             let _runtime_incarnation = instance.incarnation_id();
-//!             Box::new(AgentChannelHandler::from_config_with_client(
-//!                 AgentConfig::standard("qwen3-max", "im-assistant", "You are a friendly assistant")
-//!                     .enable_tool(true)
-//!                     .enable_memory(true),
-//!                 Arc::clone(&llm_client),
-//!             ))
-//!         },
-//!     ))
-//! };
-//!
-//! // 4. Start
-//! for result in manager.start_all(handler_factory).await {
-//!     result.result?;
-//! }
-//! manager.stop_all().await?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+ * IM 渠道集成模块。
+ *
+ * 分为两层：
+ * - 对 `echo_integration::channels` 的直接门面（façade）重导出
+ * - crate 本地的 `AgentChannelHandler` 适配器，用于将 `ReactAgent`
+ *   接入 IM 渠道的会话模型
+ *
+ * # 能力继承
+ *
+ * 通过 `AgentChannelHandler` 创建的 Agent 会自动继承所有框架能力：
+ * - 内置工具（think、memory、answer）
+ * - 外部工具（MCP、Skill、web、媒体、数据）
+ * - 长期记忆（remember/recall/forget）
+ * - 上下文压缩
+ * - Guards
+ * - 权限策略
+ *
+ * # 快速开始
+ *
+ * ```rust,no_run
+ * use echo_agent::prelude::*;
+ * use echo_agent::channels::*;
+ * use std::sync::Arc;
+ *
+ * # async fn example() -> echo_agent::error::Result<()> {
+ * // 1. 创建 ChannelManager
+ * let mut manager = ChannelManager::new();
+ *
+ * // 2. 注册渠道
+ * manager.register(Box::new(QqChannel::new(QqConfig {
+ *     app_id: "your-app-id".into(),
+ *     client_secret: "your-secret".into(),
+ * })?))?;
+ *
+ * // 3. 构建一个显式的 client，并在各渠道会话之间共享它。
+ * let llm_config = LlmConfig::for_provider(
+ *     "openai",
+ *     "https://api.openai.com/v1",
+ *     "sk-...",
+ *     "gpt-5.5",
+ *     LlmApiProtocol::Responses,
+ * )?;
+ * let llm_client: Arc<dyn LlmClient> = Arc::from(llm_config.build_client()?);
+ * let session_config = SessionConfig::default();
+ * let handler_factory = move |_channel_id: &str| -> Arc<dyn MessageHandler> {
+ *     let llm_client = Arc::clone(&llm_client);
+ *     Arc::new(SessionHandler::new(
+ *         session_config.clone(),
+ *         move |instance: &ChannelSessionInstance| -> Box<dyn MessageHandler> {
+ *             let _runtime_incarnation = instance.incarnation_id();
+ *             Box::new(AgentChannelHandler::from_config_with_client(
+ *                 AgentConfig::standard("qwen3-max", "im-assistant", "You are a friendly assistant")
+ *                     .enable_tool(true)
+ *                     .enable_memory(true),
+ *                 Arc::clone(&llm_client),
+ *             ))
+ *         },
+ *     ))
+ * };
+ *
+ * // 4. 启动
+ * for result in manager.start_all(handler_factory).await {
+ *     result.result?;
+ * }
+ * manager.stop_all().await?;
+ * # Ok(())
+ * # }
+ * ```
+ */
 
-/// Direct re-exports from `echo_integration::channels`.
+/// 直接从 `echo_integration::channels` 重导出。
 pub mod integration {
     pub use echo_integration::channels::*;
 }
@@ -88,17 +89,21 @@ use async_trait::async_trait;
 use futures::{StreamExt, stream::BoxStream};
 use std::sync::Arc;
 
-/// IM message handler backed by a `ReactAgent`.
-///
-/// Forwards IM channel messages to the agent, automatically inheriting all
-/// framework capabilities (tools, memory, MCP, Skills, compression, guards, etc.).
-///
-/// Each sender in each channel conversation (managed by `SessionHandler`) owns
-/// an independent `AgentChannelHandler` to ensure conversation isolation.
+/**
+ * 由 `ReactAgent` 支撑的 IM 消息处理器。
+ *
+ * 将 IM 渠道消息转发给 Agent，自动继承所有框架能力
+ * （工具、记忆、MCP、Skill、压缩、guard 等）。
+ *
+ * 每个渠道会话中的每个发送者（由 `SessionHandler` 管理）都拥有
+ * 一个独立的 `AgentChannelHandler`，以确保会话隔离。
+ */
 pub struct AgentChannelHandler {
+    /// 底层的 ReactAgent 实例
     agent: Arc<ReactAgent>,
 }
 
+/// 空实现的事件汇（sink），用于非流式 Turn 驱动路径
 struct ChannelEventSink;
 
 #[async_trait]
@@ -109,21 +114,25 @@ impl EventSink for ChannelEventSink {
 }
 
 impl AgentChannelHandler {
-    /// Create from an existing `ReactAgent`.
-    ///
-    /// Use this when you need to pre-configure the agent (custom tools,
-    /// `LlmConfig`, `MemoryStore`, etc.).
+    /**
+     * 从一个已存在的 `ReactAgent` 创建。
+     *
+     * 当你需要预先配置该 Agent 时使用此方法（自定义工具、
+     * `LlmConfig`、`MemoryStore` 等）。
+     */
     pub fn new(agent: ReactAgent) -> Self {
         Self {
             agent: Arc::new(agent),
         }
     }
 
-    /// Create from an `AgentConfig` and an explicit provider configuration.
-    ///
-    /// The provider client is built before the handler is returned, so invalid
-    /// client/header configuration fails at construction instead of on the
-    /// first channel message.
+    /**
+     * 从一个 `AgentConfig` 和一份显式的 provider 配置创建。
+     *
+     * provider client 会在 handler 返回之前构建完成，因此无效的
+     * client/header 配置会在构造阶段就失败，而不是等到第一条
+     * 渠道消息到达时才失败。
+     */
     pub fn from_config(config: AgentConfig, llm_config: LlmConfig) -> Result<Self> {
         let client: Arc<dyn LlmClient> = Arc::from(llm_config.build_client()?);
         let mut agent = ReactAgent::new(config);
@@ -131,20 +140,23 @@ impl AgentChannelHandler {
         Ok(Self::new(agent))
     }
 
-    /// Create from an `AgentConfig` and an already constructed shared client.
-    ///
-    /// Session factories use this form so each sender in each conversation owns
-    /// independent agent state while all sessions reuse the same provider
-    /// transport.
+    /**
+     * 从一个 `AgentConfig` 和一个已构建好的共享 client 创建。
+     *
+     * 会话工厂使用这种形式，使每个会话中的每个发送者都拥有
+     * 独立的 Agent 状态，同时所有会话复用同一个 provider 传输层。
+     */
     pub fn from_config_with_client(config: AgentConfig, client: Arc<dyn LlmClient>) -> Self {
         Self::new(ReactAgent::new(config).with_llm_client(client))
     }
 
-    /// Drive one channel message through the framework Turn authority.
-    ///
-    /// Callers that need cancellation, terminal classification, or usage can
-    /// retain this receipt; the standard `MessageHandler` path projects its
-    /// completed final answer into an outbound message.
+    /**
+     * 通过框架的 Turn 权威驱动一条渠道消息。
+     *
+     * 需要取消、终止态分类或用量信息的调用方可以保留这份回执；
+     * 标准的 `MessageHandler` 路径会把其中已完成的最终回答
+     * 投影为一条出站消息。
+     */
     pub async fn drive_turn(
         &self,
         msg: &InboundMessage,
@@ -154,10 +166,12 @@ impl AgentChannelHandler {
             .await
     }
 
-    /// Drive a Channel Turn while delivering every envelope to the caller's sink.
-    ///
-    /// The receipt's delivery status records this sink's acceptance. QQ/Feishu
-    /// network delivery happens later at their transport boundary.
+    /**
+     * 驱动一次渠道 Turn，并将每个事件信封投递给调用方的 sink。
+     *
+     * 回执的投递状态记录的是该 sink 的接受情况。QQ/飞书的
+     * 网络投递发生在稍后它们各自的传输边界处。
+     */
     pub async fn drive_turn_with_sink(
         &self,
         msg: &InboundMessage,
@@ -182,6 +196,8 @@ impl AgentChannelHandler {
     }
 }
 
+/// 将一份 Turn 回执转换为可回复给渠道的文本；若回执处于失败/取消/未投递
+/// 等状态，或缺少最终回答，则返回错误
 fn channel_reply_from_receipt(receipt: TurnReceipt) -> Result<String> {
     match (receipt.outcome, receipt.delivery, receipt.final_answer) {
         (TurnOutcome::Completed, TurnDeliveryOutcome::Delivered, Some(reply)) => Ok(reply),
@@ -220,7 +236,7 @@ impl MessageHandler for AgentChannelHandler {
     }
 
     async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
-        // reply is handled by the channel itself
+        // reply 由渠道自身处理
         Ok(())
     }
 

@@ -9,30 +9,44 @@ use agent_client_protocol::{Client, ConnectionTo};
 use async_trait::async_trait;
 use std::sync::Mutex;
 
+/// 投影器（projector）的内部可变状态。
 #[derive(Default)]
 struct ProjectionState {
+    /// 当前是否处于“思考中”阶段。
     thinking: bool,
+    /// 本轮是否已经发出过 Agent 正文文本。
     emitted_agent_text: bool,
+    /// 本轮已发送的 update 数量。
     updates_sent: usize,
+    /// 本轮已发送 update 的累计字符数。
     total_update_chars: usize,
 }
 
-/// Standard ACP view of one run's committed events.
-///
-/// The projector never owns the events: the shared run ledger commits every
-/// accepted [`EventEnvelope`] first, and this type only renders the bounded
-/// `session/update` projection of the same facts (design §11.1 — the
-/// projection may not introduce new sequences or terminals).
+/**
+一次运行（run）已提交事件的标准 ACP 视图。
+
+投影器（projector）永远不拥有事件本身：共享的运行账本（run ledger）
+会先提交每一个被接受的 [`EventEnvelope`]，而这个类型只是对同一批
+事实渲染出受限的 `session/update` 投影（对应设计文档 §11.1 —— 该
+投影不允许引入新的事件序列或终态）。
+*/
 pub struct AcpEventProjector {
+    /// 本次会话的 ACP session id。
     session_id: SessionId,
+    /// 用于向客户端发送通知的连接句柄。
     connection: ConnectionTo<Client>,
+    /// 单条 update 允许的最大字符数。
     max_update_chars: usize,
+    /// 单轮（turn）允许发送的最大 update 数量。
     max_updates_per_turn: usize,
+    /// 单轮累计允许发送的最大字符总数。
     max_total_update_chars: usize,
+    /// 投影器的内部可变状态。
     state: Mutex<ProjectionState>,
 }
 
 impl AcpEventProjector {
+    /// 创建一个新的 [`AcpEventProjector`]。
     pub fn new(
         session_id: SessionId,
         connection: ConnectionTo<Client>,
@@ -50,9 +64,11 @@ impl AcpEventProjector {
         }
     }
 
-    /// Render and send the standard updates for one committed envelope.
-    /// A bounds violation or a failed send is surfaced as delivery failure;
-    /// it never becomes a second Agent execution terminal.
+    /**
+    渲染并发送一个已提交 envelope 对应的标准 update。
+    越界（bounds violation）或发送失败都会被上报为投递失败；
+    这类失败永远不会变成第二个 Agent 执行终态。
+    */
     pub async fn emit(&self, envelope: &EventEnvelope) -> Result<()> {
         for notification in self.project(envelope)? {
             self.reserve(&notification)?;
@@ -65,6 +81,7 @@ impl AcpEventProjector {
         Ok(())
     }
 
+    /// 将一个事件信封（envelope）渲染为若干条 ACP session 通知。
     fn project(&self, envelope: &EventEnvelope) -> Result<Vec<SessionNotification>> {
         let updates = self.updates(&envelope.payload)?;
         Ok(updates
@@ -73,6 +90,7 @@ impl AcpEventProjector {
             .collect())
     }
 
+    /// 根据单个 Agent 事件计算出应当发出的 ACP update 列表。
     fn updates(&self, payload: &AgentEvent) -> Result<Vec<SessionUpdate>> {
         let mut state = self
             .state
@@ -146,6 +164,7 @@ impl AcpEventProjector {
         Ok(updates)
     }
 
+    /// 为一条 notification 登记预算（字符数与条数），超出配置的上限时返回错误。
     fn reserve(&self, notification: &SessionNotification) -> Result<()> {
         let serialized = serde_json::to_string(notification).map_err(|error| {
             ReactError::Other(format!("failed to encode ACP session/update: {error}"))
@@ -190,6 +209,7 @@ impl EventSink for AcpEventProjector {
     }
 }
 
+/// 校验文本长度是否超过允许的最大字符数。
 fn validate_update_size(text: &str, max_chars: usize) -> Result<()> {
     if text.chars().count() > max_chars {
         return Err(ReactError::Other(format!(
@@ -199,6 +219,7 @@ fn validate_update_size(text: &str, max_chars: usize) -> Result<()> {
     Ok(())
 }
 
+/// 将值序列化为 JSON，并在超出大小限制时返回错误。
 fn encode_bounded<T: serde::Serialize>(value: &T, max_chars: usize) -> Result<serde_json::Value> {
     let encoded = serde_json::to_string(value)
         .map_err(|error| ReactError::Other(format!("failed to encode ACP tool update: {error}")))?;

@@ -1,14 +1,14 @@
-//! Prompt cache layout and diagnostics.
+//! Prompt 缓存布局与诊断。
 //!
-//! This module provides a **read-only, zero-copy** view over the flat messages
-//! array that identifies cache-relevant segments (system, canonical context,
-//! conversation history, runtime context). Providers can use this view to:
+//! 本模块在扁平的消息数组之上提供一个**只读、零拷贝**的视图，用于识别与缓存
+//! 相关的分段（system、规范化上下文、对话历史、运行时上下文）。各 provider
+//! 可以利用这个视图来：
 //!
-//! 1. Place explicit cache breakpoints (Anthropic `cache_control`)
-//! 2. Verify prefix stability for automatic prefix caches (OpenAI-compatible)
-//! 3. Compute stable prefix hashes for cache invalidation diagnostics
+//! 1. 放置显式缓存断点（Anthropic 的 `cache_control`）
+//! 2. 校验前缀稳定性，用于自动前缀缓存（OpenAI 兼容）
+//! 3. 计算稳定前缀哈希，用于缓存失效诊断
 //!
-//! This does **not** change how messages are stored — it is purely a view.
+//! 本模块**不会**改变消息的存储方式 —— 它纯粹只是一个视图。
 
 pub mod diagnostic;
 pub mod layout;

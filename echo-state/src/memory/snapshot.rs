@@ -55,8 +55,11 @@ pub enum SnapshotPolicy {
 ///
 /// 超过 `max_snapshots` 时自动淘汰最早的快照。
 pub struct SnapshotManager {
+    /// 按时间正序存放的快照列表。
     snapshots: Vec<StateSnapshot>,
+    /// 当前使用的自动快照策略。
     policy: SnapshotPolicy,
+    /// 最多保留的快照数量，超出后淘汰最早的快照。
     max_snapshots: usize,
 }
 
@@ -172,6 +175,7 @@ impl SnapshotManager {
 mod tests {
     use super::*;
 
+    /// 生成 n 条测试用用户消息。
     fn sample_messages(n: usize) -> Vec<Message> {
         (0..n).map(|i| Message::user(format!("msg-{i}"))).collect()
     }

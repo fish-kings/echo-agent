@@ -1,12 +1,13 @@
-//! Criterion benchmarks for echo-agent core operations.
-//!
-//! Run with: `cargo bench -p echo_agent`
+/*! echo-agent 核心操作的 Criterion 基准测试。
+
+运行方式：`cargo bench -p echo_agent`
+*/
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use echo_agent::prelude::*;
 use std::sync::Arc;
 
-/// Benchmark: Agent construction via builder
+/// 基准测试：通过构建器（builder）构造 Agent。
 fn bench_agent_build(c: &mut Criterion) {
     c.bench_function("agent_build", |b| {
         b.iter(|| {
@@ -21,7 +22,7 @@ fn bench_agent_build(c: &mut Criterion) {
     });
 }
 
-/// Benchmark: Agent construction with tools enabled
+/// 基准测试：启用工具（tools）后构造 Agent。
 fn bench_agent_build_with_tools(c: &mut Criterion) {
     c.bench_function("agent_build_with_tools", |b| {
         b.iter(|| {
@@ -37,7 +38,7 @@ fn bench_agent_build_with_tools(c: &mut Criterion) {
     });
 }
 
-/// Benchmark: SharedAgent creation (post-Mutex-removal, lock-free)
+/// 基准测试：创建 SharedAgent（移除 Mutex 之后的无锁实现）。
 fn bench_shared_agent_create(c: &mut Criterion) {
     c.bench_function("shared_agent_create", |b| {
         b.iter(|| {
@@ -54,7 +55,7 @@ fn bench_shared_agent_create(c: &mut Criterion) {
     });
 }
 
-/// Benchmark: Graph workflow build
+/// 基准测试：构建一个简单的 Graph 工作流。
 fn bench_workflow_build_simple(c: &mut Criterion) {
     c.bench_function("workflow_build_simple", |b| {
         b.iter(|| {
@@ -75,7 +76,7 @@ fn bench_workflow_build_simple(c: &mut Criterion) {
     });
 }
 
-/// Benchmark: Token budget allocation calculation (CPU-bound micro-benchmark)
+/// 基准测试：Token 预算分配计算（纯 CPU 密集型的微基准测试）。
 fn bench_token_budget_allocate(c: &mut Criterion) {
     c.bench_function("token_budget_allocate", |b| {
         let budget = echo_core::budget::TokenBudget::new(128_000).unwrap_or_default();

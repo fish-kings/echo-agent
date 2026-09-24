@@ -1,7 +1,7 @@
-//! Prompt improvement generator — uses LLM to regenerate prompts from failure feedback.
+//! 提示词改进生成器 —— 使用 LLM 根据失败反馈重新生成提示词。
 //!
-//! Inspired by `skill-creator/scripts/improve_description.py`. Takes failed
-//! eval results and generates improved system prompts or tool instructions.
+//! 思路借鉴自 `skill-creator/scripts/improve_description.py`。
+//! 接收失败的评估结果，生成改进后的系统提示词或工具说明。
 
 use crate::agent::Agent;
 use crate::improve::RunCritique;
@@ -19,9 +19,9 @@ Produce the smallest prompt change that directly addresses the supplied failure 
 
 Return only the complete revised prompt inside <new_prompt>...</new_prompt>."#;
 
-/// Generator that uses an LLM to produce improved prompts.
+/// 使用 LLM 生成改进提示词的生成器。
 pub struct PromptGenerator {
-    /// Maximum characters for the generated prompt.
+    /// 生成的提示词允许的最大字符数。
     pub max_chars: usize,
 }
 
@@ -32,14 +32,17 @@ impl Default for PromptGenerator {
 }
 
 impl PromptGenerator {
+    /// 创建一个使用默认配置的 [`PromptGenerator`]。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Generate an improved system prompt based on failure analysis.
-    ///
-    /// Takes the current system prompt, a set of critiques from failed runs,
-    /// and asks an LLM to produce an improved version.
+    /**
+    根据失败分析生成改进后的系统提示词。
+
+    接收当前的系统提示词、一组来自失败运行的评价（critique），
+    并要求 LLM 生成一个改进版本。
+    */
     pub async fn generate_improved_prompt(
         &self,
         agent: &dyn Agent,
@@ -47,7 +50,7 @@ impl PromptGenerator {
         critiques: &[RunCritique],
         task_domain: &str,
     ) -> String {
-        // Use structured report format instead of Debug format
+        // 使用结构化的报告格式，而非 Debug 格式
         let failure_summary: String = critiques
             .iter()
             .map(|c| c.format_report())
@@ -80,6 +83,7 @@ impl PromptGenerator {
             .collect()
     }
 
+    /// 构建发送给 LLM、用于生成改进提示词的完整请求文本。
     fn build_improvement_prompt(
         current_prompt: &str,
         task_domain: &str,
@@ -99,7 +103,7 @@ impl PromptGenerator {
         format!("{PROMPT_IMPROVEMENT_CONTRACT}\n\nINPUT JSON:\n{payload}")
     }
 
-    /// Format an improvement suggestion as human-readable text.
+    /// 将改进建议格式化为可读文本。
     fn format_suggestion(suggestion: &crate::improve::ImprovementSuggestion) -> String {
         use crate::improve::ImprovementSuggestion;
         match suggestion {
@@ -118,7 +122,7 @@ impl PromptGenerator {
         }
     }
 
-    /// Extract content between XML-style tags.
+    /// 提取 XML 风格标签之间的内容。
     fn extract_tagged_content(raw: &str, tag: &str) -> Option<String> {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");

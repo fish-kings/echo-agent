@@ -1,10 +1,11 @@
-//! Background review — generate evidence-linked candidates from completed runs.
-//!
-//! When invoked, [`BackgroundReviewer`] analyzes one completed run as untrusted
-//! evidence and asks whether it contains durable memory. The default behavior is
-//! proposal-only; optional writes use typed metadata and the shared memory layer.
-//!
-//! Inspired by Hermes Agent's background review system.
+/*! 后台审查（Background review）—— 从已完成的运行中生成带证据链接的候选项。
+
+被调用时，[`BackgroundReviewer`] 会把一次已完成的运行当作不可信证据来分析，
+并判断其中是否包含值得长期保留的记忆。默认行为是仅提议（proposal-only）；
+可选的写入操作会使用类型化元数据，并经过共享的记忆层。
+
+灵感来自 Hermes Agent 的后台审查系统。
+*/
 
 use crate::evolution::MemoryLayerManager;
 use crate::llm::LlmClient;
@@ -16,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
-// ── Review prompts (adapted from Hermes Agent) ─────────────────────
+// ── 审查提示词（改编自 Hermes Agent） ─────────────────────
 
 const MEMORY_REVIEW_PROMPT: &str = "\
     Review one completed run and consider saving durable memory only when the
@@ -84,19 +85,22 @@ const REVIEW_SYSTEM_PROMPT: &str = "\
 
 // ── BackgroundReviewConfig ─────────────────────────────────────────
 
-/// Configuration for the background review system.
+/// 后台审查系统的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundReviewConfig {
-    /// Whether background review is enabled.
+    /// 是否启用后台审查。
     pub enabled: bool,
+    /// 后台审查允许消耗的最大预算次数；为 0 时会直接跳过审查（预算已耗尽）。
     pub max_iterations: usize,
-    /// Which review types to run.
+    /// 是否运行记忆类审查。
     pub review_memory: bool,
-    /// Whether to review skills.
+    /// 是否运行技能类审查。
     pub review_skills: bool,
-    /// Persist high-confidence user preferences automatically. Default: `false`.
-    ///
-    /// Project facts, debugging lessons, and skills are always proposal-only.
+    /** 自动持久化高置信度的用户偏好。默认值：`false`。
+
+    项目事实、调试经验教训以及技能始终只是"仅提议"（proposal-only），
+    不会自动写入。
+    */
     #[serde(default)]
     pub auto_persist_user_preferences: bool,
 }
@@ -115,65 +119,89 @@ impl Default for BackgroundReviewConfig {
 
 // ── ReviewOutcome ──────────────────────────────────────────────────
 
-/// Kind of durable-information candidate produced by a run review.
+/// 由一次运行审查产生的、值得长期保留的候选信息的类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewCandidateKind {
+    /// 用户偏好。
     UserPreference,
+    /// 项目事实。
     ProjectFact,
+    /// 调试经验教训。
     DebuggingLesson,
+    /// 技能候选。
     Skill,
 }
 
-/// Structured, evidence-linked output from a run review.
+/// 一次运行审查产生的、带证据链接的结构化输出。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewCandidate {
+    /// 候选信息的类型。
     pub kind: ReviewCandidateKind,
+    /// 候选信息的具体内容（简明、描述性文本）。
     pub content: String,
+    /// 支撑该候选信息的原文证据（精确引用）。
     pub evidence: String,
+    /// 置信度（0.0-1.0）。
     pub confidence: f32,
+    /// 是否已被持久化：`Some(true)` 已保存、`Some(false)` 仅提议未保存、
+    /// `None` 表示持久化结果未知（例如写入过程中发生 panic 或部分失败）。
     pub persisted: Option<bool>,
 }
 
-/// Result of a background review pass.
+/// 一次后台审查的结果。
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewOutcome {
-    /// The run ID that was reviewed.
+    /// 被审查的运行 ID。
     pub run_id: String,
-    /// Summary of actions taken or proposed.
+    /// 已执行或已提议的操作摘要。
     pub actions: Vec<String>,
-    /// Whether the review found no supported candidate.
+    /// 本次审查是否未发现任何有证据支撑的候选信息。
     pub nothing_to_save: bool,
-    /// Structured candidate, when the review found supported durable information.
+    /// 当审查发现有证据支撑的可长期保留信息时，返回结构化的候选项。
     pub candidate: Option<ReviewCandidate>,
-    /// Error message if the review failed.
+    /// 若审查失败，记录相应的错误信息。
     pub error: Option<String>,
 }
 
+/// LLM 返回的审查决策，用于反序列化其结构化输出。
 #[derive(Debug, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
 enum ReviewDecision {
+    /// 未发现任何值得保留的信息。
     Nothing,
+    /// 发现了一条带证据的候选信息。
     Candidate {
+        /// 候选信息的类型。
         kind: ReviewCandidateKind,
+        /// 候选信息内容。
         content: String,
+        /// 支撑该候选信息的原文证据。
         evidence: String,
+        /// 置信度（0.0-1.0）。
         confidence: f32,
     },
 }
 
 // ── BackgroundReviewer ─────────────────────────────────────────────
 
+/** 后台审查器：对已完成的运行进行异步审查，产生带证据链接的候选信息，
+并可选地将高置信度的用户偏好自动持久化到记忆层。
+*/
 pub struct BackgroundReviewer {
+    /// 后台审查的配置。
     config: BackgroundReviewConfig,
+    /// 用于发起审查请求的 LLM 客户端。
     llm_client: Arc<dyn LlmClient>,
+    /// 可选的分层记忆管理器，用于将候选信息写入共享记忆层。
     layer_manager: Option<Arc<MemoryLayerManager>>,
+    /// 可选的运行存储，用于按 `run_id` 加载待审查的运行。
     run_store: Option<Arc<dyn RunStore>>,
 }
 
 impl BackgroundReviewer {
-    /// Create a new background reviewer.
+    /// 创建一个新的后台审查器。
     pub fn new(
         config: BackgroundReviewConfig,
         llm_client: Arc<dyn LlmClient>,
@@ -188,16 +216,17 @@ impl BackgroundReviewer {
         }
     }
 
-    /// Route explicitly enabled user-preference writes through the evolution layer.
-    ///
-    /// Proposal-only review does not require a layer manager. When auto-persistence
-    /// is enabled, this keeps writes on the audited memory path.
+    /** 让显式开启的用户偏好写入经过 evolution 记忆层路由。
+
+    仅提议（proposal-only）审查不需要分层管理器。当启用了自动持久化时，
+    这个方法能确保写入操作走的是有审计记录的记忆路径。
+    */
     pub fn with_layer_manager(mut self, layer_manager: Arc<MemoryLayerManager>) -> Self {
         self.layer_manager = Some(layer_manager);
         self
     }
 
-    /// Get the review prompt based on configuration.
+    /// 根据配置选择要使用的审查提示词。
     fn review_prompt(&self) -> &str {
         match (self.config.review_memory, self.config.review_skills) {
             (true, true) => COMBINED_REVIEW_PROMPT,
@@ -207,7 +236,7 @@ impl BackgroundReviewer {
         }
     }
 
-    /// Convert a Run's events into a conversation transcript string.
+    /// 将一次 Run 的事件列表转换为对话形式的事务记录（transcript）字符串。
     fn build_transcript(run: &Run) -> String {
         let mut lines = Vec::new();
         lines.push(format!("User: {}", run.input));
@@ -257,6 +286,11 @@ impl BackgroundReviewer {
         lines.join("\n")
     }
 
+    /** 审查一次给定的运行，返回带证据链接的结果。
+
+    若审查过程中发生 panic，会被捕获并转换为一个带错误信息的空结果，
+    避免单次审查失败影响调用方。
+    */
     pub async fn review(&self, run: &Run) -> ReviewOutcome {
         if let Some(outcome) = self.skip_review(&run.run_id) {
             return outcome;
@@ -284,10 +318,12 @@ impl BackgroundReviewer {
             })
     }
 
+    /// 与 [`Self::review`] 等价，语义上强调调用方会等待审查完成。
     pub async fn review_and_wait(&self, run: &Run) -> ReviewOutcome {
         self.review(run).await
     }
 
+    /// 根据 `run_id` 从运行存储中加载运行，再对其执行审查。
     pub async fn review_by_run_id(&self, run_id: &str) -> ReviewOutcome {
         if let Some(outcome) = self.skip_review(run_id) {
             return outcome;
@@ -309,6 +345,8 @@ impl BackgroundReviewer {
         }
     }
 
+    /// 判断本次审查是否应被跳过（未启用，或预算已耗尽）；
+    /// 需要跳过时返回相应的空结果，否则返回 `None`。
     fn skip_review(&self, run_id: &str) -> Option<ReviewOutcome> {
         if !self.config.enabled {
             Some(Self::empty_outcome(run_id, None))
@@ -322,6 +360,8 @@ impl BackgroundReviewer {
         }
     }
 
+    /// 构造一个不包含候选信息的结果；`error` 为 `None` 时表示这是一次
+    /// 正常的“无内容可保存”的结果，否则表示审查因错误而未能给出结论。
     fn empty_outcome(run_id: &str, error: Option<String>) -> ReviewOutcome {
         ReviewOutcome {
             run_id: run_id.to_string(),
@@ -332,10 +372,11 @@ impl BackgroundReviewer {
         }
     }
 
-    /// Execute the review using the LLM client directly.
-    ///
-    /// Uses a simple chat call (not a full agent loop) for efficiency.
-    /// The LLM response must match the strict structured review schema.
+    /** 直接使用 LLM 客户端执行审查。
+
+    出于效率考虑，这里使用一次简单的 chat 调用（而非完整的 agent 循环）。
+    LLM 的响应必须匹配严格的结构化审查 schema。
+    */
     async fn run_review(
         llm_client: Arc<dyn LlmClient>,
         layer_manager: Option<Arc<MemoryLayerManager>>,
@@ -476,6 +517,8 @@ impl BackgroundReviewer {
     }
 }
 
+/// 校验 LLM 返回的候选信息是否满足长度、置信度与“证据须为原文精确引用”
+/// 等约束；校验通过时返回裁剪后的 `(content, evidence)`。
 fn validate_candidate(
     kind: ReviewCandidateKind,
     content: String,
@@ -1021,8 +1064,8 @@ mod tests {
             review_skills: true,
             ..Default::default()
         };
-        // We can't easily construct a real reviewer without LLM client,
-        // but we can test the prompt selection logic
+        // 没有 LLM 客户端时很难构造出一个真正的 reviewer，
+        // 但我们仍然可以单独测试提示词选择逻辑
         let prompt = match (config.review_memory, config.review_skills) {
             (true, true) => COMBINED_REVIEW_PROMPT,
             (true, false) => MEMORY_REVIEW_PROMPT,

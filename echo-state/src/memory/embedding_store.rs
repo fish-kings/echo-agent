@@ -48,11 +48,12 @@ use tracing::{debug, info, warn};
 /// 内存向量索引：namespace_key → key → 嵌入向量
 #[derive(Default)]
 struct VecIndex {
-    /// JSON-encoded namespace components → key (UUID) → vector.
+    /// JSON 编码的命名空间组件 → key（UUID） → 向量。
     data: HashMap<String, HashMap<String, Vec<f32>>>,
 }
 
 impl VecIndex {
+    /// 在指定命名空间下插入或覆盖某个 key 的向量。
     fn insert(&mut self, ns_key: &str, key: &str, vec: Vec<f32>) {
         self.data
             .entry(ns_key.to_string())
@@ -60,12 +61,14 @@ impl VecIndex {
             .insert(key.to_string(), vec);
     }
 
+    /// 从指定命名空间中移除某个 key 的向量。
     fn remove(&mut self, ns_key: &str, key: &str) {
         if let Some(ns) = self.data.get_mut(ns_key) {
             ns.remove(key);
         }
     }
 
+    /// 获取指定命名空间下的全部向量映射。
     fn get_namespace(&self, ns_key: &str) -> Option<&HashMap<String, Vec<f32>>> {
         self.data.get(ns_key)
     }
@@ -79,9 +82,13 @@ impl VecIndex {
 /// > 全部加载到内存中，对于大规模检索场景，推荐使用专门的向量数据库
 /// > （如 Milvus、Qdrant、pgvector 等）。
 pub struct EmbeddingStore {
+    /// 底层被包装的 KV Store，负责实际的内容存取。
     inner: Arc<dyn Store>,
+    /// 用于计算文本嵌入向量的嵌入器。
     embedder: Arc<dyn Embedder>,
+    /// 内存中的向量索引。
     index: RwLock<VecIndex>,
+    /// 向量索引持久化文件路径（为 `None` 时仅保存在内存中）。
     vec_path: Option<PathBuf>,
     /// 语义检索时最多加载到内存进行比对的向量数量。
     /// 超出此数量的向量会被跳过，避免 OOM。
@@ -179,6 +186,7 @@ impl EmbeddingStore {
         value_to_text(value)
     }
 
+    /// 将内存中的向量索引原子写入到持久化文件（若配置了持久化路径）。
     async fn flush_index(&self) -> Result<()> {
         let Some(ref path) = self.vec_path else {
             return Ok(());
@@ -186,7 +194,7 @@ impl EmbeddingStore {
         let index = self.index.read().await;
         let json = serde_json::to_string(&index.data)
             .map_err(|e| MemoryError::SerializationError(format!("向量索引序列化失败: {e}")))?;
-        // Atomic write: tmp + sync_all + rename to prevent corruption on crash
+        // 原子写入：先写临时文件 + sync_all + rename，防止崩溃导致数据损坏
         let tmp_path = path.with_extension("json.tmp");
         {
             let mut file = tokio::fs::File::create(&tmp_path)
@@ -215,6 +223,8 @@ impl EmbeddingStore {
         self.flush_index().await
     }
 
+    /// 执行语义检索：计算查询文本的嵌入向量，与索引中的向量做余弦相似度
+    /// 比对并按分数排序；若嵌入计算失败或索引为空，则回退到关键词检索。
     async fn semantic_search_impl(
         &self,
         namespace: &[&str],
@@ -266,33 +276,30 @@ impl EmbeddingStore {
 }
 
 impl Drop for EmbeddingStore {
+    /// 尽力而为地在析构时刷盘，避免在未显式调用 `flush_vector_index()` 的
+    /// 情况下，向量索引的变更随 store 被 drop 而悄悄丢失。
     fn drop(&mut self) {
-        // Best-effort flush on drop so vector index changes are not silently
-        // lost when the store is dropped without an explicit flush_vector_index().
-        //
-        // P1-10: the previous implementation called `handle.block_on(self
-        // .flush_index())` directly. If `drop` runs on a runtime executor thread
-        // that is currently driving a future holding this store (a common case
-        // when the store is owned by an agent task), `block_on` deadlocks the
-        // runtime — that thread blocks waiting for a future that needs the very
-        // executor it just parked. Instead, snapshot the index data under a
-        // non-blocking `try_read` and spawn a detached task that owns only the
-        // cloned snapshot + path (no `&self`), so `drop` returns immediately
-        // without blocking or holding the runtime. If the lock is contended or
-        // no runtime exists, we give up — this is best-effort by design.
+        /* P1-10：此前的实现直接调用 `handle.block_on(self.flush_index())`。
+        如果 `drop` 运行在正在驱动某个持有该 store 的 future 的运行时执行器
+        线程上（当 store 归属于某个 agent 任务时是常见情况），`block_on`
+        会导致运行时死锁——该线程会阻塞等待一个恰好需要它刚刚占用的执行器
+        才能推进的 future。因此这里改为在非阻塞的 `try_read` 下对索引数据
+        做快照，并 spawn 一个只持有克隆后快照数据 + 路径（不持有 `&self`）
+        的分离任务，使 `drop` 能立即返回，不阻塞也不占用运行时。如果锁被
+        占用或不存在运行时，则直接放弃——这是设计上的尽力而为。 */
         let Some(path) = self.vec_path.clone() else {
             return;
         };
         let Ok(index) = self.index.try_read() else {
-            // Lock contended during drop — skip; data remains in memory only.
+            // 析构期间锁被占用——跳过；数据仅保留在内存中。
             return;
         };
         let data = index.data.clone();
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        // Detached: fire-and-forget. The task owns `data` and `path` by value,
-        // so it is safe to run after `self` is freed.
+        // 分离任务：即发即弃。该任务按值持有 `data` 与 `path`，
+        // 因此在 `self` 被释放之后运行也是安全的。
         handle.spawn(async move {
             let json = match serde_json::to_string(&data) {
                 Ok(j) => j,
@@ -301,7 +308,7 @@ impl Drop for EmbeddingStore {
                     return;
                 }
             };
-            // Atomic write: tmp + sync_all + rename.
+            // 原子写入：临时文件 + sync_all + rename。
             let tmp_path = path.with_extension("json.tmp");
             match write_and_rename(&tmp_path, &path, json.as_bytes()).await {
                 Ok(()) => tracing::debug!(path = %path.display(), "💾 向量索引已持久化(drop)"),
@@ -311,7 +318,7 @@ impl Drop for EmbeddingStore {
     }
 }
 
-/// Atomically write `bytes` to `tmp`, fsync, then rename over `dest`.
+/// 原子地将 `bytes` 写入 `tmp`，执行 fsync，再重命名覆盖到 `dest`。
 async fn write_and_rename(tmp: &Path, dest: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
     {
@@ -327,6 +334,7 @@ async fn write_and_rename(tmp: &Path, dest: &Path, bytes: &[u8]) -> std::io::Res
 }
 
 impl Store for EmbeddingStore {
+    /// 写入条目：先写入底层 Store，再异步计算并更新向量索引（嵌入失败仅告警，不影响写入）。
     fn put<'a>(
         &'a self,
         namespace: &'a [&'a str],

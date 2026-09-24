@@ -1,111 +1,108 @@
-//! Hook System -- lifecycle hooks for the Echo Agent framework.
-//!
-//! Hooks allow skills and users to extend the agent's behavior by running commands,
-//! injecting prompts, making HTTP calls, or invoking MCP tools at specific points
-//! in the agent lifecycle.
-//!
-//! ## Architecture role
-//!
-//! This module provides the shared hook dispatch and extension layer. embedding application is a
-//! local, user-controlled application, so user-configured commands, local HTTP
-//! endpoints, and MCP tools are treated as trusted extensions. Registration
-//! still rejects malformed configuration and accidental runaway timeouts.
-//!
-//! | Design concept | Implementation in this module |
-//! |---------------|-------------------------------|
-//! | `ToolExecutionEngine` | [`HookRegistry`] — central dispatch for all hook events |
-//! | `ToolHook` trait | [`HookAction`] enum — Command, Prompt, Permission, Http, McpTool, Agent, ActivateSkill |
-//! | `HookDecision` (Allow/Deny/Modify) | [`HookResult`] — `block`, `updated_input`, `permission_decision` |
-//! | `ToolPolicy` | [`HooksDefinition`] + [`HookRule`] — matcher → actions mapping (YAML-configurable) |
-//!
-//! Tool hooks are wired through the shared tool execution pipeline:
-//! - `PreToolUseHookStage`
-//! - the permission stage for `PermissionRequest`
-//! - `PostToolUseHookStage`, which routes
-//!   successful and unsuccessful results to their distinct events
-//!
-//! ## Hook events
-//!
-//! | Event | When | Can modify |
-//! |-------|------|-----------|
-//! | `PreToolUse` | Before tool execution | Input, permission (allow/block) |
-//! | `PostToolUse` | After tool execution succeeds | Output, continuation |
-//! | `PostToolUseFailure` | After tool execution fails | Error feedback |
-//! | `PermissionRequest` | Permission dialog appears | Auto-approve/deny |
-//! | `PermissionDenied` | Permission denied | Retry signal |
-//! | `SessionStart` | Session begins or resumes | Context injection |
-//! | `SessionEnd` | Session terminates | Cleanup |
-//! | `Stop` | Agent finishes responding | Continue reason |
-//! | `StopFailure` | Agent encounters unrecoverable error | Alert/recovery |
-//! | `Notification` | Agent needs user attention | Permission shortcut |
-//! | `UserPromptSubmit` | User submits prompt | Context injection, block |
-//! | `PreCompact` | Before context compression | Context injection |
-//! | `PostCompact` | After context compression | Context injection |
-//! | `ConfigChange` | Configuration file changes | Block/reload |
-//! | `InstructionsLoaded` | Skills/instructions loaded | Post-load validation |
-//! | `PostToolBatch` | After batch of parallel tool calls | Aggregation |
-//! | `SubagentStart` | Before subagent dispatch | Context injection |
-//! | `SubagentStop` | After subagent completes | Result injection |
-//! | `TaskCreated` | Task node enters an executable graph | Context injection |
-//! | `TaskStarted` | Scheduler claims a task for execution | Context injection |
-//! | `TaskCompleted` | Task reaches a terminal status | Result injection |
-//! | `PluginLoaded` | Plugin components become active | Post-load integration |
-//! | `PluginDisabled` | Plugin components are deactivated | Cleanup |
-//! | `PostMemoryWrite` | Memory is persisted | Follow-up processing |
-//! | `MemoryLayerChange` | Memory changes layer | Follow-up processing |
-//! | `SkillCandidateDetected` | A skill candidate is detected | Review/notification |
-//! | `SkillLifecycleTransition` | A skill changes lifecycle state | Follow-up processing |
-//! | `SkillHealthCheck` | A skill health check completes | Follow-up processing |
-//! | `SkillPatchApplied` | A skill patch is applied | Follow-up processing |
-//! | `SkillMergeApplied` | Skills are merged | Follow-up processing |
-//! | `RulePromoted` | Memory is promoted to an AGENTS.md rule | Follow-up processing |
-//!
-//! ## Hook types
-//!
-//! | Type | Behavior |
-//! |------|----------|
-//! | `command` | Execute a shell command; stdin receives JSON context |
-//! | `prompt` | Inject a prompt message for the LLM |
-//! | `permission` | Return a permission decision directly (allow/deny/ask) |
-//! | `http` | POST event data to a URL, parse response |
-//! | `mcp_tool` | Call an MCP server tool |
-//! | `agent` | Invoke a configured subagent |
-//! | `activate_skill` | Activate a discovered skill directly |
-//!
-//! ## Format (application configuration)
-//!
-//! Skill files do not carry private Hook extensions. Hooks are supplied by
-//! host application configuration or plugin Hook components.
-//!
-//! ```yaml
-//! hooks:
-//!   PreToolUse:
-//!     - matcher: "Bash"
-//!       hooks:
-//!         - type: command
-//!           command: "${SKILL_DIR}/validate.sh"
-//!           timeout: 5
-//!     - matcher: "Write"
-//!       hooks:
-//!         - type: prompt
-//!           prompt: "Check file permissions before writing"
-//!   PostToolUse:
-//!     - matcher: "Edit|Write"
-//!       hooks:
-//!         - type: command
-//!           command: "jq -r '.tool_input.file_path' | xargs prettier --write"
-//!   Stop:
-//!     - hooks:
-//!         - type: command
-//!           command: "osascript -e 'display notification \"Done\"'"
-//!   SessionStart:
-//!     - matcher: "startup"
-//!       hooks:
-//!         - type: prompt
-//!           prompt: "Remember to use bun, not npm."
-//! ```
+/*! Hook 系统 —— Echo Agent 框架的生命周期钩子。
 
-// ── Re-export core types from echo-core ─────────────────────────────────
+Hook 允许技能（skill）和用户在 agent 生命周期的特定节点，通过运行命令、注入提示词
+（prompt）、发起 HTTP 调用或调用 MCP 工具来扩展 agent 的行为。
+
+## 架构角色
+
+本模块提供共享的 hook 分发与扩展层。宿主应用是本地的、由用户控制的应用，因此用户配置的
+命令、本地 HTTP 端点和 MCP 工具都被当作可信的扩展来对待。注册阶段仍然会拒绝格式错误的
+配置以及意外的超长超时设置。
+
+| 设计概念 | 本模块中的实现 |
+|---------------|-------------------------------|
+| `ToolExecutionEngine` | [`HookRegistry`] —— 所有 hook 事件的集中分发器 |
+| `ToolHook` trait | [`HookAction`] 枚举 —— Command、Prompt、Permission、Http、McpTool、Agent、ActivateSkill |
+| `HookDecision`（Allow/Deny/Modify） | [`HookResult`] —— `block`、`updated_input`、`permission_decision` |
+| `ToolPolicy` | [`HooksDefinition`] + [`HookRule`] —— matcher → actions 映射（可通过 YAML 配置） |
+
+工具 hook 通过共享的工具执行流水线接入：
+- `PreToolUseHookStage`
+- 用于 `PermissionRequest` 的权限阶段
+- `PostToolUseHookStage`，负责把成功和失败的结果路由到各自不同的事件
+
+## Hook 事件
+
+| 事件 | 触发时机 | 可修改内容 |
+|-------|------|-----------|
+| `PreToolUse` | 工具执行之前 | 输入、权限（允许/阻止） |
+| `PostToolUse` | 工具执行成功之后 | 输出、是否继续 |
+| `PostToolUseFailure` | 工具执行失败之后 | 错误反馈 |
+| `PermissionRequest` | 出现权限确认对话框时 | 自动批准/拒绝 |
+| `PermissionDenied` | 权限被拒绝时 | 重试信号 |
+| `SessionStart` | 会话开始或恢复时 | 注入上下文 |
+| `SessionEnd` | 会话结束时 | 清理 |
+| `Stop` | Agent 完成响应时 | 继续原因 |
+| `StopFailure` | Agent 遇到不可恢复错误时 | 告警/恢复 |
+| `Notification` | Agent 需要用户关注时 | 权限快捷方式 |
+| `UserPromptSubmit` | 用户提交提示词时 | 注入上下文、阻止 |
+| `PreCompact` | 上下文压缩之前 | 注入上下文 |
+| `PostCompact` | 上下文压缩之后 | 注入上下文 |
+| `ConfigChange` | 配置文件变更时 | 阻止/重新加载 |
+| `InstructionsLoaded` | 技能/指令加载完成时 | 加载后校验 |
+| `PostToolBatch` | 一批并行工具调用完成之后 | 聚合 |
+| `SubagentStart` | 子 agent 派发之前 | 注入上下文 |
+| `SubagentStop` | 子 agent 完成之后 | 注入结果 |
+| `TaskCreated` | 任务节点进入可执行图时 | 注入上下文 |
+| `TaskStarted` | 调度器认领任务开始执行时 | 注入上下文 |
+| `TaskCompleted` | 任务到达终态时 | 注入结果 |
+| `PluginLoaded` | 插件组件被激活时 | 加载后集成 |
+| `PluginDisabled` | 插件组件被停用时 | 清理 |
+| `PostMemoryWrite` | 记忆被持久化时 | 后续处理 |
+| `MemoryLayerChange` | 记忆变更层级时 | 后续处理 |
+| `SkillCandidateDetected` | 检测到技能候选项时 | 评审/通知 |
+| `SkillLifecycleTransition` | 技能生命周期状态变化时 | 后续处理 |
+| `SkillHealthCheck` | 技能健康检查完成时 | 后续处理 |
+| `SkillPatchApplied` | 技能补丁应用完成时 | 后续处理 |
+| `SkillMergeApplied` | 技能合并完成时 | 后续处理 |
+| `RulePromoted` | 记忆被提升为 AGENTS.md 规则时 | 后续处理 |
+
+## Hook 类型
+
+| 类型 | 行为 |
+|------|----------|
+| `command` | 执行一条 shell 命令；JSON 上下文通过 stdin 传入 |
+| `prompt` | 为 LLM 注入一条提示消息 |
+| `permission` | 直接返回一个权限决策（allow/deny/ask） |
+| `http` | 向某个 URL POST 事件数据并解析响应 |
+| `mcp_tool` | 调用某个 MCP 服务器上的工具 |
+| `agent` | 调用一个已配置的子 agent |
+| `activate_skill` | 直接激活一个已发现的技能 |
+
+## 格式（应用配置）
+
+技能文件本身不携带私有的 Hook 扩展。Hook 由宿主应用配置或插件的 Hook 组件提供。
+
+```yaml
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: "${SKILL_DIR}/validate.sh"
+          timeout: 5
+    - matcher: "Write"
+      hooks:
+        - type: prompt
+          prompt: "Check file permissions before writing"
+  PostToolUse:
+    - matcher: "Edit|Write"
+      hooks:
+        - type: command
+          command: "jq -r '.tool_input.file_path' | xargs prettier --write"
+  Stop:
+    - hooks:
+        - type: command
+          command: "osascript -e 'display notification \"Done\"'"
+  SessionStart:
+    - matcher: "startup"
+      hooks:
+        - type: prompt
+          prompt: "Remember to use bun, not npm."
+```
+*/
+
+// ── 从 echo-core 重新导出核心类型 ─────────────────────────────────
 
 pub use echo_core::hooks::{
     CompressHookStats, HookContext, HookEvent, HookEventCategory, HookResult, HookSource,
@@ -127,94 +124,108 @@ use tracing::{debug, info, warn};
 use crate::sandbox::{SandboxCommand, SandboxExecutor};
 use crate::skills::minimal_hook_env_with_context;
 
-// ── (HookEvent, HookContext, HookResult, CompressHookStats, HookSource are now in echo-core) ──
+// ── （HookEvent、HookContext、HookResult、CompressHookStats、HookSource 现已移至 echo-core）──
 
-// ── Hook Action ────────────────────────────────────────────────────────
+// ── Hook 动作 ────────────────────────────────────────────────────────
 
-/// Default timeout for hook actions (seconds).
+/// hook 动作的默认超时时间（秒）。
 const fn default_hook_timeout() -> u64 {
     600
 }
 
-/// Maximum allowed hook timeout (seconds). Prevents accidental runaway hooks.
+/// hook 允许的最大超时时间（秒）。用于防止意外的超长超时。
 const MAX_HOOK_TIMEOUT: u64 = 3600;
 
-/// Maximum command string length (Unicode scalar values).
+/// 命令字符串的最大长度（以 Unicode 标量值计）。
 const MAX_COMMAND_CHARS: usize = 32 * 1024;
 
-/// A single hook action.
+/// 单个 hook 动作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum HookAction {
-    /// Execute a shell command. The command receives JSON context on stdin.
+    /// 执行一条 shell 命令。命令通过 stdin 接收 JSON 格式的上下文。
     Command {
+        /// 要执行的 shell 命令字符串。
         command: String,
+        /// 使用的 shell 类型（例如 "bash"、"powershell"），默认为 bash。
         #[serde(default)]
         shell: Option<String>,
+        /// 命令执行超时时间（秒）。
         #[serde(default = "default_hook_timeout")]
         timeout: u64,
     },
-    /// Inject a prompt for the LLM to consider.
-    Prompt { prompt: String },
-    /// Return a permission decision directly.
+    /// 为 LLM 注入一条提示词供其参考。
+    Prompt {
+        /// 注入的提示词内容。
+        prompt: String,
+    },
+    /// 直接返回一个权限决策。
     Permission {
-        /// Decision: "allow" | "deny" | "ask"
+        /// 决策："allow" | "deny" | "ask"
         decision: String,
-        /// Reason for deny
+        /// 拒绝（deny）时的原因
         #[serde(default)]
         reason: Option<String>,
-        /// Suggestions for ask
+        /// 询问（ask）时的建议选项
         #[serde(default)]
         suggestions: Vec<String>,
     },
-    /// POST event data to a URL and parse the response.
+    /// 向某个 URL POST 事件数据并解析响应。
     Http {
+        /// 请求目标 URL。
         url: String,
+        /// HTTP 方法，默认为 POST。
         #[serde(default)]
         method: Option<String>,
+        /// 附加的请求头。
         #[serde(default)]
         headers: Option<HashMap<String, String>>,
+        /// 请求超时时间（秒）。
         #[serde(default = "default_hook_timeout")]
         timeout: u64,
     },
-    /// Call an MCP server tool.
+    /// 调用某个 MCP 服务器上的工具。
     #[serde(rename = "mcp_tool")]
     McpTool {
+        /// MCP 服务器名称。
         server: String,
+        /// 要调用的工具名称。
         tool: String,
+        /// 传给工具的参数。
         #[serde(default)]
         arguments: Option<Value>,
+        /// 调用超时时间（秒）。
         #[serde(default = "default_hook_timeout")]
         timeout: u64,
     },
-    /// Spawn a subagent to handle the hook action.
+    /// 派生一个子 agent 来处理该 hook 动作。
     Subagent {
-        /// Name of the subagent to invoke.
+        /// 要调用的子 agent 名称。
         name: String,
-        /// Task description to pass to the subagent.
+        /// 传给子 agent 的任务描述。
         #[serde(default)]
         task: Option<String>,
-        /// Timeout in seconds.
+        /// 超时时间（秒）。
         #[serde(default = "default_hook_timeout")]
         timeout: u64,
     },
-    /// Directly activate a skill without going through the LLM.
-    /// The hook engine calls `ReactAgent::activate_skill(skill)` when matched.
-    /// `reason` is surfaced to the model as a system note explaining why.
+    /// 不经过 LLM，直接激活一个技能。
+    /// 匹配成功时，hook 引擎会调用 `ReactAgent::activate_skill(skill)`。
+    /// `reason` 会作为系统提示展示给模型，说明激活原因。
     #[serde(rename = "activate_skill")]
     ActivateSkill {
-        /// Name of the skill to activate (must match a discovered skill).
+        /// 要激活的技能名称（必须匹配一个已发现的技能）。
         skill: String,
-        /// Human-readable reason shown to the model.
+        /// 展示给模型的可读原因说明。
         #[serde(default)]
         reason: String,
     },
 }
 
 impl HookAction {
-    /// Validate the hook action and return an error for unsafe/invalid config.
+    /// 校验该 hook 动作，对不安全/无效的配置返回错误。
     ///
-    /// Called during hook registration to catch misconfigurations early.
+    /// 在 hook 注册期间调用，用于尽早发现配置错误。
     pub fn validate(&self) -> Result<(), String> {
         match self {
             HookAction::Command {
@@ -316,7 +327,7 @@ impl HookAction {
         Ok(())
     }
 
-    /// Stable action name used by diagnostics and dry-run output.
+    /// 稳定的动作名称，用于诊断信息和 dry-run 输出。
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::Command { .. } => "command",
@@ -330,6 +341,7 @@ impl HookAction {
     }
 }
 
+/// 判断给定 URL 是否指向本地/私有地址（用于放行非 https 的 http hook）。
 fn is_local_http_url(url: &reqwest::Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -363,48 +375,51 @@ fn is_local_http_url(url: &reqwest::Url) -> bool {
         || normalized_host.ends_with(".lan")
 }
 
-// ── Hook Rule ──────────────────────────────────────────────────────────
+// ── Hook 规则 ──────────────────────────────────────────────────────────
 
-/// A hook rule: a matcher pattern + one or more actions.
+/** 一条 hook 规则：一个匹配模式（matcher）+ 一个或多个动作。
+
+`matcher` 字段：
+- 对于工具事件：匹配工具名称（精确匹配、glob 通配，或以 `|` 分隔的多个候选）。
+- 对于生命周期事件：匹配事件提示（例如 `"startup"`、`"permission_prompt"`）。
+- `"*"` 或空字符串匹配任意情况。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookRule {
-    /// Matcher pattern.
-    /// For tool events: matches tool name (exact, glob, or `|`-separated).
-    /// For lifecycle events: matches the event hint (e.g. "startup", "permission_prompt").
-    /// `"*"` or empty string matches everything.
+    /// 匹配模式。
     #[serde(default)]
     pub matcher: String,
 
-    /// Actions to execute when the matcher matches.
+    /// 匹配成功后要执行的动作列表。
     pub hooks: Vec<HookAction>,
 }
 
-// ── Hooks Definition ───────────────────────────────────────────────────
+// ── Hooks 定义 ───────────────────────────────────────────────────────
 
-/// Complete hooks definition from a programmatic Skill descriptor or host
-/// configuration.
-///
-/// Uses a `HashMap<HookEvent, Vec<HookRule>>` so that any event type
-/// is automatically supported without modifying this struct.
+/** 来自编程式 Skill 描述符或宿主配置的完整 hooks 定义。
+
+使用 `HashMap<HookEvent, Vec<HookRule>>`，这样新增任何事件类型都无需修改本结构体即可
+自动支持。
+*/
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HooksDefinition {
-    /// Event -> rules mapping. Supports all `HookEvent` variants.
+    /// 事件 -> 规则列表 的映射，支持所有 `HookEvent` 变体。
     #[serde(flatten)]
     pub rules: HashMap<HookEvent, Vec<HookRule>>,
 }
 
 impl HooksDefinition {
-    /// Get rules for a specific event.
+    /// 获取指定事件对应的规则列表。
     pub fn rules_for(&self, event: HookEvent) -> &[HookRule] {
         self.rules.get(&event).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Check if any hooks are defined.
+    /// 判断是否未定义任何 hook。
     pub fn is_empty(&self) -> bool {
         self.rules.values().all(|v| v.is_empty())
     }
 
-    /// Add rules for a specific event.
+    /// 为指定事件添加规则。
     pub fn add_rules(&mut self, event: HookEvent, rules: Vec<HookRule>) {
         let (rules, _) = validate_hook_rules(event, rules, "definition");
         if !rules.is_empty() {
@@ -412,7 +427,7 @@ impl HooksDefinition {
         }
     }
 
-    /// Merge another definition into this one.
+    /// 将另一个定义合并进当前定义。
     pub fn merge(&mut self, other: HooksDefinition) {
         for (event, rules) in other.rules {
             self.add_rules(event, rules);
@@ -420,6 +435,7 @@ impl HooksDefinition {
     }
 }
 
+/// 校验一批规则中的所有动作，剔除无效动作后返回保留的规则以及被跳过的数量。
 fn validate_hook_rules(
     event: HookEvent,
     rules: Vec<HookRule>,
@@ -448,6 +464,7 @@ fn validate_hook_rules(
     (kept_rules, skipped)
 }
 
+/// 校验整份 hooks 定义（遍历所有事件），返回清理后的定义以及被跳过的动作总数。
 fn validate_hook_definition(definition: HooksDefinition, source: &str) -> (HooksDefinition, usize) {
     let mut clean = HooksDefinition::default();
     let mut skipped = 0usize;
@@ -461,73 +478,75 @@ fn validate_hook_definition(definition: HooksDefinition, source: &str) -> (Hooks
     (clean, skipped)
 }
 
-// ── MCP Tool Executor ─────────────────────────────────────────────────
+// ── MCP 工具执行器 ─────────────────────────────────────────────────
 
-/// Type-erased callback for executing MCP tool calls from hooks.
-///
-/// The agent layer injects this via [`HookRegistry::set_mcp_executor`]
-/// so that [`HookAction::McpTool`] hooks can call into the agent's MCP manager
-/// without echo-execution depending on echo-integration.
+/** 用于从 hook 中执行 MCP 工具调用的类型擦除回调。
+
+agent 层通过 [`HookRegistry::set_mcp_executor`] 注入该回调，使得 [`HookAction::McpTool`]
+hook 能够调用 agent 的 MCP 管理器，而无需让 echo-execution 依赖 echo-integration。
+*/
 pub type McpExecutorFn = Arc<
     dyn Fn(String, String, Option<Value>) -> Pin<Box<dyn Future<Output = HookResult> + Send>>
         + Send
         + Sync,
 >;
 
-/// Type-erased callback for spawning a subagent from a hook.
-///
-/// The agent layer injects this via [`HookRegistry::set_subagent_executor`]
-/// so that [`HookAction::Subagent`] hooks can dispatch a subagent by name
-/// without echo-execution depending on the agent layer.
-/// Receives (subagent_name, task_prompt) and returns the subagent's output text.
+/** 用于从 hook 中派生子 agent 的类型擦除回调。
+
+agent 层通过 [`HookRegistry::set_subagent_executor`] 注入该回调，使得
+[`HookAction::Subagent`] hook 能够按名称派发子 agent，而无需让 echo-execution 依赖
+agent 层。接收 (subagent_name, task_prompt)，返回子 agent 的输出文本。
+*/
 pub type SubagentExecutorFn = Arc<
     dyn Fn(String, String) -> Pin<Box<dyn Future<Output = Result<String, String>> + Send>>
         + Send
         + Sync,
 >;
 
-/// Type-erased programmatic hook executor.
-///
-/// Embedders (for example the SDK extension bridge, which forwards hook
-/// events to a host-language implementation) inject closures this way so
-/// programmatic hooks run with the same merging, mutation and
-/// short-circuit semantics as data-driven rules — without echo-execution
-/// depending on any specific host. Mirrors the existing
-/// [`McpExecutorFn`]/[`SubagentExecutorFn`] injection pattern.
+/** 类型擦除的编程式 hook 执行器。
+
+嵌入方（例如把 hook 事件转发给宿主语言实现的 SDK 扩展桥接层）通过注入闭包的方式，
+使编程式 hook 能够遵循与数据驱动规则相同的合并、修改与短路语义 —— 同时不让
+echo-execution 依赖任何具体宿主。与已有的
+[`McpExecutorFn`]/[`SubagentExecutorFn`] 注入模式保持一致。
+*/
 pub type ProgrammaticHookFn =
     Arc<dyn Fn(HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send>> + Send + Sync>;
 
 tokio::task_local! {
+    /// 当前任务内子 agent hook 的嵌套深度，用于防止子 agent hook 递归触发自身。
     static SUBAGENT_HOOK_DEPTH: u8;
 }
 
-// ── Hook Registry ──────────────────────────────────────────────────────
+// ── Hook 注册表 ──────────────────────────────────────────────────────────
 
-/// Registry of hooks from all sources (skills and user config).
-// Manual Clone keeps the type-erased runtime callbacks attached to snapshots.
+/// 汇总所有来源（技能与用户配置）的 hook 注册表。
+// 手动实现 Clone，以保证类型擦除的运行时回调在克隆快照中仍然保留。
 #[derive(Default)]
 pub struct HookRegistry {
-    /// Source -> hooks definition.
+    /// 来源 -> hooks 定义 的映射。
     sources: HashMap<HookSource, RegisteredHook>,
-    /// Optional sandbox manager for executing hook commands.
+    /// 用于执行 hook 命令的可选沙箱管理器。
     sandbox: Option<Arc<dyn SandboxExecutor>>,
-    /// Optional HTTP client for Http hook actions.
+    /// 用于 Http hook 动作的可选 HTTP 客户端。
     http_client: Option<reqwest::Client>,
-    /// Optional MCP tool executor for McpTool hook actions.
+    /// 用于 McpTool hook 动作的可选 MCP 工具执行器。
     mcp_executor: Option<McpExecutorFn>,
-    /// Optional subagent executor for Subagent hook actions.
+    /// 用于 Subagent hook 动作的可选子 agent 执行器。
     subagent_executor: Option<SubagentExecutorFn>,
-    /// Programmatic (closure) hooks, kept sorted by name for deterministic
-    /// execution order.
+    /// 编程式（闭包）hook 列表，按名称排序以保证确定性的执行顺序。
     programmatic: Vec<ProgrammaticHookEntry>,
 }
 
-/// One registered programmatic hook: a named closure plus the events it
-/// subscribes to (empty = every event).
+/// 一个已注册的编程式 hook：一个具名闭包，加上它订阅的事件列表
+/// （空列表表示订阅所有事件）。
 #[derive(Clone)]
 struct ProgrammaticHookEntry {
+    /// hook 名称，用于去重和排序。
     name: String,
+    /// 订阅的事件列表；为空表示订阅所有事件。
     events: Vec<HookEvent>,
+    /// 实际执行的闭包。
     executor: ProgrammaticHookFn,
 }
 
@@ -544,45 +563,55 @@ impl Clone for HookRegistry {
     }
 }
 
+/// 一个来源已注册的 hook 定义及其运行所需的目录信息。
 #[derive(Debug, Clone)]
 struct RegisteredHook {
+    /// 该来源的 hooks 定义。
     definition: HooksDefinition,
+    /// 该来源对应的目录，用作命令的工作目录及环境变量来源。
     source_dir: String,
+    /// 该来源对应的插件数据目录（仅插件来源存在）。
     plugin_data_dir: Option<String>,
 }
 
-/// One action that would execute for a hook context, without side effects.
+/// 针对某个 hook 上下文将会执行的一个动作，不产生任何副作用（用于 dry-run）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookDryRunMatch {
+    /// 该动作所属的 hook 来源（如 "user_config"、"skill:xxx"）。
     pub source: String,
+    /// 命中的匹配模式。
     pub matcher: String,
+    /// 动作类型名称。
     pub action: String,
 }
 
-/// Result of matching a hook context without executing any action.
+/// 匹配某个 hook 上下文但不实际执行任何动作的结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HookDryRunResult {
+    /// 被匹配的事件类型。
     pub event: HookEvent,
+    /// 所有命中的动作列表。
     pub matches: Vec<HookDryRunMatch>,
 }
 
 impl HookRegistry {
+    /// 创建一个空的 hook 注册表。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Attach a sandbox manager for executing hook commands.
+    /// 以构建器（builder）风格附加一个沙箱管理器，用于执行 hook 命令。
     pub fn with_sandbox_manager(mut self, manager: Arc<dyn SandboxExecutor>) -> Self {
         self.sandbox = Some(manager);
         self
     }
 
-    /// Attach or replace the sandbox manager.
+    /// 附加或替换沙箱管理器。
     pub fn set_sandbox_manager(&mut self, manager: Arc<dyn SandboxExecutor>) {
         self.sandbox = Some(manager);
     }
 
-    /// Register hooks from a skill.
+    /// 注册来自某个技能的 hooks。
     pub fn register(&mut self, skill_name: &str, skill_dir: &str, definition: HooksDefinition) {
         let source = format!("skill:{skill_name}");
         let (definition, skipped) = validate_hook_definition(definition, &source);
@@ -605,7 +634,7 @@ impl HookRegistry {
         );
     }
 
-    /// Register hooks from user configuration.
+    /// 注册来自用户配置的 hooks。
     pub fn register_user_hooks(&mut self, definition: HooksDefinition) {
         let (definition, skipped) = validate_hook_definition(definition, "user_config");
         if definition.is_empty() {
@@ -625,21 +654,18 @@ impl HookRegistry {
         );
     }
 
-    /// Register hooks contributed by an installed plugin.
-    ///
-    /// This is the plugin-source counterpart of [`register`](Self::register):
-    /// it stores the definition under [`HookSource::Plugin`] so plugin hooks
-    /// keep a distinct source identity from skill and user-config hooks (audit
-    /// P0-2). Previously plugin hooks were filed under
-    /// `HookSource::Skill("plugin:…")`, which (1) never exercised the
-    /// `HookSource::Plugin` variant and (2) made plugin hooks indistinguishable
-    /// from skill hooks in `list_sources` / hot-reload source replacement.
-    ///
-    /// Every action is validated up front (see [`HookAction::validate`]);
-    /// invalid actions are logged and dropped rather than aborting the whole
-    /// plugin (a single malformed hook should not poison a plugin's other
-    /// components). Re-registering the same plugin replaces its prior
-    /// definition, enabling rebuild-on-reload without manual unregister.
+    /** 注册由已安装插件贡献的 hooks。
+
+    这是 [`register`](Self::register) 面向插件来源的对应版本：它将定义存放在
+    [`HookSource::Plugin`] 下，使插件 hook 与技能、用户配置 hook 保持独立的来源身份
+    （对应审计项 P0-2）。此前插件 hook 被归档在 `HookSource::Skill("plugin:…")` 下，
+    这样做的问题是：（1）从未真正用到 `HookSource::Plugin` 这个变体；（2）导致插件
+    hook 在 `list_sources` / 热重载来源替换时与技能 hook 无法区分。
+
+    每个动作都会预先校验（见 [`HookAction::validate`]）；无效动作会被记录日志并丢弃，
+    而不是中止整个插件的注册（单个格式错误的 hook 不应该拖累插件的其他组件）。
+    对同一插件重复注册会替换其先前的定义，从而支持“重载时重建”而无需手动反注册。
+    */
     pub fn register_plugin_hooks(
         &mut self,
         plugin_name: &str,
@@ -679,15 +705,14 @@ impl HookRegistry {
         true
     }
 
-    /// Unregister hooks from a specific source.
+    /// 反注册来自某个来源的 hooks。
     pub fn unregister(&mut self, source: &HookSource) -> bool {
         self.sources.remove(source).is_some()
     }
 
-    /// Register (or replace) one programmatic hook by name. `events` limits
-    /// the events the executor observes; an empty slice subscribes to every
-    /// event. Programmatic hooks run after data-driven sources in name
-    /// order, with identical merging and short-circuit semantics.
+    /// 按名称注册（或替换）一个编程式 hook。`events` 限定该执行器关注的事件范围；
+    /// 空切片表示订阅所有事件。编程式 hook 会在所有数据驱动来源之后按名称顺序运行，
+    /// 合并与短路语义与数据驱动规则相同。
     pub fn set_programmatic_hook(
         &mut self,
         name: &str,
@@ -713,19 +738,19 @@ impl HookRegistry {
         }
     }
 
-    /// Remove a programmatic hook by name; true when it was registered.
+    /// 按名称移除一个编程式 hook；若该 hook 确实已注册则返回 true。
     pub fn remove_programmatic_hook(&mut self, name: &str) -> bool {
         let before = self.programmatic.len();
         self.programmatic.retain(|entry| entry.name != name);
         before != self.programmatic.len()
     }
 
-    /// Clear all user-configured hooks (keeps skill hooks intact).
+    /// 清除所有用户配置的 hooks（保留技能 hook 不受影响）。
     pub fn clear_user_hooks(&mut self) -> bool {
         self.sources.remove(&HookSource::UserConfig).is_some()
     }
 
-    /// List all registered hook sources with their rule counts.
+    /// 列出所有已注册的 hook 来源及各自的规则数量。
     pub fn list_sources(&self) -> Vec<(String, usize)> {
         self.sources
             .iter()
@@ -741,12 +766,12 @@ impl HookRegistry {
             .collect()
     }
 
-    /// Check if any hooks are registered.
+    /// 判断是否未注册任何 hook。
     pub fn is_empty(&self) -> bool {
         self.sources.is_empty() && self.programmatic.is_empty()
     }
 
-    /// Check if any hooks are registered for a specific event.
+    /// 判断是否为指定事件注册了任何 hook。
     pub fn has_hooks_for(&self, event: HookEvent) -> bool {
         self.sources
             .values()
@@ -757,7 +782,7 @@ impl HookRegistry {
                 .any(|entry| entry.events.is_empty() || entry.events.contains(&event))
     }
 
-    /// Match hooks for a concrete context without executing any action.
+    /// 针对一个具体上下文匹配 hooks，但不执行任何动作。
     pub fn dry_run(&self, context: &HookContext) -> HookDryRunResult {
         let mut matches = Vec::new();
         for source in self.sorted_sources() {
@@ -783,6 +808,8 @@ impl HookRegistry {
         }
     }
 
+    /// 按确定的优先级顺序排列 hook 来源：用户配置最先，其次是按名称排序的插件，
+    /// 最后是按名称排序的技能。
     fn sorted_sources(&self) -> Vec<&HookSource> {
         let mut sources: Vec<&HookSource> = self.sources.keys().collect();
         sources.sort_by(|a, b| match (a, b) {
@@ -796,30 +823,32 @@ impl HookRegistry {
         sources
     }
 
-    /// Set the HTTP client for Http hook actions.
+    /// 设置用于 Http hook 动作的 HTTP 客户端。
     pub fn set_http_client(&mut self, client: reqwest::Client) {
         self.http_client = Some(client);
     }
 
-    /// Set the MCP tool executor for McpTool hook actions.
-    ///
-    /// The executor receives (server_name, tool_name, arguments) and
-    /// should call the corresponding MCP server tool, returning a [`HookResult`].
+    /** 设置用于 McpTool hook 动作的 MCP 工具执行器。
+
+    该执行器接收 (server_name, tool_name, arguments)，应当调用对应 MCP 服务器上的
+    工具，并返回一个 [`HookResult`]。
+    */
     pub fn set_mcp_executor(&mut self, executor: McpExecutorFn) {
         self.mcp_executor = Some(executor);
     }
 
-    /// Set the subagent executor for Subagent hook actions.
-    ///
-    /// The executor receives (agent_name, task_prompt) and should dispatch
-    /// the named subagent, returning its output text on success.
+    /** 设置用于 Subagent hook 动作的子 agent 执行器。
+
+    该执行器接收 (agent_name, task_prompt)，应当派发指定名称的子 agent，并在
+    成功时返回其输出文本。
+    */
     pub fn set_subagent_executor(&mut self, executor: SubagentExecutorFn) {
         self.subagent_executor = Some(executor);
     }
 
-    // -- Public execution methods --
+    // -- 公开的执行方法 --
 
-    /// Execute all matching PreToolUse hooks.
+    /// 执行所有匹配的 PreToolUse hooks。
     pub async fn run_pre_tool_use(
         &self,
         tool_name: &str,
@@ -830,7 +859,7 @@ impl HookRegistry {
         self.run_hooks(&context).await
     }
 
-    /// Execute all matching PostToolUse hooks.
+    /// 执行所有匹配的 PostToolUse hooks。
     pub async fn run_post_tool_use(
         &self,
         tool_name: &str,
@@ -843,7 +872,7 @@ impl HookRegistry {
         self.run_hooks(&context).await
     }
 
-    /// Execute all matching PostToolUseFailure hooks.
+    /// 执行所有匹配的 PostToolUseFailure hooks。
     pub async fn run_post_tool_use_failure(
         &self,
         tool_name: &str,
@@ -857,18 +886,19 @@ impl HookRegistry {
         self.run_hooks(&context).await
     }
 
-    /// Execute hooks for a lifecycle event.
+    /// 执行某个生命周期事件对应的 hooks。
     pub async fn run_lifecycle_hooks(&self, context: &HookContext) -> HookResult {
         self.run_hooks(context).await
     }
 
-    // -- Core execution engine --
+    // -- 核心执行引擎 --
 
+    /// 依次遍历所有数据驱动来源与编程式 hook，匹配并执行动作，合并出最终结果。
     async fn run_hooks(&self, context: &HookContext) -> HookResult {
         let event = context.event;
         let mut combined = HookResult::default();
 
-        // Sort sources: UserConfig first, then skills alphabetically
+        // 来源排序：用户配置优先，然后按字母顺序排列技能
         for source in self.sorted_sources() {
             let Some(registered) = self.sources.get(source) else {
                 continue;
@@ -906,9 +936,8 @@ impl HookRegistry {
             }
         }
 
-        // Programmatic hooks run after every data-driven source, in name
-        // order, with the same merge/short-circuit semantics. An empty
-        // event subscription observes everything.
+        // 编程式 hook 在所有数据驱动来源之后按名称顺序运行，采用相同的合并/短路
+        // 语义。空的事件订阅表示关注所有事件。
         for entry in &self.programmatic {
             if !entry.events.is_empty() && !entry.events.contains(&event) {
                 continue;
@@ -924,16 +953,16 @@ impl HookRegistry {
     }
 }
 
-// ── Matcher ────────────────────────────────────────────────────────────
+// ── 匹配器 ────────────────────────────────────────────────────────────
 
-/// Unified matcher for all hook events.
+/// 所有 hook 事件通用的匹配函数。
 fn matches_hook(matcher: &str, context: &HookContext) -> bool {
-    // "*" or empty matcher matches everything
+    // "*" 或空字符串匹配任意情况
     if matcher == "*" || matcher.is_empty() {
         return true;
     }
 
-    // Tool events: match against tool_name
+    // 工具事件：与 tool_name 匹配
     if context.event.is_tool_event()
         && let Some(ref tool_name) = context.tool_name
         && matches_tool_name(matcher, tool_name)
@@ -941,26 +970,26 @@ fn matches_hook(matcher: &str, context: &HookContext) -> bool {
         return true;
     }
 
-    // Non-tool events (Lifecycle, Subagent, Task): match against context.matcher hint
+    // 非工具事件（生命周期、子 agent、任务）：与 context.matcher 提示匹配
     if let Some(ref hint) = context.matcher {
-        // Exact match
+        // 精确匹配
         if matcher == hint.as_str() {
             return true;
         }
-        // Pipe-separated alternatives (e.g., "Edit|Write" or "startup|resume")
+        // 以 `|` 分隔的多个候选（例如 "Edit|Write" 或 "startup|resume"）
         for part in matcher.split('|') {
             let part = part.trim();
             if part == hint.as_str() {
                 return true;
             }
-            // Try each part as a glob pattern
+            // 尝试将每个候选作为 glob 模式匹配
             if let Ok(pattern) = glob::Pattern::new(part)
                 && pattern.matches(hint)
             {
                 return true;
             }
         }
-        // Try full matcher as glob
+        // 尝试将完整 matcher 作为 glob 模式匹配
         if let Ok(pattern) = glob::Pattern::new(matcher)
             && pattern.matches(hint)
         {
@@ -971,24 +1000,24 @@ fn matches_hook(matcher: &str, context: &HookContext) -> bool {
     false
 }
 
-/// Match a tool name against a pattern (exact, glob, prefix with parens).
+/// 将工具名称与模式进行匹配（精确匹配、glob 通配，或带括号的前缀匹配）。
 fn matches_tool_name(matcher: &str, tool_name: &str) -> bool {
     if matcher == tool_name {
         return true;
     }
-    // Pipe-separated alternatives
+    // 以 `|` 分隔的多个候选
     if matcher.contains('|') {
         return matcher
             .split('|')
             .any(|part| matches_tool_name(part.trim(), tool_name));
     }
-    // Glob matching
+    // glob 匹配
     if let Ok(pattern) = glob::Pattern::new(matcher)
         && pattern.matches(tool_name)
     {
         return true;
     }
-    // Prefix match for patterns like "Bash" matching "Bash(git:*)"
+    // 前缀匹配，例如模式 "Bash" 匹配 "Bash(git:*)"
     if tool_name.starts_with(matcher)
         && tool_name.len() > matcher.len()
         && tool_name.as_bytes().get(matcher.len()) == Some(&b'(')

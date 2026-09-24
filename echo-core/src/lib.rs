@@ -1,22 +1,21 @@
 //! # echo-core
 //!
-//! Core traits, types, and error definitions for the [echo-agent](https://crates.io/crates/echo_agent) framework.
+//! [echo-agent](https://crates.io/crates/echo_agent) 框架的核心 trait、类型与错误定义。
 //!
-//! This crate provides the shared interfaces that all other workspace crates build on:
+//! 本 crate 提供了工作区中其他所有 crate 都依赖的共享接口：
 //!
-//! | Module | Contents |
+//! | 模块 | 内容 |
 //! |--------|----------|
-//! | [`agent`] | `Agent` trait, `AgentEvent`, `AgentCallback`, `CancellationToken`, `Critic` trait with built-in implementations, `Executor` trait with built-in implementations, reflection types and store |
-//! | [`llm`] | `LlmClient` trait, `ChatRequest`/`ChatResponse`/`ChatChunk` types |
-//! | [`tools`] | `Tool` trait, `ToolResult`, `ToolPermission`, permission model |
-//! | [`error`] | Unified `Error` enum covering all failure modes |
-//! | [`guard`] | `Guard` trait, `GuardResult`, `GuardManager` |
-//! | [`audit`] | `AuditEvent`, `AuditLogger` trait |
-//! | [`retry`] | `RetryPolicy` with exponential backoff |
-//! | [`tokenizer`] | Token counting interface |
+//! | [`agent`] | `Agent` trait、`AgentEvent`、`AgentCallback`、`CancellationToken`、内置了若干实现的 `Critic` trait、内置了若干实现的 `Executor` trait、反思相关类型与存储 |
+//! | [`llm`] | `LlmClient` trait、`ChatRequest`/`ChatResponse`/`ChatChunk` 类型 |
+//! | [`tools`] | `Tool` trait、`ToolResult`、`ToolPermission`、权限模型 |
+//! | [`error`] | 覆盖所有失败场景的统一 `Error` 枚举 |
+//! | [`guard`] | `Guard` trait、`GuardResult`、`GuardManager` |
+//! | [`audit`] | `AuditEvent`、`AuditLogger` trait |
+//! | [`retry`] | 带指数退避的 `RetryPolicy` |
+//! | [`tokenizer`] | Token 计数接口 |
 //!
-//! Most users should depend on `echo_agent` (the facade crate) instead of
-//! depending on `echo_core` directly.
+//! 大多数用户应当依赖 `echo_agent`（门面 crate），而不是直接依赖 `echo_core`。
 
 pub mod agent;
 pub mod audit;
@@ -39,9 +38,9 @@ pub mod tokenizer;
 pub mod tools;
 pub mod utils;
 
-/// Implementation dependencies used by code generated from `echo_macros`.
-/// This is public only so downstream macro expansion does not require users to
-/// duplicate framework implementation dependencies in their manifests.
+/// `echo_macros` 生成代码所依赖的实现依赖项。
+/// 之所以公开，仅仅是为了让下游宏展开时，用户无需在自己的 manifest 中
+/// 重复声明框架的实现依赖。
 #[doc(hidden)]
 pub mod __macro_support {
     pub use futures;

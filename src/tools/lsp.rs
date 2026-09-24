@@ -1,7 +1,9 @@
-//! LSP tools — expose language server capabilities as agent tools.
-//!
-//! These tools require an `LspManager` to be initialized and passed
-//! during registration. They are gated behind the `lsp` feature.
+/*!
+ * LSP 工具 —— 将语言服务器能力暴露为 Agent 工具。
+ *
+ * 这些工具需要在注册时传入一个已初始化的 `LspManager`。
+ * 它们由 `lsp` feature 门控。
+ */
 
 use echo_core::error::Result;
 use echo_core::lsp::{DiagnosticSeverity, LspClient, Position};
@@ -12,16 +14,19 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// 共享的 LSP 管理器句柄
 type SharedLspManager = Arc<RwLock<LspManager>>;
 
 // ── lsp_diagnostics ─────────────────────────────────────────────────
 
-/// Get diagnostics (errors, warnings) for a file from the language server.
+/// 从语言服务器获取某个文件的诊断信息（错误、警告）。
 pub struct LspDiagnosticsTool {
+    /// 共享的 LSP 管理器
     lsp_manager: SharedLspManager,
 }
 
 impl LspDiagnosticsTool {
+    /// 创建一个新的诊断工具实例。
     pub fn new(lsp_manager: SharedLspManager) -> Self {
         Self { lsp_manager }
     }
@@ -112,12 +117,14 @@ impl Tool for LspDiagnosticsTool {
 
 // ── lsp_goto_definition ─────────────────────────────────────────────
 
-/// Find the definition of a symbol at a given position.
+/// 查找给定位置处符号的定义。
 pub struct LspGotoDefinitionTool {
+    /// 共享的 LSP 管理器
     lsp_manager: SharedLspManager,
 }
 
 impl LspGotoDefinitionTool {
+    /// 创建一个新的跳转到定义工具实例。
     pub fn new(lsp_manager: SharedLspManager) -> Self {
         Self { lsp_manager }
     }
@@ -209,12 +216,14 @@ impl Tool for LspGotoDefinitionTool {
 
 // ── lsp_find_references ──────────────────────────────────────────────
 
-/// Find all references to a symbol.
+/// 查找某个符号的所有引用。
 pub struct LspFindReferencesTool {
+    /// 共享的 LSP 管理器
     lsp_manager: SharedLspManager,
 }
 
 impl LspFindReferencesTool {
+    /// 创建一个新的查找引用工具实例。
     pub fn new(lsp_manager: SharedLspManager) -> Self {
         Self { lsp_manager }
     }
@@ -306,12 +315,14 @@ impl Tool for LspFindReferencesTool {
 
 // ── lsp_hover ────────────────────────────────────────────────────────
 
-/// Get hover information (type, docs) for a symbol.
+/// 获取符号的悬浮信息（类型、文档）。
 pub struct LspHoverTool {
+    /// 共享的 LSP 管理器
     lsp_manager: SharedLspManager,
 }
 
 impl LspHoverTool {
+    /// 创建一个新的悬浮信息工具实例。
     pub fn new(lsp_manager: SharedLspManager) -> Self {
         Self { lsp_manager }
     }
@@ -387,12 +398,14 @@ impl Tool for LspHoverTool {
 
 // ── lsp_status ───────────────────────────────────────────────────────
 
-/// Show status of all language servers.
+/// 显示所有语言服务器的状态。
 pub struct LspStatusTool {
+    /// 共享的 LSP 管理器
     lsp_manager: SharedLspManager,
 }
 
 impl LspStatusTool {
+    /// 创建一个新的状态查询工具实例。
     pub fn new(lsp_manager: SharedLspManager) -> Self {
         Self { lsp_manager }
     }
@@ -453,8 +466,9 @@ impl Tool for LspStatusTool {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────
 
+/// 打开文件供 LSP 使用：定位到对应语言的 client，并发送 `didOpen` 通知。
 async fn open_file_for_lsp(
     manager: &LspManager,
     file_path: &str,
@@ -475,7 +489,7 @@ async fn open_file_for_lsp(
     Ok(Some(client))
 }
 
-/// Convert a file path to a file:// URI.
+/// 将文件路径转换为 file:// URI。
 fn path_to_uri(path: &str) -> String {
     if path.starts_with("file://") {
         path.to_string()
@@ -484,12 +498,12 @@ fn path_to_uri(path: &str) -> String {
     }
 }
 
-/// Convert a file:// URI back to a path.
+/// 将 file:// URI 转换回文件路径。
 fn uri_to_path(uri: &str) -> String {
     uri.strip_prefix("file://").unwrap_or(uri).to_string()
 }
 
-/// Register all LSP tools with the given LspManager.
+/// 将所有 LSP 工具注册到给定的 LspManager 上。
 pub fn register_lsp_tools(
     tool_manager: &mut dyn echo_core::tools::ToolRegistrar,
     lsp_manager: SharedLspManager,

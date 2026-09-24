@@ -1,36 +1,36 @@
-//! Memory scope — layering for different memory lifetimes.
+//! 记忆作用域 —— 为不同的记忆生命周期分层。
 //!
-//! # Scopes
+//! # 作用域
 //!
-//! - **User**: Cross-project user preferences and patterns.
-//! - **Project**: Project-specific conventions and rules.
-//! - **Repo**: Repository-specific patterns (nested within project).
-//! - **Task**: Current task state (active until task completion).
-//! - **Session**: Current session context (active until agent restart).
-//! - **Run**: Single execution run (cleared after each run).
+//! - **User**：跨项目的用户偏好与模式。
+//! - **Project**：特定项目的约定与规则。
+//! - **Repo**：特定仓库的模式（嵌套于项目之内）。
+//! - **Task**：当前任务状态（在任务完成前始终有效）。
+//! - **Session**：当前会话上下文（在 agent 重启前始终有效）。
+//! - **Run**：单次执行运行（每次运行结束后清空）。
 
 use serde::{Deserialize, Serialize};
 
-/// The lifetime layer for a memory.
+/// 记忆的生命周期层级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryScope {
-    /// Cross-project user preferences (persisted indefinitely).
+    /// 跨项目的用户偏好（永久持久化）。
     User,
-    /// Project-specific conventions (persisted with project).
+    /// 特定项目的约定（随项目持久化）。
     Project,
-    /// Repository-specific patterns (nested within project).
+    /// 特定仓库的模式（嵌套于项目之内）。
     Repo,
-    /// Current task state (cleared when task completes).
+    /// 当前任务状态（任务完成后清空）。
     Task,
-    /// Current session context (cleared on agent restart).
+    /// 当前会话上下文（agent 重启后清空）。
     Session,
-    /// Single execution run (cleared after each run).
+    /// 单次执行运行（每次运行结束后清空）。
     Run,
 }
 
 impl MemoryScope {
-    /// Human-readable name.
+    /// 返回人类可读的名称。
     pub fn name(&self) -> &str {
         match self {
             Self::User => "user",
@@ -42,7 +42,7 @@ impl MemoryScope {
         }
     }
 
-    /// Priority order (lower = longer-lived).
+    /// 优先级顺序（数值越小，生命周期越长）。
     pub fn priority(&self) -> u8 {
         match self {
             Self::User => 0,
@@ -54,12 +54,12 @@ impl MemoryScope {
         }
     }
 
-    /// Whether this scope persists across agent restarts.
+    /// 该作用域是否在 agent 重启后依然持久化。
     pub fn is_persistent(&self) -> bool {
         matches!(self, Self::User | Self::Project | Self::Repo)
     }
 
-    /// All scopes in priority order.
+    /// 按优先级顺序返回所有作用域。
     pub fn all() -> [Self; 6] {
         [
             Self::User,
@@ -75,6 +75,7 @@ impl MemoryScope {
 impl std::str::FromStr for MemoryScope {
     type Err = String;
 
+    /// 从字符串解析出对应的记忆作用域（大小写不敏感，支持部分别名）。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_lowercase().as_str() {
             "user" => Ok(Self::User),

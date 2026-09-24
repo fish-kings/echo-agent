@@ -1,23 +1,26 @@
-//! Connection-scoped extension invocation authority (supreme plan 06, todo
-//! `build-shared-extension-runtime`).
-//!
-//! The authority is deliberately protocol-neutral: it owns invocation
-//! lifecycle only — admission, concurrency permits, per-call cancellation,
-//! exclusive-mutation leases and exactly-once settlement (design §12.3). It
-//! never sees language objects, protocol DTOs, product UI state or a second
-//! run/terminal authority; the typed bridge in the SDK host maps this
-//! lifecycle onto the official reverse-request transport.
-//!
-//! Invariants enforced here:
-//!
-//! - the reader loop never blocks on a callback: leases are acquired with
-//!   `try_acquire`, and every wait has an explicit caller-side deadline;
-//! - one invocation identity settles at most once; later settlements are
-//!   reported as late and discarded by the caller;
-//! - dropping an unsettled lease is fail-closed: it settles as cancelled and
-//!   releases its resources, so a crashed proxy task can never leak a permit;
-//! - exclusive leases make re-entrant mutation of the same registration a
-//!   typed conflict instead of mutual waiting.
+/*!
+ * 连接作用域的扩展调用权威（supreme plan 06，todo
+ * `build-shared-extension-runtime`）。
+ *
+ * 该权威刻意保持协议无关：它只负责调用的生命周期 ——
+ * 准入、并发许可、单次调用取消、独占互斥租约以及
+ * 恰好一次的结算（设计文档 §12.3）。它从不接触语言层对象、
+ * 协议 DTO、产品 UI 状态或第二个 run/terminal 权威；
+ * SDK host 中的类型化桥接层负责将该生命周期映射到
+ * 官方的反向请求（reverse-request）传输层上。
+ *
+ * 这里强制执行的不变式：
+ *
+ * - 读取循环永远不会因回调而阻塞：租约通过 `try_acquire`
+ *   获取，且每一次等待都有调用方显式设置的截止时间；
+ * - 一个调用身份最多结算一次；之后的结算会被视为迟到
+ *   （late）并由调用方丢弃；
+ * - 丢弃一个未结算的租约会失败关闭（fail-closed）：它会
+ *   自动结算为已取消并释放其占用的资源，因此一个崩溃的
+ *   代理任务永远不会泄漏许可；
+ * - 独占租约会将对同一注册对象的重入式变更变成一个
+ *   类型化的冲突，而不是相互等待。
+ */
 
 use crate::agent::CancellationToken;
 use std::collections::HashMap;
@@ -26,17 +29,21 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore, TryAcquireError};
 
-/// Why an invocation lease could not be acquired. Mapped by the bridge to
-/// typed extension errors; the runtime itself stays error-code agnostic.
+/**
+ * 说明为什么无法获取一次调用租约。桥接层会将其映射为
+ * 类型化的扩展错误；运行时本身对错误码保持无感知。
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionLeaseError {
-    /// The connection is closing and refuses new invocations.
+    /// 连接正在关闭，拒绝新的调用。
     AdmissionClosed,
-    /// The negotiated concurrency of in-flight callbacks is exhausted.
+    /// 已协商的并发回调数量已耗尽。
     ConcurrencyLimit,
-    /// An exclusive lease for the same registration is still held
-    /// (re-entrant mutation). Callers report a typed conflict instead of
-    /// waiting (design §12.3).
+    /**
+     * 同一注册对象的独占租约仍被持有（重入式变更）。
+     * 调用方会报告一个类型化的冲突，而不是等待
+     * （设计文档 §12.3）。
+     */
     ExclusiveConflict,
 }
 
@@ -53,34 +60,41 @@ impl std::fmt::Display for ExtensionLeaseError {
     }
 }
 
-/// Terminal settlement of one invocation, transport-agnostic.
+/// 一次调用的终止态结算，与传输层无关。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtensionSettlement {
-    /// The transport delivered an answer (payload already handled by the
-    /// caller; the runtime only records the fact).
+    /**
+     * 传输层已送达一个应答（负载已由调用方处理；
+     * 运行时只记录这一事实）。
+     */
     Answered,
-    /// The deadline elapsed before an answer settled.
+    /// 在应答结算之前，截止时间已到。
     TimedOut,
-    /// Cancelled by the framework, the owning run, or connection teardown.
+    /// 被框架、所属的 run，或连接拆除逻辑取消。
     Cancelled,
-    /// The reverse transport failed (send error or disconnect).
+    /// 反向传输失败（发送错误或断开连接）。
     Disconnected,
 }
 
 impl ExtensionSettlement {
-    /// Whether this settlement is success-shaped for diagnostics.
+    /// 该结算对于诊断而言是否呈现为成功状态。
     pub fn is_answered(&self) -> bool {
         matches!(self, Self::Answered)
     }
 }
 
+/// 一次调用的内部记录：取消令牌、结算状态与通知器
 struct InvocationEntry {
+    /// 该调用的取消令牌
     cancellation: CancellationToken,
+    /// 结算状态（一旦写入即不可变更）
     state: StdMutex<Option<ExtensionSettlement>>,
+    /// 用于通知等待者结算已完成
     settled: Notify,
 }
 
 impl InvocationEntry {
+    /// 记录结算；若已结算过则返回 false
     fn settle(&self, settlement: ExtensionSettlement) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
@@ -93,48 +107,64 @@ impl InvocationEntry {
         true
     }
 
+    /// 返回已记录的结算（如果存在）
     fn settlement(&self) -> Option<ExtensionSettlement> {
         self.state.lock().ok().and_then(|state| *state)
     }
 }
 
-/// One in-flight invocation lease. The holder drives the reverse transport;
-/// settlement must happen exactly once. Dropping an unsettled lease settles
-/// it as cancelled and releases every resource it holds.
+/**
+ * 一个正在进行中的调用租约。持有者负责驱动反向传输；
+ * 结算必须恰好发生一次。丢弃一个未结算的租约会将其
+ * 结算为已取消，并释放它持有的全部资源。
+ */
 pub struct ExtensionInvocationLease {
+    /// 所属的调用权威
     authority: Arc<ExtensionInvocationAuthority>,
+    /// 本次调用的唯一标识
     identity: String,
+    /// 如果是独占租约，则为其注册键
     exclusive_key: Option<String>,
+    /// 关联的调用条目（状态与通知）
     entry: Arc<InvocationEntry>,
+    /// 持有的并发许可
     permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl ExtensionInvocationLease {
-    /// Unique invocation identity of this lease. Independent from any
-    /// JSON-RPC request id (design §10.1).
+    /**
+     * 该租约的唯一调用标识，独立于任何 JSON-RPC 请求 id
+     * （设计文档 §10.1）。
+     */
     pub fn identity(&self) -> &str {
         &self.identity
     }
 
-    /// Cancellation token of this invocation. Signalled by the authority on
-    /// teardown, or proactively by the holder's framework cancellation.
+    /**
+     * 该次调用的取消令牌。会在拆除时由权威触发信号，
+     * 也可能由持有者所在框架的取消逻辑主动触发。
+     */
     pub fn cancellation(&self) -> CancellationToken {
         self.entry.cancellation.clone()
     }
 
-    /// Record the settlement. Returns false when the lease already settled —
-    /// the caller must discard that late outcome without touching state.
+    /**
+     * 记录结算结果。若该租约已经结算过，则返回 false ——
+     * 调用方必须丢弃这个迟到的结果，且不能再改动状态。
+     */
     pub fn settle(&mut self, settlement: ExtensionSettlement) -> bool {
         self.entry.settle(settlement)
     }
 
-    /// The already-recorded settlement, when one exists.
+    /// 已记录的结算结果（如果存在的话）。
     pub fn settlement(&self) -> Option<ExtensionSettlement> {
         self.entry.settlement()
     }
 
-    /// Wait until this lease is settled (by the holder, cancellation or
-    /// teardown). Always pair with a caller-side deadline.
+    /**
+     * 等待直到该租约被结算（由持有者、取消操作或拆除逻辑
+     * 触发）。请务必搭配调用方侧的截止时间一起使用。
+     */
     pub async fn wait_settled(&self) -> ExtensionSettlement {
         loop {
             let notified = self.entry.settled.notified();
@@ -145,12 +175,15 @@ impl ExtensionInvocationLease {
         }
     }
 
-    /// Settle as timed out if still pending, then report whether this call
-    /// was the first settlement (true) or a late one (false).
+    /**
+     * 如果仍处于待定状态，则将其结算为超时，然后报告本次
+     * 调用是首次结算（true）还是迟到的结算（false）。
+     */
     pub fn settle_timeout(&mut self) -> bool {
         self.entry.settle(ExtensionSettlement::TimedOut)
     }
 
+    /// 释放该租约占用的许可与独占键，并从权威处移除该调用记录
     fn release(&mut self) {
         self.permit.take();
         if let Some(key) = self.exclusive_key.take() {
@@ -162,28 +195,37 @@ impl ExtensionInvocationLease {
 
 impl Drop for ExtensionInvocationLease {
     fn drop(&mut self) {
-        // Fail-closed: an unsettled lease (crashed or aborted proxy task)
-        // settles as cancelled so no waiter can hang on it.
+        /* 失败关闭（fail-closed）：一个未结算的租约（崩溃或被中止的
+         * 代理任务）会被结算为已取消，这样就不会有等待者被挂起。
+         */
         self.entry.settle(ExtensionSettlement::Cancelled);
         self.release();
     }
 }
 
-/// Per-connection invocation authority shared by every extension proxy.
+/// 每个连接共享的调用权威，被所有扩展代理共用。
 pub struct ExtensionInvocationAuthority {
+    /// 是否仍接受新的调用
     admission: AtomicBool,
+    /// 连接级别的取消令牌
     connection_cancellation: CancellationToken,
+    /// 并发许可信号量
     semaphore: Arc<Semaphore>,
+    /// 独占租约的持有计数表
     exclusive: StdMutex<HashMap<String, usize>>,
+    /// 当前所有在途调用
     invocations: StdMutex<HashMap<String, Arc<InvocationEntry>>>,
+    /// 用于生成调用标识的自增序号
     serial: AtomicU64,
+    /// 调用标识的前缀（每个权威实例唯一）
     identity_prefix: String,
 }
 
 impl ExtensionInvocationAuthority {
-    /// Create the authority with the negotiated concurrency bound. A
-    /// non-positive bound is rejected because it would disable the bridge
-    /// silently.
+    /**
+     * 使用已协商的并发上限创建权威。非正数的上限会被拒绝，
+     * 因为那样会静默地禁用桥接层。
+     */
     pub fn new(max_concurrency: usize) -> Result<Arc<Self>, ExtensionLeaseError> {
         if max_concurrency == 0 {
             return Err(ExtensionLeaseError::ConcurrencyLimit);
@@ -191,9 +233,11 @@ impl ExtensionInvocationAuthority {
         Ok(Self::build(max_concurrency))
     }
 
-    /// Create the authority, clamping a non-positive bound to one permit.
-    /// Used by connection setup where the config was already validated and
-    /// degrading is safer than failing the whole connection.
+    /**
+     * 创建权威，并将非正数的上限钳制为一个许可。
+     * 用于连接建立阶段：此时配置已经过校验，降级处理
+     * 比让整个连接失败更安全。
+     */
     pub fn new_saturating(max_concurrency: usize) -> Arc<Self> {
         Self::build(max_concurrency.max(1))
     }
@@ -210,26 +254,30 @@ impl ExtensionInvocationAuthority {
         })
     }
 
-    /// Whether new invocations are admitted.
+    /// 是否仍接受新的调用。
     pub fn admission_open(&self) -> bool {
         self.admission.load(Ordering::Acquire)
     }
 
-    /// Close admission. In-flight invocations keep running until they settle,
-    /// are cancelled by [`Self::cancel_all`], or the bounded drain expires.
+    /**
+     * 关闭准入。在途的调用会继续运行，直到它们自行结算、
+     * 被 [`Self::cancel_all`] 取消，或有限期的排空（drain）超时。
+     */
     pub fn close_admission(&self) {
         self.admission.store(false, Ordering::Release);
         self.connection_cancellation.cancel();
     }
 
-    /// Cancellation token shared by invocations that are not tied to a
-    /// framework run-specific context. It is cancelled during connection
-    /// teardown so callbacks cannot outlive their owning ACP connection.
+    /**
+     * 由那些未绑定到特定框架 run 上下文的调用共享的取消令牌。
+     * 它会在连接拆除期间被取消，从而确保回调的存活时间
+     * 不会超过其所属的 ACP 连接。
+     */
     pub fn connection_cancellation(&self) -> CancellationToken {
         self.connection_cancellation.clone()
     }
 
-    /// Number of currently in-flight invocations.
+    /// 当前在途调用的数量。
     pub fn in_flight(&self) -> usize {
         self.invocations
             .lock()
@@ -237,15 +285,17 @@ impl ExtensionInvocationAuthority {
             .unwrap_or_default()
     }
 
-    /// Acquire one invocation lease.
-    ///
-    /// `exclusive_key` marks the invocation as an exclusive mutation of one
-    /// registration (connection generation + implementation identity): while
-    /// such a lease is outstanding, another exclusive lease on the same key
-    /// fails with [`ExtensionLeaseError::ExclusiveConflict`] instead of
-    /// queueing (design §12.3). `framework_cancellation` links the lease to
-    /// the owning run/tool cancellation so framework cancels reach the
-    /// callback without waiting for the deadline.
+    /**
+     * 获取一个调用租约。
+     *
+     * `exclusive_key` 将该调用标记为对某个注册对象（连接代际 +
+     * 实现标识）的独占变更：当这样的租约仍未释放时，对同一
+     * 键的另一个独占租约请求会以
+     * [`ExtensionLeaseError::ExclusiveConflict`] 失败，而不是
+     * 排队等待（设计文档 §12.3）。`framework_cancellation`
+     * 将该租约与所属的 run/工具取消逻辑关联起来，使框架层的
+     * 取消操作无需等待截止时间即可到达回调。
+     */
     pub fn lease(
         self: &Arc<Self>,
         exclusive_key: Option<&str>,
@@ -270,7 +320,7 @@ impl ExtensionInvocationAuthority {
         if let Some(key) = exclusive_key
             && !self.reserve_exclusive(key)
         {
-            // The permit is dropped here, releasing the concurrency slot.
+            // 此处许可会被丢弃，从而释放该并发名额。
             return Err(ExtensionLeaseError::ExclusiveConflict);
         }
         let serial = self.serial.fetch_add(1, Ordering::AcqRel);
@@ -292,9 +342,11 @@ impl ExtensionInvocationAuthority {
         })
     }
 
-    /// Cancel every in-flight invocation. Returns how many were pending when
-    /// cancellation began; leases observe the cancellation through their
-    /// token or the settled state and release themselves.
+    /**
+     * 取消所有在途调用。返回取消开始时处于待定状态的调用数量；
+     * 各个租约会通过自己的取消令牌或结算状态感知到取消，
+     * 并自行释放。
+     */
     pub fn cancel_all(&self) -> usize {
         let entries: Vec<Arc<InvocationEntry>> = self
             .invocations
@@ -313,9 +365,11 @@ impl ExtensionInvocationAuthority {
         pending
     }
 
-    /// Bounded teardown wait: wait until every lease settled (and therefore
-    /// released) or the timeout expires. Returns the number of leases still
-    /// in flight after the wait — zero is the clean-shutdown condition.
+    /**
+     * 有限期的拆除等待：等待直到每个租约都已结算（因而已释放），
+     * 或者超时到期。返回等待结束后仍处于在途状态的租约数量 ——
+     * 零表示干净关闭。
+     */
     pub async fn drain(&self, timeout: Duration) -> usize {
         let drained = tokio::time::timeout(timeout, async {
             loop {
@@ -323,8 +377,9 @@ impl ExtensionInvocationAuthority {
                 if pending == 0 {
                     return;
                 }
-                // Poll briefly: lease release happens in proxy tasks, not
-                // through a single notify point.
+                /* 短暂轮询：租约的释放发生在各个代理任务中，
+                 * 而不是通过单一的通知点触发。
+                 */
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
@@ -332,6 +387,7 @@ impl ExtensionInvocationAuthority {
         if drained.is_ok() { 0 } else { self.in_flight() }
     }
 
+    /// 释放指定键上的一次独占持有计数
     fn release_exclusive(&self, key: &str) {
         if let Ok(mut exclusive) = self.exclusive.lock() {
             match exclusive.get(key).copied() {
@@ -346,6 +402,7 @@ impl ExtensionInvocationAuthority {
         }
     }
 
+    /// 尝试为指定键预留一次独占持有；已被占用时返回 false
     fn reserve_exclusive(&self, key: &str) -> bool {
         let Ok(mut exclusive) = self.exclusive.lock() else {
             return false;
@@ -359,6 +416,7 @@ impl ExtensionInvocationAuthority {
         }
     }
 
+    /// 从在途调用表中移除指定标识的记录
     fn forget_invocation(&self, identity: &str) {
         if let Ok(mut invocations) = self.invocations.lock() {
             invocations.remove(identity);
@@ -413,7 +471,7 @@ mod tests {
         assert_eq!(lease.settlement(), None);
         assert!(lease.settle(ExtensionSettlement::Answered));
         assert_eq!(lease.settlement(), Some(ExtensionSettlement::Answered));
-        // A late response arriving afterwards must be discarded.
+        // 之后到达的迟到响应必须被丢弃。
         assert!(!lease.settle(ExtensionSettlement::Answered));
         assert!(!lease.settle_timeout());
         drop(lease);
@@ -432,7 +490,7 @@ mod tests {
             reentrant.err(),
             Some(ExtensionLeaseError::ExclusiveConflict)
         );
-        // Non-exclusive leases on other keys are unaffected.
+        // 其他键上的非独占租约不受影响。
         assert!(
             authority
                 .lease(Some("extension-2/human-loop"), CancellationToken::new())
@@ -482,24 +540,26 @@ mod tests {
             Some(ExtensionLeaseError::AdmissionClosed)
         );
         let pending = authority.cancel_all();
-        // The lease was pending until cancel_all settled it as cancelled.
+        // 在 cancel_all 将其结算为已取消之前，该租约一直处于待定状态。
         assert_eq!(pending, 1);
         assert_eq!(held.settlement(), Some(ExtensionSettlement::Cancelled));
-        // The proxy task observes the settlement and releases its lease;
-        // only then can the bounded drain observe a clean state.
+        /* 代理任务感知到结算后会释放自己的租约；
+         * 只有到那时，有限期的排空（drain）才能观察到干净的状态。
+         */
         drop(held);
         let remaining = authority.drain(Duration::from_millis(200)).await;
         assert_eq!(remaining, 0);
         assert_eq!(authority.in_flight(), 0);
-        // A lease dropped after settlement must not resurrect anything.
+        // 结算之后再丢弃的租约不应让任何东西死灰复燃。
         assert_eq!(authority.in_flight(), 0);
     }
 
     #[tokio::test]
     async fn drain_reports_leases_that_never_release() {
         let authority = ExtensionInvocationAuthority::new_saturating(4);
-        // Inject an entry whose lease object was leaked without Drop: the
-        // drain must report it instead of hanging.
+        /* 注入一个租约对象未经 Drop 就被泄漏的条目：
+         * drain 必须报告它，而不是一直挂起等待。
+         */
         authority.invocations.lock().expect("lock").insert(
             "invocation-test-stuck".to_string(),
             Arc::new(InvocationEntry {
@@ -528,7 +588,7 @@ mod tests {
                 entry.settlement()
             })
         };
-        // Give the waiter a chance to subscribe before settling.
+        // 在结算之前，先给等待者一个订阅的机会。
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert!(lease.settle(ExtensionSettlement::Disconnected));
         let observed = waiter.await.expect("waiter completes");

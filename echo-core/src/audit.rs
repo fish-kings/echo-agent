@@ -1,4 +1,4 @@
-//! Audit logging core trait and event types
+//! 审计日志核心 trait 与事件类型
 
 use crate::error::Result;
 use crate::guard::GuardDirection;
@@ -9,25 +9,25 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Audit event
+/// 审计事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
-    /// Time when the event was recorded.
+    /// 事件被记录时的时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub timestamp: DateTime<Utc>,
-    /// Optional conversation or session identifier.
+    /// 可选的会话标识符。
     pub session_id: Option<String>,
-    /// Agent name associated with the event.
+    /// 与该事件关联的 agent 名称。
     pub agent_name: String,
-    /// Structured payload describing the event kind.
+    /// 描述事件种类的结构化负载。
     pub event_type: AuditEventType,
-    /// Optional distributed tracing identifier.
+    /// 可选的分布式追踪标识符。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
 }
 
 impl AuditEvent {
-    /// Construct a new event stamped with the current UTC time.
+    /// 构造一个以当前 UTC 时间为时间戳的新事件。
     pub fn now(session_id: Option<String>, agent_name: String, event_type: AuditEventType) -> Self {
         Self {
             timestamp: Utc::now(),
@@ -38,6 +38,7 @@ impl AuditEvent {
         }
     }
 
+    /// 按照内容保留策略，就地脱敏/清理该事件中携带的文本与 JSON 内容。
     pub fn apply_retention(&mut self, retention: &ContentRetentionPolicy) {
         match &mut self.event_type {
             AuditEventType::UserInput { content } | AuditEventType::FinalAnswer { content } => {
@@ -62,85 +63,85 @@ impl AuditEvent {
     }
 }
 
-/// Audit event types
+/// 审计事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuditEventType {
-    /// Raw user input captured before the agent starts processing.
+    /// agent 开始处理前捕获的原始用户输入。
     UserInput {
-        /// User-provided content.
+        /// 用户提供的内容。
         content: String,
     },
-    /// A model invocation with optional token accounting.
+    /// 一次模型调用，附带可选的 token 计数。
     LlmCall {
-        /// Model name used for the request.
+        /// 该请求所使用的模型名称。
         model: String,
         #[serde(skip_serializing_if = "Option::is_none")]
-        /// Prompt token count if the provider reported it.
+        /// 若 provider 有上报，则为提示词的 token 数。
         prompt_tokens: Option<u64>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        /// Completion token count if the provider reported it.
+        /// 若 provider 有上报，则为补全内容的 token 数。
         completion_tokens: Option<u64>,
     },
-    /// A tool invocation and its observed outcome.
+    /// 一次工具调用及其观测到的结果。
     ToolCall {
-        /// Canonical tool invocation identity when supplied by the runtime.
+        /// 由运行时提供的规范化工具调用标识（若存在）。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_id: Option<String>,
-        /// Tool identifier.
+        /// 工具标识符。
         tool: String,
-        /// Serialized tool input.
+        /// 序列化后的工具输入。
         input: Value,
-        /// Tool output text.
+        /// 工具输出文本。
         output: String,
-        /// Whether the tool succeeded.
+        /// 工具是否执行成功。
         success: bool,
-        /// Execution duration in milliseconds.
+        /// 执行耗时（毫秒）。
         duration_ms: u64,
     },
-    /// A guard rejected input or output.
+    /// 某个 guard 拒绝了输入或输出。
     GuardBlock {
-        /// Guard name.
+        /// Guard 名称。
         guard: String,
-        /// Whether the guard acted on input or output.
+        /// 该 guard 作用于输入还是输出。
         direction: GuardDirection,
-        /// Human-readable reason.
+        /// 人类可读的原因。
         reason: String,
     },
-    /// A permission policy denied a tool invocation.
+    /// 权限策略拒绝了一次工具调用。
     PermissionDenied {
-        /// Tool identifier.
+        /// 工具标识符。
         tool: String,
-        /// Permissions that triggered the denial.
+        /// 触发拒绝的权限项。
         required: Vec<ToolPermission>,
-        /// Human-readable reason.
+        /// 人类可读的原因。
         reason: String,
     },
-    /// Final answer returned to the caller.
+    /// 返回给调用方的最终答案。
     FinalAnswer {
-        /// Final response content.
+        /// 最终的响应内容。
         content: String,
     },
-    /// Approval request was initiated
+    /// 审批请求已发起
     ApprovalRequested {
-        /// Tool name
+        /// 工具名称
         tool: String,
-        /// Argument hash (for cache matching)
+        /// 参数哈希（用于缓存匹配）
         args_hash: String,
-        /// Risk level
+        /// 风险等级
         risk_level: String,
     },
-    /// Approval decision was returned
+    /// 审批结果已返回
     ApprovalCompleted {
-        /// Tool name
+        /// 工具名称
         tool: String,
-        /// Decision result
+        /// 决策结果
         decision: String,
-        /// Approval scope
+        /// 审批范围
         scope: String,
-        /// Rejection reason (if any)
+        /// 拒绝原因（如有）
         reason: Option<String>,
-        /// Duration from request to decision (milliseconds)
+        /// 从发起请求到得出决策的耗时（毫秒）
         duration_ms: u64,
     },
 }
@@ -148,22 +149,22 @@ pub enum AuditEventType {
 /// 审计查询过滤器
 #[derive(Debug, Default, Clone)]
 pub struct AuditFilter {
-    /// Restrict results to a specific session.
+    /// 仅限定于某个会话的结果。
     pub session_id: Option<String>,
-    /// Restrict results to a specific agent name.
+    /// 仅限定于某个 agent 名称的结果。
     pub agent_name: Option<String>,
-    /// Inclusive lower timestamp bound.
+    /// 时间戳下界（含）。
     pub from: Option<DateTime<Utc>>,
-    /// Inclusive upper timestamp bound.
+    /// 时间戳上界（含）。
     pub to: Option<DateTime<Utc>>,
-    /// Maximum number of results to return.
+    /// 返回结果的最大数量。
     pub limit: Option<usize>,
 }
 
 /// 审计日志记录器 trait
 pub trait AuditLogger: Send + Sync {
-    /// Persist one audit event.
+    /// 持久化一条审计事件。
     fn log<'a>(&'a self, event: AuditEvent) -> BoxFuture<'a, Result<()>>;
-    /// Query stored events with a filter.
+    /// 按过滤条件查询已存储的事件。
     fn query<'a>(&'a self, filter: AuditFilter) -> BoxFuture<'a, Result<Vec<AuditEvent>>>;
 }

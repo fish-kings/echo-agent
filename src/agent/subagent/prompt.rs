@@ -1,4 +1,4 @@
-//! Prompt compilation contracts shared by subagent dispatch paths.
+//! 子代理派发路径共用的 prompt 编译契约。
 
 use echo_core::llm::ToolDefinition;
 use echo_core::llm::types::{ContentPart, Message, MessageContent, Role};
@@ -8,28 +8,38 @@ use std::path::PathBuf;
 
 use super::types::{ExecutionMode, SubagentAccessMode};
 
-/// Controls whether a dispatch starts fresh or receives filtered parent turns.
+/// 控制一次派发是从空白开始，还是接收经过过滤的父级历史轮次。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ContextTransferPolicy {
+    /// 从空白上下文开始，不继承父级历史。
     #[default]
     Fresh,
+    /// 继承经过结构化过滤后的父级历史。
     InheritStructured,
 }
 
+/// 单个工具的能力描述（名称与说明）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCapability {
+    /// 工具名称。
     pub name: String,
+    /// 工具说明（用于渲染进 prompt）。
     pub description: String,
 }
 
+/// 一次注册时刻的工具能力快照：全部工具、可见工具与被禁用工具。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolCapabilitySnapshot {
+    /// 已注册的全部工具，按名称排序并去重。
     pub tools: Vec<ToolCapability>,
+    /// 未被禁用、对外可见的工具名称列表。
     pub visible_tools: Vec<String>,
+    /// 已注册但被禁用的工具名称列表（按名称排序）。
     pub disabled_tools: Vec<String>,
 }
 
 impl ToolCapabilitySnapshot {
+    /// 依据工具定义与禁用集合构建一份能力快照。
     pub fn from_definitions(
         definitions: &[ToolDefinition],
         disabled_tools: &HashSet<String>,
@@ -72,33 +82,44 @@ impl ToolCapabilitySnapshot {
     }
 }
 
+/// 系统 prompt 的编译对象：是子代理还是主代理。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptActor {
+    /// 目标是子代理（subagent）。
     Subagent,
+    /// 目标是主代理（primary）。
     Primary,
 }
 
+/// 子代理执行的边界约束（访问模式、隔离方式、是否可再派发）。
 #[derive(Debug, Clone, Copy)]
 pub struct SubagentExecutionBoundary<'a> {
+    /// 子代理的访问模式。
     pub access: SubagentAccessMode,
+    /// 隔离方式的描述文本。
     pub isolation: &'a str,
+    /// 该子代理是否可以继续派发下一级子代理。
     pub can_delegate: bool,
 }
 
-/// Stable provenance for one compiler-owned prompt section.
+/// 由编译器写入的、某个 prompt 片段的稳定来源信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptSectionDiagnostic {
+    /// 该片段的标识符。
     pub id: String,
+    /// 该片段的来源描述。
     pub source: String,
 }
 
-/// Structured diagnostics for prompt tests and observability.
+/// 供 prompt 测试与可观测性使用的结构化诊断信息。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptDiagnostics {
+    /// 已记录的各个 prompt 片段来源信息。
     pub sections: Vec<PromptSectionDiagnostic>,
 }
 
 impl PromptDiagnostics {
+    /// 记录一个 prompt 片段的标识符与来源。
     pub fn record(&mut self, id: impl Into<String>, source: impl Into<String>) {
         self.sections.push(PromptSectionDiagnostic {
             id: id.into(),
@@ -106,6 +127,7 @@ impl PromptDiagnostics {
         });
     }
 
+    /// 统计指定标识符的片段被记录的次数。
     pub fn count(&self, id: &str) -> usize {
         self.sections
             .iter()
@@ -114,63 +136,94 @@ impl PromptDiagnostics {
     }
 }
 
-/// Registration-time facts used to compile a cache-stable role system prompt.
+/// 用于编译出缓存稳定的角色系统 prompt 的注册时刻信息。
 #[derive(Debug, Clone)]
 pub struct SubagentSystemPromptInput<'a> {
+    /// 编译目标：子代理还是主代理。
     pub actor: PromptActor,
+    /// 代理名称。
     pub name: &'a str,
+    /// 代理描述。
     pub description: &'a str,
+    /// 角色 prompt 原文。
     pub role_prompt: &'a str,
+    /// 该代理可用的工具能力快照。
     pub capabilities: &'a ToolCapabilitySnapshot,
+    /// 该代理的执行边界约束。
     pub boundary: SubagentExecutionBoundary<'a>,
 }
 
-/// Registration-time compiler result.
+/// 注册时刻的编译结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompiledSubagentSystemPrompt {
+    /// 编译得到的系统 prompt 文本。
     pub system_prompt: String,
+    /// 编译过程中产生的诊断信息。
     pub diagnostics: PromptDiagnostics,
 }
 
+/// 派发给子代理的任务上下文信息。
 #[derive(Debug, Clone, Default)]
 pub struct SubagentTaskContext {
+    /// 任务标题。
     pub task_title: Option<String>,
+    /// 用户目标描述。
     pub user_goal: Option<String>,
+    /// 隔离工作区根目录。
     pub workspace: Option<PathBuf>,
+    /// 与任务相关的文件列表。
     pub files: Vec<String>,
+    /// 需要执行的检查项列表。
     pub execution_checks: Vec<String>,
+    /// 验收标准列表。
     pub acceptance_criteria: Vec<String>,
+    /// 必须产出的工件列表。
     pub required_artifacts: Vec<String>,
+    /// 附加约束条件列表。
     pub constraints: Vec<String>,
 }
 
-/// Dispatch-time facts presented to a prompt compiler.
+/// 派发时刻呈现给 prompt 编译器的信息。
 pub struct SubagentInvocation<'a> {
+    /// 代理名称。
     pub agent_name: &'a str,
+    /// 任务文本。
     pub task: &'a str,
+    /// 执行模式。
     pub mode: ExecutionMode,
+    /// 上下文迁移策略。
     pub transfer_policy: ContextTransferPolicy,
+    /// 父级历史消息。
     pub history: &'a [Message],
+    /// 历史消息数量上限。
     pub history_limit: Option<usize>,
-    /// Current typed input, including any binary attachments. The compiler owns
-    /// its final text framing and must preserve non-text content.
+    /**
+    当前的带类型输入，可能包含二进制附件。编译器拥有最终文本编排的
+    所有权，必须保留非文本内容。
+    */
     pub current_message: Option<&'a Message>,
+    /// 子代理任务上下文。
     pub context: &'a SubagentTaskContext,
-    /// Present only when this invocation narrows the stable registered tool
-    /// surface. Product compilers render the override, not a duplicate catalog.
+    /**
+    仅当本次调用需要收窄稳定注册的工具面时才会出现。产品层编译器
+    应渲染该覆盖集合，而不是重复渲染完整目录。
+    */
     pub capability_override: Option<&'a ToolCapabilitySnapshot>,
-    /// Opaque product-layer payload. Framework compilers ignore it.
+    /// 产品层的不透明负载。框架层编译器会忽略它。
     pub payload: Option<&'a Value>,
 }
 
-/// Dispatch-time compiler result consumed by the executor.
+/// 供执行器消费的、派发时刻的编译结果。
 #[derive(Debug, Clone, Default)]
 pub struct CompiledSubagentInvocation {
+    /// 编译得到的消息序列（最后一条为当前任务输入）。
     pub messages: Vec<Message>,
+    /// 编译过程中产生的诊断信息。
     pub diagnostics: PromptDiagnostics,
 }
 
 impl CompiledSubagentInvocation {
+    /// 取出编译结果中最后一条消息的文本内容，即当前任务输入。
     pub fn task_input(&self) -> String {
         self.messages
             .last()
@@ -178,6 +231,7 @@ impl CompiledSubagentInvocation {
             .unwrap_or_default()
     }
 
+    /// 取出除最后一条（当前任务输入）之外的历史消息。
     pub fn history(&self) -> &[Message] {
         self.messages
             .get(..self.messages.len().saturating_sub(1))
@@ -185,19 +239,22 @@ impl CompiledSubagentInvocation {
     }
 }
 
-/// One prompt compiler instance owns registration-time and dispatch-time framing.
+/// 单个 prompt 编译器实例同时拥有注册时刻与派发时刻编排的所有权。
 pub trait SubagentPromptCompiler: Send + Sync {
+    /// 编译注册时刻的角色系统 prompt。
     fn compile_system(&self, input: &SubagentSystemPromptInput<'_>)
     -> CompiledSubagentSystemPrompt;
 
+    /// 编译派发时刻的调用消息序列。
     fn compile_invocation(&self, input: &SubagentInvocation<'_>) -> CompiledSubagentInvocation;
 }
 
-/// Product-neutral fallback used by framework consumers that do not inject a compiler.
+/// 供未注入自定义编译器的框架消费者使用的、与产品无关的兜底实现。
 #[derive(Debug, Default)]
 pub struct DefaultSubagentPromptCompiler;
 
 impl SubagentPromptCompiler for DefaultSubagentPromptCompiler {
+    /// 直接使用角色 prompt 原文作为系统 prompt，并记录一条诊断信息。
     fn compile_system(
         &self,
         input: &SubagentSystemPromptInput<'_>,
@@ -210,6 +267,7 @@ impl SubagentPromptCompiler for DefaultSubagentPromptCompiler {
         }
     }
 
+    /// 按照迁移策略过滤历史、拼装约束与工作区信息，编译出最终的调用消息序列。
     fn compile_invocation(&self, input: &SubagentInvocation<'_>) -> CompiledSubagentInvocation {
         let mut diagnostics = PromptDiagnostics::default();
         diagnostics.record("task", "dispatch_request");
@@ -245,7 +303,7 @@ impl SubagentPromptCompiler for DefaultSubagentPromptCompiler {
     }
 }
 
-/// Build the final current user message while retaining binary attachments.
+/// 构建最终的当前用户消息，同时保留二进制附件。
 pub fn compiled_current_message(message: Option<&Message>, task_input: &str) -> Message {
     message
         .cloned()
@@ -253,9 +311,11 @@ pub fn compiled_current_message(message: Option<&Message>, task_input: &str) -> 
         .unwrap_or_else(|| Message::user(task_input.to_string()))
 }
 
-/// Avoid replaying the exact current user text immediately before the compiled
-/// invocation. The current message remains authoritative because it may also
-/// carry attachments that the history projection intentionally does not own.
+/**
+避免在编译出的调用消息之前，紧接着重复回放完全相同的当前用户文本。
+当前消息仍然是权威来源，因为它可能携带附件，而历史投影有意不拥有
+这些附件的所有权。
+*/
 pub fn remove_duplicate_current_message(history: &mut Vec<Message>, current: Option<&Message>) {
     let Some(current_text) = current.and_then(Message::text_content) else {
         return;
@@ -270,7 +330,7 @@ pub fn remove_duplicate_current_message(history: &mut Vec<Message>, current: Opt
     }
 }
 
-/// Keep only provider-safe user turns and complete assistant final turns.
+/// 只保留对 provider 安全的用户轮次，以及完整的助手最终回复轮次。
 pub fn filter_history(messages: &[Message], limit: Option<usize>) -> Vec<Message> {
     let mut filtered = messages
         .iter()
@@ -310,7 +370,7 @@ pub fn filter_history(messages: &[Message], limit: Option<usize>) -> Vec<Message
     filtered
 }
 
-/// Replace the text part of a user message while preserving binary attachments.
+/// 替换用户消息中的文本部分，同时保留二进制附件。
 pub fn with_compiled_task(message: Message, task_input: &str) -> Message {
     let content = match message.content {
         MessageContent::Parts(parts) => {

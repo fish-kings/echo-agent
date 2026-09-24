@@ -1,10 +1,10 @@
-//! QQ Bot HTTP API — Token acquisition + message sending
+//! QQ 机器人 HTTP API —— 获取 Token + 发送消息
 //!
-//! Official API docs:
-//! - Token: POST <https://bots.qq.com/app/getAppAccessToken>
-//! - Gateway: GET <https://api.sgroup.qq.com/v2/gateway>
-//! - Direct message: POST `https://api.sgroup.qq.com/v2/users/{openid}/messages`
-//! - Group message: POST `https://api.sgroup.qq.com/v2/groups/{guild_id}/messages`
+//! 官方 API 文档：
+//! - Token：POST <https://bots.qq.com/app/getAppAccessToken>
+//! - Gateway：GET <https://api.sgroup.qq.com/v2/gateway>
+//! - 私聊消息：POST `https://api.sgroup.qq.com/v2/users/{openid}/messages`
+//! - 群消息：POST `https://api.sgroup.qq.com/v2/groups/{guild_id}/messages`
 
 use super::super::super::types::ChatType;
 use crate::redaction::{json as redact_json, json_with_secrets, request_error, text_with_secrets};
@@ -19,24 +19,31 @@ use tracing::{debug, info, warn};
 const QQ_API_BASE: &str = "https://api.sgroup.qq.com";
 const QQ_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
 
+/// 构造一个共享使用的 `reqwest::Client`；若自定义构建失败则退回默认客户端。
 pub fn reqwest_client() -> Client {
     Client::builder().build().unwrap_or_else(|_| Client::new())
 }
 
-// ── Token Management ────────────────────────────────────────────────────────────
+// ── Token 管理 ────────────────────────────────────────────────────────────
 
-/// QQ Token Manager — acquires and caches access_token
+/// QQ Token 管理器 —— 获取并缓存 access_token
 pub(super) struct TokenManager {
+    /// QQ 机器人应用 ID。
     app_id: String,
+    /// QQ 机器人应用密钥。
     client_secret: String,
+    /// 缓存的 access_token。
     token: Arc<Mutex<Option<String>>>,
+    /// token 的过期时间（Unix 秒），用于判断是否需要刷新。
     expires_at: Arc<AtomicU64>,
-    /// Prevent concurrent duplicate refresh
+    /// 防止并发重复刷新
     refresh_lock: Arc<Mutex<()>>,
+    /// 用于请求 QQ 开放平台接口的 HTTP 客户端。
     http: reqwest::Client,
 }
 
 impl TokenManager {
+    /// 使用给定的 `app_id` 与 `client_secret` 创建一个新的 Token 管理器。
     pub fn new(app_id: String, client_secret: String) -> Self {
         Self {
             app_id,
@@ -48,11 +55,13 @@ impl TokenManager {
         }
     }
 
+    /// 判断当前缓存的 token 是否已过期。
     async fn is_expired(&self) -> bool {
         let now = chrono::Utc::now().timestamp() as u64;
         self.expires_at.load(Ordering::Relaxed) <= now
     }
 
+    /// 若缓存的 token 未过期，返回其克隆；否则返回 `None`。
     async fn get_cached(&self) -> Option<String> {
         if self.is_expired().await {
             return None;
@@ -60,20 +69,21 @@ impl TokenManager {
         self.token.lock().await.clone()
     }
 
-    /// Get access_token (auto-cache / refresh)
+    /// 获取 access_token（自动缓存 / 刷新）
     pub async fn get_token(&self) -> Result<String> {
         if let Some(token) = self.get_cached().await {
             return Ok(token);
         }
-        // Lock to prevent concurrent duplicate refresh
+        // 加锁以防止并发重复刷新
         let _lock = self.refresh_lock.lock().await;
-        // Double-check after acquiring the lock
+        // 获取锁后再次检查缓存
         if let Some(token) = self.get_cached().await {
             return Ok(token);
         }
         self.refresh_token().await
     }
 
+    /// 向 QQ 开放平台请求新的 access_token，并更新本地缓存与过期时间。
     async fn refresh_token(&self) -> Result<String> {
         info!("QQ Bot: refreshing access_token");
 
@@ -113,7 +123,7 @@ impl TokenManager {
             text_with_secrets(&redact_json(&json).to_string(), [&self.client_secret]);
         debug!("QQ Bot: token response = {}", redacted_response);
 
-        // QQ API may return the field as access_token (snake_case) or accessToken (camelCase)
+        // QQ API 返回的字段可能是 access_token（snake_case）也可能是 accessToken（camelCase）
         let token = json
             .get("accessToken")
             .or_else(|| json.get("access_token"))
@@ -126,8 +136,8 @@ impl TokenManager {
             })?
             .to_string();
 
-        // QQ Token validity is typically 7200 seconds; refresh 5 minutes early
-        // Note: expires_in may be a string "7200" or a number 7200
+        // QQ Token 有效期通常为 7200 秒；提前 5 分钟刷新
+        // 注意：expires_in 可能是字符串 "7200"，也可能是数字 7200
         let expires_in = json
             .get("expiresIn")
             .or_else(|| json.get("expires_in"))
@@ -150,13 +160,13 @@ impl TokenManager {
 
 // ── Gateway URL ───────────────────────────────────────────────────────────────
 
-/// Get the WebSocket Gateway URL
+/// 获取 WebSocket Gateway 地址
 pub async fn get_gateway_url(client: &reqwest::Client, token: &str) -> Result<String> {
-    // QQ Bot API v2 gateway endpoint: try multiple paths
+    // QQ 机器人 API v2 的 gateway 端点：依次尝试多个路径
     let endpoints = [
-        format!("{}/gateway", QQ_API_BASE),        // no version prefix
-        format!("{}/gateway/bot", QQ_API_BASE),    // bot suffix
-        format!("{}/v2/gateway", QQ_API_BASE),     // v2 prefix
+        format!("{}/gateway", QQ_API_BASE),        // 无版本前缀
+        format!("{}/gateway/bot", QQ_API_BASE),    // bot 后缀
+        format!("{}/v2/gateway", QQ_API_BASE),     // v2 前缀
         format!("{}/v2/gateway/bot", QQ_API_BASE), // v2 + bot
     ];
 
@@ -217,9 +227,9 @@ pub async fn get_gateway_url(client: &reqwest::Client, token: &str) -> Result<St
     })))
 }
 
-// ── Send Message ──────────────────────────────────────────────────────────────
+// ── 发送消息 ──────────────────────────────────────────────────────────────
 
-/// Send a QQ message
+/// 发送一条 QQ 消息
 pub async fn send_qq_message(
     client: &reqwest::Client,
     token: &str,

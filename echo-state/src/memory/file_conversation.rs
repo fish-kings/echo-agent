@@ -1,34 +1,33 @@
-//! File-backed [`ConversationStore`] — a no-dependency JSON-file backend.
+//! 文件后端的 [`ConversationStore`] —— 一个无额外依赖的 JSON 文件存储实现。
 //!
-//! Each conversation has a small manifest and an append-oriented message log,
-//! plus a monotonic id counter in `<base>/conversations/_meta.json`. This is
-//! the no-SQLite alternative to `SqliteConversationStore` (`sqlite` feature).
+//! 每个会话都有一份小型清单（manifest）和一份追加式的消息日志，另外在
+//! `<base>/conversations/_meta.json` 中维护一个单调递增的 id 计数器。这是在不使用
+//! SQLite 时替代 `SqliteConversationStore`（`sqlite` feature）的方案。
 //!
-//! ## Layout
+//! ## 目录结构
 //!
-//! - `<base>/conversations/<safe_id>.json` — conversation metadata and the
-//!   committed message-log generation/byte boundary, written atomically.
-//! - `<base>/conversations/<safe_id>.messages.<generation>.jsonl` — messages.
-//!   Pure transcript growth appends only the new suffix. Replacements switch
-//!   to a new atomically-written generation before committing the manifest.
-//! - `<base>/conversations/_meta.json` — monotonic id counter, replacing the
-//!   SQLite autoincrement. Bumped on every new conversation/message so ids stay
-//!   unique across the store; self-heals across restarts.
+//! - `<base>/conversations/<safe_id>.json` —— 会话元数据，以及已提交的消息日志的
+//!   代（generation）编号/字节边界，原子写入。
+//! - `<base>/conversations/<safe_id>.messages.<generation>.jsonl` —— 消息内容。
+//!   纯粹的转录增长只追加新的后缀；如果发生替换，则会先原子写入一个新的
+//!   generation，再提交清单。
+//! - `<base>/conversations/_meta.json` —— 单调递增的 id 计数器，用来替代 SQLite 的
+//!   自增主键。每新增一个会话/消息都会递增该计数器，从而保证 id 在整个存储中唯一；
+//!   重启后可自我修复（self-heal）。
 //!
-//! ## Robustness
+//! ## 健壮性设计
 //!
-//! - **Path-safe ids.** Conversation ids are sanitized to a filesystem-safe
-//!   segment (rejecting `/`, `\`, `..`) before joining into the path. This
-//!   prevents path-traversal (`../foo`) and accidental directory escapes.
-//! - **Corrupt JSON is an error.** A malformed record / meta file surfaces as
-//!   `MemoryError::SerializationError` rather than silently returning `None` /
-//!   an empty list (which previously looked indistinguishable from "no data").
-//! - **Unique temp names + parent-dir sync.** Each atomic write uses a
-//!   uuid-suffixed temp file (no cross-write collisions) and, on Unix, `fsync`s
-//!   the parent directory after rename so the rename survives a crash.
-//! - **Committed log boundary.** Message bytes are synced before the manifest
-//!   advances. Readers ignore an uncommitted tail, and the next append removes
-//!   it before writing, so a crash cannot expose a partial message.
+//! - **路径安全的 id。** 会话 id 在拼入路径前会被规整为文件系统安全的片段（拒绝
+//!   `/`、`\`、`..`），从而防止路径穿越（`../foo`）以及意外的目录逃逸。
+//! - **损坏的 JSON 视为错误。** 格式错误的记录/元数据文件会返回
+//!   `MemoryError::SerializationError`，而不是静默返回 `None`/空列表（以前这种做法
+//!   会让"数据损坏"和"没有数据"难以区分）。
+//! - **唯一临时文件名 + 父目录同步。** 每次原子写入都使用带 uuid 后缀的临时文件
+//!   （避免并发写入冲突），在 Unix 上重命名后还会对父目录执行 `fsync`，确保重命名
+//!   能在崩溃后仍然生效。
+//! - **已提交日志边界。** 消息字节会在清单推进前先落盘同步。读取方会忽略未提交的
+//!   尾部数据，下一次追加会在写入前先清理这部分尾部，因此崩溃不会暴露出不完整的
+//!   消息。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -61,40 +60,54 @@ const SEARCH_FILTER_WORDS: usize = 64;
 const MAX_PROJECTION_EPOCH: u64 = i64::MAX as u64;
 const DELETE_RECEIPT_RETENTION: usize = 32;
 
-/// One conversation manifest plus messages loaded from its committed log.
+/// 一份会话清单，加上从其已提交日志中加载出的消息。
 ///
-/// `messages` remains deserializable for records written by the original
-/// single-file layout. The first subsequent `save_messages` call migrates such
-/// a record into the append-oriented layout.
+/// `messages` 字段依然可以反序列化最初单文件布局所写出的记录。后续第一次调用
+/// `save_messages` 时，会把这类旧记录迁移到追加式布局。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationRecord {
+    /// 会话本身的元数据（标题、用户、时间戳等）。
     conversation: Conversation,
+    /// 旧版单文件布局内嵌的消息；一旦迁移到 `message_log`，此字段清空。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     messages: Vec<StoredMessage>,
+    /// 追加式消息日志的提交状态（generation、已提交字节数等）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     message_log: Option<MessageLogMeta>,
+    /// 用于快速排除不匹配会话的搜索候选过滤器。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     search_filter: Option<SearchFilter>,
+    /// 托管会话的投影（projection）状态；`None` 表示这是一个非托管会话。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     projection: Option<FileProjectionState>,
 }
 
+/// 单个会话的投影（projection）权威状态：epoch、revision、生命周期，
+/// 以及去重/回执所需的簿记信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileProjectionState {
+    /// 当前投影所处的 epoch；每次(重新)创建会话都会递增。
     epoch: u64,
+    /// 当前投影的修订号；每次成功变更都会递增。
     revision: u64,
+    /// 会话当前的生命周期状态（存活/已删除等）。
     lifecycle: ConversationProjectionLifecycle,
+    /// 删除回执的保留下限 epoch；低于此值的回执可被回收。
     #[serde(default)]
     retention_floor_epoch: u64,
+    /// 已应用的操作 id → payload 摘要，用于幂等去重。
     #[serde(default)]
     applied_operations: HashMap<String, String>,
+    /// 每个 generation 内，序号（ordinal）到摘要的映射，用于校验转录顺序与内容一致性。
     #[serde(default)]
     ordinals: BTreeMap<String, BTreeMap<u64, String>>,
+    /// 已保留的删除回执，按操作 id 索引。
     #[serde(default)]
     delete_receipts: HashMap<String, FileDeleteReceipt>,
 }
 
 impl FileProjectionState {
+    /// 构造一个全新的、处于存活状态的投影（epoch/revision 均从 1 开始）。
     fn live() -> Self {
         Self {
             epoch: 1,
@@ -107,6 +120,7 @@ impl FileProjectionState {
         }
     }
 
+    /// 把内部状态导出为对外暴露的权威（authority）快照。
     fn authority(&self, conversation_id: &str) -> ConversationProjectionAuthority {
         ConversationProjectionAuthority {
             conversation_id: conversation_id.to_string(),
@@ -117,6 +131,7 @@ impl FileProjectionState {
         }
     }
 
+    /// 计算下一个修订号；到达 `u64` 上限时返回错误而不是溢出。
     fn next_revision(&self, conversation_id: &str) -> Result<u64> {
         self.revision.checked_add(1).ok_or_else(|| {
             MemoryError::Unsupported(format!(
@@ -126,6 +141,8 @@ impl FileProjectionState {
         })
     }
 
+    /// 裁剪已保留的删除回执，使其数量不超过 [`DELETE_RECEIPT_RETENTION`]；
+    /// 被淘汰的回执会把 `retention_floor_epoch` 上移到其 `deleted_epoch`。
     fn retain_delete_receipts(&mut self) {
         while self.delete_receipts.len() > DELETE_RECEIPT_RETENTION {
             let oldest = self
@@ -142,23 +159,32 @@ impl FileProjectionState {
     }
 }
 
+/// 一次托管会话删除操作的回执：payload 摘要 + 发生删除时的 epoch，
+/// 用于对重复的删除请求做幂等判断。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileDeleteReceipt {
+    /// 触发本次删除的请求 payload 的摘要。
     payload_digest: String,
+    /// 执行删除时所处的 epoch。
     deleted_epoch: u64,
 }
 
-/// Durable commit marker for one message-log generation.
+/// 单个消息日志 generation 的持久化提交标记。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct MessageLogMeta {
+    /// 当前生效的消息日志文件代号（generation），对应文件名中的数字后缀。
     generation: u64,
+    /// 该 generation 文件中已提交（可安全读取）的字节数。
     committed_bytes: u64,
+    /// 已提交消息的数量。
     message_count: usize,
+    /// 已提交消息中的最大 id（如果有的话），用于恢复单调 id 计数器。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     max_message_id: Option<i64>,
 }
 
 impl MessageLogMeta {
+    /// 构造一个空的日志元数据（generation 从 1 开始，尚无已提交内容）。
     fn empty() -> Self {
         Self {
             generation: 1,
@@ -169,23 +195,25 @@ impl MessageLogMeta {
     }
 }
 
-/// Fixed-size candidate filter for case-insensitive Unicode substring search.
+/// 用于大小写不敏感的 Unicode 子串搜索的固定大小候选过滤器（布隆过滤器思路）。
 ///
-/// It is never an authority: positive candidates are checked against the
-/// conversation title and committed messages before being returned. Legacy
-/// manifests omit it and therefore conservatively remain candidates.
+/// 它从不作为权威判定：命中的候选还需要针对会话标题和已提交消息再做一次真实校验。
+/// 旧版清单没有此字段，因此会被保守地当作候选保留下来（即不做过滤）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchFilter {
+    /// 位图存储，每个 `u64` 表示 64 位。
     bits: Vec<u64>,
 }
 
 impl SearchFilter {
+    /// 构造一个全零的空过滤器。
     fn empty() -> Self {
         Self {
             bits: vec![0; SEARCH_FILTER_WORDS],
         }
     }
 
+    /// 根据会话标题和当前消息列表构建一个新的过滤器。
     fn from_conversation(conversation: &Conversation, messages: &[StoredMessage]) -> Self {
         let mut filter = Self::empty();
         if let Some(title) = conversation.title.as_deref() {
@@ -200,12 +228,14 @@ impl SearchFilter {
         filter
     }
 
+    /// 把单条消息的内容并入过滤器（用于增量追加场景）。
     fn insert_message(&mut self, message: &StoredMessage) {
         if let Some(content) = message.content.as_deref() {
             self.insert_text(content);
         }
     }
 
+    /// 把一段文本按 1~3 个字符宽度切出所有 n-gram 并写入过滤器。
     fn insert_text(&mut self, text: &str) {
         let normalized = text.to_lowercase();
         let chars = normalized.chars().collect::<Vec<_>>();
@@ -217,6 +247,7 @@ impl SearchFilter {
         }
     }
 
+    /// 把一个 n-gram 对应的比特位置 1。
     fn insert_gram(&mut self, gram: &str) {
         for bit in search_filter_bits(gram) {
             let word = bit / u64::BITS as usize;
@@ -227,6 +258,7 @@ impl SearchFilter {
         }
     }
 
+    /// 判断查询串是否*可能*出现在该会话中（假阳性允许，假阴性不允许）。
     fn might_contain(&self, query: &str) -> bool {
         if query.is_empty() {
             return true;
@@ -250,6 +282,7 @@ impl SearchFilter {
     }
 }
 
+/// 把一个 n-gram 哈希映射为过滤器位图中的两个比特位下标。
 fn search_filter_bits(value: &str) -> [usize; 2] {
     let digest = Sha256::digest(value.as_bytes());
     let first = digest
@@ -269,69 +302,93 @@ fn search_filter_bits(value: &str) -> [usize; 2] {
     ]
 }
 
-/// Monotonic id counter persisted as `_meta.json`, replacing the SQLite
-/// autoincrement. `next_id` is bumped on every new conversation/message so ids
-/// stay unique across the store.
+/// 持久化为 `_meta.json` 的单调递增 id 计数器，用来替代 SQLite 的自增主键。
+/// 每新建一个会话/消息，`next_id` 都会递增，从而保证 id 在整个存储中唯一。
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct StoreMeta {
+    /// 下一个可分配的 id。
     next_id: i64,
 }
 
 impl StoreMeta {
+    /// 分配并返回下一个 id（自增后返回新值）。
     fn take_id(&mut self) -> i64 {
         self.next_id = self.next_id.saturating_add(1);
         self.next_id
     }
 }
 
+/// 内存缓存中的单条消息摘要信息，用于快速判断追加写入的前缀是否匹配，
+/// 而无需重新读取/反序列化整段消息内容。
 #[derive(Debug)]
 struct CachedMessage {
+    /// 消息 id（如果已分配）。
     id: Option<i64>,
+    /// 消息创建时间。
     created_at: String,
+    /// 消息语义字段（角色、内容、附件等）的摘要，用于内容比对。
     semantic_digest: [u8; 32],
 }
 
+/// 单个会话的内存缓存：当前消息日志状态及每条消息的摘要，
+/// 用来加速 `save_messages` 的前缀匹配判断。
 #[derive(Debug)]
 struct ConversationCache {
+    /// 缓存所对应的消息日志元数据快照，用于判断缓存是否仍然有效。
     log: Option<MessageLogMeta>,
+    /// 已缓存的消息摘要列表。
     messages: Vec<CachedMessage>,
 }
 
-/// File-backed conversation store.
+/// 文件后端的会话存储。
 ///
-/// Handles opened on the same canonical base share one in-process authority
-/// and ordered operations for each conversation. Distinct conversations use a
-/// process-wide bounded blocking pool. A lifetime-held sidecar lease rejects a
-/// competing process instead of allowing unsynchronized file writes.
+/// 在同一个规范化（canonical）根路径下打开的多个句柄，共享同一个进程内权威状态，
+/// 并对每个会话的操作保持顺序。不同会话之间使用一个进程级、有界的阻塞线程池。
+/// 一个贯穿生命周期持有的旁路文件锁（sidecar lease）会拒绝另一个竞争进程接入，
+/// 而不是允许出现未同步的并发文件写入。
 ///
-/// [`Self::new`] is synchronous bootstrap: it obtains the process lease,
-/// reconciles metadata, and removes orphaned generations. Async callers should
-/// construct the store before latency-sensitive work or in a blocking setup
-/// task. The [`ConversationStore`] methods offload their file operations.
+/// [`Self::new`] 是同步的初始化过程：获取进程锁、协调元数据、清理孤儿 generation
+/// 文件。异步调用方应当在对延迟敏感的工作开始之前，或在一个阻塞的初始化任务中
+/// 构造该存储。[`ConversationStore`] trait 的各个方法会把文件操作转移到阻塞线程执行。
 #[derive(Clone)]
 pub struct FileConversationStore {
+    /// 会话数据所在的根目录（`<base>/conversations`），已规范化。
     base: PathBuf,
+    /// 进程内共享的权威状态（缓存、元数据、进程锁等）。
     authority: Arc<FileConversationAuthority>,
+    /// 可选的持久化调用上下文（用于超时/截止时间检查）。
     persistence_call_context: Option<PersistenceCallContext>,
 }
 
+/// 同一根目录下所有 [`FileConversationStore`] 句柄共享的进程内权威状态。
 struct FileConversationAuthority {
+    /// 单调 id 计数器。
     meta: Mutex<StoreMeta>,
+    /// 按会话 id 索引的内存缓存。
     conversations: Mutex<HashMap<String, ConversationCache>>,
+    /// 用于串行化「扫描全部清单」与「单会话写入」之间关系的读写锁。
     scan_barrier: RwLock<()>,
+    /// 测试专用：用于在搜索扫描到某个快照点时暂停，便于测试并发场景。
     #[cfg(test)]
     search_snapshot_hook: Mutex<Option<SearchSnapshotHook>>,
+    /// 测试专用：置位后使下一次清单写入注入失败，用于测试错误路径。
     #[cfg(test)]
     fail_next_manifest_write: Mutex<bool>,
+    /// 进程级独占文件锁，防止多个进程实例并发写入同一存储目录。
     _lease: ExclusiveFileLease,
 }
 
+/// 测试专用：搜索扫描的暂停/继续钩子。
 #[cfg(test)]
 struct SearchSnapshotHook {
+    /// 通知观察者「已捕获到快照点」的单发信号。
     captured: tokio::sync::oneshot::Sender<()>,
+    /// 等待观察者放行、恢复执行的接收端。
     release: std::sync::mpsc::Receiver<()>,
 }
 
+/// 进程内的全局注册表：按规范化根路径复用同一个 [`FileConversationAuthority`]，
+/// 使得指向同一目录的多个 store 句柄共享缓存与进程锁。
 fn file_conversation_registry() -> &'static Mutex<HashMap<PathBuf, Weak<FileConversationAuthority>>>
 {
     static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<FileConversationAuthority>>>> =
@@ -340,9 +397,9 @@ fn file_conversation_registry() -> &'static Mutex<HashMap<PathBuf, Weak<FileConv
 }
 
 impl FileConversationStore {
-    /// Create a file-backed conversation store rooted at `base/conversations/`.
+    /// 创建一个以 `base/conversations/` 为根目录的文件后端会话存储。
     ///
-    /// This synchronous bootstrap acquires the lease and scans existing files.
+    /// 这是一个同步的初始化过程：获取进程锁并扫描已有文件。
     pub fn new(base: impl AsRef<Path>) -> Result<Self> {
         let base = base.as_ref().join("conversations");
         std::fs::create_dir_all(&base)
@@ -383,6 +440,7 @@ impl FileConversationStore {
         })
     }
 
+    /// 克隆出一个携带指定持久化调用上下文的句柄（用于截止时间检查）。
     fn with_persistence_call_context(&self, context: PersistenceCallContext) -> Self {
         Self {
             base: self.base.clone(),
@@ -391,6 +449,7 @@ impl FileConversationStore {
         }
     }
 
+    /// 若当前持有调用上下文，则检查其是否已过期。
     fn ensure_persistence_call_not_expired(&self) -> Result<()> {
         if let Some(context) = self.persistence_call_context {
             context.ensure_not_expired()?;
@@ -398,6 +457,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 为某个会话 id 构造对应的阻塞文件操作作用域标识，用于串行化同一会话的并发操作。
     fn conversation_scope(conversation_id: impl Into<String>) -> BlockingFileOperationScope {
         let conversation_id = conversation_id.into();
         BlockingFileOperationScope::Entity(echo_core::utils::fs::encode_utf8_path_identity(
@@ -405,6 +465,7 @@ impl FileConversationStore {
         ))
     }
 
+    /// 测试专用：安装一个搜索快照钩子，使搜索扫描在完成快照采集后暂停等待放行。
     #[cfg(test)]
     fn install_search_snapshot_hook(
         &self,
@@ -421,6 +482,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 测试专用：若已安装钩子，通知观察者快照已捕获，并阻塞等待其放行（最多 2 秒）。
     #[cfg(test)]
     fn pause_search_after_snapshot(&self) -> Result<()> {
         let hook = self
@@ -441,6 +503,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 测试专用：置位标志，使下一次清单写入注入一次失败（用于测试错误恢复路径）。
     #[cfg(test)]
     fn fail_next_manifest_write(&self) -> Result<()> {
         let mut fail = self
@@ -452,6 +515,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 把给定的同步操作放到进程级阻塞线程池上执行，并按 `scope` 与其他操作排队/串行化。
     fn run_blocking<'a, T, F>(
         &'a self,
         scope: BlockingFileOperationScope,
@@ -478,11 +542,13 @@ impl FileConversationStore {
         })
     }
 
+    /// 计算某个会话清单文件的路径。
     fn conv_path(&self, conversation_id: &str) -> Result<PathBuf> {
         let safe = safe_segment(conversation_id)?;
         Ok(self.base.join(format!("{safe}.json")))
     }
 
+    /// 计算某个会话在指定 generation 下的消息日志文件路径。
     fn message_log_path(&self, conversation_id: &str, generation: u64) -> Result<PathBuf> {
         let safe = safe_segment(conversation_id)?;
         Ok(self
@@ -490,15 +556,16 @@ impl FileConversationStore {
             .join(format!("{safe}.messages.{generation}.jsonl")))
     }
 
+    /// 计算 `_meta.json` 的路径。
     fn meta_path(base: &Path) -> PathBuf {
         base.join("_meta.json")
     }
 
-    /// Read `_meta.json` and reconcile it with persisted records.
+    /// 读取 `_meta.json`，并与已持久化的记录做协调（reconcile）。
     ///
-    /// A record rename can become durable just before the corresponding meta
-    /// write during a crash. Scanning the existing records prevents the next
-    /// process from reusing an already-persisted conversation/message id.
+    /// 崩溃场景下，一次记录重命名可能恰好在对应的 meta 写入之前变为持久化状态。
+    /// 扫描现有记录可以防止下一次启动的进程复用一个已经被持久化过的
+    /// 会话/消息 id。
     fn read_meta(base: &Path) -> Result<StoreMeta> {
         let mut meta = match std::fs::read_to_string(Self::meta_path(base)) {
             Ok(s) => {
@@ -541,6 +608,8 @@ impl FileConversationStore {
         Ok(meta)
     }
 
+    /// 扫描目录，删除不再被任何清单引用的消息日志文件（例如替换操作中被淘汰的旧
+    /// generation，在崩溃后未能及时清理的情况）。
     fn cleanup_orphaned_message_logs(base: &Path) -> Result<()> {
         let mut referenced = HashSet::new();
         let entries =
@@ -590,6 +659,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 把 id 计数器原子写入 `_meta.json`。
     fn persist_meta(&self, meta: &StoreMeta) -> Result<()> {
         let json = serde_json::to_string(meta)
             .map_err(|e| MemoryError::SerializationError(format!("serialize meta: {e}")))?;
@@ -598,6 +668,8 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 解析清单 JSON 内容，并校验其内部一致性（消息日志/内嵌消息互斥、搜索过滤器
+    /// 长度、投影权威状态的各项不变量）。
     fn parse_manifest(path: &Path, content: &str) -> Result<ConversationRecord> {
         let record: ConversationRecord = serde_json::from_str(content).map_err(|e| {
             MemoryError::SerializationError(format!("parse {}: {e}", path.display()))
@@ -662,13 +734,14 @@ impl FileConversationStore {
         Ok(record)
     }
 
+    /// 从给定路径读取并解析一份清单文件。
     fn read_manifest_path(path: &Path) -> Result<ConversationRecord> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| MemoryError::IoError(format!("read {}: {e}", path.display())))?;
         Self::parse_manifest(path, &content)
     }
 
-    /// Read one conversation manifest. Missing file → `Ok(None)`; corrupt → `Err`.
+    /// 读取单个会话的清单。文件不存在 → `Ok(None)`；内容损坏 → `Err`。
     fn read_manifest(&self, conversation_id: &str) -> Result<Option<ConversationRecord>> {
         let path = self.conv_path(conversation_id)?;
         match std::fs::read_to_string(&path) {
@@ -681,7 +754,7 @@ impl FileConversationStore {
         }
     }
 
-    /// Read one conversation and its committed messages.
+    /// 读取单个会话及其已提交的消息。
     fn read_record(&self, conversation_id: &str) -> Result<Option<ConversationRecord>> {
         let mut record = match self.read_manifest(conversation_id)? {
             Some(record) => record,
@@ -693,6 +766,8 @@ impl FileConversationStore {
         Ok(Some(record))
     }
 
+    /// 按照清单记录的已提交字节边界，读取并解析该会话的消息日志文件，
+    /// 忽略未提交的尾部数据；发现截断或格式不一致时返回错误。
     fn read_message_log(
         &self,
         conversation_id: &str,
@@ -769,6 +844,8 @@ impl FileConversationStore {
         Ok(messages)
     }
 
+    /// 原子写入会话清单；若已采用日志式消息存储，写入前会清空内嵌的 `messages`
+    /// 字段（避免同时持有两种存储形式）。
     fn write_manifest(&self, record: &ConversationRecord) -> Result<()> {
         #[cfg(test)]
         {
@@ -797,6 +874,7 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 把消息列表序列化为 JSON Lines 字节流（每条消息一行，以 `\n` 分隔）。
     fn serialize_message_log(messages: &[StoredMessage]) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         for message in messages {
@@ -808,6 +886,8 @@ impl FileConversationStore {
         Ok(bytes)
     }
 
+    /// 计算一条消息「语义字段」（角色、内容、附件、工具调用等）的摘要，
+    /// 用于判断两条消息在内容上是否等价，而不考虑 id/时间戳等元数据差异。
     fn semantic_digest(message: &StoredMessage) -> Result<[u8; 32]> {
         let semantic_fields = (
             &message.role,

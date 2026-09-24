@@ -1,8 +1,10 @@
-//! Attempt-scoped, in-process control for active subagent dispatches.
-//!
-//! Durable command identity and recovery belong to framework consumers. This
-//! registry only binds an exact execution attempt to its cancellation token and
-//! the agent's existing live-steering safe point.
+/*!
+ * 面向单次执行尝试（attempt）、仅在进程内生效的子代理（subagent）派发控制。
+ *
+ * 持久化的命令身份与恢复逻辑由框架的使用方（consumer）负责维护；本注册表
+ * 只负责把一次精确的执行尝试绑定到它的取消令牌（cancellation token），
+ * 以及 agent 现有的实时引导（live-steering）安全点上。
+ */
 
 use echo_core::agent::{
     Agent, AgentSteerError, AgentSteerReceipt, AgentSteerState, CancellationToken,
@@ -19,18 +21,24 @@ use super::types::SubagentStatus;
 const SETTLED_RETENTION: usize = 256;
 const PENDING_INTERRUPT_CAPACITY: usize = 256;
 
-/// Stable identity for one attempt of a logical subagent task.
+/// 一个逻辑子代理任务（Subagent task）中某次执行尝试的稳定身份标识。
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct SubagentAttemptIdentity {
+    /// 所属运行（run）的标识；未绑定到具体运行时为 `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
+    /// 控制作用域标识，用于在同一 `run_id` 下隔离不同的运行时作用域。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub control_scope_id: Option<String>,
+    /// 逻辑任务标识。
     pub task_id: String,
+    /// 本次执行的唯一标识。
     pub execution_id: String,
+    /// 尝试次数（从 1 开始计数）。
     pub attempt: u32,
 }
 
+/// 反序列化的中间字段结构：先解析所有字段，再统一走 `validate` 校验。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubagentAttemptIdentityFields {
@@ -61,22 +69,30 @@ impl<'de> Deserialize<'de> for SubagentAttemptIdentity {
     }
 }
 
-/// Durable identity for one idempotent command addressed to an exact
-/// Subagent attempt.
-///
-/// The command id and task-graph revision are generic lifecycle facts, so
-/// consumers can persist this value directly instead of defining a parallel
-/// command identity around [`SubagentAttemptIdentity`].
+/**
+ * 一次寻址到某个精确 Subagent 执行尝试的、具备幂等性的命令的持久化身份标识。
+ *
+ * 命令 id 与任务图（task-graph）修订版本号都是通用的生命周期事实，因此
+ * 使用方可以直接持久化本结构体，而不必围绕 [`SubagentAttemptIdentity`]
+ * 再定义一套平行的命令身份标识。
+ */
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct SubagentCommandIdentity {
+    /// 所属运行（run）的标识。
     pub run_id: String,
+    /// 逻辑任务标识。
     pub task_id: String,
+    /// 本次执行的唯一标识。
     pub execution_id: String,
+    /// 任务图（task-graph）的修订版本号。
     pub plan_revision: u64,
+    /// 尝试次数（从 1 开始计数）。
     pub attempt: u32,
+    /// 命令标识，用于实现幂等性。
     pub command_id: String,
 }
 
+/// 反序列化的中间字段结构：先解析所有字段，再统一走 `validate` 校验。
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubagentCommandIdentityFields {
@@ -108,6 +124,7 @@ impl<'de> Deserialize<'de> for SubagentCommandIdentity {
 }
 
 impl SubagentCommandIdentity {
+    /// 构造并校验一个新的命令身份标识。
     pub fn new(
         run_id: impl Into<String>,
         task_id: impl Into<String>,
@@ -128,6 +145,7 @@ impl SubagentCommandIdentity {
         Ok(identity)
     }
 
+    /// 校验各字段是否合法（非空、修订版本号非零等）。
     pub fn validate(&self) -> Result<(), SubagentControlError> {
         if self.run_id.trim().is_empty() {
             return Err(SubagentControlError::InvalidIdentity { field: "run_id" });
@@ -145,7 +163,7 @@ impl SubagentCommandIdentity {
         self.attempt_identity().map(|_| ())
     }
 
-    /// Return the live-control identity for this command's exact attempt.
+    /// 返回该命令对应的精确执行尝试的实时控制身份标识。
     pub fn attempt_identity(&self) -> Result<SubagentAttemptIdentity, SubagentControlError> {
         SubagentAttemptIdentity::for_run(
             self.run_id.clone(),
@@ -157,6 +175,7 @@ impl SubagentCommandIdentity {
 }
 
 impl SubagentAttemptIdentity {
+    /// 构造一个未绑定运行（run）和控制作用域的执行尝试身份标识。
     pub fn new(
         task_id: impl Into<String>,
         execution_id: impl Into<String>,
@@ -173,6 +192,10 @@ impl SubagentAttemptIdentity {
         Ok(identity)
     }
 
+    /**
+     * 构造一个绑定到指定运行（run）的执行尝试身份标识，并将该运行 id
+     * 同时作为控制作用域标识。
+     */
     pub fn for_run(
         run_id: impl Into<String>,
         task_id: impl Into<String>,
@@ -191,6 +214,10 @@ impl SubagentAttemptIdentity {
         Ok(identity)
     }
 
+    /**
+     * 构造一个绑定到指定运行时作用域（control scope）和运行（run）的
+     * 执行尝试身份标识。
+     */
     pub fn for_runtime_scope(
         control_scope_id: impl Into<String>,
         run_id: impl Into<String>,
@@ -209,6 +236,7 @@ impl SubagentAttemptIdentity {
         Ok(identity)
     }
 
+    /// 校验各字段是否合法（非空等）。
     fn validate(&self) -> Result<(), SubagentControlError> {
         if self
             .run_id
@@ -240,6 +268,7 @@ impl SubagentAttemptIdentity {
         Ok(())
     }
 
+    /// 返回用于按 (作用域, 运行, 任务, 尝试次数) 索引的复合键。
     fn task_attempt(&self) -> ScopedTaskAttemptKey {
         (
             self.control_scope_id.clone(),
@@ -250,31 +279,41 @@ impl SubagentAttemptIdentity {
     }
 }
 
-/// Control phase observed before or while settling an interrupt request.
+/// 在中断请求发起前或正在结算过程中观察到的控制阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentControlPhase {
+    /// 已预留（reserve）但尚未绑定实时 Agent。
     Starting,
+    /// 已绑定实时 Agent，正在运行。
     Running,
+    /// 已收到中断请求，等待结算。
     InterruptRequested,
+    /// 已结算（终态）。
     Settled,
 }
 
-/// Durable lifecycle phase for one Subagent command.
-///
-/// This phase is distinct from [`SubagentControlPhase`], which describes the
-/// in-process executor binding. It starts at durable command persistence and
-/// ends when the owning turn settles, so a consumer can expose one complete
-/// command receipt without inventing another lifecycle enum.
+/**
+ * 一个 Subagent 命令的持久化生命周期阶段。
+ *
+ * 此阶段与描述“进程内执行器绑定”的 [`SubagentControlPhase`] 是不同的概念。
+ * 它从命令被持久化写入开始，到所属回合（turn）结算为止，因此使用方无需
+ * 再发明另一套生命周期枚举，就能对外暴露一份完整的命令回执。
+ */
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentCommandPhase {
+    /// 命令已持久化写入。
     Persisted,
+    /// 命令已被邮箱（mailbox）接受。
     MailboxAccepted,
+    /// 命令已被消费（drain）进入模型上下文。
     Drained,
+    /// 所属回合已结算。
     TurnSettled,
 }
 
 impl SubagentCommandPhase {
+    /// 返回该阶段对应的线路（wire）字符串表示。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Persisted => "persisted",
@@ -284,6 +323,7 @@ impl SubagentCommandPhase {
         }
     }
 
+    /// 从线路（wire）字符串解析出对应的阶段；无法识别时返回 `None`。
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "persisted" => Some(Self::Persisted),
@@ -295,124 +335,183 @@ impl SubagentCommandPhase {
     }
 }
 
-/// Exact-attempt envelope for one live message accepted by the active Agent
-/// mailbox. The nested framework receipt is the sole lifecycle authority.
+/**
+ * 活跃 Agent 邮箱（mailbox）接受的一条实时消息、绑定到精确执行尝试的信封。
+ * 内嵌的框架回执（receipt）是生命周期状态的唯一权威来源。
+ */
 #[derive(Debug, Clone)]
 pub struct SubagentMessageReceipt {
+    /// 本次执行的唯一标识。
     pub execution_id: String,
+    /// 尝试次数。
     pub attempt: u32,
+    /// 框架持有的、生命周期状态权威的跟踪回执。
     receipt: AgentSteerReceipt,
 }
 
 impl SubagentMessageReceipt {
-    /// The framework-owned tracked receipt for this exact message.
+    /// 该条精确消息对应的、由框架持有的跟踪回执。
     pub fn receipt(&self) -> &AgentSteerReceipt {
         &self.receipt
     }
 
-    /// Consume this delivery and return its framework-owned tracked receipt.
+    /// 消费本次投递，返回其框架持有的跟踪回执。
     pub fn into_receipt(self) -> AgentSteerReceipt {
         self.receipt
     }
 
-    /// Wait until the message reaches model context or the owning turn settles.
+    /// 等待消息进入模型上下文，或所属回合结算为止。
     pub async fn wait_for_drained(&mut self) -> AgentSteerState {
         self.receipt.wait_for_drained().await
     }
 
-    /// Wait until the owning turn reaches its typed terminal outcome.
+    /// 等待所属回合到达其类型化的终态结果。
     pub async fn wait_for_turn_settled(&mut self) -> AgentSteerState {
         self.receipt.wait_for_turn_settled().await
     }
 }
 
-/// Receipt for guidance queued for one exact future attempt.
+/// 为某次未来的精确执行尝试排队等待的指导信息（guidance）回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentGuidanceQueueReceipt {
+    /// 逻辑任务标识。
     pub task_id: String,
+    /// 目标尝试次数。
     pub attempt: u32,
+    /// 当前排队中的指导信息条数。
     pub queued_count: usize,
 }
 
-/// Result returned after an exact-attempt interrupt reaches settlement.
+/// 某次精确执行尝试的中断请求完成结算后返回的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentInterruptOutcome {
+    /// 本次执行的唯一标识。
     pub execution_id: String,
+    /// 尝试次数。
     pub attempt: u32,
+    /// 是否是本次调用实际发起了中断请求。
     pub requested: bool,
+    /// 是否已经结算完成。
     pub settled: bool,
+    /// 发起中断请求前观察到的控制阶段。
     pub previous_status: SubagentControlPhase,
+    /// 结算后的终态子代理状态；仅在已结算时为 `Some`。
     pub terminal_status: Option<SubagentStatus>,
 }
 
-/// Immediate acknowledgement for an exact interrupt request.
+/// 对某次精确中断请求的即时确认回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentInterruptRequestReceipt {
+    /// 目标执行尝试的身份标识。
     pub identity: SubagentAttemptIdentity,
+    /// 请求处理结果的处置方式。
     pub disposition: SubagentInterruptRequestDisposition,
 }
 
-/// Process-local disposition before an exact interrupt is fully settled.
+/// 中断请求在完全结算之前、仅在进程本地生效的处置方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentInterruptRequestDisposition {
+    /// 执行尝试尚未准入（admit），请求被排队等待。
     QueuedBeforeAdmission,
+    /// 执行尝试处于预留（reserve）阶段，请求已记录。
     ReservedRequested,
+    /// 执行尝试处于活跃状态，本次请求触发了取消。
     ActiveRequested,
+    /// 执行尝试处于活跃状态，但此前已经请求过中断。
     ActiveAlreadyRequested,
+    /// 执行尝试已经结算，附带其终态状态。
     AlreadySettled(SubagentStatus),
 }
 
-/// Typed rejection from the process-scoped Subagent control plane.
+/// 来自进程作用域 Subagent 控制平面的类型化拒绝错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentControlError {
+    /// 身份标识中的某个字段不合法。
     InvalidIdentity {
+        /// 不合法的字段名。
         field: &'static str,
     },
+    /// 指导信息（instruction）为空。
     EmptyInstruction,
+    /// 控制状态当前不可用（例如锁被污染）。
     StateUnavailable,
+    /// 该执行标识对应的执行已存在，不能重复注册。
     DuplicateExecution {
+        /// 冲突的执行标识。
         execution_id: String,
     },
+    /// 执行身份标识不匹配。
     ExecutionIdentityMismatch {
+        /// 期望的执行标识。
         expected: String,
+        /// 实际收到的执行标识。
         actual: String,
     },
+    /// 执行尝试的身份标识字段不匹配。
     AttemptIdentityMismatch {
+        /// 相关的执行标识。
         execution_id: String,
+        /// 不匹配的字段名。
         field: &'static str,
+        /// 期望值。
         expected: String,
+        /// 实际值。
         actual: String,
     },
+    /// 该任务的这次尝试已经开始过。
     AttemptAlreadyStarted {
+        /// 逻辑任务标识。
         task_id: String,
+        /// 尝试次数。
         attempt: u32,
     },
+    /// 未知的执行标识。
     UnknownExecution {
+        /// 未知的执行标识。
         execution_id: String,
     },
+    /// 尝试次数不匹配。
     AttemptMismatch {
+        /// 相关的执行标识。
         execution_id: String,
+        /// 期望的尝试次数。
         expected: u32,
+        /// 实际的尝试次数。
         actual: u32,
     },
+    /// 该执行尝试正在结算一次中断请求。
     InterruptPending {
+        /// 相关的执行标识。
         execution_id: String,
+        /// 尝试次数。
         attempt: u32,
     },
+    /// 待处理中断请求的数量超出了容量上限。
     PendingCapacityExceeded {
+        /// 容量上限。
         limit: usize,
     },
+    /// 同一个任务尝试上出现了执行身份冲突。
     IdentityConflict {
+        /// 逻辑任务标识。
         task_id: String,
+        /// 尝试次数。
         attempt: u32,
+        /// 期望的执行标识。
         expected_execution_id: String,
+        /// 实际的执行标识。
         actual_execution_id: String,
     },
+    /// 该执行尝试已经结算完成。
     AttemptSettled {
+        /// 相关的执行标识。
         execution_id: String,
+        /// 尝试次数。
         attempt: u32,
+        /// 结算后的终态状态。
         status: SubagentStatus,
     },
+    /// 底层的实时引导（steer）操作被拒绝。
     Steer(AgentSteerError),
 }
 
@@ -495,6 +594,7 @@ impl fmt::Display for SubagentControlError {
 
 impl std::error::Error for SubagentControlError {}
 
+/// 精确执行尝试与其所属注册表之间的内部绑定句柄。
 #[derive(Clone)]
 pub(crate) struct SubagentAttemptBinding {
     registry: Arc<SubagentControlRegistry>,
@@ -502,10 +602,12 @@ pub(crate) struct SubagentAttemptBinding {
 }
 
 impl SubagentAttemptBinding {
+    /// 返回该绑定对应的执行尝试身份标识。
     pub(crate) fn identity(&self) -> &SubagentAttemptIdentity {
         &self.identity
     }
 
+    /// 将实时 Agent 与所属回合绑定到该执行尝试上，返回引导租约（lease）。
     pub(crate) fn attach(
         &self,
         agent: Arc<dyn Agent>,
@@ -518,14 +620,23 @@ impl SubagentAttemptBinding {
     }
 }
 
+/**
+ * 一次已被准入（admit）的执行尝试，携带其绑定句柄、待投递的排队指导信息
+ * 以及取消令牌。
+ */
 pub(crate) struct SubagentAttemptAdmission {
+    /// 该执行尝试与其所属注册表之间的绑定句柄。
     pub(crate) binding: SubagentAttemptBinding,
+    /// 准入时消费掉的、此前为该尝试排队的指导信息。
     pub(crate) guidance: Vec<String>,
+    /// 该执行尝试的取消令牌。
     pub(crate) cancel: CancellationToken,
+    /// 是否已经结算完成（用于 Drop 时判断是否需要兜底结算）。
     settled: bool,
 }
 
 impl SubagentAttemptAdmission {
+    /// 以给定终态状态结算该执行尝试。
     pub(crate) fn settle(mut self, status: SubagentStatus) {
         self.binding.registry.settle(&self.binding.identity, status);
         self.settled = true;
@@ -545,6 +656,7 @@ impl Drop for SubagentAttemptAdmission {
     }
 }
 
+/// 实时引导（steering）租约；释放（drop）时自动从注册表上解绑。
 pub(crate) struct SubagentSteeringLease {
     binding: SubagentAttemptBinding,
 }
@@ -555,6 +667,7 @@ impl Drop for SubagentSteeringLease {
     }
 }
 
+/// 一次正在进行中的执行尝试的进程内状态。
 struct ActiveAttempt {
     identity: SubagentAttemptIdentity,
     cancel: CancellationToken,
@@ -566,14 +679,17 @@ struct ActiveAttempt {
     settled_tx: watch::Sender<Option<SubagentStatus>>,
 }
 
+/// 已结算执行尝试的终态记录。
 #[derive(Debug, Clone)]
 struct SettledAttempt {
     identity: SubagentAttemptIdentity,
     status: SubagentStatus,
 }
 
+/// 用于索引 (控制作用域, 运行, 任务, 尝试次数) 的复合键类型。
 type ScopedTaskAttemptKey = (Option<String>, Option<String>, String, u32);
 
+/// 控制注册表的内部可变状态。
 #[derive(Default)]
 struct ControlState {
     active: HashMap<String, ActiveAttempt>,
@@ -585,29 +701,41 @@ struct ControlState {
     settled_order: VecDeque<String>,
 }
 
-/// Bounded, read-only summary of one active attempt, for in-tree discovery
-/// tools such as `subagent_list`.
+/**
+ * 一次活跃执行尝试的只读摘要，数量有上限，供 `subagent_list` 等内建
+ * 发现类工具使用。
+ */
 #[derive(Clone, Debug)]
 pub struct ActiveAttemptSummary {
+    /// 本次执行的唯一标识。
     pub execution_id: String,
+    /// 逻辑任务标识。
     pub task_id: String,
+    /// 尝试次数。
     pub attempt: u32,
+    /// 当前控制阶段。
     pub phase: SubagentControlPhase,
 }
 
-/// Process-scoped execution control. Durable state remains consumer-owned.
-///
-/// Shared per `SubagentRegistry` so an `execution_id` is addressable across
-/// every executor built on that registry (see `SubagentRegistry::control_registry`).
+/**
+ * 进程作用域的执行控制器。持久化状态仍由使用方（consumer）负责管理。
+ *
+ * 按每个 `SubagentRegistry` 共享一份，使得同一个 `execution_id` 可以在
+ * 基于该注册表构建的每一个执行器（executor）之间寻址
+ * （参见 `SubagentRegistry::control_registry`）。
+ */
 #[derive(Default)]
 pub struct SubagentControlRegistry {
+    /// 内部可变状态（活跃/已结算执行尝试、排队指导信息等）。
     state: Mutex<ControlState>,
 }
 
 impl SubagentControlRegistry {
-    /// Reserve an exact attempt before it waits for shared execution capacity.
-    /// The later [`Self::admit`] call consumes this reservation and receives
-    /// the same binding; no second identity or cancellation token is created.
+    /**
+     * 在执行尝试等待共享执行容量之前，先为其预留（reserve）一个位置。
+     * 之后调用 [`Self::admit`] 会消费这次预留并拿到同一个绑定句柄；
+     * 不会再创建第二份身份标识或取消令牌。
+     */
     pub(crate) fn reserve(
         self: &Arc<Self>,
         identity: SubagentAttemptIdentity,
@@ -682,6 +810,10 @@ impl SubagentControlRegistry {
         Ok(())
     }
 
+    /**
+     * 将一次执行尝试准入（admit）为活跃状态，消费此前的预留（若存在），
+     * 并返回其绑定句柄、待投递的排队指导信息与取消令牌。
+     */
     pub(crate) fn admit(
         self: &Arc<Self>,
         identity: SubagentAttemptIdentity,
@@ -699,8 +831,8 @@ impl SubagentControlRegistry {
                     execution_id: identity.execution_id,
                 });
             }
-            // The reservation owns the child token. Use it for the dispatch
-            // even if a caller supplied another token for this identity.
+            /* 该预留（reservation）持有子取消令牌的所有权。即使调用方为
+             * 该身份提供了另一个令牌，也要使用预留时的令牌来完成派发。 */
             let cancel = active.cancel.clone();
             active.reserved = false;
             let guidance = state
@@ -779,7 +911,7 @@ impl SubagentControlRegistry {
         })
     }
 
-    /// Request an exact interrupt without waiting for execution settlement.
+    /// 请求对某次精确执行尝试发起中断，不等待执行结算完成。
     pub(crate) fn request_interrupt(
         &self,
         identity: SubagentAttemptIdentity,
@@ -863,9 +995,11 @@ impl SubagentControlRegistry {
         })
     }
 
-    /// Retire an exact pending or settled projection after durable claim
-    /// settlement. An active/reserved projection is cancelled and retained
-    /// until canonical dispatch settlement.
+    /**
+     * 在持久化的任务认领（claim）结算完成后，退役（retire）某个精确的
+     * 待处理或已结算投影。活跃/预留中的投影会被取消，但仍会保留，
+     * 直到权威派发结算完成为止。
+     */
     pub(crate) fn retire_exact(
         &self,
         identity: &SubagentAttemptIdentity,
@@ -907,10 +1041,11 @@ impl SubagentControlRegistry {
         Ok(false)
     }
 
-    /// Reconcile process-local projections against the exact execution IDs
-    /// still owned by durable TaskClaims. Stale active/reserved attempts are
-    /// cancelled but retained until their canonical dispatch settles; stale
-    /// pending and settled projections can be removed immediately.
+    /**
+     * 将进程本地的投影与仍归持久化 TaskClaim 所有的精确执行 ID 集合进行
+     * 对账（reconcile）。过期的活跃/预留执行尝试会被取消，但仍会保留，
+     * 直到其权威派发结算完成为止；过期的待处理与已结算投影可以立即移除。
+     */
     pub(crate) fn reconcile_scope(
         &self,
         control_scope_id: &str,
@@ -971,6 +1106,7 @@ impl SubagentControlRegistry {
         Ok(())
     }
 
+    /// 为尚未开始的未来执行尝试排队一条指导信息（guidance）。
     pub(crate) fn queue_guidance(
         &self,
         task_id: &str,
@@ -1010,6 +1146,10 @@ impl SubagentControlRegistry {
         })
     }
 
+    /**
+     * 向指定的精确执行尝试投递一条实时消息，并返回可跟踪的回执；若该
+     * 尝试尚未就绪（未绑定实时 Agent），则等待其就绪后再投递。
+     */
     pub(crate) async fn send_message_tracked(
         &self,
         execution_id: &str,
@@ -1053,20 +1193,21 @@ impl SubagentControlRegistry {
                 active.ready_tx.subscribe()
             };
             if ready_rx.changed().await.is_err() {
-                // Settlement drops the readiness sender. Re-read the bounded
-                // terminal record and return its exact outcome.
+                /* 结算（settle）会丢弃就绪发送端。重新读取有界的终态记录，
+                 * 并返回其精确结果。 */
                 continue;
             }
         }
     }
 
-    /// Deliver a queue-only message to whichever attempt is currently active
-    /// under `execution_id`, resolving the attempt number internally.
-    ///
-    /// Used by the default uplink (parent steer) and `subagent_message`
-    /// (sibling steer), where the caller knows the target execution id but
-    /// not its attempt number. Attempts the same receipt contract as
-    /// [`Self::send_message_tracked`].
+    /**
+     * 将一条仅排队投递的消息发送给 `execution_id` 下当前活跃的那次执行
+     * 尝试，尝试次数在内部自动解析。
+     *
+     * 用于默认上行链路（父级 steer）和 `subagent_message`（同级 steer）
+     * 场景：调用方只知道目标执行标识，但不知道其尝试次数。回执契约与
+     * [`Self::send_message_tracked`] 保持一致。
+     */
     pub(crate) async fn send_message_to_active(
         &self,
         execution_id: &str,
@@ -1088,8 +1229,10 @@ impl SubagentControlRegistry {
             .await
     }
 
-    /// Snapshot of currently active attempts, bounded by `limit` (clamped to
-    /// at most 64 entries; sorted by execution id for stable output).
+    /**
+     * 当前活跃执行尝试的快照，数量受 `limit` 限制（最多截断到 64 条），
+     * 并按执行标识排序以保证输出稳定。
+     */
     pub fn active_snapshot(&self, limit: usize) -> Vec<ActiveAttemptSummary> {
         let limit = limit.min(64);
         let Ok(state) = self.state.lock() else {
@@ -1110,6 +1253,7 @@ impl SubagentControlRegistry {
         summaries
     }
 
+    /// 对某次精确执行尝试发起中断，并等待其结算完成后返回结果。
     pub(crate) async fn interrupt(
         &self,
         execution_id: &str,
@@ -1168,6 +1312,7 @@ impl SubagentControlRegistry {
         })
     }
 
+    /// 将实时 Agent 与回合 id 绑定到指定的活跃执行尝试上。
     fn attach(
         &self,
         identity: &SubagentAttemptIdentity,
@@ -1194,6 +1339,7 @@ impl SubagentControlRegistry {
         Ok(())
     }
 
+    /// 解除某个活跃执行尝试与实时 Agent 之间的绑定。
     fn detach(&self, identity: &SubagentAttemptIdentity) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -1211,6 +1357,7 @@ impl SubagentControlRegistry {
         }
     }
 
+    /// 将一次活跃执行尝试以给定终态状态结算，并迁移进已结算集合。
     fn settle(&self, identity: &SubagentAttemptIdentity, status: SubagentStatus) {
         let Ok(mut state) = self.state.lock() else {
             return;
@@ -1250,6 +1397,7 @@ impl SubagentControlRegistry {
         }
     }
 
+    /// 判断指定执行尝试对应的取消令牌是否已被取消。
     fn is_cancelled(&self, identity: &SubagentAttemptIdentity) -> bool {
         self.state
             .lock()
@@ -1259,6 +1407,7 @@ impl SubagentControlRegistry {
             .is_some_and(|active| active.identity == *identity && active.cancel.is_cancelled())
     }
 
+    /// 校验身份标识中的尝试次数是否与期望值一致。
     fn validate_attempt(
         identity: &SubagentAttemptIdentity,
         expected_attempt: u32,
@@ -1273,6 +1422,7 @@ impl SubagentControlRegistry {
         Ok(())
     }
 
+    /// 逐字段校验实际身份标识是否与期望的身份标识一致。
     fn validate_identity(
         expected: &SubagentAttemptIdentity,
         actual: &SubagentAttemptIdentity,
@@ -1304,6 +1454,7 @@ impl SubagentControlRegistry {
         )
     }
 
+    /// 比较单个身份字段的期望值与实际值，不一致时返回错误。
     fn validate_identity_field(
         execution_id: &str,
         field: &'static str,
@@ -1321,6 +1472,7 @@ impl SubagentControlRegistry {
         Ok(())
     }
 
+    /// 在找不到活跃执行时，结合已结算记录构造更精确的错误信息。
     fn missing_execution_error(
         &self,
         state: &ControlState,

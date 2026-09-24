@@ -1,7 +1,7 @@
-//! Skill similarity detection and merging.
+//! 技能相似度检测与合并。
 //!
-//! Detects overlapping skills based on triggers, paths, tools, and descriptions,
-//! then proposes or executes merges to reduce redundancy.
+//! 基于触发词、路径、工具以及描述文本检测重叠的技能，
+//! 然后生成或执行合并以减少冗余。
 
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -19,57 +19,57 @@ use super::skill_mutation::{
 };
 use crate::error::Result;
 
-// Re-export SkillDescriptor from echo-execution for use in this module.
-// The actual type lives in echo_execution::skills::external::types.
+// 从 echo-execution 重新导出 SkillDescriptor 供本模块使用。
+// 实际类型定义在 echo_execution::skills::external::types 中。
 pub use echo_execution::skills::external::SkillDescriptor;
 
-/// Threshold above which a merge proposal is generated.
+/// 超过该阈值即生成合并提案。
 const MERGE_THRESHOLD: f64 = 0.75;
 
-/// Namespace for storing merge proposals.
+/// 存储合并提案所使用的命名空间。
 const MERGE_NAMESPACE: &[&str] = &["agent", "evolution", "merges"];
 
-/// A proposal to merge two similar skills.
+/// 合并两个相似技能的提案。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillMergeProposal {
-    /// Name of the first skill.
+    /// 第一个技能的名称。
     pub skill_a: String,
-    /// Name of the second skill.
+    /// 第二个技能的名称。
     pub skill_b: String,
-    /// Overall similarity score (0.0 to 1.0).
+    /// 综合相似度分数（0.0 到 1.0）。
     pub similarity_score: f64,
-    /// Breakdown of similarity by dimension.
+    /// 按维度拆分的相似度明细。
     pub breakdown: SimilarityBreakdown,
-    /// Which skill should be kept (the one with more telemetry data).
+    /// 应当保留的技能（遥测数据更多的那个）。
     pub primary_skill: String,
-    /// Which skill should be deprecated.
+    /// 应当被弃用的技能。
     pub deprecated_skill: String,
-    /// When this proposal was created.
+    /// 该提案的创建时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub created_at: DateTime<Utc>,
 }
 
-/// Detailed breakdown of similarity across different dimensions.
+/// 各维度相似度的详细拆分。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimilarityBreakdown {
-    /// Overlap in trigger keywords (Jaccard).
+    /// 触发关键词的重叠度（Jaccard）。
     pub trigger_overlap: f64,
-    /// Overlap in file paths patterns (Jaccard).
+    /// 文件路径模式的重叠度（Jaccard）。
     pub path_overlap: f64,
-    /// Overlap in allowed tools (Jaccard).
+    /// 允许工具的重叠度（Jaccard）。
     pub tool_overlap: f64,
-    /// Text similarity in descriptions (word-level Jaccard).
+    /// 描述文本的相似度（词级别 Jaccard）。
     pub description_similarity: f64,
 }
 
-/// Detects similar skills and generates merge proposals.
+/// 检测相似技能并生成合并提案。
 pub struct SkillSimilarityDetector {
     store: Arc<dyn Store>,
     telemetry_store: SkillTelemetryStore,
 }
 
 impl SkillSimilarityDetector {
-    /// Create a new detector.
+    /// 创建一个新的检测器。
     pub fn new(store: Arc<dyn Store>) -> Self {
         let telemetry_store = SkillTelemetryStore::new(store.clone());
         Self {
@@ -78,7 +78,7 @@ impl SkillSimilarityDetector {
         }
     }
 
-    /// Analyze two skills and compute their similarity score.
+    /// 分析两个技能并计算它们的相似度分数。
     pub fn compute_similarity(
         desc_a: &SkillDescriptor,
         desc_b: &SkillDescriptor,
@@ -96,8 +96,8 @@ impl SkillSimilarityDetector {
         }
     }
 
-    /// Compute overall similarity score from breakdown.
-    /// Weights: triggers 0.4, paths 0.2, tools 0.2, description 0.2
+    /// 根据明细计算综合相似度分数。
+    /// 权重：triggers 0.4，paths 0.2，tools 0.2，description 0.2
     pub fn overall_score(breakdown: &SimilarityBreakdown) -> f64 {
         breakdown.trigger_overlap * 0.4
             + breakdown.path_overlap * 0.2
@@ -105,7 +105,7 @@ impl SkillSimilarityDetector {
             + breakdown.description_similarity * 0.2
     }
 
-    /// Scan all registered skills and generate merge proposals for similar pairs.
+    /// 扫描所有已注册的技能，为相似的技能对生成合并提案。
     pub async fn scan_and_propose(
         &self,
         descriptors: &[SkillDescriptor],
@@ -116,7 +116,7 @@ impl SkillSimilarityDetector {
 
         for (i, desc_a) in descriptors.iter().enumerate() {
             for desc_b in descriptors.iter().skip(i + 1) {
-                // Normalize pair key to avoid duplicates (A-B vs B-A).
+                // 规范化配对键以避免重复（A-B 与 B-A 视为同一对）。
                 let (first, second) = if desc_a.name < desc_b.name {
                     (&desc_a.name, &desc_b.name)
                 } else {
@@ -144,7 +144,7 @@ impl SkillSimilarityDetector {
                         created_at: Utc::now(),
                     };
 
-                    // Store the proposal.
+                    // 存储该提案。
                     let store_key = format!("{}__{}", proposal.skill_a, proposal.skill_b);
                     let value = serde_json::to_value(&proposal).map_err(|e| {
                         echo_core::error::ReactError::Other(format!(
@@ -154,7 +154,7 @@ impl SkillSimilarityDetector {
                     })?;
                     self.store.put(MERGE_NAMESPACE, &store_key, value).await?;
 
-                    // Record in audit log.
+                    // 记录到审计日志中。
                     let entry =
                         ChangeEntryBuilder::new(EntityType::Skill, &store_key, ChangeType::Create)
                             .reason(format!(
@@ -173,8 +173,8 @@ impl SkillSimilarityDetector {
         Ok(proposals)
     }
 
-    /// Determine which skill should be primary based on telemetry data.
-    /// The one with more activations or more recent usage becomes primary.
+    /// 根据遥测数据决定哪个技能应作为主技能。
+    /// 激活次数更多或使用时间更近的一方会成为主技能。
     async fn determine_primary(
         &self,
         desc_a: &SkillDescriptor,
@@ -193,9 +193,9 @@ impl SkillSimilarityDetector {
             .ok()
             .flatten();
 
-        // Normalised scoring: 50% activation_count (≤1.0) + 50% recency
-        // (last_used normalised to [0, 1] via approximate epoch→now window).
-        // Previously `last_used / 1e12` ≈ 1.77 dominated activation_count ≤ 1.0.
+        // 归一化打分：50% activation_count（≤1.0）+ 50% recency
+        // （通过近似的 epoch→now 窗口把 last_used 归一化到 [0, 1]）。
+        // 此前 `last_used / 1e12` ≈ 1.77，会盖过 ≤1.0 的 activation_count。
         fn usage_score(t: &SkillTelemetry) -> f64 {
             let recency = (t.last_used as f64 / 1.7e12 - 1.0).clamp(0.0, 1.0);
             t.activation_count as f64 * 0.5 + recency * 0.5
@@ -211,28 +211,34 @@ impl SkillSimilarityDetector {
     }
 }
 
-/// Executes skill merges by updating descriptors and marking skills as deprecated.
+/// 通过更新描述符并把技能标记为已弃用来执行技能合并。
 pub struct SkillMerger {
+    /// 技能变更权限方（负责预览、审批与应用变更）。
     authority: Arc<SkillMutationAuthority>,
 }
 
+/// 一次技能合并的预览：待应用的变更请求、预览结果以及合并后的描述符。
 pub struct SkillMergePreview {
+    /// 待提交给权限方的变更请求。
     pub request: SkillMutationRequest,
+    /// 该变更请求的预览结果（含操作摘要）。
     pub preview: SkillMutationPreview,
+    /// 合并后的技能描述符（尚未落盘，仅在预览通过后才会生效）。
     pub merged_descriptor: SkillDescriptor,
 }
 
 impl SkillMerger {
-    /// Create a new merger.
+    /// 创建一个新的合并器。
     pub fn new(authority: Arc<SkillMutationAuthority>) -> Self {
         Self { authority }
     }
 
-    /// Legacy direct merge entry point. It fails closed because no reviewed
-    /// approval artifact is available; use `preview_merge` + `execute_preview`.
-    ///
-    /// The `primary_descriptor` is updated in-place with merged triggers, paths,
-    /// and tools. The deprecated skill is marked via the Curator.
+    /** 旧版直接合并入口。由于没有经过审阅的审批凭证，该方法总是失败
+    （fail closed）；请改用 `preview_merge` + `execute_preview`。
+
+    `primary_descriptor` 会被原地更新，合并后的 triggers、paths 和 tools
+    会写入其中。被弃用的技能会通过 Curator 标记。
+    */
     pub async fn execute_merge(
         &self,
         proposal: &SkillMergeProposal,
@@ -253,7 +259,7 @@ impl SkillMerger {
         deprecated_descriptor: Option<&SkillDescriptor>,
     ) -> Result<SkillMergePreview> {
         let mut merged = primary_descriptor.clone();
-        // Merge triggers from deprecated skill into primary.
+        // 把被弃用技能的 triggers 合并进主技能。
         if let Some(dep_desc) = deprecated_descriptor {
             let mut merged_triggers: HashSet<String> = merged.triggers.iter().cloned().collect();
             for trigger in &dep_desc.triggers {
@@ -261,14 +267,14 @@ impl SkillMerger {
             }
             merged.triggers = merged_triggers.into_iter().collect();
 
-            // Merge paths.
+            // 合并 paths。
             let mut merged_paths: HashSet<String> = merged.paths.iter().cloned().collect();
             for path in &dep_desc.paths {
                 merged_paths.insert(path.clone());
             }
             merged.paths = merged_paths.into_iter().collect();
 
-            // Merge allowed_tools.
+            // 合并 allowed_tools。
             let mut merged_tools: HashSet<String> = merged.allowed_tools.iter().cloned().collect();
             for tool in &dep_desc.allowed_tools {
                 merged_tools.insert(tool.clone());
@@ -363,9 +369,9 @@ fn update_skill_frontmatter(content: &str, descriptor: &SkillDescriptor) -> Resu
         .map_err(echo_core::error::ReactError::Other)
 }
 
-// ── Similarity helpers ──────────────────────────────────────────────────
+// ── 相似度辅助函数 ────────────────────────────────────────────────────
 
-/// Compute Jaccard similarity between two string lists.
+/// 计算两个字符串列表之间的 Jaccard 相似度。
 fn jaccard_overlap(list_a: &[String], list_b: &[String]) -> f64 {
     if list_a.is_empty() && list_b.is_empty() {
         return 1.0;
@@ -387,7 +393,7 @@ fn jaccard_overlap(list_a: &[String], list_b: &[String]) -> f64 {
     }
 }
 
-/// Compute word-level Jaccard similarity between two text strings.
+/// 计算两段文本之间的词级别 Jaccard 相似度。
 fn word_similarity(text_a: &str, text_b: &str) -> f64 {
     let words_a: HashSet<&str> = text_a.split_whitespace().collect();
     let words_b: HashSet<&str> = text_b.split_whitespace().collect();
@@ -441,7 +447,7 @@ mod tests {
         }
     }
 
-    /// A no-op ChangeLog for testing.
+    /// 用于测试的空操作（no-op）ChangeLog。
     struct NullChangeLog;
     impl ChangeLog for NullChangeLog {
         fn record(&self, _entry: super::super::audit::ChangeEntry) -> Result<()> {
@@ -491,8 +497,8 @@ mod tests {
     fn test_jaccard_overlap_partial() {
         let list_a = vec!["git".to_string(), "commit".to_string(), "push".to_string()];
         let list_b = vec!["git".to_string(), "commit".to_string(), "pull".to_string()];
-        // Intersection: {git, commit} = 2
-        // Union: {git, commit, push, pull} = 4
+        // 交集：{git, commit} = 2
+        // 并集：{git, commit, push, pull} = 4
         let overlap = jaccard_overlap(&list_a, &list_b);
         assert!((overlap - 0.5).abs() < 1e-9);
     }
@@ -510,8 +516,8 @@ mod tests {
         let text_a = "Git workflow for version control";
         let text_b = "Git workflow management";
         let similarity = word_similarity(text_a, text_b);
-        // Intersection: {Git, workflow} = 2
-        // Union: {Git, workflow, for, version, control, management} = 6
+        // 交集：{Git, workflow} = 2
+        // 并集：{Git, workflow, for, version, control, management} = 6
         assert!((similarity - 2.0 / 6.0).abs() < 1e-9);
     }
 
@@ -592,7 +598,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Should find the git-workflow <-> git-ops pair.
+        // 应当找到 git-workflow <-> git-ops 这一对。
         assert!(!proposals.is_empty());
         let proposal = &proposals[0];
         assert!(
@@ -691,23 +697,22 @@ mod tests {
             .await
             .map_err(|error| error.to_string())?;
 
-        // Primary should now have merged triggers.
+        // 主技能现在应当拥有合并后的 triggers。
         assert!(primary.triggers.contains(&"git".to_string()));
         assert!(primary.triggers.contains(&"commit".to_string()));
         assert!(primary.triggers.contains(&"push".to_string()));
         assert!(primary.triggers.contains(&"pull".to_string()));
 
-        // Primary should have merged paths.
+        // 主技能应当拥有合并后的 paths。
         assert!(primary.paths.contains(&"*.rs".to_string()));
         assert!(primary.paths.contains(&"*.toml".to_string()));
 
-        // Primary should have merged tools.
+        // 主技能应当拥有合并后的 tools。
         assert!(primary.allowed_tools.contains(&"Bash".to_string()));
         assert!(primary.allowed_tools.contains(&"Read".to_string()));
         assert!(primary.allowed_tools.contains(&"Write".to_string()));
-        // The persisted file is standard-format: the merged tool surface is
-        // written as a space-separated string, while routing triggers have
-        // no standard field and stay in the in-memory descriptor only.
+        // 持久化文件是标准格式：合并后的工具集合以空格分隔字符串的形式写入，
+        // 而路由用的 triggers 没有标准字段，只保留在内存中的描述符里。
         let persisted =
             std::fs::read_to_string(&primary_path).map_err(|error| error.to_string())?;
         assert!(persisted.contains("allowed-tools: Bash Read Write"));

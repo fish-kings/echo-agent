@@ -1,5 +1,6 @@
 use echo_agent_learning::ownership::{append_label, character_count, first_non_empty, owned_title};
 
+/// 演示所有权、借用与克隆等基本概念的用法。
 fn main() {
     let title = String::from("学习所有权");
     let count = character_count(&title);

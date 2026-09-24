@@ -31,12 +31,14 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// 子 Agent 工具调用的超时时间（毫秒）。
 const SUBAGENT_TOOL_TIMEOUT_MS: u64 = 180_000;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：依次演示长期记忆系统、Agent 编排协作、任务管理系统与多模态支持四个部分。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -80,6 +82,7 @@ async fn main() -> Result<()> {
 // Part 1: 长期记忆系统
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 1 演示：使用 SqliteStore 存储用户资料与对话历史，并验证长期记忆检索能力。
 async fn demo_long_term_memory(db_path: &Path) -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 1: 长期记忆系统");
@@ -185,6 +188,7 @@ async fn demo_long_term_memory(db_path: &Path) -> Result<()> {
 // Part 2: Agent 编排协作
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 2 演示：创建规划、研究、写作三个专业化子 Agent，并由主编排 Agent 调度它们协作完成复杂任务。
 async fn demo_agent_orchestration() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 2: Agent 编排协作");
@@ -276,6 +280,7 @@ async fn demo_agent_orchestration() -> Result<()> {
 // Part 3: 任务管理系统
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 3 演示：使用 `TaskRevisionService` 创建并更新一组版本化任务，验证任务状态流转与进度统计。
 async fn demo_task_management() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 3: 任务管理系统");
@@ -408,6 +413,7 @@ async fn demo_task_management() -> Result<()> {
     Ok(())
 }
 
+/// 根据任务 ID 与描述文本构建一个 `TaskDraft`（标题与描述使用相同文本，默认无依赖、不重试）。
 fn task_draft(id: &str, description: &str) -> TaskDraft {
     TaskDraft {
         id: id.to_string(),
@@ -423,6 +429,7 @@ fn task_draft(id: &str, description: &str) -> TaskDraft {
 // Part 4: 多模态支持
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 4 演示：展示多模态 Agent 的纯文本对话能力，并说明如何启用视觉模型进行图片分析。
 async fn demo_multimodal_support() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 4: 多模态支持");
@@ -463,6 +470,7 @@ async fn demo_multimodal_support() -> Result<()> {
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Echo Agent 个人智能助手 - 综合示例                 ║");
@@ -472,6 +480,7 @@ fn print_banner() {
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 }
 
+/// 生成本次演示使用的临时 SQLite 数据库文件路径（按进程 ID 区分）。
 fn personal_assistant_db_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "echo_agent_personal_assistant_{}.db",
@@ -479,12 +488,14 @@ fn personal_assistant_db_path() -> PathBuf {
     ))
 }
 
+/// 删除 SQLite 主数据库文件及其 WAL / SHM 辅助文件。
 fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
+/// 读取已配置的模型信息，若环境变量未正确配置 provider/model 则返回明确的错误。
 fn require_configured_model(preferred: Option<&str>) -> echo_agent::error::Result<LlmConfig> {
     support::llm_config(preferred).map_err(|error| {
         echo_agent::error::ReactError::Other(format!(

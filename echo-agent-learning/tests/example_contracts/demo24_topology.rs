@@ -10,6 +10,7 @@ use echo_agent::advanced::*;
 use echo_agent::prelude::*;
 use std::sync::Arc;
 
+/// 契约测试：演示手动构建拓扑图、导出 Mermaid/DOT/JSON 格式，以及通过回调自动追踪调用关系。
 #[tokio::test]
 async fn contract_demo24_topology() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();

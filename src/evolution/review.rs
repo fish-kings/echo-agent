@@ -1,35 +1,34 @@
-//! Memory review analysis and explicit conflict resolution.
-//!
-//! Phase 2 of the evolution system. Phase 1 gave memories typed metadata, layered
-//! storage (hot/warm/cold), and an audit log, but memories were never re-evaluated
-//! after creation. This module adds:
-//!
-//! - [`StalenessScorer`] — full staleness score from age, usage, instability,
-//!   contradiction, and source-weakness factors (replaces `MemoryMeta::base_staleness`).
-//! - [`ConflictDetector`] — groups memories sharing the same topic + type with
-//!   different content hashes.
-//! - [`MemoryMerger`] — explicit mutation primitive that merges a user-approved
-//!   conflict group into one primary entry and supersedes the rest.
-//! - [`MemoryReviewer`] — analysis-only orchestrator: scan → score → propose.
-//!
-//! # Status thresholds
-//!
-//! The factor caps in the formula (age ≤ 0.8, contradiction ≤ 0.5) mean the
-//! theoretical maximum staleness is only ≈0.83 — a deliberately conservative
-//! design so that no single factor, maxed out alone, can doom an entry. The
-//! thresholds below are calibrated to that actual dynamic range rather than the
-//! full `[0, 1]`:
-//!
-//! | Staleness  | Status                       |
-//! |------------|------------------------------|
-//! | `< 0.35`   | Active                       |
-//! | `0.35–0.50`| Active (flagged for review)  |
-//! | `0.50–0.65`| Superseded candidate         |
-//! | `≥ 0.65`   | Archived candidate           |
-//!
-//! The reviewer never mutates memories. Deterministic scheduled maintenance is
-//! owned by [`super::dreaming::Dreaming`]; semantic conflict resolution requires
-//! an explicit caller to invoke [`MemoryMerger`].
+/*! 记忆的复核分析与显式冲突解决。
+ *
+ * 这是演化（evolution）系统的第二阶段。第一阶段为记忆提供了类型化元数据、
+ * 分层存储（热/温/冷），以及审计日志，但记忆在创建之后从未被重新评估过。
+ * 本模块新增了：
+ *
+ * - [`StalenessScorer`] —— 根据年龄、使用度、不稳定性、矛盾冲突和来源弱点
+ *   等因素计算完整的陈旧度分数（取代 `MemoryMeta::base_staleness`）。
+ * - [`ConflictDetector`] —— 将拥有相同主题 + 类型、但内容哈希不同的记忆
+ *   分组。
+ * - [`MemoryMerger`] —— 显式的变更原语，将一个经用户批准的冲突组合并为
+ *   一条主条目，并将其余条目标记为被取代。
+ * - [`MemoryReviewer`] —— 仅做分析的编排器：扫描 → 评分 → 提出建议。
+ *
+ * # 状态阈值
+ *
+ * 公式中各因子的上限（年龄因子 ≤ 0.8，矛盾因子 ≤ 0.5）意味着理论上的
+ * 最大陈旧度只有约 0.83——这是一种有意为之的保守设计，确保没有任何单一
+ * 因子在被拉满时就能单独判定一条记忆“该被淘汰”。下面的阈值就是按照这个
+ * 实际动态范围校准的，而不是完整的 `[0, 1]` 区间：
+ *
+ * | 陈旧度       | 状态                         |
+ * |------------|------------------------------|
+ * | `< 0.35`   | 活跃（Active）                |
+ * | `0.35–0.50`| 活跃（标记待复核）             |
+ * | `0.50–0.65`| 待取代候选                    |
+ * | `≥ 0.65`   | 待归档候选                    |
+ *
+ * 复核器本身从不修改记忆。确定性的定期维护由 [`super::dreaming::Dreaming`]
+ * 负责；语义层面的冲突解决则需要调用方显式调用 [`MemoryMerger`]。
+ */
 
 use chrono::{DateTime, Duration, Utc};
 use echo_core::memory::types::{MemoryMeta, MemoryStatus, MemoryType};
@@ -42,40 +41,42 @@ use super::audit::{ChangeLog, EntityType};
 use super::layer::MemoryLayerManager;
 use crate::error::Result;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── 常量 ──────────────────────────────────────────────────────────
 
-/// Staleness threshold below which an entry stays Active.
-///
-/// Calibrated to the formula's dynamic range (max ≈ 0.83), not the full `[0,1]`.
+/** 陈旧度低于该阈值时，条目维持 Active 状态。
+ *
+ * 该阈值是按照公式的实际动态范围（最大约 0.83）校准的，而不是完整的 `[0,1]`。
+ */
 const STALENESS_ACTIVE_MAX: f32 = 0.35;
-/// Staleness threshold above which an entry is a superseded candidate.
+/// 陈旧度高于该阈值时，条目成为待取代候选。
 const STALENESS_SUPERSEDED_MIN: f32 = 0.50;
-/// Staleness threshold above which an entry is archived.
+/// 陈旧度高于该阈值时，条目被归档。
 const STALENESS_ARCHIVE_MIN: f32 = 0.65;
 
 // ── StalenessScorer ────────────────────────────────────────────────────
 
-/// Computes a staleness score (0.0 = fresh, 1.0 = very stale) for a typed memory.
-///
-/// `staleness = age·0.35 + low_usage·0.20 + instability·0.20 + contradiction·0.20 + source_weakness·0.05`
-///
-/// Factor weights are tuned so that no single factor dominates: an old but
-/// frequently-revised, high-confidence entry from a trusted source can still
-/// stay below the archive threshold, while a fresh but contradictory,
-/// low-confidence auto-extracted entry can still be flagged.
+/** 为一条类型化记忆计算陈旧度分数（0.0 = 新鲜，1.0 = 非常陈旧）。
+ *
+ * `staleness = age·0.35 + low_usage·0.20 + instability·0.20 + contradiction·0.20 + source_weakness·0.05`
+ *
+ * 各因子权重经过调优，使得没有单一因子能够主导结果：一条较旧但经常被
+ * 修订、来自可信来源且置信度高的条目，依然可能停留在归档阈值之下；而
+ * 一条新鲜但存在矛盾、由自动抽取且置信度较低的条目，依然可能被标记。
+ */
 pub struct StalenessScorer;
 
 impl StalenessScorer {
-    /// Create a new scorer.
+    /// 创建一个新的评分器。
     pub fn new() -> Self {
         Self
     }
 
-    /// Score a single entry.
-    ///
-    /// `has_contradiction` should be `true` when the [`ConflictDetector`] found
-    /// this entry in a conflict group. The reviewer detects conflicts before its
-    /// single scoring pass.
+    /** 对单条记忆条目评分。
+     *
+     * 当 [`ConflictDetector`] 发现该条目位于某个冲突组中时，
+     * `has_contradiction` 应为 `true`。复核器会在单次评分之前先
+     * 完成冲突检测。
+     */
     pub fn score(
         &self,
         entry: &TypedMemoryEntry,
@@ -116,37 +117,38 @@ impl Default for StalenessScorer {
     }
 }
 
-/// A single entry's staleness breakdown.
+/// 单条记忆的陈旧度评分明细。
 #[derive(Debug, Clone)]
 pub struct StalenessReport {
-    /// The scored memory key.
+    /// 被评分的记忆键。
     pub key: String,
-    /// Aggregate staleness (0.0–1.0).
+    /// 综合陈旧度（0.0–1.0）。
     pub staleness: f32,
-    /// Time since the latest recall, falling back to creation time.
+    /// 距离最近一次被检索（recall）的时间，若没有则回退为创建时间。
     pub age_factor: f32,
-    /// Low-recall-count factor.
+    /// 低检索次数因子。
     pub usage_factor: f32,
-    /// `1.0 - stability`.
+    /// `1.0 - stability`。
     pub instability_factor: f32,
-    /// 0.0 (no conflict) or 0.5 (in a conflict group).
+    /// 0.0（无冲突）或 0.5（处于某个冲突组中）。
     pub contradiction_factor: f32,
-    /// `1.0 - source.default_confidence()`.
+    /// `1.0 - source.default_confidence()`。
     pub source_factor: f32,
-    /// Status the reviewer would move this entry to.
+    /// 复核器建议将该条目转移到的状态。
     pub recommended_status: MemoryStatus,
 }
 
-/// Compute the age factor from the entry's most recent recall activity.
-///
-/// `<7d → 0.0`, `7–30d → 0.2`, `30–90d → 0.5`, `>90d → 0.8`.
+/** 根据条目最近一次检索活动计算年龄因子。
+ *
+ * `<7天 → 0.0`，`7–30天 → 0.2`，`30–90天 → 0.5`，`>90天 → 0.8`。
+ */
 fn age_factor(entry: &TypedMemoryEntry, now: DateTime<Utc>) -> f32 {
-    // Metadata-only recall updates also change StoreItem::updated_at, so using
-    // that field would make telemetry writes look like semantic edits. Keep a
-    // dedicated recall timestamp and otherwise fall back to creation time.
+    /* 仅更新元数据的检索操作也会改变 StoreItem::updated_at，如果用这个
+     * 字段判断，会让遥测写入看起来像语义编辑。因此这里保留一个专门的
+     * 检索时间戳字段，否则回退到创建时间。 */
     let secs = entry.meta.last_recalled_at.unwrap_or(entry.raw.created_at);
     let Some(then) = DateTime::<Utc>::from_timestamp(secs as i64, 0) else {
-        // Unparseable timestamp — treat as unknown-age (neutral).
+        // 时间戳无法解析——按未知年龄（中性值）处理。
         return 0.2;
     };
     let age = now.signed_duration_since(then);
@@ -161,21 +163,23 @@ fn age_factor(entry: &TypedMemoryEntry, now: DateTime<Utc>) -> f32 {
     }
 }
 
-/// Low-usage factor based on actual recall telemetry.
-///
-/// `recall_count` is incremented by the shared recall path and is the same
-/// signal consumed by Dreaming. Revision count measures edits, not usefulness.
+/** 基于真实检索遥测数据计算的低使用度因子。
+ *
+ * `recall_count` 由共享的检索路径统一递增，与 Dreaming 消费的是同一份
+ * 信号。修订次数衡量的是编辑次数，而不是有用程度。
+ */
 fn low_usage_factor(meta: &MemoryMeta) -> f32 {
     1.0 - (meta.recall_count as f32 / 3.0).min(1.0)
 }
 
-/// Map a staleness score to a recommended status.
-///
-/// Already-archived/superseded entries keep their terminal status — the reviewer
-/// never re-activates something a prior review retired.
+/** 将陈旧度分数映射为建议状态。
+ *
+ * 已经归档/被取代的条目保持其终态——复核器绝不会重新激活此前某次
+ * 复核已经淘汰的条目。
+ */
 fn recommended_status(staleness: f32, current: MemoryStatus) -> MemoryStatus {
     match current {
-        // Terminal statuses are sticky.
+        // 终态是粘性的，不会被改变。
         MemoryStatus::Archived | MemoryStatus::Superseded => current,
         MemoryStatus::Draft | MemoryStatus::Active => {
             if staleness >= STALENESS_ARCHIVE_MIN {
@@ -191,29 +195,29 @@ fn recommended_status(staleness: f32, current: MemoryStatus) -> MemoryStatus {
 
 // ── ConflictDetector ───────────────────────────────────────────────────
 
-/// Groups memories that share a topic + type but have different content hashes.
-///
-/// Two memories "conflict" when they live in the same `(topic, memory_type)`
-/// bucket but their trimmed content hashes differ — i.e. they make different
-/// claims about the same subject. Identical content (true duplicates) is *not*
-/// treated as a conflict by this detector; deduplication is handled elsewhere
-/// (`memory_promoter.rs`).
+/** 将拥有相同主题 + 类型、但内容哈希不同的记忆分组。
+ *
+ * 当两条记忆位于同一个 `(topic, memory_type)` 分桶中，但去除首尾空白后的
+ * 内容哈希不同时，就称它们“冲突”——也就是说它们对同一主题给出了不同的
+ * 说法。完全相同的内容（真正的重复）*不会*被本检测器视为冲突；去重逻辑
+ * 由别处（`memory_promoter.rs`）负责。
+ */
 pub struct ConflictDetector;
 
 impl ConflictDetector {
-    /// Create a new detector.
+    /// 创建一个新的检测器。
     pub fn new() -> Self {
         Self
     }
 
-    /// Detect conflict groups in a set of entries.
-    ///
-    /// A group is returned only when it contains **2 or more** entries with
-    /// *different* content hashes under the same `(topic, memory_type)`.
-    /// Pure-duplicate groups (all identical content) are dropped — they are
-    /// dedup candidates, not conflicts.
+    /** 在一组条目中检测冲突组。
+     *
+     * 仅当同一个 `(topic, memory_type)` 分桶下存在 **2 条或更多**内容
+     * 哈希*不同*的条目时，才会返回一个冲突组。全部内容相同的分组（纯
+     * 重复）会被丢弃——它们属于去重候选，而不是冲突。
+     */
     pub fn detect(&self, entries: &[TypedMemoryEntry]) -> Vec<ConflictGroup> {
-        // Bucket by (topic, memory_type) → list of (hash, entry index).
+        // 按 (topic, memory_type) 分桶 → (哈希, 条目下标) 列表。
         let mut buckets: HashMap<(String, MemoryType), Vec<(u64, usize)>> = HashMap::new();
         for (idx, entry) in entries.iter().enumerate() {
             let hash = content_hash(&entry.content);
@@ -228,7 +232,7 @@ impl ConflictDetector {
             if members.len() < 2 {
                 continue;
             }
-            // Need at least two distinct hashes to call it a conflict.
+            // 至少需要两个不同的哈希才能称之为冲突。
             let distinct_hashes: std::collections::HashSet<u64> =
                 members.iter().map(|(h, _)| *h).collect();
             if distinct_hashes.len() < 2 {
@@ -254,57 +258,74 @@ impl Default for ConflictDetector {
     }
 }
 
-/// A set of 2+ memories that conflict on the same `(topic, memory_type)`.
+/// 在同一 `(topic, memory_type)` 上发生冲突的一组（≥2 条）记忆。
 #[derive(Debug, Clone)]
 pub struct ConflictGroup {
-    /// Shared topic.
+    /// 共同的主题。
     pub topic: String,
-    /// Shared memory type.
+    /// 共同的记忆类型。
     pub memory_type: MemoryType,
-    /// The conflicting entries (≥2, with at least two distinct contents).
+    /// 冲突的条目（≥2 条，且至少存在两种不同内容）。
     pub entries: Vec<TypedMemoryEntry>,
 }
 
-/// One member of a semantic memory-conflict proposal.
+/// 语义记忆冲突提案中的一个成员。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryConflictMember {
+    /// 该成员的记忆键。
     pub key: String,
+    /// 该成员的记忆内容。
     pub content: String,
+    /// 该成员的置信度。
     pub confidence: f32,
+    /// 该成员当前的状态。
     pub status: MemoryStatus,
+    /// 该成员被检索的次数。
     pub recall_count: u32,
+    /// 该成员最近一次更新的时间戳。
     pub updated_at: u64,
 }
 
-/// Analysis-only proposal describing a conflict that needs an explicit choice.
+/// 仅做分析、描述某个需要显式选择的冲突的提案。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryConflictProposal {
+    /// 冲突所在的主题。
     pub topic: String,
+    /// 冲突所在的记忆类型。
     pub memory_type: MemoryType,
+    /// 建议作为主条目的键。
     pub recommended_primary_key: String,
+    /// 参与该冲突的所有成员。
     pub members: Vec<MemoryConflictMember>,
 }
 
-/// Exact pre-merge state used to undo an explicitly approved merge.
+/// 用于撤销一次已获批准的合并操作的、合并前精确状态快照。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryMergeSnapshot {
+    /// 该条目的记忆键。
     pub key: String,
+    /// 合并前的记忆内容。
     pub content: String,
+    /// 合并前的元数据。
     pub meta: MemoryMeta,
 }
 
-/// Result of applying one conflict proposal.
+/// 应用一次冲突提案后的结果。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppliedMemoryMerge {
+    /// 合并后存活下来的主条目键。
     pub primary_key: String,
+    /// 被主条目取代的所有条目键。
     pub superseded_keys: Vec<String>,
+    /// 合并前所有条目的快照，用于回滚。
     pub before: Vec<MemoryMergeSnapshot>,
-    /// Durable operation batch that can be passed to later rollback.
+    /// 可用于之后回滚的持久化操作批次标识。
     #[serde(default)]
     pub batch_id: Option<String>,
 }
 
 impl MemoryConflictProposal {
+    /// 从一个冲突组构建一份冲突提案；空组返回 `None`。
     pub(crate) fn from_group(group: &ConflictGroup) -> Option<Self> {
         let ordered = ordered_conflict_entries(group);
         let recommended_primary_key = ordered.first()?.key.clone();
@@ -328,6 +349,7 @@ impl MemoryConflictProposal {
     }
 }
 
+/// 按置信度（降序）、更新时间（降序）、键（升序）对冲突组内的条目排序。
 pub(super) fn ordered_conflict_entries(group: &ConflictGroup) -> Vec<TypedMemoryEntry> {
     let mut ordered = group.entries.clone();
     ordered.sort_by(|a, b| {
@@ -345,78 +367,83 @@ pub(super) fn ordered_conflict_entries(group: &ConflictGroup) -> Vec<TypedMemory
     ordered
 }
 
-/// Content hash for conflict comparison — FNV-1a over trimmed content.
-///
-/// Matches the existing dedup hash in `memory_promoter.rs` so the two systems
-/// agree on what counts as "same content".
+/** 用于冲突比较的内容哈希——对去除首尾空白后的内容做 FNV-1a。
+ *
+ * 与 `memory_promoter.rs` 中现有的去重哈希保持一致，使两套系统对“内容
+ * 相同”的判定标准一致。
+ */
 fn content_hash(content: &str) -> u64 {
     fnv1a_64(content.trim().as_bytes())
 }
 
 // ── MemoryMerger ───────────────────────────────────────────────────────
 
-/// Merges a [`ConflictGroup`] into a single primary entry, superseding the rest.
-///
-/// Merge policy:
-/// - The entry with the highest `confidence` wins (ties broken by recency of
-///   `updated_at`, then by key for determinism).
-/// - The primary's content stays verbatim; provenance is stored in audit data.
-/// - Secondary entries are rewritten with `status = Superseded`,
-///   `superseded_by = <primary key>`, and their `revision_count` is folded into
-///   the primary's.
-/// - The manager prepares the complete group before projecting any member,
-///   then records each member in the business audit under a stable identity.
+/** 将一个 [`ConflictGroup`] 合并为单一的主条目，并取代其余条目。
+ *
+ * 合并策略：
+ * - `confidence` 最高的条目获胜（相同则按 `updated_at` 更新时间较新者
+ *   优先，仍相同则按键排序以保证确定性）。
+ * - 主条目的内容保持原样不变；来源信息记录在审计数据中。
+ * - 次要条目会被改写为 `status = Superseded`，`superseded_by = <主条目键>`，
+ *   其 `revision_count` 会被并入主条目。
+ * - 管理器会先准备好完整的分组，再对任何成员做投影，然后在业务审计中
+ *   以稳定身份记录每个成员。
+ */
 pub struct MemoryMerger<'a> {
+    /// 承载合并变更的持久化状态管理器。
     manager: &'a MemoryLayerManager,
 }
 
-/// Outcome of merging one conflict group.
+/// 合并一个冲突组后的结果。
 #[derive(Debug, Clone)]
 pub struct MergeResult {
-    /// Key of the surviving primary entry.
+    /// 存活下来的主条目的键。
     pub primary_key: String,
-    /// Keys of the entries superseded by the primary.
+    /// 被主条目取代的所有条目的键。
     pub superseded_keys: Vec<String>,
-    /// Durable operation batch identity for a later rollback.
+    /// 供之后回滚使用的持久化操作批次标识。
     pub batch_id: Option<String>,
 }
 
 impl<'a> MemoryMerger<'a> {
-    /// Bind the merge policy to the canonical durable mutation owner.
+    /// 将合并策略绑定到权威的持久化变更所有者上。
     pub fn new(manager: &'a MemoryLayerManager) -> Self {
         Self { manager }
     }
 
-    /// Merge a single conflict group.
-    ///
-    /// Returns `Ok(MergeResult)` with an empty `superseded_keys` when the group
-    /// has fewer than 2 entries (nothing to merge).
+    /** 合并单个冲突组。
+     *
+     * 当分组条目少于 2 条（无需合并）时，返回 `Ok(MergeResult)`，
+     * 其 `superseded_keys` 为空。
+     */
     pub async fn merge_group(&self, group: &ConflictGroup) -> Result<MergeResult> {
         self.manager.commit_merge_group(group).await
     }
 }
 
-// ── MemoryReviewer (orchestrator) ──────────────────────────────────────
+// ── MemoryReviewer（编排器） ──────────────────────────────────────
 
-/// Orchestrates an analysis-only review pass: scan → score → propose.
+/// 编排一次仅做分析的复核流程：扫描 → 评分 → 提出建议。
 pub struct MemoryReviewer {
+    /// 用于计算陈旧度的评分器。
     scorer: StalenessScorer,
+    /// 用于发现语义冲突的检测器。
     conflict_detector: ConflictDetector,
 }
 
-/// Tunable knobs for a review pass.
+/// 一次复核流程的可调参数。
 #[derive(Debug, Clone)]
 pub struct ReviewConfig {
-    /// Run a review when the session ends. Default: `false`.
+    /// 是否在会话结束时运行一次复核。默认：`false`。
     pub review_on_session_end: bool,
-    /// Cap on conflict proposals returned per pass. Default: `10`.
+    /// 每次复核返回的冲突提案数量上限。默认：`10`。
     pub max_conflicts_per_review: usize,
-    /// Maximum members allowed in one proposal. Larger groups are reported but
-    /// omitted from actionable output to bound JSONL and prompt growth.
+    /// 单个提案允许包含的最大成员数。更大的分组会被上报，但不会出现在
+    /// 可操作的输出中，以此控制 JSONL 与提示词的膨胀。
     pub max_conflict_members: usize,
-    /// Run skill candidate detection during review. Default: `true`.
+    /// 是否在复核期间运行技能候选检测。默认：`true`。
     pub detect_skill_candidates: bool,
-    /// Auto-generate draft SKILL.md for new candidates. Default: `false`.
+    /// 是否为新候选自动生成 SKILL.md 草稿。默认：`false`。
     pub auto_generate_drafts: bool,
 }
 
@@ -432,50 +459,66 @@ impl Default for ReviewConfig {
     }
 }
 
-/// A single proposal produced during a review pass.
+/// 复核流程中产生的单条提案。
 #[derive(Debug, Clone)]
 pub enum ReviewChange {
-    /// A memory crossed the staleness review threshold.
+    /// 一条记忆的陈旧度越过了复核阈值。
     StalenessSuggested {
+        /// 该记忆的键。
         key: String,
+        /// 建议转移到的状态。
         recommended_status: MemoryStatus,
+        /// 该记忆的陈旧度分数。
         staleness: f32,
     },
-    /// A semantic conflict needs an explicit primary selection.
+    /// 一个语义冲突需要显式选择主条目。
     ConflictProposed {
+        /// 冲突所在的主题。
         topic: String,
+        /// 建议作为主条目的键。
         recommended_primary_key: String,
+        /// 参与冲突的所有成员键。
         member_keys: Vec<String>,
     },
-    /// A new skill candidate was proposed from observed patterns.
-    CandidateProposed { name: String, sample_count: usize },
-    /// A draft SKILL.md was generated from a candidate.
-    DraftGenerated { name: String, path: String },
+    /// 根据观察到的模式提出了一个新的技能候选。
+    CandidateProposed {
+        /// 候选技能的名称。
+        name: String,
+        /// 支撑该候选的样本数量。
+        sample_count: usize,
+    },
+    /// 为某个候选生成了一份 SKILL.md 草稿。
+    DraftGenerated {
+        /// 候选技能的名称。
+        name: String,
+        /// 生成的草稿文件路径。
+        path: String,
+    },
 }
 
-/// Aggregate result of one review pass.
+/// 一次复核流程的汇总结果。
 #[derive(Debug, Clone, Default)]
 pub struct ReviewReport {
-    /// Total entries scanned in the warm layer.
+    /// 在温层（warm layer）中扫描到的条目总数。
     pub total_scanned: usize,
-    /// Entries whose staleness crossed the flag threshold (≥ 0.35).
+    /// 陈旧度越过标记阈值（≥ 0.35）的条目数量。
     pub stale_count: usize,
-    /// Conflict groups found.
+    /// 发现的冲突组数量。
     pub conflict_groups: usize,
-    /// Explainable staleness suggestions; no status is changed by the reviewer.
+    /// 可解释的陈旧度建议；复核器本身不会改变任何状态。
     pub staleness_suggestions: Vec<StalenessReport>,
-    /// Semantic conflict proposals capped by `max_conflicts_per_review`.
+    /// 语义冲突提案，数量受 `max_conflicts_per_review` 限制。
     pub conflict_proposals: Vec<MemoryConflictProposal>,
-    /// Skill candidates proposed during this review.
+    /// 本次复核中提出的技能候选数量。
     pub candidates_proposed: usize,
-    /// Draft SKILL.md files generated during this review.
+    /// 本次复核中生成的 SKILL.md 草稿数量。
     pub drafts_generated: usize,
-    /// Individual proposals, in deterministic order.
+    /// 按确定性顺序排列的各条提案。
     pub changes: Vec<ReviewChange>,
 }
 
 impl MemoryReviewer {
-    /// Create a new reviewer with default scorer and conflict detector.
+    /// 使用默认的评分器与冲突检测器创建一个新的复核器。
     pub fn new() -> Self {
         Self {
             scorer: StalenessScorer::new(),
@@ -483,10 +526,11 @@ impl MemoryReviewer {
         }
     }
 
-    /// Analyze the warm layer without mutating it.
-    ///
-    /// Deterministic lifecycle maintenance belongs to `Dreaming`; semantic
-    /// conflict resolution belongs to an explicit `MemoryMerger` caller.
+    /** 分析温层（warm layer）而不修改它。
+     *
+     * 确定性的生命周期维护属于 `Dreaming` 的职责；语义层面的冲突解决
+     * 则属于显式调用 `MemoryMerger` 的调用方的职责。
+     */
     pub async fn review(
         &self,
         typed_store: &TypedMemoryStore,
@@ -495,7 +539,7 @@ impl MemoryReviewer {
         let now = Utc::now();
         let mut report = ReviewReport::default();
 
-        // ── 1. Scan warm layer ──
+        // ── 1. 扫描温层 ──
         let entries = typed_store
             .list_typed(
                 crate::evolution::layer::WARM_NAMESPACE,
@@ -507,15 +551,15 @@ impl MemoryReviewer {
             return Ok(report);
         }
 
-        // ── 2. Conflict detection ──
+        // ── 2. 冲突检测 ──
         let reviewable_entries: Vec<_> = entries
             .iter()
             .filter(|entry| entry.meta.status != MemoryStatus::Superseded)
             .cloned()
             .collect();
         let conflict_groups = self.conflict_detector.detect(&reviewable_entries);
-        // Collect the set of keys that participate in any conflict group so the
-        // scoring pass can flag them.
+        /* 收集所有参与任意冲突组的键的集合，以便评分阶段能够
+         * 标记它们。 */
         let mut conflicted_keys: std::collections::HashSet<String> =
             std::collections::HashSet::new();
         for group in &conflict_groups {
@@ -525,7 +569,7 @@ impl MemoryReviewer {
         }
         report.conflict_groups = conflict_groups.len();
 
-        // ── 3. Score every entry ──
+        // ── 3. 为每条条目评分 ──
         let mut scored: Vec<StalenessReport> = Vec::with_capacity(entries.len());
         for entry in &entries {
             let has_contradiction = conflicted_keys.contains(&entry.key);
@@ -572,7 +616,7 @@ impl Default for MemoryReviewer {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -582,7 +626,7 @@ mod tests {
     use echo_state::memory::store::InMemoryStore;
     use std::sync::Arc;
 
-    /// A no-op ChangeLog for testing.
+    /// 用于测试的空操作 ChangeLog。
     struct NullChangeLog;
     impl ChangeLog for NullChangeLog {
         fn record(&self, _entry: super::super::audit::ChangeEntry) -> Result<()> {
@@ -636,7 +680,7 @@ mod tests {
         ((Utc::now() - Duration::days(days)).timestamp()).max(0) as u64
     }
 
-    // ── StalenessScorer ──
+    // ── StalenessScorer 测试 ──
 
     #[test]
     fn test_fresh_high_quality_entry_is_active() {
@@ -657,7 +701,7 @@ mod tests {
             report.staleness
         );
         assert_eq!(report.recommended_status, MemoryStatus::Active);
-        // Fresh entry ⇒ age factor 0; ExplicitSave ⇒ source factor 0.
+        // 新鲜条目 ⇒ 年龄因子为 0；ExplicitSave 来源 ⇒ 来源因子为 0。
         assert_eq!(report.age_factor, 0.0);
         assert_eq!(report.source_factor, 0.0);
     }
@@ -668,7 +712,7 @@ mod tests {
         let meta = MemoryMeta::new(MemoryType::ProjectFact, MemorySource::L3Promotion, "old")
             .with_confidence(0.40)
             .with_stability(0.20);
-        // 120 days old, never revised.
+        // 120 天前创建，从未被修订过。
         let entry = make_entry("old_fact", "Stale project fact", meta, days_ago_secs(120));
 
         let report = scorer.score(&entry, Utc::now(), false);
@@ -703,7 +747,7 @@ mod tests {
 
     #[test]
     fn test_recommended_status_is_sticky_for_terminal() {
-        // Archived/Superseded entries should never be re-activated by scoring.
+        // 已归档/已被取代的条目绝不应因评分而被重新激活。
         let archived = recommended_status(0.99, MemoryStatus::Archived);
         assert_eq!(archived, MemoryStatus::Archived);
         let superseded = recommended_status(0.10, MemoryStatus::Superseded);
@@ -737,7 +781,7 @@ mod tests {
         assert_eq!(config.max_conflict_members, 16);
     }
 
-    // ── ConflictDetector ──
+    // ── ConflictDetector 测试 ──
 
     #[test]
     fn test_detects_same_topic_type_different_content() {
@@ -788,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_no_conflict_for_identical_content() {
-        // Two entries with identical content are dedup candidates, not conflicts.
+        // 两条内容完全相同的条目属于去重候选，而不是冲突。
         let detector = ConflictDetector::new();
         let meta = MemoryMeta::new(
             MemoryType::ProjectFact,
@@ -802,7 +846,7 @@ mod tests {
         assert!(detector.detect(&entries).is_empty());
     }
 
-    // ── MemoryMerger ──
+    // ── MemoryMerger 测试 ──
 
     #[tokio::test]
     async fn test_merge_keeps_highest_confidence_as_primary() -> Result<()> {
@@ -860,7 +904,7 @@ mod tests {
         assert_eq!(result.primary_key, "high");
         assert_eq!(result.superseded_keys, vec!["low".to_string()]);
 
-        // Primary content stays verbatim; provenance belongs in audit metadata.
+        // 主条目的内容保持原样不变；来源信息属于审计元数据的范畴。
         let primary = typed
             .get_typed(crate::evolution::layer::WARM_NAMESPACE, "high")
             .await
@@ -868,7 +912,7 @@ mod tests {
             .unwrap();
         assert_eq!(primary.content, "Build uses cargo 1.80");
 
-        // Secondary should be Superseded with superseded_by pointing at the primary.
+        // 次要条目应变为 Superseded 状态，且 superseded_by 指向主条目。
         let secondary = typed
             .get_typed(crate::evolution::layer::WARM_NAMESPACE, "low")
             .await
@@ -903,7 +947,7 @@ mod tests {
         Ok(())
     }
 
-    // ── MemoryReviewer end-to-end ──
+    // ── MemoryReviewer 端到端测试 ──
 
     #[tokio::test]
     async fn test_review_reports_stale_and_conflicts_without_mutation() {
@@ -911,7 +955,7 @@ mod tests {
         let store: Arc<dyn echo_core::memory::store::Store> = mem_store.clone();
         let typed = TypedMemoryStore::new(store.clone());
 
-        // (1) A very stale entry → should be reported as an archive candidate.
+        // (1) 一条非常陈旧的条目 → 应该被报告为归档候选。
         let stale_meta = MemoryMeta::new(MemoryType::ProjectFact, MemorySource::L3Promotion, "old")
             .with_confidence(0.30)
             .with_stability(0.20);
@@ -924,8 +968,8 @@ mod tests {
             )
             .await
             .unwrap();
-        // Force the underlying item's timestamp into the distant past.
-        // We use `put_raw` so the Store doesn't overwrite updated_at with now().
+        /* 将底层条目的时间戳强制改为很久以前。
+         * 这里使用 `put_raw`，这样 Store 就不会用当前时间覆盖 updated_at。 */
         {
             let item = store
                 .get(crate::evolution::layer::WARM_NAMESPACE, "stale")
@@ -938,7 +982,7 @@ mod tests {
             mem_store.put_raw(past).await;
         }
 
-        // (2) Two conflicting entries on the same topic → should produce a proposal.
+        // (2) 同一主题下的两条冲突条目 → 应该产生一份提案。
         let c1 = MemoryMeta::new(MemoryType::ProjectFact, MemorySource::ExplicitSave, "build")
             .with_confidence(0.95);
         let c2 = MemoryMeta::new(
@@ -966,7 +1010,7 @@ mod tests {
             .await
             .unwrap();
 
-        // (3) A fresh, high-quality entry → should stay put.
+        // (3) 一条新鲜、高质量的条目 → 应该保持不变。
         let good = MemoryMeta::new(
             MemoryType::UserPreference,
             MemorySource::ExplicitSave,
@@ -1000,7 +1044,7 @@ mod tests {
             "build_a"
         );
 
-        // Analysis must not archive or merge anything.
+        // 分析过程不能归档或合并任何内容。
         let stale = typed
             .get_typed(crate::evolution::layer::WARM_NAMESPACE, "stale")
             .await

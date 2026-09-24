@@ -1,40 +1,45 @@
-//! A/B comparison evaluator — compares two agent configurations.
+//! A/B 对比评估器 —— 比较两种 Agent 配置。
 //!
-//! Inspired by `skill-creator/agents/comparator.md`. Runs the same eval cases
-//! against two different agent configurations and computes per-case deltas.
+//! 思路借鉴自 `skill-creator/agents/comparator.md`。在两种不同的
+//! Agent 配置上运行相同的评估用例，并计算每个用例的分数差值。
 
 use crate::eval::{EvalCase, EvalReport, EvalRunner};
 
-/// Result of comparing two eval runs.
+/// 两次评估运行的对比结果。
 pub struct AbComparison {
-    /// Eval results from configuration A (baseline).
+    /// 配置 A（baseline，基线）的评估结果。
     pub baseline: EvalReport,
-    /// Eval results from configuration B (experiment).
+    /// 配置 B（experiment，实验组）的评估结果。
     pub experiment: EvalReport,
-    /// Per-case score deltas (experiment - baseline).
+    /// 每个用例的分数差值（experiment - baseline）。
     pub per_case_deltas: Vec<CaseDelta>,
-    /// Cases where experiment improved over baseline.
+    /// 实验组相对基线有所提升的用例数。
     pub improved: usize,
-    /// Cases where experiment regressed vs baseline.
+    /// 实验组相对基线出现退化的用例数。
     pub regressed: usize,
-    /// Cases with no change.
+    /// 没有变化的用例数。
     pub unchanged: usize,
 }
 
-/// Per-case comparison data.
+/// 单个用例的对比数据。
 pub struct CaseDelta {
+    /// 用例 id。
     pub case_id: String,
+    /// 基线分数。
     pub baseline_score: f64,
+    /// 实验组分数。
     pub experiment_score: f64,
+    /// 分数差值。
     pub delta: f64,
+    /// 该用例是否有所提升。
     pub improved: bool,
 }
 
-/// Runs A/B comparison between two agent configurations.
+/// 在两种 Agent 配置之间运行 A/B 对比。
 pub struct AbComparator;
 
 impl AbComparator {
-    /// Compare two agent factories on the same eval cases.
+    /// 在同一批评估用例上对比两个 Agent 工厂。
     pub async fn compare(
         cases: &[EvalCase],
         mut baseline_factory: impl FnMut() -> Box<dyn crate::agent::Agent>,
@@ -72,7 +77,7 @@ impl AbComparator {
             });
         }
 
-        // Attach delta to experiment report
+        // 将差值附加到实验组报告上
         let mut experiment = experiment;
         experiment.delta_vs_baseline = Some(experiment.avg_score - baseline.avg_score);
 
@@ -86,7 +91,7 @@ impl AbComparator {
         }
     }
 
-    /// Format comparison as a readable summary.
+    /// 将对比结果格式化为可读的摘要文本。
     pub fn format_summary(comparison: &AbComparison) -> String {
         let delta = comparison.experiment.avg_score - comparison.baseline.avg_score;
         let direction = if delta > 0.0 {

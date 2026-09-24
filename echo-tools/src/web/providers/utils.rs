@@ -1,6 +1,6 @@
-//! Common utility functions for search providers
+//! 搜索提供方通用的工具函数
 
-/// URL encoding (percent-encoding, compliant with RFC 3986 unreserved character set)
+/// URL 编码（百分号编码，遵循 RFC 3986 的未保留字符集）
 pub fn urlencode(input: &str) -> String {
     input
         .bytes()
@@ -13,7 +13,7 @@ pub fn urlencode(input: &str) -> String {
         .collect()
 }
 
-/// Safely truncate by character count (won't split in the middle of multi-byte UTF-8 characters)
+/// 按字符数安全截断（不会截断到多字节 UTF-8 字符的中间）
 pub fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -22,7 +22,7 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-/// Percent-decoding
+/// 百分号解码
 pub fn percent_decode(input: &str) -> String {
     let mut result = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -48,6 +48,7 @@ pub fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&result).to_string()
 }
 
+/// 将单个十六进制字符（ASCII）解码为其数值（0-15）；非法字符返回 `None`。
 fn decode_hex(value: u8) -> Option<u8> {
     match value {
         b'0'..=b'9' => Some(value - b'0'),
@@ -61,6 +62,7 @@ fn decode_hex(value: u8) -> Option<u8> {
 mod tests {
     use super::*;
 
+    /// 验证 URL 编码函数对空格、连字符及多字节 UTF-8 字符的处理是否正确。
     #[test]
     fn test_urlencode() {
         assert_eq!(urlencode("hello world"), "hello%20world");
@@ -68,16 +70,18 @@ mod tests {
         assert_eq!(urlencode("café"), "caf%C3%A9");
     }
 
+    /// 验证截断函数在长度足够/不足时的行为，且不会破坏多字节字符的完整性。
     #[test]
     fn test_truncate_chars() {
         assert_eq!(truncate_chars("hello", 10), "hello");
         assert_eq!(truncate_chars("Hello World", 2), "He");
-        // Won't split in the middle of multibyte characters
+        // 不会截断到多字节字符的中间
         let s = "a🌍b".repeat(50);
         let truncated = truncate_chars(&s, 10);
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
+    /// 验证百分号解码函数能正确处理转义序列、`+` 转空格，以及非法/未编码的字节序列。
     #[test]
     fn test_percent_decode() {
         assert_eq!(

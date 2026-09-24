@@ -1,11 +1,11 @@
-//! Hook type definitions — shared across all workspace crates.
+//! Hook 类型定义 —— 整个工作区 crate 共享。
 //!
-//! This module contains the core types for the unified hook system,
-//! defined here in `echo-core` so that both `echo-execution` and
-//! `echo-orchestration` can reference them without circular dependencies.
+//! 本模块包含统一 hook 系统的核心类型，之所以定义在 `echo-core` 中，
+//! 是为了让 `echo-execution` 和 `echo-orchestration` 都能引用这些类型，
+//! 而不产生循环依赖。
 //!
-//! The execution engine (`HookRegistry`, `parse_hook_output`, etc.)
-//! remains in `echo-execution/src/skills/hooks.rs`.
+//! 执行引擎（`HookRegistry`、`parse_hook_output` 等）仍位于
+//! `echo-execution/src/skills/hooks.rs`。
 
 use crate::tools::permission::{PermissionDecision, PermissionMode};
 use serde::{Deserialize, Serialize};
@@ -14,52 +14,52 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-// ── Hook Event Category ────────────────────────────────────────────────
+// ── Hook 事件类别 ────────────────────────────────────────────────
 
-/// Category of a hook event, used to determine matcher semantics.
+/// Hook 事件的类别，用于确定 matcher（匹配器）的语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HookEventCategory {
-    /// Tool execution events — matcher filters by tool name.
+    /// 工具执行事件 —— matcher 按工具名过滤。
     Tool,
-    /// Session lifecycle events — matcher filters by lifecycle hint.
+    /// 会话生命周期事件 —— matcher 按生命周期提示过滤。
     Lifecycle,
-    /// Subagent dispatch events — matcher filters by subagent type/name.
+    /// Subagent 派发事件 —— matcher 按 subagent 类型/名称过滤。
     Subagent,
-    /// Task execution events — matcher filters by task subject/name.
+    /// 任务执行事件 —— matcher 按任务主题/名称过滤。
     Task,
-    /// Error/failure events — generally do not support matcher.
+    /// 错误/失败事件 —— 通常不支持 matcher。
     Error,
-    /// Evolution/memory lifecycle events — matcher filters by memory source or layer.
+    /// 演化/记忆生命周期事件 —— matcher 按记忆来源或层级过滤。
     Evolution,
 }
 
-// ── Subagent Stop Status ────────────────────────────────────────────────
+// ── Subagent 终止状态 ────────────────────────────────────────────────
 
-/// Terminal status of a subagent run, carried by the `SubagentStop` event.
-///
-/// Industry alignment (Claude Code / Codex / OpenAI Agents SDK / AGTP): all
-/// converge on "two boundary events (Start/Stop) + a status enum on the
-/// terminal event" rather than one independent event per terminal state
-/// (Stop/Cancelled/Failed/TimedOut). Every concrete dispatch attempt emits one
-/// Start/Stop pair; a retry is a new attempt with its own pair.
-///
-/// `SubagentCancelled` (the former independent event) is removed per this
-/// model — cancelled is a `SubagentStop` status value, not a separate event.
+/** Subagent 运行的终止状态，随 `SubagentStop` 事件一起携带。
+
+业界共识（Claude Code / Codex / OpenAI Agents SDK / AGTP）：都收敛到
+「两个边界事件（Start/Stop）+ 终止事件上的一个状态枚举」，而不是为每个终止态
+（Stop/Cancelled/Failed/TimedOut）单独设一个事件。每一次具体的派发尝试都会发出
+一对 Start/Stop；重试则是一次拥有自己 Start/Stop 对的新尝试。
+
+按此模型，`SubagentCancelled`（原先独立的事件）已被移除 —— cancelled 现在是
+`SubagentStop` 的一个状态值，而不是单独的事件。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentStopStatus {
-    /// Subagent finished normally with output.
+    /// Subagent 正常结束并产出结果。
     Completed,
-    /// Subagent exited with an error / reported failure.
+    /// Subagent 以错误退出 / 报告了失败。
     Failed,
-    /// Subagent was cancelled (user abort, parent run cancelled, etc.).
+    /// Subagent 被取消（用户中止、父 run 被取消等）。
     Cancelled,
-    /// Subagent hit a deadline / timeout.
+    /// Subagent 触发了截止时间 / 超时。
     TimedOut,
 }
 
 impl SubagentStopStatus {
-    /// Stable wire name (used in serialized hook payloads and logs).
+    /// 稳定的线上名称（用于序列化的 hook payload 和日志）。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -70,33 +70,33 @@ impl SubagentStopStatus {
     }
 }
 
-// ── Task Terminal Status ────────────────────────────────────────────────
+// ── 任务终止状态 ────────────────────────────────────────────────
 
-/// Terminal status of a PlanTask node, carried by the `TaskCompleted` event.
-///
-/// Industry alignment: timeout/cancelled are status values on the terminal
-/// event, not independent event types (Codex `CommandExecutionStatus`; this
-/// avoids the "no carrier object" problem — `TodoStatus` has no Timeout/
-/// Cancelled variants, so firing them at the PlanTask layer was a category
-/// error). The values map 1:1 to embedding application `TodoStatus` terminals plus a TimedOut
-/// reason for runs that end on a deadline.
+/** PlanTask 节点的终止状态，随 `TaskCompleted` 事件一起携带。
+
+业界共识：timeout/cancelled 是终止事件上的状态值，而不是独立的事件类型
+（Codex `CommandExecutionStatus`；这避免了「没有承载对象」的问题 ——
+`TodoStatus` 没有 Timeout/Cancelled 变体，因此在 PlanTask 层触发它们本身就是
+一种类型错误）。这些值与宿主应用 `TodoStatus` 的终止态一一对应，
+另外为因截止时间而结束的运行增加了一个 TimedOut 原因。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskTerminalStatus {
-    /// PlanTask finished successfully (all execution/review/integration gates passed).
+    /// PlanTask 成功完成（执行/评审/集成各关卡均已通过）。
     Completed,
-    /// PlanTask failed terminally (retry budget exhausted or hard failure).
+    /// PlanTask 终止性失败（重试预算耗尽或硬失败）。
     Failed,
-    /// PlanTask was cancelled (parent run cancelled before it ran).
+    /// PlanTask 被取消（父 run 在其运行前就被取消）。
     Cancelled,
-    /// PlanTask hit a deadline / timeout.
+    /// PlanTask 触发了截止时间 / 超时。
     TimedOut,
-    /// PlanTask was skipped because an upstream dependency cannot complete.
+    /// 因上游依赖无法完成而跳过该 PlanTask。
     Skipped,
 }
 
 impl TaskTerminalStatus {
-    /// Stable wire name (serialized payload + logs).
+    /// 稳定的线上名称（序列化 payload + 日志）。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -108,126 +108,126 @@ impl TaskTerminalStatus {
     }
 }
 
-// ── Hook Event ─────────────────────────────────────────────────────────
+// ── Hook 事件 ─────────────────────────────────────────────────────────
 
-/// When a hook fires in the agent lifecycle.
-///
-/// ## Event categories
-///
-/// | Category | Events | Matcher semantics |
-/// |----------|--------|-------------------|
-/// | Tool | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied` | Tool name (exact, glob, `|`-separated) |
-/// | Lifecycle | `SessionStart`, `SessionEnd`, `Stop`, `Notification`, `UserPromptSubmit`, `PreCompact`, `PostCompact`, `ConfigChange`, `InstructionsLoaded`, `PostToolBatch` | Lifecycle hint (e.g. "startup", "permission_prompt") |
-/// | Subagent | `SubagentStart`, `SubagentStop` | Subagent type/name. `SubagentStop` carries a `subagent_stop_status` (completed/failed/cancelled/timed_out); there is no separate `SubagentCancelled` event. |
-/// | Task | `TaskCreated`, `TaskStarted`, `TaskCompleted` | Task subject/name. `TaskCompleted` carries the terminal status. |
-/// | Error | `StopFailure` | Not supported |
-/// | Evolution | `PostMemoryWrite`, `MemoryLayerChange` | Memory source or layer name |
+/** Hook 在 agent 生命周期中触发的时机。
+
+## 事件类别
+
+| 类别 | 事件 | Matcher 语义 |
+|----------|--------|-------------------|
+| Tool | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied` | 工具名（精确匹配、glob、用 `|` 分隔） |
+| Lifecycle | `SessionStart`, `SessionEnd`, `Stop`, `Notification`, `UserPromptSubmit`, `PreCompact`, `PostCompact`, `ConfigChange`, `InstructionsLoaded`, `PostToolBatch` | 生命周期提示（如 "startup"、"permission_prompt"） |
+| Subagent | `SubagentStart`, `SubagentStop` | Subagent 类型/名称。`SubagentStop` 携带一个 `subagent_stop_status`（completed/failed/cancelled/timed_out）；不存在单独的 `SubagentCancelled` 事件。 |
+| Task | `TaskCreated`, `TaskStarted`, `TaskCompleted` | 任务主题/名称。`TaskCompleted` 携带终止状态。 |
+| Error | `StopFailure` | 不支持 |
+| Evolution | `PostMemoryWrite`, `MemoryLayerChange` | 记忆来源或层级名称 |
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum HookEvent {
-    // ── Tool execution events ──
-    /// Before tool execution. Can block or modify input.
+    // ── 工具执行事件 ──
+    /// 工具执行前。可以阻断或修改输入。
     PreToolUse,
-    /// After tool execution succeeds.
+    /// 工具执行成功后。
     PostToolUse,
-    /// After tool execution fails.
+    /// 工具执行失败后。
     PostToolUseFailure,
-    /// Permission dialog appears. Can auto-approve/deny.
+    /// 权限对话框出现时。可以自动批准/拒绝。
     PermissionRequest,
-    /// After a tool is denied permission. Can signal retry.
+    /// 工具被拒绝权限后。可以指示重试。
     PermissionDenied,
 
-    // ── Session lifecycle events ──
-    /// Session begins or resumes.
+    // ── 会话生命周期事件 ──
+    /// 会话开始或恢复。
     SessionStart,
-    /// Session terminates.
+    /// 会话终止。
     SessionEnd,
-    /// Agent finishes responding. Can request continuation.
+    /// Agent 完成响应。可以请求继续。
     Stop,
-    /// Agent needs user attention.
+    /// Agent 需要用户关注。
     Notification,
-    /// User submits a prompt. Can inject context or block.
+    /// 用户提交了一个 prompt。可以注入上下文或阻断。
     UserPromptSubmit,
-    /// Before context compression.
+    /// 上下文压缩之前。
     PreCompact,
-    /// After context compression.
+    /// 上下文压缩之后。
     PostCompact,
-    /// Configuration file changes.
+    /// 配置文件发生变化。
     ConfigChange,
-    /// Skills/instructions loaded. Useful for post-load validation.
+    /// Skills/instructions 已加载。可用于加载后校验。
     InstructionsLoaded,
-    /// After a batch of parallel tool calls resolves. Aggregation point.
+    /// 一批并行工具调用全部结束后。用于聚合处理。
     PostToolBatch,
 
-    // ── Subagent events ──
-    /// Before subagent dispatch.
+    // ── Subagent 事件 ──
+    /// Subagent 派发之前。
     SubagentStart,
-    /// After subagent completes (success or failure).
+    /// Subagent 完成后（无论成功或失败）。
     SubagentStop,
 
-    // ── Task events ──
-    // Three-stage task lifecycle aligned with industry (Codex item.started/
-    // item.completed; Cursor plan-submit vs build-start; Claude Code
-    // TaskCreated/TaskCompleted). TaskCreated = node enters the executable
-    // graph (plan revision committed); TaskStarted = scheduler picks the node
-    // and is about to dispatch; TaskCompleted = node reached a terminal state,
-    // carried on `task_terminal_status`. Timeout/Cancelled are NOT separate
-    // events — they are `TaskCompleted` status values (Codex
-    // CommandExecutionStatus model).
-    /// Task node entered the executable graph (plan revision committed).
+    // ── Task 事件 ──
+    // 与业界对齐的三阶段任务生命周期（Codex item.started/
+    // item.completed；Cursor plan-submit vs build-start；Claude Code
+    // TaskCreated/TaskCompleted）。TaskCreated = 节点进入可执行图
+    // （计划修订已提交）；TaskStarted = 调度器选中该节点，即将派发；
+    // TaskCompleted = 节点达到终止状态，携带在 `task_terminal_status` 上。
+    // Timeout/Cancelled 不是独立事件 —— 它们是 `TaskCompleted` 的状态值
+    // （对齐 Codex CommandExecutionStatus 模型）。
+    /// 任务节点进入可执行图（计划修订已提交）。
     TaskCreated,
-    /// Scheduler picked the task and is about to dispatch execution.
+    /// 调度器已选中该任务，即将派发执行。
     TaskStarted,
-    /// Task reached a terminal state (see `task_terminal_status`).
+    /// 任务达到终止状态（见 `task_terminal_status`）。
     TaskCompleted,
 
-    // ── Error events ──
-    /// Agent encounters an unrecoverable error.
+    // ── 错误事件 ──
+    /// Agent 遇到不可恢复的错误。
     StopFailure,
 
-    // ── Plugin lifecycle events ──
-    /// A plugin has been loaded and its components registered.
+    // ── 插件生命周期事件 ──
+    /// 插件已加载，其组件已注册。
     PluginLoaded,
-    /// A plugin has been disabled or unloaded.
+    /// 插件已被禁用或卸载。
     PluginDisabled,
 
-    // ── Extended task events ──
-    // TaskTimeout / TaskCancelled removed: terminal reasons are now
-    // `TaskCompleted` status values (see TaskTerminalStatus), not separate
-    // events. Industry-aligned (Codex CommandExecutionStatus; Claude Code
-    // lacks a TaskStarted but its TaskCompleted is terminal-agnostic). This
-    // avoids the former "no carrier object" problem — TodoStatus has no
-    // Timeout/Cancelled variants, so firing them at the PlanTask layer was a
-    // category error; they belong on the terminal event's status.
+    // ── 扩展的任务事件 ──
+    // TaskTimeout / TaskCancelled 已移除：终止原因现在是
+    // `TaskCompleted` 的状态值（见 TaskTerminalStatus），而不是独立
+    // 事件。与业界对齐（Codex CommandExecutionStatus；Claude Code
+    // 没有 TaskStarted，但它的 TaskCompleted 对终止原因是无关的）。
+    // 这避免了此前「没有承载对象」的问题 —— TodoStatus 没有
+    // Timeout/Cancelled 变体，因此在 PlanTask 层触发它们本身就是一种
+    // 类型错误；它们应属于终止事件的状态字段。
 
-    // ── Extended subagent events ──
-    // SubagentCancelled removed: the terminal model is now
-    // SubagentStop(status = completed|failed|cancelled|timed_out), emitted
-    // exactly once. Cancelled is a SubagentStop status, not a separate event.
-    // (Claude Code / Codex / OpenAI Agents SDK / AGTP all converge on this
-    // two-event + status-enum model.)
+    // ── 扩展的 Subagent 事件 ──
+    // SubagentCancelled 已移除：终止模型现在统一为
+    // SubagentStop(status = completed|failed|cancelled|timed_out)，
+    // 恰好发出一次。Cancelled 是 SubagentStop 的一个状态，而不是独立
+    // 事件。（Claude Code / Codex / OpenAI Agents SDK / AGTP 均收敛到
+    // 这种「两事件 + 状态枚举」模型。）
 
-    // ── Evolution events ──
-    /// After any memory is persisted to the Store.
+    // ── 演化事件 ──
+    /// 任意一条记忆被持久化到 Store 之后。
     PostMemoryWrite,
-    /// After a memory is promoted or demoted between layers.
+    /// 记忆在层级之间被提升或降级之后。
     MemoryLayerChange,
-    /// After a skill candidate is detected from memory patterns.
+    /// 从记忆模式中检测到 skill 候选之后。
     SkillCandidateDetected,
-    /// After a skill transitions between lifecycle states.
+    /// skill 在生命周期状态之间转换之后。
     SkillLifecycleTransition,
-    /// After a skill health check completes.
+    /// skill 健康检查完成之后。
     SkillHealthCheck,
-    /// After a skill patch is applied.
+    /// skill 补丁应用之后。
     SkillPatchApplied,
-    /// After two or more skills are merged.
+    /// 两个或多个 skill 合并之后。
     SkillMergeApplied,
-    /// After a memory is promoted to a rule in AGENTS.md.
+    /// 一条记忆被提升为 AGENTS.md 中的规则之后。
     RulePromoted,
 }
 
 impl HookEvent {
-    /// Every supported hook event in stable display order.
+    /// 按稳定展示顺序列出所有受支持的 hook 事件。
     pub const ALL: &'static [Self] = &[
         Self::PreToolUse,
         Self::PostToolUse,
@@ -262,7 +262,7 @@ impl HookEvent {
         Self::RulePromoted,
     ];
 
-    /// Event category — determines matcher semantics and routing.
+    /// 事件类别 —— 决定 matcher 语义与路由方式。
     pub fn category(self) -> HookEventCategory {
         match self {
             HookEvent::PreToolUse
@@ -303,12 +303,12 @@ impl HookEvent {
         }
     }
 
-    /// Whether this event is a tool execution event (uses tool_name matcher).
+    /// 该事件是否为工具执行事件（使用 tool_name 作为 matcher）。
     pub fn is_tool_event(self) -> bool {
         self.category() == HookEventCategory::Tool
     }
 
-    /// Whether this event supports the matcher field.
+    /// 该事件是否支持 matcher 字段。
     pub fn supports_matcher(self) -> bool {
         matches!(
             self.category(),
@@ -320,9 +320,9 @@ impl HookEvent {
         )
     }
 
-    /// Return the PascalCase event name as a static string (no allocation).
+    /// 以静态字符串返回 PascalCase 形式的事件名（不分配内存）。
     ///
-    /// Prefer this over `format!("{:?}", event)` in hot paths.
+    /// 在热路径上优先使用它，而不是 `format!("{:?}", event)`。
     pub const fn as_str(self) -> &'static str {
         match self {
             HookEvent::PreToolUse => "PreToolUse",
@@ -359,8 +359,7 @@ impl HookEvent {
         }
     }
 
-    /// Parse the canonical PascalCase event name used by hook configuration
-    /// and user-facing test commands.
+    /// 解析 hook 配置和用户可见的测试命令所使用的规范 PascalCase 事件名。
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "PreToolUse" => Some(Self::PreToolUse),
@@ -399,163 +398,166 @@ impl HookEvent {
     }
 }
 
-// ── Compression Stats ──────────────────────────────────────────────────
+// ── 压缩统计 ──────────────────────────────────────────────────
 
-/// Compression statistics passed to PreCompact/PostCompact hooks.
+/// 传递给 PreCompact/PostCompact hook 的压缩统计信息。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CompressHookStats {
+    /// 压缩前的消息数。
     pub before_count: usize,
+    /// 压缩后的消息数。
     pub after_count: usize,
+    /// 压缩前的估算 token 数。
     pub before_tokens: usize,
+    /// 压缩后的估算 token 数。
     pub after_tokens: usize,
 }
 
-// ── Hook Context ────────────────────────────────────────────────────────
+// ── Hook 上下文 ────────────────────────────────────────────────────────
 
-/// Contextual data passed to hook execution, varying by event type.
+/// 传递给 hook 执行的上下文数据，随事件类型不同而不同。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HookContext {
-    /// The event that triggered this hook.
+    /// 触发本次 hook 的事件。
     pub event: HookEvent,
-    /// Session ID.
+    /// 会话 ID。
     pub session_id: String,
-    /// Agent name.
+    /// Agent 名称。
     pub agent_name: String,
-    /// Working directory at the time of the event.
+    /// 事件发生时的工作目录。
     pub cwd: String,
 
-    // ── Tool event fields ──
-    /// Tool name (PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied).
+    // ── 工具事件字段 ──
+    /// 工具名（PreToolUse、PostToolUse、PostToolUseFailure、PermissionRequest、PermissionDenied）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    /// Tool input (PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, PermissionDenied).
+    /// 工具输入（PreToolUse、PostToolUse、PostToolUseFailure、PermissionRequest、PermissionDenied）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_input: Option<Value>,
-    /// Tool output (PostToolUse only).
+    /// 工具输出（仅 PostToolUse）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_output: Option<String>,
-    /// Tool error message (PostToolUseFailure only).
+    /// 工具错误信息（仅 PostToolUseFailure）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_error: Option<String>,
 
-    // ── PermissionDenied fields ──
-    /// Reason the permission was denied (PermissionDenied only).
+    // ── PermissionDenied 字段 ──
+    /// 权限被拒绝的原因（仅 PermissionDenied）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denial_reason: Option<String>,
-    /// Whether the model may retry with different params (PermissionDenied only).
+    /// 模型是否可以用不同参数重试（仅 PermissionDenied）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_allowed: Option<bool>,
 
-    // ── Lifecycle event fields ──
-    /// Matcher hint for lifecycle events.
+    // ── 生命周期事件字段 ──
+    /// 生命周期事件的 matcher 提示。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matcher: Option<String>,
-    /// User prompt text (UserPromptSubmit only).
+    /// 用户 prompt 文本（仅 UserPromptSubmit）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
-    /// Compression stats (PreCompact, PostCompact only).
+    /// 压缩统计信息（仅 PreCompact、PostCompact）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compress_stats: Option<CompressHookStats>,
-    /// Changed config file path (ConfigChange only).
+    /// 变化的配置文件路径（仅 ConfigChange）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config_path: Option<String>,
-    /// Loaded skill names (InstructionsLoaded only).
+    /// 已加载的 skill 名称（仅 InstructionsLoaded）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skill_names: Option<Vec<String>>,
 
-    // ── PostToolBatch fields ──
-    /// Tool names in this batch (PostToolBatch only).
+    // ── PostToolBatch 字段 ──
+    /// 本批次中的工具名（仅 PostToolBatch）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_tool_names: Option<Vec<String>>,
-    /// Number of tools in batch that succeeded (PostToolBatch only).
+    /// 批次中成功的工具数量（仅 PostToolBatch）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_success_count: Option<usize>,
-    /// Number of tools in batch that failed (PostToolBatch only).
+    /// 批次中失败的工具数量（仅 PostToolBatch）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub batch_failure_count: Option<usize>,
 
-    // ── Subagent fields ──
-    /// Subagent name/type (SubagentStart, SubagentStop only).
+    // ── Subagent 字段 ──
+    /// Subagent 名称/类型（仅 SubagentStart、SubagentStop）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_name: Option<String>,
-    /// Subagent execution mode (SubagentStart, SubagentStop only).
+    /// Subagent 执行模式（仅 SubagentStart、SubagentStop）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_mode: Option<String>,
-    /// Subagent task description (SubagentStart only).
+    /// Subagent 任务描述（仅 SubagentStart）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_task: Option<String>,
-    /// Subagent result summary (SubagentStop only).
+    /// Subagent 结果摘要（仅 SubagentStop）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_result: Option<String>,
-    /// Terminal status of the subagent run (SubagentStop only).
+    /// Subagent 运行的终止状态（仅 SubagentStop）。
     ///
-    /// Always present on SubagentStop contexts. Lets consumers distinguish
-    /// completed/failed/cancelled/timed_out without inspecting free-form
-    /// result text. Industry-aligned (see [`SubagentStopStatus`]).
+    /// 在 SubagentStop 上下文中始终存在。使消费者无需解析自由文本结果，
+    /// 即可区分 completed/failed/cancelled/timed_out。与业界对齐
+    /// （见 [`SubagentStopStatus`]）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_stop_status: Option<SubagentStopStatus>,
 
-    // ── Task fields ──
-    /// Task ID (TaskCreated, TaskStarted, TaskCompleted).
+    // ── 任务字段 ──
+    /// 任务 ID（TaskCreated、TaskStarted、TaskCompleted）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    /// Task subject/name (TaskCreated, TaskStarted, TaskCompleted).
+    /// 任务主题/名称（TaskCreated、TaskStarted、TaskCompleted）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_subject: Option<String>,
-    /// Task result summary (TaskCompleted only).
+    /// 任务结果摘要（仅 TaskCompleted）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_result: Option<String>,
-    /// Terminal status of the PlanTask node (TaskCompleted only).
+    /// PlanTask 节点的终止状态（仅 TaskCompleted）。
     ///
-    /// Always present on TaskCompleted contexts. Lets consumers distinguish
-    /// completed/failed/cancelled/timed_out/skipped without parsing
-    /// free-form text. Replaces the former TaskTimeout/TaskCancelled events.
+    /// 在 TaskCompleted 上下文中始终存在。使消费者无需解析自由文本，
+    /// 即可区分 completed/failed/cancelled/timed_out/skipped。
+    /// 取代了此前独立的 TaskTimeout/TaskCancelled 事件。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_terminal_status: Option<TaskTerminalStatus>,
 
-    // ── Run / plan correlation fields ──
-    // These let a hook correlate a Task/Subagent event back to the owning
-    // TaskRun, the plan revision, and the specific attempt. They are optional
-    // because the framework layer (which defines HookContext) does not always
-    // know them — application runtimes (e.g. embedding application task_runtime) populate them
-    // at fire time.
-    /// Owning TaskRun ID (Task/Subagent events when known).
+    // ── Run / 计划关联字段 ──
+    // 这些字段让 hook 能把一次 Task/Subagent 事件关联回所属的
+    // TaskRun、计划修订版本，以及具体的尝试次数。它们是可选的，
+    // 因为定义 HookContext 的框架层并不总能知道这些值 ——
+    // 由应用运行时（例如宿主应用的 task_runtime）在触发时负责填充。
+    /// 所属 TaskRun ID（已知时用于 Task/Subagent 事件）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
-    /// Plan revision the event belongs to (Task/Subagent events when known).
+    /// 事件所属的计划修订版本（已知时用于 Task/Subagent 事件）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_revision: Option<String>,
-    /// SubagentRun ID (Subagent events only): `{run_id}:{task_id}:{rev}:{attempt}`.
+    /// SubagentRun ID（仅 Subagent 事件）：`{run_id}:{task_id}:{rev}:{attempt}`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_run_id: Option<String>,
-    /// 1-based attempt ordinal for this task's SubagentRun (Subagent events).
+    /// 该任务对应 SubagentRun 的尝试序号，从 1 开始（Subagent 事件）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt: Option<u32>,
 
-    // ── StopFailure fields ──
-    /// Error message (StopFailure only).
+    // ── StopFailure 字段 ──
+    /// 错误信息（仅 StopFailure）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_error: Option<String>,
-    /// Error category: "max_iterations", "api_error", "tool_batch_timeout", etc.
+    /// 错误类别："max_iterations"、"api_error"、"tool_batch_timeout" 等。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_category: Option<String>,
 
-    // ── Stop hook loop prevention ──
-    /// Whether this Stop hook is being re-invoked (prevents infinite loops).
+    // ── Stop hook 防循环 ──
+    /// 该 Stop hook 是否为被重新触发的调用（用于防止无限循环）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_hook_active: Option<bool>,
 
-    // ── Evolution event fields ──
-    /// Memory key that was written (PostMemoryWrite only).
+    // ── 演化事件字段 ──
+    /// 被写入的记忆键（仅 PostMemoryWrite）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_key: Option<String>,
-    /// Memory source that triggered the write (PostMemoryWrite only).
+    /// 触发写入的记忆来源（仅 PostMemoryWrite）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_source: Option<String>,
-    /// Layer the memory was promoted/demoted from (MemoryLayerChange only).
+    /// 记忆被提升/降级的来源层级（仅 MemoryLayerChange）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_from_layer: Option<String>,
-    /// Layer the memory was promoted/demoted to (MemoryLayerChange only).
+    /// 记忆被提升/降级的目标层级（仅 MemoryLayerChange）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_to_layer: Option<String>,
 }
@@ -563,7 +565,7 @@ pub struct HookContext {
 impl Default for HookContext {
     fn default() -> Self {
         Self {
-            event: HookEvent::PreToolUse, // arbitrary, always overridden by factory
+            event: HookEvent::PreToolUse, // 任意占位值，总会被工厂方法覆盖
             session_id: String::new(),
             agent_name: String::new(),
             cwd: HookContext::cwd_default(),
@@ -606,13 +608,14 @@ impl Default for HookContext {
 }
 
 impl HookContext {
+    /// 返回默认的当前工作目录字符串（失败时回退为空字符串）。
     fn cwd_default() -> String {
         std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_default()
     }
 
-    /// Build a matcher-only context for side-effect-free hook dry runs.
+    /// 构建一个仅含 matcher、无副作用的上下文，供 hook 干跑（dry run）使用。
     pub fn for_dry_run(event: HookEvent, matcher: &str) -> Self {
         if event.is_tool_event() {
             Self {
@@ -626,8 +629,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for tool events ──
+    // ── 工具事件的工厂方法 ──
 
+    /// 构建 PreToolUse 事件的上下文。
     pub fn for_pre_tool_use(
         tool_name: &str,
         tool_input: &Value,
@@ -644,6 +648,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PostToolUse 事件的上下文。
     pub fn for_post_tool_use(
         tool_name: &str,
         tool_input: &Value,
@@ -662,6 +667,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PostToolUseFailure 事件的上下文。
     pub fn for_post_tool_use_failure(
         tool_name: &str,
         tool_input: &Value,
@@ -680,6 +686,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PermissionRequest 事件的上下文。
     pub fn for_permission_request(
         tool_name: &str,
         tool_input: &Value,
@@ -696,6 +703,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PermissionDenied 事件的上下文。
     pub fn for_permission_denied(
         tool_name: &str,
         tool_input: &Value,
@@ -716,8 +724,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for lifecycle events ──
+    // ── 生命周期事件的工厂方法 ──
 
+    /// 构建 SessionStart 事件的上下文。
     pub fn for_session_start(matcher: &str, session_id: &str, agent_name: &str) -> Self {
         Self {
             event: HookEvent::SessionStart,
@@ -728,6 +737,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 SessionEnd 事件的上下文。
     pub fn for_session_end(matcher: &str, session_id: &str, agent_name: &str) -> Self {
         Self {
             event: HookEvent::SessionEnd,
@@ -738,7 +748,7 @@ impl HookContext {
         }
     }
 
-    /// Generic constructor for lifecycle events that don't have a dedicated factory.
+    /// 没有专用工厂方法的生命周期事件的通用构造函数。
     pub fn for_lifecycle(
         event: HookEvent,
         matcher: &str,
@@ -754,6 +764,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 Stop 事件的上下文。
     pub fn for_stop(
         matcher: Option<&str>,
         session_id: &str,
@@ -770,6 +781,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 Notification 事件的上下文。
     pub fn for_notification(matcher: &str, session_id: &str, agent_name: &str) -> Self {
         Self {
             event: HookEvent::Notification,
@@ -780,6 +792,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 UserPromptSubmit 事件的上下文。
     pub fn for_user_prompt_submit(
         prompt: &str,
         matcher: Option<&str>,
@@ -796,6 +809,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PreCompact 事件的上下文。
     pub fn for_pre_compact(
         stats: &CompressHookStats,
         matcher: &str,
@@ -812,6 +826,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 PostCompact 事件的上下文。
     pub fn for_post_compact(
         stats: &CompressHookStats,
         matcher: &str,
@@ -828,6 +843,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 ConfigChange 事件的上下文。
     pub fn for_config_change(
         config_path: &str,
         matcher: Option<&str>,
@@ -844,6 +860,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 InstructionsLoaded 事件的上下文。
     pub fn for_instructions_loaded(
         matcher: &str,
         skill_names: &[String],
@@ -860,8 +877,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for aggregation events ──
+    // ── 聚合事件的工厂方法 ──
 
+    /// 构建 PostToolBatch 事件的上下文。
     pub fn for_post_tool_batch(
         batch_tool_names: &[String],
         success_count: usize,
@@ -881,8 +899,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for subagent events ──
+    // ── Subagent 事件的工厂方法 ──
 
+    /// 构建 SubagentStart 事件的上下文。
     pub fn for_subagent_start(
         subagent_name: &str,
         subagent_mode: &str,
@@ -902,6 +921,7 @@ impl HookContext {
         }
     }
 
+    /// 构建 SubagentStop 事件的上下文。
     pub fn for_subagent_stop(
         subagent_name: &str,
         subagent_mode: &str,
@@ -923,11 +943,10 @@ impl HookContext {
         }
     }
 
-    /// Add optional TaskRun/SubagentRun identifiers to this context.
+    /// 为该上下文附加可选的 TaskRun/SubagentRun 标识信息。
     ///
-    /// Framework-only dispatches may not know every identifier. Application
-    /// runtimes should populate all available fields instead of encoding them
-    /// into matcher or result strings.
+    /// 纯框架层的派发可能无法获知每一个标识符。应用运行时应尽量填充所有可
+    /// 得字段，而不是把它们编码进 matcher 或 result 字符串里。
     pub fn with_run_correlation(
         mut self,
         run_id: Option<&str>,
@@ -942,8 +961,9 @@ impl HookContext {
         self
     }
 
-    // ── Factory methods for task events ──
+    // ── 任务事件的工厂方法 ──
 
+    /// 构建 TaskCreated 事件的上下文。
     pub fn for_task_created(
         task_id: &str,
         task_subject: &str,
@@ -961,7 +981,7 @@ impl HookContext {
         }
     }
 
-    /// Create context for TaskStarted (scheduler picked the task, about to dispatch).
+    /// 构建 TaskStarted 事件的上下文（调度器已选中该任务，即将派发）。
     pub fn for_task_started(
         task_id: &str,
         task_subject: &str,
@@ -979,11 +999,10 @@ impl HookContext {
         }
     }
 
-    /// Create context for TaskCompleted (terminal state).
+    /// 构建 TaskCompleted 事件的上下文（终止状态）。
     ///
-    /// `status` is the structured terminal reason (completed/failed/cancelled/
-    /// timed_out/skipped), replacing the former TaskTimeout/Cancelled
-    /// independent events.
+    /// `status` 是结构化的终止原因（completed/failed/cancelled/
+    /// timed_out/skipped），取代了此前独立的 TaskTimeout/Cancelled 事件。
     pub fn for_task_completed(
         task_id: &str,
         task_subject: &str,
@@ -1005,8 +1024,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for error events ──
+    // ── 错误事件的工厂方法 ──
 
+    /// 构建 StopFailure 事件的上下文。
     pub fn for_stop_failure(
         failure_error: &str,
         failure_category: &str,
@@ -1023,9 +1043,9 @@ impl HookContext {
         }
     }
 
-    // ── Factory methods for evolution events ──
+    // ── 演化事件的工厂方法 ──
 
-    /// Create context for PostMemoryWrite event.
+    /// 构建 PostMemoryWrite 事件的上下文。
     pub fn for_post_memory_write(
         memory_key: &str,
         memory_source: &str,
@@ -1043,7 +1063,7 @@ impl HookContext {
         }
     }
 
-    /// Create context for MemoryLayerChange event.
+    /// 构建 MemoryLayerChange 事件的上下文。
     pub fn for_memory_layer_change(
         memory_key: &str,
         from_layer: &str,
@@ -1064,41 +1084,41 @@ impl HookContext {
     }
 }
 
-// ── Hook Result ─────────────────────────────────────────────────────────
+// ── Hook 结果 ─────────────────────────────────────────────────────────
 
-/// Result of executing a hook.
+/// 执行一次 hook 得到的结果。
 #[derive(Debug, Clone, Default)]
 pub struct HookResult {
-    /// If true, the operation should be blocked.
+    /// 若为 true，则应阻断该操作。
     pub block: bool,
-    /// Reason for blocking (if block is true).
+    /// 阻断原因（当 block 为 true 时有效）。
     pub block_reason: Option<String>,
-    /// Modified tool input (PreToolUse only).
+    /// 修改后的工具输入（仅 PreToolUse）。
     pub updated_input: Option<Value>,
-    /// Messages to inject into context.
+    /// 要注入到上下文中的消息列表。
     pub messages: Vec<String>,
-    /// If true, prevent further hooks from running.
+    /// 若为 true，阻止后续的 hook 继续执行。
     pub stop_propagation: bool,
-    /// Permission decision (PreToolUse, PermissionRequest, Notification).
+    /// 权限决策（PreToolUse、PermissionRequest、Notification）。
     pub permission_decision: Option<PermissionDecision>,
-    /// Permission mode override (PreToolUse, PermissionRequest).
+    /// 权限模式覆盖值（PreToolUse、PermissionRequest）。
     pub permission_mode_override: Option<PermissionMode>,
-    /// For Stop event: if set, agent continues instead of stopping.
+    /// 用于 Stop 事件：若设置，agent 将继续而不是停止。
     pub continue_reason: Option<String>,
-    /// For UserPromptSubmit/SessionStart: additional context to inject.
+    /// 用于 UserPromptSubmit/SessionStart：要注入的额外上下文。
     pub injected_context: Option<String>,
-    /// For PermissionDenied: if true, the model may retry with different parameters.
+    /// 用于 PermissionDenied：若为 true，模型可以用不同参数重试。
     pub retry: bool,
-    /// Arbitrary metadata from hooks.
+    /// 来自 hook 的任意元数据。
     pub metadata: Option<Value>,
-    /// For ActivateSkill hooks: skill to activate directly (name + reason).
-    /// Populated by `execute_action` when an `ActivateSkill` action matches;
-    /// consumed by `fire_lifecycle_hook` to call `ReactAgent::activate_skill`.
+    /// 用于 ActivateSkill hook：要直接激活的 skill（名称 + 原因）。
+    /// 当 `ActivateSkill` 动作匹配时由 `execute_action` 填充；
+    /// 由 `fire_lifecycle_hook` 消费，用于调用 `ReactAgent::activate_skill`。
     pub activate_skill: Option<(String, String)>,
 }
 
 impl HookResult {
-    /// Create an allow result.
+    /// 创建一个「允许」结果。
     pub fn allow() -> Self {
         Self {
             permission_decision: Some(PermissionDecision::Allow),
@@ -1106,7 +1126,7 @@ impl HookResult {
         }
     }
 
-    /// Create a deny result.
+    /// 创建一个「拒绝」结果。
     pub fn deny(reason: String) -> Self {
         Self {
             block: true,
@@ -1116,7 +1136,7 @@ impl HookResult {
         }
     }
 
-    /// Create an ask result.
+    /// 创建一个「询问」结果。
     pub fn ask(suggestions: Vec<String>) -> Self {
         Self {
             permission_decision: Some(PermissionDecision::Ask { suggestions }),
@@ -1124,17 +1144,17 @@ impl HookResult {
         }
     }
 
-    /// Check if hook made a permission decision.
+    /// 检查 hook 是否做出了权限决策。
     pub fn has_permission_decision(&self) -> bool {
         self.permission_decision.is_some()
     }
 
-    /// Whether this result indicates the agent should continue working.
+    /// 该结果是否指示 agent 应该继续工作。
     pub fn should_continue(&self) -> bool {
         self.continue_reason.is_some()
     }
 
-    /// Create a result requesting direct skill activation.
+    /// 创建一个请求直接激活 skill 的结果。
     pub fn with_activate_skill(skill: String, reason: String) -> Self {
         Self {
             activate_skill: Some((skill, reason)),
@@ -1143,16 +1163,16 @@ impl HookResult {
     }
 }
 
-// ── Hook Source ──────────────────────────────────────────────────────────
+// ── Hook 来源 ──────────────────────────────────────────────────────────
 
-/// Source of hook registration.
+/// Hook 注册的来源。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HookSource {
-    /// Hooks from a file-based skill.
+    /// 来自基于文件的 skill 的 hook。
     Skill(String),
-    /// Hooks supplied by an embedding application's configuration.
+    /// 由宿主应用配置提供的 hook。
     UserConfig,
-    /// Hooks from an installed plugin.
+    /// 来自已安装插件的 hook。
     Plugin(String),
 }
 
@@ -1166,17 +1186,17 @@ impl std::fmt::Display for HookSource {
     }
 }
 
-// ── Unified Hook Executor Fn ─────────────────────────────────────────────
+// ── 统一 Hook 执行器函数 ─────────────────────────────────────────────
 
-/// Type-erased callback for firing unified hooks from
-/// orchestration/subagent layers that don't have direct access to
-/// `HookRegistry` (which lives in `echo-execution`).
-///
-/// The agent layer injects this via construction so that revisioned task
-/// runtimes and `SubagentExecutor` can fire `TaskCreated`/`TaskCompleted` and
-/// `SubagentStart`/`SubagentStop` events into the unified system.
-///
-/// Handles Lifecycle, Subagent, and Task events (not just Lifecycle).
+/** 类型擦除的回调，用于从没有直接访问 `HookRegistry`（位于
+`echo-execution` 中）能力的 orchestration/subagent 层触发统一 hook。
+
+Agent 层在构造时注入此回调，以便带修订版本的任务运行时和
+`SubagentExecutor` 能把 `TaskCreated`/`TaskCompleted` 和
+`SubagentStart`/`SubagentStop` 事件送入统一系统。
+
+处理 Lifecycle、Subagent 和 Task 事件（不仅限于 Lifecycle）。
+*/
 pub type UnifiedHookExecutorFn =
     Arc<dyn Fn(HookContext) -> Pin<Box<dyn Future<Output = HookResult> + Send>> + Send + Sync>;
 
@@ -1456,8 +1476,8 @@ mod tests {
 
     #[test]
     fn test_subagent_stop_status_serde_and_str() {
-        // Industry-aligned terminal model: SubagentStop carries a status enum,
-        // there is no separate SubagentCancelled event.
+        // 与业界对齐的终止模型：SubagentStop 携带一个状态枚举，
+        // 不存在单独的 SubagentCancelled 事件。
         for (status, expected) in [
             (SubagentStopStatus::Completed, "completed"),
             (SubagentStopStatus::Failed, "failed"),
@@ -1486,7 +1506,7 @@ mod tests {
 
     #[test]
     fn test_task_terminal_status_serde_and_str() {
-        // Timeout/Cancelled are status values, not separate events.
+        // Timeout/Cancelled 是状态值，而不是独立的事件。
         for (status, expected) in [
             (TaskTerminalStatus::Completed, "completed"),
             (TaskTerminalStatus::Failed, "failed"),

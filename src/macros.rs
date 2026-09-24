@@ -1,48 +1,51 @@
-//! Declarative convenience macros
-//!
-//! Provides `agent!`, `messages!`, `tool_params!`, `chat_request!` and other
-//! macros for quickly building common objects, lowering the framework's
-//! entry barrier.
+/*!
+声明式便捷宏
 
-/// Quickly create an Agent (declarative syntax, replaces builder chaining).
-///
-/// # Examples
-///
-/// ```rust,no_run
-/// use echo_agent::prelude::*;
-///
-/// # fn example() -> echo_agent::error::Result<()> {
-/// let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
-///     echo_agent::error::ConfigError::MissingConfig(
-///         "agent macro example".to_string(),
-///         "OPENAI_API_KEY".to_string(),
-///     )
-/// })?;
-/// let llm_config = LlmConfig::for_provider(
-///     "openai",
-///     "https://api.openai.com/v1",
-///     api_key,
-///     "gpt-5.5",
-///     LlmApiProtocol::Responses,
-/// )?;
-/// let mut agent = echo_agent::agent! {
-///     llm_config: llm_config.clone(),
-///     system_prompt: "You are a helpful assistant",
-/// }?;
-///
-/// // With tools (use any type implementing Tool, e.g. echo_tools builtins)
-/// let mut agent = echo_agent::agent! {
-///     llm_config: llm_config,
-///     system_prompt: "You are an assistant",
-///     // tools: [my_calculator_tool, my_weather_tool],
-///     max_iterations: 15,
-/// }?;
-/// # Ok(())
-/// # }
-/// ```
+提供 `agent!`、`messages!`、`tool_params!`、`chat_request!` 等宏，
+用于快速构建常用对象，降低框架的使用门槛。
+*/
+
+/**
+快速创建一个 Agent（声明式语法，替代构建器链式调用）。
+
+# 示例
+
+```rust,no_run
+use echo_agent::prelude::*;
+
+# fn example() -> echo_agent::error::Result<()> {
+let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+    echo_agent::error::ConfigError::MissingConfig(
+        "agent macro example".to_string(),
+        "OPENAI_API_KEY".to_string(),
+    )
+})?;
+let llm_config = LlmConfig::for_provider(
+    "openai",
+    "https://api.openai.com/v1",
+    api_key,
+    "gpt-5.5",
+    LlmApiProtocol::Responses,
+)?;
+let mut agent = echo_agent::agent! {
+    llm_config: llm_config.clone(),
+    system_prompt: "You are a helpful assistant",
+}?;
+
+// 使用工具（可使用任何实现了 Tool 的类型，例如 echo_tools 内置工具）
+let mut agent = echo_agent::agent! {
+    llm_config: llm_config,
+    system_prompt: "You are an assistant",
+    // tools: [my_calculator_tool, my_weather_tool],
+    max_iterations: 15,
+}?;
+# Ok(())
+# }
+```
+*/
 #[macro_export]
 macro_rules! agent {
-    // terminal
+    // 终止规则
     (@build $b:expr $(,)?) => { $b.build_strict() };
 
     (@build $b:expr, model: $v:expr, $($rest:tt)*) => {
@@ -100,31 +103,33 @@ macro_rules! agent {
         }, $($rest)*)
     };
 
-    // entry point
+    // 入口点
     ( $($body:tt)* ) => {
         $crate::agent!(@build $crate::agent::ReactAgentBuilder::new(), $($body)*)
     };
 }
 
-/// Quickly build a message list.
-///
-/// # Examples
-///
-/// ```rust
-/// use echo_agent::messages;
-/// use echo_agent::llm::types::Message;
-/// use echo_agent::llm::types::Role;
-///
-/// let msgs = messages![
-///     system("You are an assistant"),
-///     user("Hello"),
-///     assistant("Hello! How can I help you?"),
-///     user("1+1=?"),
-/// ];
-///
-/// assert_eq!(msgs.len(), 4);
-/// assert_eq!(msgs[0].role, Role::System);
-/// ```
+/**
+快速构建一个消息列表。
+
+# 示例
+
+```rust
+use echo_agent::messages;
+use echo_agent::llm::types::Message;
+use echo_agent::llm::types::Role;
+
+let msgs = messages![
+    system("You are an assistant"),
+    user("Hello"),
+    assistant("Hello! How can I help you?"),
+    user("1+1=?"),
+];
+
+assert_eq!(msgs.len(), 4);
+assert_eq!(msgs[0].role, Role::System);
+```
+*/
 #[macro_export]
 macro_rules! messages {
     ( $( $role:ident($content:expr) ),* $(,)? ) => {
@@ -134,18 +139,20 @@ macro_rules! messages {
     };
 }
 
-/// Quickly build tool parameter JSON Schema.
-///
-/// # Examples
-///
-/// ```rust
-/// use echo_agent::tool_params;
-///
-/// let schema = tool_params! {
-///     "expression" => (string, required, "Math expression"),
-///     "precision"  => (number, "Decimal precision"),
-/// };
-/// ```
+/**
+快速构建工具参数的 JSON Schema。
+
+# 示例
+
+```rust
+use echo_agent::tool_params;
+
+let schema = tool_params! {
+    "expression" => (string, required, "Math expression"),
+    "precision"  => (number, "Decimal precision"),
+};
+```
+*/
 #[macro_export]
 macro_rules! tool_params {
     ( $( $name:literal => $spec:tt ),* $(,)? ) => {{
@@ -160,6 +167,7 @@ macro_rules! tool_params {
     }};
 }
 
+// 内部辅助宏：为 tool_params! 展开单个参数字段，不对外直接使用
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __tool_param_field {
@@ -207,20 +215,22 @@ macro_rules! __tool_param_field {
     };
 }
 
-/// Quickly build a chat request.
-///
-/// # Examples
-///
-/// ```rust
-/// use echo_agent::chat_request;
-/// use echo_agent::llm::types::Message;
-///
-/// let req = chat_request!(
-///     messages: [system("You are an assistant"), user("Hello")],
-///     temperature: 0.7,
-///     max_tokens: 2048,
-/// );
-/// ```
+/**
+快速构建一个聊天请求。
+
+# 示例
+
+```rust
+use echo_agent::chat_request;
+use echo_agent::llm::types::Message;
+
+let req = chat_request!(
+    messages: [system("You are an assistant"), user("Hello")],
+    temperature: 0.7,
+    max_tokens: 2048,
+);
+```
+*/
 #[macro_export]
 macro_rules! chat_request {
     ( messages: [$( $role:ident($content:expr) ),* $(,)?] $(, $key:ident : $val:expr)* $(,)? ) => {{
@@ -236,6 +246,7 @@ macro_rules! chat_request {
     }};
 }
 
+// 内部辅助宏：为 chat_request! 展开单个可选字段，不对外直接使用
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __chat_request_field {
@@ -372,3 +383,4 @@ mod tests {
         assert!(result.is_err());
     }
 }
+</content>

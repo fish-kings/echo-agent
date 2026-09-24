@@ -1,16 +1,16 @@
-//! demo08_external_skills.rs — File-based Skills: Full Feature Demo
+//! demo08_external_skills.rs — 基于文件的技能系统：完整功能演示
 //!
-//! Demonstrates the complete agentskills.io skill system:
+//! 展示完整的 agentskills.io 技能系统：
 //!
-//! | Feature | Description |
+//! | 功能 | 说明 |
 //! |---------|------------|
-//! | Progressive disclosure | 3-tier: catalog → activate → resources/scripts |
-//! | Inline shell execution | `!`cmd`` and ` ```! cmd ``` ` in SKILL.md |
-//! | Variable substitution | `${SKILL_DIR}`, `${SESSION_ID}`, `${ARGUMENTS}` |
-//! | Hooks | Host/plugin Hook configuration is separate from the Skill file |
-//! | `allowed-tools` | Declare allowed tools per skill; runtime-enforced for built-in skill tools |
+//! | 渐进式披露 | 三层结构：catalog（目录）→ activate（激活）→ resources/scripts（资源/脚本） |
+//! | 内联 shell 执行 | SKILL.md 中的 `!`cmd`` 与 ` ```! cmd ``` ` |
+//! | 变量替换 | `${SKILL_DIR}`、`${SESSION_ID}`、`${ARGUMENTS}` |
+//! | Hooks（钩子） | 宿主/插件的 Hook 配置与技能文件本身是分离的 |
+//! | `allowed-tools` | 按技能声明允许使用的工具；对内置技能工具在运行时强制生效 |
 //!
-//! # Run
+//! # 运行方式
 //! ```bash
 //! cargo run -p echo-agent-learning --example demo08_external_skills
 //! ```
@@ -27,10 +27,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// 返回内置示例外部技能所在的目录路径（`examples/demo_skills`）。
 fn demo_skills_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo_skills")
 }
 
+/// 程序入口：依次运行技能发现、目录展示、激活、脚本执行、Agent 集成、
+/// v2 新特性与小红书封面图生成技能七个部分的演示。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -59,10 +62,10 @@ async fn main() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 1: Discovery ────────────────────────────────────────────────────────
+// ── Part 1: 技能发现 ────────────────────────────────────────────────────────
 
-/// Tier 1: Parse SKILL.md frontmatter only (name + description).
-/// This is the cheapest operation — no file bodies are read.
+/// 第一层：仅解析 SKILL.md 的 frontmatter（名称 + 描述）。
+/// 这是开销最小的操作——不读取任何文件正文。
 async fn demo_1_discovery() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 1: Skill Discovery (Tier 1 — frontmatter only)\n");
@@ -141,10 +144,10 @@ async fn demo_1_discovery() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 2: Catalog ──────────────────────────────────────────────────────────
+// ── Part 2: 技能目录 ──────────────────────────────────────────────────────────
 
-/// System prompt injection: only name + description per skill.
-/// This is what the LLM "sees" at the start of every conversation.
+/// 注入系统提示词：每个技能仅包含名称 + 描述。
+/// 这是 LLM 在每次对话开始时能"看到"的全部内容。
 async fn demo_2_catalog() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 2: Skill Catalog (injected into system prompt)\n");
@@ -180,10 +183,10 @@ async fn demo_2_catalog() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 3: Activation ───────────────────────────────────────────────────────
+// ── Part 3: 技能激活 ───────────────────────────────────────────────────────────
 
-/// Tier 2: Load full SKILL.md body + resource listing.
-/// This only happens when the LLM calls activate_skill.
+/// 第二层：加载完整的 SKILL.md 正文 + 资源清单。
+/// 只有当 LLM 调用 activate_skill 时才会发生。
 async fn demo_3_activation() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 3: Skill Activation (Tier 2 — full instructions)\n");
@@ -202,7 +205,7 @@ async fn demo_3_activation() -> echo_agent::error::Result<()> {
         registry.register_descriptor(desc);
     }
 
-    // Activate "project-stats" (has scripts), or fall back to the first available
+    // 激活 "project-stats"（带有脚本），若不存在则回退到第一个可用技能
     let names = registry.available_names();
     let skill_name = if registry.get_descriptor("project-stats").is_some() {
         "project-stats".to_string()
@@ -258,10 +261,10 @@ async fn demo_3_activation() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 4: Script Execution ─────────────────────────────────────────────────
+// ── Part 4: 脚本执行 ─────────────────────────────────────────────────────────
 
-/// Tier 3b: Execute scripts from the skill's scripts/ directory.
-/// Validates the actual `run_skill_script` tool path instead of bypassing it.
+/// 第三层 b：执行技能 scripts/ 目录下的脚本。
+/// 验证真实的 `run_skill_script` 工具调用路径，而非绕过它直接执行。
 async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 4: Script Execution (Tier 3b — run_skill_script)\n");
@@ -294,7 +297,7 @@ async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
     let tool = RunSkillScriptTool::new(shared)
         .with_sandbox_manager(Arc::new(echo_agent::sandbox::SandboxManager::local_only()));
 
-    // 4a: Python script (count lines)
+    // 4a: Python 脚本（统计代码行数）
     println!("  4a. Python: count_lines.py");
     println!("  ─────────────────────────");
     {
@@ -338,7 +341,7 @@ async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
 
     println!();
 
-    // 4b: Shell script (find TODOs)
+    // 4b: Shell 脚本（查找 TODO 标记）
     println!("  4b. Bash: find_todos.sh");
     println!("  ───────────────────────");
     {
@@ -363,7 +366,7 @@ async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
 
     println!();
 
-    // 4c: TypeScript script (dependency summary)
+    // 4c: TypeScript 脚本（依赖汇总）
     println!("  4c. TypeScript: dep_summary.ts");
     println!("  ──────────────────────────────");
     {
@@ -400,6 +403,7 @@ async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 调用 `run_skill_script` 工具执行一个技能脚本，并将其 `<script_output>` 中的标准输出解析为 JSON。
 async fn run_skill_script_json(
     tool: &RunSkillScriptTool,
     skill_name: &str,
@@ -440,6 +444,7 @@ async fn run_skill_script_json(
     })
 }
 
+/// 调用 `run_skill_script` 工具执行一个技能脚本，并返回其原始标准输出文本。
 async fn run_skill_script_stdout(
     tool: &RunSkillScriptTool,
     skill_name: &str,
@@ -473,6 +478,7 @@ async fn run_skill_script_stdout(
     Ok(stdout.to_string())
 }
 
+/// 从 `<script_output>...</script_output>` 协议格式的工具输出中提取出标准输出部分（去掉标准错误部分）。
 fn extract_script_stdout(output: &str) -> Option<&str> {
     let (_, body) = output.split_once(">\n")?;
     let (body, _) = body.rsplit_once("</script_output>")?;
@@ -484,6 +490,7 @@ fn extract_script_stdout(output: &str) -> Option<&str> {
     Some(body.trim())
 }
 
+/// 从 JSON 对象中取出指定字段，缺失时返回带上下文说明的错误。
 fn required_json_field<'a>(
     value: &'a serde_json::Value,
     field: &str,
@@ -494,6 +501,7 @@ fn required_json_field<'a>(
     })
 }
 
+/// 从 JSON 对象中取出指定字段并要求其为无符号整数，否则返回带上下文说明的错误。
 fn required_json_u64(
     value: &serde_json::Value,
     field: &str,
@@ -508,6 +516,7 @@ fn required_json_u64(
         })
 }
 
+/// 从 JSON 对象中取出指定字段并要求其为浮点数，否则返回带上下文说明的错误。
 fn required_json_f64(
     value: &serde_json::Value,
     field: &str,
@@ -522,6 +531,7 @@ fn required_json_f64(
         })
 }
 
+/// 从 JSON 对象中取出指定字段并要求其为字符串，否则返回带上下文说明的错误。
 fn required_json_str<'a>(
     value: &'a serde_json::Value,
     field: &str,
@@ -536,9 +546,9 @@ fn required_json_str<'a>(
         })
 }
 
-// ── Part 5: Full Agent Integration ───────────────────────────────────────────
+// ── Part 5: 完整 Agent 集成 ───────────────────────────────────────────────────
 
-/// Full integration: agent discovers skills, injects catalog, registers 3 tools.
+/// 完整集成：Agent 发现技能、注入目录、注册 3 个渐进式披露相关工具。
 async fn demo_5_agent_integration() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 5: Agent + Skills (Full Progressive Disclosure)\n");
@@ -604,10 +614,9 @@ async fn demo_5_agent_integration() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 6: New Features Demo ────────────────────────────────────────────────
+// ── Part 6: 新特性演示 ────────────────────────────────────────────────────────
 
-/// Demonstrates v2 features: inline execution, variable substitution, hooks,
-/// conditional activation, and allowed-tools.
+/// 演示 v2 新特性：内联执行、变量替换、hooks、条件激活以及 allowed-tools。
 async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     use echo_agent::skills::external::prompt_exec::{
         PromptContext, SkillSource, process_skill_content,
@@ -617,7 +626,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 6: New Features (v2)\n");
 
-    // 6a: Variable substitution
+    // 6a：变量替换
     println!("  6a. Variable Substitution");
     println!("  ─────────────────────────");
     {
@@ -646,7 +655,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 6b: Inline shell execution
+    // 6b：内联 shell 执行
     println!("  6b. Inline Shell Execution");
     println!("  ──────────────────────────");
     {
@@ -669,7 +678,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 6c: MCP source safety
+    // 6c：MCP 来源安全性
     println!("  6c. MCP Source Safety");
     println!("  ─────────────────────");
     {
@@ -691,7 +700,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 6d: Hooks system
+    // 6d：Hooks（钩子）系统
     println!("  6d. Hooks System");
     println!("  ────────────────");
     {
@@ -761,7 +770,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 6e: Standard description metadata & allowed-tools
+    // 6e：标准 description 元数据与 allowed-tools
     println!("  6e. Standard Description Metadata & Allowed Tools");
     println!("  ───────────────────────────────────────────────");
     {
@@ -879,7 +888,7 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 6f: Activation with inline execution
+    // 6f：带内联执行的激活流程
     println!("  6f. Activation with Inline Execution");
     println!("  ────────────────────────────────────");
     {

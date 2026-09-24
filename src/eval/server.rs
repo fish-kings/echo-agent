@@ -1,20 +1,24 @@
-//! Interactive eval review — self-contained HTML with embedded JS.
+//! 交互式评测（eval）审阅页面 —— 内嵌 JS 的自包含 HTML。
 //!
-//! Generates an HTML page that can be opened directly in a browser.
-//! No server needed. Supports filtering, sorting, and feedback export.
+//! 生成一个可以直接在浏览器中打开的 HTML 页面。
+//! 无需服务端。支持筛选、排序以及反馈导出。
 
 use crate::eval::EvalReport;
 
-/// Feedback entry.
+/// 一条反馈记录。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReviewFeedback {
+    /// 该反馈所对应的评测用例 ID。
     pub case_id: String,
+    /// 评分。
     pub rating: u8,
+    /// 评价内容。
     pub comment: String,
+    /// 反馈提交的时间戳。
     pub timestamp: String,
 }
 
-/// Generate a self-contained interactive review HTML page.
+/// 生成一个自包含的交互式审阅 HTML 页面。
 pub fn generate_review_html(report: &EvalReport, title: &str) -> String {
     let json_data = serde_json::to_string(report).unwrap_or_default();
     format!(

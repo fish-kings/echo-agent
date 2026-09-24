@@ -39,6 +39,7 @@ use std::time::Duration;
 
 static EXECUTION_ID: AtomicU32 = AtomicU32::new(1);
 
+/// 在本地沙箱中执行一段 Python 代码，并返回其标准输出（失败时返回标准错误）。
 #[tool(name = "execute_python", description = "在安全沙箱中执行 Python 代码")]
 async fn execute_python(
     /// Python 代码
@@ -76,6 +77,7 @@ async fn execute_python(
     }
 }
 
+/// 分析代码质量和潜在问题（当前为模拟实现，返回固定的示例问题列表）。
 #[tool(name = "analyze_code", description = "分析代码质量和潜在问题")]
 async fn analyze_code(
     /// 代码内容
@@ -98,6 +100,7 @@ async fn analyze_code(
     Ok(ToolResult::success(result.to_string()))
 }
 
+/// 检查代码语法错误（当前为简化的关键词匹配模拟实现）。
 #[tool(name = "check_syntax", description = "检查代码语法错误")]
 async fn check_syntax(
     /// 代码内容
@@ -125,6 +128,7 @@ async fn check_syntax(
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：依次演示沙箱执行、重试策略、护栏系统、审计日志与综合代码分析五个部分。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -163,6 +167,7 @@ async fn main() -> Result<()> {
 // Part 1: 沙箱执行系统
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 1 演示：在本地沙箱中依次执行若干安全命令，验证沙箱能正常执行并返回结果。
 async fn demo_sandbox_execution() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 1: 沙箱执行系统");
@@ -221,6 +226,7 @@ async fn demo_sandbox_execution() -> Result<()> {
 // Part 2: 重试策略演示
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 2 演示：使用 `RetryPolicy` 对一个模拟的不稳定 API 调用进行自动重试。
 async fn demo_retry_policy() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 2: 重试策略");
@@ -274,6 +280,7 @@ async fn demo_retry_policy() -> Result<()> {
 // Part 3: 护栏系统
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 3 演示：使用 `RuleGuard` 对多种输入内容做安全检查，验证危险内容被拦截、正常内容放行。
 async fn demo_guard_system() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 3: 护栏系统");
@@ -352,6 +359,7 @@ async fn demo_guard_system() -> Result<()> {
 // Part 4: 审计日志
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 4 演示：使用 `InMemoryAuditLogger` 记录并查询一组审计事件。
 async fn demo_audit_logging() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 4: 审计日志");
@@ -431,6 +439,7 @@ async fn demo_audit_logging() -> Result<()> {
 // Part 5: 综合代码分析
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 5 演示：让 Agent 综合使用语法检查、代码分析、沙箱执行三个工具完成一次完整的代码分析任务。
 async fn demo_code_analysis() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 5: 综合代码分析");
@@ -529,6 +538,7 @@ print(f"Fibonacci(10) = {result}")
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Echo Agent 代码实验室助手 - 综合示例               ║");

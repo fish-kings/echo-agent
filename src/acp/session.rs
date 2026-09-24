@@ -11,37 +11,40 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 use tokio::sync::{Mutex, Notify, RwLock};
 
-/// Complete ACP context used to create one independent framework Agent.
-///
-/// Implementations may delegate ordinary construction to
-/// [`crate::agent::factory::AgentFactory`]. This protocol-specific hook also
-/// carries asynchronous Session setup inputs that the generic factory config
-/// does not own, including MCP declarations and negotiated Client capability.
+/**
+ * 用于创建一个独立框架 Agent 的完整 ACP 上下文。
+ *
+ * 具体实现可以将常规构造工作委托给
+ * [`crate::agent::factory::AgentFactory`]。这个协议专属的钩子还携带了
+ * 通用工厂配置未持有的异步 Session 建立输入，包括 MCP 声明与协商后的
+ * Client 能力。
+ */
 #[derive(Debug, Clone)]
 pub struct AcpSessionContext {
-    /// Generated stable ACP Session identity.
+    /// 生成的稳定 ACP Session 身份标识。
     pub session_id: SessionId,
-    /// Absolute primary working directory from `session/new`.
+    /// 来自 `session/new` 的绝对主工作目录。
     pub cwd: PathBuf,
-    /// Additional absolute workspace roots requested by the Client.
+    /// Client 请求的额外绝对工作区根目录。
     pub additional_directories: Vec<PathBuf>,
-    /// MCP declarations that must be prepared before the Agent is returned.
+    /// 在返回 Agent 之前必须准备好的 MCP 声明。
     pub mcp_servers: Vec<McpServer>,
-    /// Client capability snapshot captured during `initialize`.
+    /// 在 `initialize` 期间捕获的 Client 能力快照。
     pub client_capabilities: ClientCapabilities,
-    /// Namespaced request metadata preserved for the Session factory.
+    /// 为 Session 工厂保留的带命名空间的请求元数据。
     pub meta: Option<Meta>,
 }
 
-/// Creates the independent framework Agent that owns one ACP Session's history.
-///
-/// Stable ACP requires ResourceLink prompts. Returned Agents must therefore
-/// implement the structured chat methods when the Client sends a ResourceLink;
-/// a text-only Agent fails that Prompt explicitly instead of receiving a
-/// flattened private text convention. The factory must also prepare every MCP
-/// declaration in [`AcpSessionContext`] before it returns successfully.
+/**
+ * 创建独立拥有一个 ACP Session 历史记录的框架 Agent。
+ *
+ * 稳定版 ACP 要求支持 ResourceLink 提示（prompt）。因此返回的 Agent
+ * 在 Client 发送 ResourceLink 时必须实现结构化聊天方法；纯文本 Agent
+ * 应显式让该 Prompt 失败，而不是退化为扁平化的私有文本约定。工厂在
+ * 成功返回之前，还必须准备好 [`AcpSessionContext`] 中的每一条 MCP 声明。
+ */
 pub trait AcpSessionFactory: Send + Sync + 'static {
-    /// Prepare and return a new Agent that exclusively owns this Session.
+    /// 准备并返回一个独占拥有该 Session 的新 Agent。
     fn create_session(
         &self,
         context: AcpSessionContext,
@@ -61,31 +64,38 @@ where
     }
 }
 
-/// Cancellation authority of one in-flight execution on a Session.
+/// 一次 Session 上正在进行的执行的取消权柄。
 #[derive(Clone)]
 pub struct ActiveTurn {
+    /// 当前活跃执行的稳定运行身份（`<session>:turn:<n>`）。
     pub(crate) id: String,
+    /// 该次执行对应的消息身份标识。
     pub(crate) message_id: String,
+    /// 与框架驱动器共享的取消令牌。
     pub(crate) cancel: CancellationToken,
 }
 
 impl ActiveTurn {
-    /// Stable run identity of the active execution (`<session>:turn:<n>`).
+    /// 当前活跃执行的稳定运行身份（`<session>:turn:<n>`）。
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Cancellation token shared with the framework driver.
+    /// 与框架驱动器共享的取消令牌。
     pub fn cancellation(&self) -> CancellationToken {
         self.cancel.clone()
     }
 }
 
-/// Exclusive lease on a Session's single active run slot. Dropping the lease
-/// releases the slot; standard Prompts and extension Runs hold exactly one
-/// lease for the lifetime of their driver.
+/**
+ * 对某个 Session 唯一活跃运行槽位的独占租约。释放（drop）该租约会
+ * 释放该槽位；标准 Prompt 与扩展 Run 在其驱动器的整个生命周期内
+ * 恰好持有一份租约。
+ */
 pub struct ActiveTurnLease {
+    /// 所属 Session 的弱引用；释放租约时用于回写空闲槽位。
     pub(crate) session: Weak<AcpSession>,
+    /// 本次租约对应的活跃运行。
     pub turn: ActiveTurn,
 }
 
@@ -137,24 +147,32 @@ struct SessionCloseReceipt {
     abort: StdMutex<Option<tokio::task::AbortHandle>>,
 }
 
-/// Typed capability for the second phase of one ACP Session close attempt.
-///
-/// The lease is cloneable so framework and facade waiters can join the same
-/// attempt. A failed attempt remains stable for this generation; callers must
-/// invoke [`SessionRegistry::begin_close_session`] again to obtain a retry.
+/**
+ * 一次 ACP Session 关闭尝试的第二阶段所使用的类型化能力凭证。
+ *
+ * 该租约可克隆，使框架与门面（facade）层的等待方能够加入同一次尝试。
+ * 失败的尝试在当前这一代（generation）内保持稳定；调用方必须再次调用
+ * [`SessionRegistry::begin_close_session`] 才能获得一次重试。
+ */
 #[derive(Clone)]
 pub struct SessionCloseLease {
+    /// 签发该租约的注册表身份标识，用于校验租约归属。
     registry_id: String,
+    /// 被关闭的 Session 标识。
     session_id: SessionId,
+    /// 被关闭的 Session 本身。
     session: Arc<AcpSession>,
+    /// 该次关闭尝试的共享回执。
     receipt: Arc<SessionCloseReceipt>,
 }
 
 impl SessionCloseLease {
+    /// 该租约所关闭的 Session 标识。
     pub fn session_id(&self) -> &SessionId {
         &self.session_id
     }
 
+    /// 该租约对应的关闭尝试代数（generation）。
     pub fn generation(&self) -> u64 {
         self.receipt.generation
     }
@@ -170,15 +188,23 @@ impl std::fmt::Debug for SessionCloseLease {
     }
 }
 
-/// One ACP Session: an independent framework Agent plus the Session-scoped
-/// run slot. Shared by the standard profile and negotiated extension
-/// profiles — there is deliberately no second Session map.
+/**
+ * 一个 ACP Session：一个独立的框架 Agent 加上该 Session 作用域内的运行
+ * 槽位。标准 profile 与协商出的扩展 profile 共享同一份结构 —— 刻意
+ * 没有维护第二份 Session 映射表。
+ */
 pub struct AcpSession {
+    /// 创建该 Session 时使用的上下文（cwd、MCP 声明、Client 能力等）。
     pub context: AcpSessionContext,
+    /// 该 Session 独立拥有的框架 Agent。
     pub agent: Arc<dyn Agent>,
+    /// 该 Session 唯一活跃运行槽位的内部状态。
     turn: StdMutex<TurnSlot>,
+    /// 活跃运行结算时用于唤醒等待方的通知器。
     turn_settled: Notify,
+    /// 该 Session 是否已被标记为关闭。
     closed: AtomicBool,
+    /// 当前正在进行或已完成的关闭尝试状态。
     close_attempt: StdMutex<SessionCloseAttempt>,
 }
 
@@ -200,6 +226,10 @@ impl AcpSession {
         }
     }
 
+    /**
+     * 为一次新的 Prompt Turn 预留唯一的活跃运行槽位；若 Session 已关闭
+     * 或已存在活跃运行，则返回错误。
+     */
     pub fn begin_turn(self: &Arc<Self>) -> Result<ActiveTurnLease> {
         let mut slot = self.turn.lock().unwrap_or_else(|error| error.into_inner());
         if self.closed.load(Ordering::Acquire) {
@@ -228,6 +258,7 @@ impl AcpSession {
         })
     }
 
+    /// 取消当前活跃的运行（若存在）；返回是否确实取消了一次运行。
     pub fn cancel_active(&self) -> bool {
         let cancel = self
             .turn
@@ -295,6 +326,7 @@ impl AcpSession {
         })
     }
 
+    /// 等待，直到该 Session 当前没有活跃运行为止。
     pub async fn wait_until_idle(&self) {
         loop {
             let notified = self.turn_settled.notified();
@@ -314,13 +346,21 @@ impl AcpSession {
     }
 }
 
+/// 一个连接范围内所有 ACP Session 的注册表，负责创建、查找与关闭 Session。
 pub struct SessionRegistry {
+    /// 该注册表的稳定身份标识，用于校验关闭租约的归属。
     registry_id: String,
+    /// 用于创建每个 Session 独立 Agent 的工厂。
     factory: Arc<dyn AcpSessionFactory>,
+    /// 允许同时存在的最大 Session 数量。
     max_sessions: usize,
+    /// 是否仍接受新的 Session 创建请求。
     admission_open: AtomicBool,
+    /// 序列化 Session 创建与关闭之间的竞态窗口的互斥锁。
     creation_gate: Mutex<()>,
+    /// 在 `initialize` 期间捕获的 Client 能力快照。
     client_capabilities: RwLock<Option<ClientCapabilities>>,
+    /// 当前所有活跃的 Session，按 Session 标识索引。
     sessions: RwLock<HashMap<SessionId, Arc<AcpSession>>>,
 }
 
@@ -407,6 +447,7 @@ async fn run_session_close_attempt(session: Arc<AcpSession>, mut owner: SessionC
 }
 
 impl SessionRegistry {
+    /// 创建一个新的 Session 注册表，绑定给定的工厂与 Session 数量上限。
     pub fn new(factory: Arc<dyn AcpSessionFactory>, max_sessions: usize) -> Self {
         Self {
             registry_id: uuid::Uuid::new_v4().to_string(),
@@ -419,10 +460,12 @@ impl SessionRegistry {
         }
     }
 
+    /// 记录 `initialize` 阶段协商出的 Client 能力，供后续创建 Session 时使用。
     pub async fn initialize(&self, capabilities: ClientCapabilities) {
         *self.client_capabilities.write().await = Some(capabilities);
     }
 
+    /// 永久关闭新 Session 的准入；已存在的 Session 不受影响。
     pub fn close_admission(&self) {
         self.admission_open.store(false, Ordering::Release);
     }
@@ -437,6 +480,10 @@ impl SessionRegistry {
         }
     }
 
+    /**
+     * 处理标准的 `session/new` 请求：校验路径、生成新的 Session 身份
+     * 标识，并将其插入注册表。
+     */
     pub async fn create(&self, request: NewSessionRequest) -> Result<SessionId> {
         validate_session_paths(&request)?;
         let context = AcpSessionContext {
@@ -450,7 +497,7 @@ impl SessionRegistry {
         self.insert_session(context).await
     }
 
-    /// Client capability snapshot captured during `initialize`.
+    /// 在 `initialize` 期间捕获的 Client 能力快照。
     pub async fn capabilities(&self) -> Result<ClientCapabilities> {
         self.client_capabilities
             .read()
@@ -459,10 +506,12 @@ impl SessionRegistry {
             .ok_or_else(|| ReactError::Other("ACP connection is not initialized".to_string()))
     }
 
-    /// Insert a fully described Session, creating its independent Agent
-    /// through the connection's single factory. Standard `session/new` and
-    /// extension profile create/load both funnel through here so the
-    /// Session limit and per-Session Agent ownership stay authoritative.
+    /**
+     * 插入一个已完整描述的 Session，通过该连接唯一的工厂创建它独立的
+     * Agent。标准的 `session/new` 与扩展 profile 的 create/load 都会
+     * 汇聚到这里，从而使 Session 数量上限与按 Session 划分的 Agent
+     * 所有权保持权威一致。
+     */
     pub async fn insert_session(&self, context: AcpSessionContext) -> Result<SessionId> {
         let _creation = self.creation_gate.lock().await;
         self.ensure_admission()?;
@@ -479,16 +528,16 @@ impl SessionRegistry {
             )));
         }
         let agent = self.factory.create_session(context.clone()).await?;
-        // ACP Sessions own distinct Agents, so binding the Session cwd as the
-        // Agent default cannot leak across conversations. This also keeps the
-        // adapter compatible with text-only Agent implementations.
+        /* ACP Session 各自拥有独立的 Agent，因此把 Session 的 cwd 绑定为
+         * Agent 的默认工作目录不会跨会话泄漏。这样做也能保持适配器与
+         * 纯文本 Agent 实现的兼容性。 */
         agent.set_working_dir(Some(context.cwd.clone()));
         let session_id = context.session_id.clone();
         let session = Arc::new(AcpSession::new(context, agent));
         if !self.admission_open.load(Ordering::Acquire) {
-            // Shutdown that raced the async factory still owns this Agent.
-            // Retain it as a closed Session for close_all after the creation
-            // gate is released; the caller must not receive a usable handle.
+            /* 与异步工厂发生竞态的关闭流程仍然拥有这个 Agent。创建关口
+             * （creation gate）释放后，将其保留为一个已关闭的 Session，
+             * 以便 close_all 能处理到它；调用方绝不能拿到可用的句柄。 */
             session.mark_closed();
             self.sessions.write().await.insert(session_id, session);
             return Err(ReactError::Other(
@@ -502,15 +551,18 @@ impl SessionRegistry {
         Ok(session_id)
     }
 
+    /// 按 Session 标识查找一个活跃的 Session；不存在时返回 `None`。
     pub async fn get(&self, session_id: &SessionId) -> Option<Arc<AcpSession>> {
         self.sessions.read().await.get(session_id).cloned()
     }
 
-    /// Begin closing one Session without waiting for its active run.
-    ///
-    /// The returned lease proves that new turns are fenced and the current
-    /// turn cancellation has been signalled. Facades may drain their own
-    /// operation leases before calling [`Self::finish_close_session`].
+    /**
+     * 开始关闭一个 Session，但不等待其活跃运行结束。
+     *
+     * 返回的租约证明新回合（turn）已被拦截、且当前回合的取消已经发出。
+     * 门面（facade）层可以在调用 [`Self::finish_close_session`] 之前，
+     * 先耗尽自己持有的操作租约。
+     */
     pub async fn begin_close_session(
         &self,
         session_id: &SessionId,
@@ -523,11 +575,13 @@ impl SessionRegistry {
         session.prepare_close(&self.registry_id).map(Some)
     }
 
-    /// Finish a close attempt after facade-owned operations have drained.
-    ///
-    /// Concurrent callers with the same lease join one Agent close attempt.
-    /// A failed attempt preserves the Session and returns the same failure to
-    /// every waiter. Call `begin_close_session` again to obtain a retry lease.
+    /**
+     * 在门面层持有的操作耗尽之后，完成一次关闭尝试。
+     *
+     * 持有同一份租约的并发调用方会加入同一次 Agent 关闭尝试。失败的
+     * 尝试会保留该 Session，并把同样的失败结果返回给每一个等待方。
+     * 需要重试时应再次调用 `begin_close_session` 获取新的租约。
+     */
     pub async fn finish_close_session(&self, lease: SessionCloseLease) -> Result<()> {
         self.finish_close_session_inner(lease, None).await
     }
@@ -628,7 +682,7 @@ impl SessionRegistry {
         }
     }
 
-    /// Close one Session through the canonical two-phase lifecycle.
+    /// 通过标准的两阶段生命周期关闭一个 Session。
     pub async fn close_session(&self, session_id: &SessionId) -> Result<bool> {
         let Some(lease) = self.begin_close_session(session_id).await? else {
             return Ok(false);
@@ -637,6 +691,7 @@ impl SessionRegistry {
         Ok(true)
     }
 
+    /// 取消指定 Session 当前活跃的运行；Session 不存在时返回 `false`。
     pub async fn cancel(&self, session_id: &SessionId) -> bool {
         let session = self.get(session_id).await;
         if let Some(session) = session {
@@ -646,6 +701,10 @@ impl SessionRegistry {
         }
     }
 
+    /**
+     * 关闭注册表中所有 Session：先永久停止新的准入，再并发地对每个
+     * Session 执行两阶段关闭，并汇总任何未能结算的失败信息。
+     */
     pub async fn close_all(&self) -> Result<()> {
         self.close_admission();
         let leases = {
@@ -1023,8 +1082,8 @@ mod tests {
         assert!(registry.get(&session.context.session_id).await.is_some());
         assert!(!close_started.load(Ordering::Acquire));
 
-        // A facade drains its own operation leases here. The framework turn
-        // remains registered until that external drain releases its run owner.
+        /* 门面（facade）层在这里耗尽自己的操作租约。框架回合（turn）会
+         * 一直保持注册状态，直到这次外部耗尽释放其运行所有者为止。 */
         drop(turn);
         registry.finish_close_session(lease).await?;
         assert!(close_started.load(Ordering::Acquire));

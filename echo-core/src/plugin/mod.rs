@@ -1,4 +1,4 @@
-//! Plugin system core contracts.
+//! 插件系统核心契约。
 
 pub mod capability;
 pub mod lifecycle;

@@ -1,9 +1,11 @@
-//! ReactAgent capability configuration API
-//!
-//! - Tool registration (`add_tool` / `add_tools` / `add_need_appeal_tool`)
-//! - Skill installation (`add_skill` / `add_skills` / `discover_skills` / `load_skills_from_dir`)
-//! - MCP connections (`connect_mcp` / `load_mcp_from_file`)
-//! - Subagent, compressor, callbacks, etc.
+/*!
+ * ReactAgent 能力配置 API
+ *
+ * - 工具注册（`add_tool` / `add_tools` / `add_need_appeal_tool`）
+ * - 技能安装（`add_skill` / `add_skills` / `discover_skills` / `load_skills_from_dir`）
+ * - MCP 连接（`connect_mcp` / `load_mcp_from_file`）
+ * - 子代理、压缩器、回调等
+ */
 
 use super::ReactAgent;
 #[cfg(feature = "subagent")]
@@ -35,12 +37,16 @@ use tracing::{info, warn};
 
 const SKILL_CATALOG_PROJECTION: &str = "echo-agent:skill-catalog";
 
+/// 一次待注册的 Skill，可能来自文件系统发现，也可能是已经准备好的文档。
 enum SkillRegistration {
+    /// 通过文件系统发现得到的 Skill 描述符。
     Filesystem(SkillDescriptor),
+    /// 已预先构建完成的 Skill 文档（例如插件场景）。
     Prepared(crate::skills::external::SkillDocument),
 }
 
 impl SkillRegistration {
+    /// 获取该注册项对应的描述符。
     fn descriptor(&self) -> &SkillDescriptor {
         match self {
             Self::Filesystem(descriptor) => descriptor,
@@ -48,6 +54,7 @@ impl SkillRegistration {
         }
     }
 
+    /// 设置该 Skill 的注册来源标记。
     fn set_registration_source(&mut self, source: &str) {
         match self {
             Self::Filesystem(descriptor) => descriptor.source = Some(source.to_string()),
@@ -56,6 +63,7 @@ impl SkillRegistration {
     }
 }
 
+/// 将某个已激活 Skill 的提示块投影到上下文中。
 pub(crate) async fn project_skill_activation(
     context: &Arc<tokio::sync::Mutex<ContextManager>>,
     skill_name: &str,
@@ -67,59 +75,82 @@ pub(crate) async fn project_skill_activation(
     );
 }
 
-/// A validated token-limit update with exclusive ownership of the live context.
-///
-/// Holding this value prevents an agent turn from entering the context between
-/// preparation and commit. Dropping it cancels the update without changing the
-/// agent or its context.
+/**
+ * 一次已校验的 token 上限更新，独占持有当前存活的上下文。
+ *
+ * 持有该值可阻止某次 agent 轮次在“准备”与“提交”之间进入上下文。
+ * 丢弃（drop）它会取消这次更新，而不会改变 agent 或其上下文。
+ */
 pub struct PreparedTokenLimit {
+    /// 被独占写锁定的目标 agent。
     agent: tokio::sync::OwnedRwLockWriteGuard<ReactAgent>,
+    /// 待提交的 token 上限相关取值。
     values: PreparedTokenLimitValues,
 }
 
+/// 待提交的 token 上限取值，含预算与被独占锁定的上下文。
 struct PreparedTokenLimitValues {
+    /// 新的 token 上限。
     token_limit: usize,
+    /// 根据配置构建出的 token 预算（若启用）。
     budget: Option<TokenBudget>,
+    /// 独占锁定的上下文管理器句柄。
     context: OwnedMutexGuard<ContextManager>,
 }
 
-/// Explicit critic publication policy for a prepared model generation.
+/// 针对一次已准备好的模型生成，critic（评审器）应如何发布的显式策略。
 pub enum PreparedCriticUpdate {
-    /// Leave the currently installed critic and its ownership unchanged.
+    /// 保持当前已安装的 critic 及其所有权不变。
     Preserve,
-    /// Replace the critic only when it is still owned by `owner`.
-    ///
-    /// A later [`ReactAgent::set_critic`] call clears named ownership, so a
-    /// consumer cannot overwrite a user-installed custom critic accidentally.
+    /**
+     * 仅当 critic 仍归 `owner` 所有时才替换它。
+     *
+     * 之后的 [`ReactAgent::set_critic`] 调用会清除具名所有权，
+     * 因此调用方不会意外覆盖用户自行安装的自定义 critic。
+     */
     ReplaceOwned {
+        /// 期望持有当前 critic 所有权的调用方标识。
         owner: String,
+        /// 待安装的新 critic 实例。
         critic: Arc<dyn Critic>,
     },
 }
 
-/// A complete, prevalidated runtime model generation for a [`ReactAgent`].
-///
-/// The LLM client is constructed by the consumer before preparation, so commit
-/// performs no I/O, configuration parsing, or provider lookup.
+/**
+ * 面向 [`ReactAgent`] 的一次完整、已预先校验的运行时模型生成。
+ *
+ * LLM 客户端由调用方在准备阶段之前构建完成，因此提交（commit）过程
+ * 不执行任何 I/O、配置解析或 provider 查找。
+ */
 pub struct PreparedAgentModelGeneration {
+    /// 被独占写锁定的目标 agent。
     agent: tokio::sync::OwnedRwLockWriteGuard<ReactAgent>,
+    /// 待应用的 LLM 配置。
     llm_config: LlmConfig,
+    /// 待安装的 LLM 客户端实例。
     llm_client: Arc<dyn LlmClient>,
+    /// 待应用的温度参数。
     temperature: Option<f32>,
+    /// 待应用的最大 token 数。
     max_tokens: Option<u32>,
+    /// 待应用的思考（thinking）配置。
     thinking: Option<ThinkingConfig>,
+    /// critic 的发布策略。
     critic: PreparedCriticUpdate,
+    /// 待提交的 token 上限相关取值。
     token_limit: PreparedTokenLimitValues,
 }
 
-/// A target-bound receipt that clears one agent's active model generation.
+/// 一次与目标 agent 绑定的回执，用于清除该 agent 当前激活的模型生成。
 pub struct PreparedAgentModelDeactivation {
+    /// 被独占写锁定的目标 agent。
     agent: tokio::sync::OwnedRwLockWriteGuard<ReactAgent>,
+    /// 若清除成功，需要一并释放所有权的 critic 拥有者标识。
     critic_owner: Option<String>,
 }
 
 impl PreparedTokenLimit {
-    /// Publish the token limit to the exact agent locked during preparation.
+    /// 将 token 上限发布到准备阶段锁定的那个 agent 上。
     pub fn commit(self) {
         let Self { mut agent, values } = self;
         agent.commit_prepared_token_limit(values);
@@ -127,9 +158,8 @@ impl PreparedTokenLimit {
 }
 
 impl PreparedAgentModelGeneration {
-    /// Publish this generation to the exact agent locked during preparation.
-    /// No target parameter exists, so a receipt prepared on one agent cannot be
-    /// committed to another agent.
+    /// 将该生成发布到准备阶段锁定的那个 agent 上。
+    /// 由于不存在 target 参数，某个 agent 上准备的回执不可能被提交到另一个 agent。
     pub fn commit(self) {
         let Self {
             mut agent,
@@ -160,7 +190,7 @@ impl PreparedAgentModelGeneration {
 }
 
 impl PreparedAgentModelDeactivation {
-    /// Clear the model generation from the exact agent locked during preparation.
+    /// 从准备阶段锁定的那个 agent 上清除模型生成。
     pub fn commit(self) {
         let Self {
             mut agent,
@@ -182,7 +212,7 @@ impl PreparedAgentModelDeactivation {
 }
 
 impl AgentHandle {
-    /// Prepare a target-bound token-limit publication.
+    /// 准备一次与目标绑定的 token 上限发布。
     pub async fn prepare_token_limit(
         &self,
         token_limit: usize,
@@ -192,7 +222,7 @@ impl AgentHandle {
         Ok(PreparedTokenLimit { agent, values })
     }
 
-    /// Prepare a target-bound complete model generation.
+    /// 准备一次与目标绑定的完整模型生成。
     #[allow(clippy::too_many_arguments)]
     pub async fn prepare_model_generation(
         &self,
@@ -225,7 +255,7 @@ impl AgentHandle {
         })
     }
 
-    /// Lock this agent for an atomic active-model deactivation.
+    /// 锁定该 agent 以执行一次原子性的“取消当前激活模型”操作。
     pub async fn prepare_model_deactivation(
         &self,
         critic_owner: Option<String>,
@@ -239,15 +269,15 @@ impl AgentHandle {
 }
 
 impl ReactAgent {
-    // ── Tool registration ────────────────────────────────────────────────────
+    // ── 工具注册 ────────────────────────────────────────────────────
 
-    /// Register a single tool. Automatically enables tool capability.
+    /// 注册单个工具，并自动启用工具能力。
     pub fn add_tool(&mut self, tool: Box<dyn Tool>) {
         self.config.enable_tool = true;
         self.tools.tool_manager.register(tool);
     }
 
-    /// Register multiple tools. Automatically enables tool capability.
+    /// 注册多个工具，并自动启用工具能力。
     pub fn add_tools(&mut self, tools: Vec<Box<dyn Tool>>) {
         if tools.is_empty() {
             return;
@@ -265,30 +295,36 @@ impl ReactAgent {
         }
     }
 
-    /// Remove a tool by name. Returns the removed tool if it existed.
-    ///
-    /// Supports dynamic tool management in the ReAct loop — for example,
-    /// switching from search tools to execution tools mid-task.
+    /**
+     * 按名称移除一个工具。若该工具存在，则返回被移除的工具。
+     *
+     * 用于支持 ReAct 循环中的动态工具管理——例如，在任务执行过程中
+     * 从搜索类工具切换到执行类工具。
+     */
     pub fn remove_tool(&mut self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.tool_manager.unregister(name)
     }
 
-    /// Replace an existing tool with a new one of the same name.
-    ///
-    /// If a tool with the same name exists, it is removed and the new tool is registered.
-    /// Returns the old tool if it was replaced.
+    /**
+     * 用一个新工具替换同名的现有工具。
+     *
+     * 如果存在同名工具，会先移除旧工具再注册新工具。
+     * 若确实发生了替换，则返回旧工具。
+     */
     pub fn replace_tool(&mut self, tool: Box<dyn Tool>) -> Option<Arc<dyn Tool>> {
         self.tools.tool_manager.replace(tool)
     }
 
-    /// Register a tool that requires human approval before execution.
-    ///
-    /// This API is intentionally synchronous so it can be used during agent setup.
-    /// When a `PermissionService` is present, the approval rule is first buffered in
-    /// `pending_permission_rules` and transferred into the next invocation snapshot.
-    /// This avoids calling `block_on()` inside a running Tokio runtime.
-    ///
-    /// Registers a permission rule requiring approval for the tool.
+    /**
+     * 注册一个执行前需要人工审批的工具。
+     *
+     * 该 API 特意设计为同步接口，以便在 agent 初始化阶段调用。
+     * 当 `PermissionService` 存在时，审批规则会先缓冲到
+     * `pending_permission_rules` 中，随后转移到下一次调用快照里，
+     * 这样可以避免在正在运行的 Tokio runtime 内调用 `block_on()`。
+     *
+     * 该方法会为此工具注册一条要求审批的权限规则。
+     */
     pub fn add_need_appeal_tool(&mut self, tool: Box<dyn Tool>) {
         #[cfg(feature = "human-loop")]
         if self.config.enable_human_in_loop {
@@ -307,9 +343,9 @@ impl ReactAgent {
                 description: Some(format!("Tool {} requires human approval", tool_name)),
             };
 
-            // add_need_appeal_tool is a synchronous API and cannot call block_on()
-            // inside a running Tokio runtime. Register the rule here first, then
-            // safely flush it to PermissionService during a later async execution phase.
+            // add_need_appeal_tool 是同步 API，不能在正在运行的 Tokio runtime 内
+            // 调用 block_on()。因此先在此处注册规则，之后再在异步执行阶段
+            // 安全地将其刷新到 PermissionService。
             if let Ok(mut pending) = self.approval.pending_permission_rules.lock() {
                 pending.push(rule);
             } else {
@@ -332,40 +368,46 @@ impl ReactAgent {
         self.add_tool(tool);
     }
 
-    // ── Context compression ──────────────────────────────────────────────────
+    // ── 上下文压缩 ──────────────────────────────────────────────────
 
-    /// Set context compressor
-    ///
-    /// # Parameters
-    /// * `compressor` - Compressor instance implementing the `ContextCompressor` trait
-    ///
-    /// # Description
-    /// The context compressor automatically compresses conversation history when the token count exceeds the limit,
-    /// removing less important messages to reduce token consumption.
+    /**
+     * 设置上下文压缩器
+     *
+     * # 参数
+     * * `compressor` - 实现了 `ContextCompressor` trait 的压缩器实例
+     *
+     * # 说明
+     * 上下文压缩器会在 token 数超过限制时自动压缩对话历史，
+     * 移除不那么重要的消息以减少 token 消耗。
+     */
     pub async fn set_compressor(&self, compressor: impl ContextCompressor + 'static) {
         self.memory.context.lock().await.set_compressor(compressor);
     }
 
-    /// Get context statistics
-    ///
-    /// # Returns
-    /// Returns tuple `(message count, estimated token count)`
+    /**
+     * 获取上下文统计信息
+     *
+     * # 返回值
+     * 返回元组 `(消息数量, 预估 token 数)`
+     */
     pub async fn context_stats(&self) -> (usize, usize) {
         let ctx = self.memory.context.lock().await;
         (ctx.messages().len(), ctx.token_estimate())
     }
 
-    /// Force compress context using the specified compressor
-    ///
-    /// # Parameters
-    /// * `compressor` - Compressor instance to use for compression
-    ///
-    /// # Returns
-    /// Returns compression statistics, including token counts before and after
-    ///
-    /// # Description
-    /// This method bypasses the automatic compression threshold and immediately compresses the context
-    /// using the specified compressor. Typically used for manual compression control or testing compression effects.
+    /**
+     * 使用指定压缩器强制压缩上下文
+     *
+     * # 参数
+     * * `compressor` - 用于压缩的压缩器实例
+     *
+     * # 返回值
+     * 返回压缩统计信息，包括压缩前后的 token 数
+     *
+     * # 说明
+     * 该方法绕过自动压缩阈值，立即使用指定的压缩器压缩上下文。
+     * 通常用于手动压缩控制或测试压缩效果。
+     */
     pub async fn force_compress_with(
         &self,
         compressor: &dyn ContextCompressor,
@@ -378,11 +420,13 @@ impl ReactAgent {
             .await
     }
 
-    /// Force compress with PreCompact/PostCompact hooks fired around the operation.
-    ///
-    /// The `matcher` parameter determines the hook matcher context:
-    /// - `"manual"` for user-initiated compression (e.g. `/compact` command)
-    /// - `"auto"` for automatic threshold-triggered compression
+    /**
+     * 强制压缩，并在操作前后触发 PreCompact/PostCompact hook。
+     *
+     * `matcher` 参数决定 hook 匹配的上下文：
+     * - `"manual"` 表示用户主动触发的压缩（例如 `/compact` 命令）
+     * - `"auto"` 表示由阈值自动触发的压缩
+     */
     pub async fn force_compress_with_hooks(
         &self,
         compressor: &dyn ContextCompressor,
@@ -395,7 +439,7 @@ impl ReactAgent {
         Ok((stats, checkpoint))
     }
 
-    /// Force-compress the context with focus instructions and PreCompact/PostCompact hooks.
+    /// 携带聚焦指令强制压缩上下文，并触发 PreCompact/PostCompact hook。
     pub async fn force_compress_with_focus_and_hooks(
         &self,
         focus_instructions: &str,
@@ -415,6 +459,7 @@ impl ReactAgent {
         Ok((stats, checkpoint))
     }
 
+    /// 触发 PostCompact hook，并将 hook 注入的上下文/消息推送到运行时上下文中。
     async fn fire_post_compact_hook(&self, matcher: &str, stats: &ForceCompressStats) {
         let hook_stats = crate::skills::hooks::CompressHookStats {
             before_count: stats.before_count,
@@ -448,11 +493,13 @@ impl ReactAgent {
         }
     }
 
-    /// Force-compress the context using the installed compressor (or fallback
-    /// SlidingWindowCompressor with window=40 if no compressor is installed).
-    ///
-    /// Designed for manual compression triggers (desktop UI button, `/compact` CLI command).
-    /// Fires PreCompact/PostCompact hooks with matcher `"manual"`.
+    /**
+     * 使用已安装的压缩器强制压缩上下文（若未安装压缩器，
+     * 则回退使用窗口大小为 40 的 SlidingWindowCompressor）。
+     *
+     * 设计用于手动压缩触发场景（桌面端 UI 按钮、`/compact` CLI 命令）。
+     * 会以 matcher `"manual"` 触发 PreCompact/PostCompact hook。
+     */
     pub async fn force_compress_context(
         &self,
     ) -> Result<(ForceCompressStats, Option<CompressionCheckpoint>)> {
@@ -480,20 +527,24 @@ impl ReactAgent {
         Ok((stats, checkpoint))
     }
 
-    /// List all registered tool names
-    ///
-    /// # Returns
-    /// List of registered tool names
+    /**
+     * 列出所有已注册的工具名称
+     *
+     * # 返回值
+     * 已注册工具名称的列表
+     */
     pub fn list_tools(&self) -> Vec<String> {
         self.tools.tool_manager.list_tools()
     }
 
-    // ── Subagent ─────────────────────────────────────────────────────────────
+    // ── 子代理 ─────────────────────────────────────────────────────────────
 
-    /// Register a subagent with the subagent registry.
-    ///
-    /// The agent is automatically wrapped in a default Sync-mode `SubagentDefinition`.
-    /// For more control, use `register_subagent_with_definition()`.
+    /**
+     * 将一个子代理注册到子代理注册表中。
+     *
+     * 该 agent 会自动包装为默认的同步模式 `SubagentDefinition`。
+     * 如需更精细的控制，请使用 `register_subagent_with_definition()`。
+     */
     #[cfg(feature = "subagent")]
     pub fn register_agent(&mut self, agent: Box<dyn Agent>) {
         let name = agent.name().to_string();
@@ -501,22 +552,23 @@ impl ReactAgent {
         self.register_subagent_with_definition(def, agent);
     }
 
-    /// Register a subagent with an explicit definition.
-    ///
-    /// The definition is exposed to the orchestrator through `agent_tool`, so
-    /// descriptions should be concise and task-oriented.
+    /**
+     * 使用显式定义注册一个子代理。
+     *
+     * 该定义会通过 `agent_tool` 暴露给编排器，因此描述应当简洁且面向任务。
+     */
     #[cfg(feature = "subagent")]
     pub fn register_subagent_with_definition(
         &mut self,
         def: SubagentDefinition,
         agent: Box<dyn Agent>,
     ) {
-        // Note: subagent registration is decoupled from `enable_subagent` flag.
-        // `enable_subagent` historically controlled two things: (1) subagent
-        // registration here, and (2) `AgentDispatchTool` LLM tool registration
-        // in `ReactAgent::new`. They are now split: subagent registration is
-        // unconditional (framework dispatch via `delegate_to_agent*` depends on
-        // it), and LLM tool registration is gated by `register_agent_dispatch_tool`.
+        // 注意：子代理注册与 `enable_subagent` 标志已解耦。
+        // `enable_subagent` 历史上同时控制两件事：(1) 此处的子代理注册，
+        // 以及 (2) `ReactAgent::new` 中 `AgentDispatchTool` LLM 工具的注册。
+        // 现在两者已拆分：子代理注册是无条件的（框架通过
+        // `delegate_to_agent*` 进行的调度依赖它），而 LLM 工具注册
+        // 则由 `register_agent_dispatch_tool` 控制。
         let name = def.name.clone();
         if self
             .tools
@@ -527,19 +579,20 @@ impl ReactAgent {
         }
     }
 
-    /// Register a subagent **definition only** — no instance and no factory.
-    ///
-    /// This is a low-level late-binding entry point. The pending definition is
-    /// visible through the registry's `get` and `contains`, but is excluded
-    /// from `list_available`, `agent_names`, and the model-facing dispatch
-    /// catalog until an instance or factory is supplied. The application layer
-    /// (which owns the prompt-compiler / tool-filter / sandbox wiring needed
-    /// to build a real `ReactAgent` instance) later supplies the instance via
-    /// [`register_subagent_with_definition`](Self::register_subagent_with_definition)
-    /// or [`register_subagent_factory`](Self::register_subagent_factory)
-    /// under the same name, overwriting the definition.
-    ///
-    /// Explicit programmatic dispatch before hydration fails (no agent to run).
+    /**
+     * 仅注册子代理**定义**——不含实例，也不含工厂。
+     *
+     * 这是一个用于延迟绑定的底层入口。待注册的定义可以通过注册表的
+     * `get` 和 `contains` 查询到，但在提供实例或工厂之前，
+     * 会被排除在 `list_available`、`agent_names` 以及面向模型的
+     * 调度目录之外。应用层（拥有构建真正 `ReactAgent` 实例所需的
+     * prompt-compiler / tool-filter / sandbox 装配逻辑）之后会通过
+     * 同名调用 [`register_subagent_with_definition`](Self::register_subagent_with_definition)
+     * 或 [`register_subagent_factory`](Self::register_subagent_factory)
+     * 提供实例，覆盖该定义。
+     *
+     * 在完成填充之前进行显式的程序化调度会失败（没有可运行的 agent）。
+     */
     #[cfg(feature = "subagent")]
     pub fn register_subagent_definition(&mut self, def: SubagentDefinition) {
         let name = def.name.clone();
@@ -556,7 +609,7 @@ impl ReactAgent {
         }
     }
 
-    /// Register a factory used to create an independent agent for each isolated dispatch.
+    /// 注册一个工厂，用于为每次隔离调度创建独立的 agent。
     #[cfg(feature = "subagent")]
     pub fn register_subagent_factory(
         &mut self,
@@ -573,8 +626,8 @@ impl ReactAgent {
         }
     }
 
-    /// Unregister a Subagent and remove it from the model-facing dispatch
-    /// catalog. Returns whether a definition existed before removal.
+    /// 注销一个子代理，并将其从面向模型的调度目录中移除。
+    /// 返回移除之前该定义是否存在。
     #[cfg(feature = "subagent")]
     pub async fn unregister_subagent(&mut self, name: &str) -> bool {
         let existed = self.tools.subagent_registry.contains(name).await;
@@ -582,21 +635,23 @@ impl ReactAgent {
         existed
     }
 
-    /// Refresh the cached tool schema for legacy callers. The dispatch catalog
-    /// itself is read from the shared registry and ignores the supplied copy.
+    /// 为旧版调用方刷新缓存的工具 schema。调度目录本身是从共享注册表中
+    /// 读取的，会忽略传入的副本。
     #[cfg(feature = "subagent")]
     pub fn sync_subagent_dispatch_catalog(&self, _definitions: &[SubagentDefinition]) {
         self.tools.tool_manager.invalidate_definition_cache();
     }
 
-    /// Batch register subagents
-    ///
-    /// # Parameters
-    /// * `agents` - List of subagent instances
-    ///
-    /// # Description
-    /// Each subagent is automatically wrapped in a default Sync-mode `SubagentDefinition`.
-    /// For more fine-grained control, use the `register_subagent_with_definition()` method.
+    /**
+     * 批量注册子代理
+     *
+     * # 参数
+     * * `agents` - 子代理实例列表
+     *
+     * # 说明
+     * 每个子代理都会自动包装为默认的同步模式 `SubagentDefinition`。
+     * 如需更精细的控制，请使用 `register_subagent_with_definition()` 方法。
+     */
     #[cfg(feature = "subagent")]
     pub fn register_agents(&mut self, agents: Vec<Box<dyn Agent>>) {
         for agent in agents {
@@ -604,40 +659,48 @@ impl ReactAgent {
         }
     }
 
-    // ── Basic config ─────────────────────────────────────────────────────────
+    // ── 基础配置 ─────────────────────────────────────────────────────────
 
-    /// Set LLM model name at runtime
-    ///
-    /// # Parameters
-    /// * `model_name` - New LLM model name
-    ///
-    /// # Description
-    /// This method allows dynamically switching the LLM model used by the Agent at runtime.
+    /**
+     * 在运行时设置 LLM 模型名称
+     *
+     * # 参数
+     * * `model_name` - 新的 LLM 模型名称
+     *
+     * # 说明
+     * 该方法允许在运行时动态切换 Agent 使用的 LLM 模型。
+     */
     pub fn set_model(&mut self, model_name: &str) {
         self.config.model_name = model_name.to_string();
     }
 
-    /// Set the temperature for LLM generation.
-    ///
-    /// # Parameters
-    /// * `temperature` - Temperature value (typically 0.0 - 2.0)
+    /**
+     * 设置 LLM 生成使用的温度参数。
+     *
+     * # 参数
+     * * `temperature` - 温度值（通常为 0.0 - 2.0）
+     */
     pub fn set_temperature(&mut self, temperature: Option<f32>) {
         self.config.temperature = temperature;
     }
 
-    /// Set the maximum number of tokens for LLM generation.
-    ///
-    /// # Parameters
-    /// * `max_tokens` - Maximum tokens to generate
+    /**
+     * 设置 LLM 生成的最大 token 数。
+     *
+     * # 参数
+     * * `max_tokens` - 最大生成 token 数
+     */
     pub fn set_max_tokens(&mut self, max_tokens: Option<u32>) {
         self.config.max_tokens = max_tokens;
     }
 
-    /// Prepare a token-limit change without mutating the agent.
-    ///
-    /// This waits for exclusive access to the live context and retains that
-    /// access in the returned receipt. Dropping the receipt rolls the operation
-    /// back; target-bound publication commit is infallible.
+    /**
+     * 准备一次 token 上限变更，但不修改 agent 本身。
+     *
+     * 该方法会等待获取当前上下文的独占访问权，并在返回的回执中
+     * 保留这一访问权。丢弃该回执会回滚此次操作；
+     * 与目标绑定的发布提交操作不会失败。
+     */
     async fn prepare_token_limit_values(
         &self,
         token_limit: usize,
@@ -655,6 +718,7 @@ impl ReactAgent {
         })
     }
 
+    /// 将已准备好的 token 上限取值提交到 agent 的上下文与配置中。
     fn commit_prepared_token_limit(&mut self, prepared: PreparedTokenLimitValues) {
         let PreparedTokenLimitValues {
             token_limit,
@@ -665,10 +729,12 @@ impl ReactAgent {
         self.config.token_limit = token_limit;
     }
 
-    /// Set the token limit (context window budget) at runtime.
-    ///
-    /// This compatibility method remains non-blocking. Consumers that need a
-    /// transactional multi-agent update should use the prepare/commit API.
+    /**
+     * 在运行时设置 token 上限（上下文窗口预算）。
+     *
+     * 该兼容方法始终保持非阻塞。需要事务性多 agent 更新的调用方
+     * 应改用 prepare/commit API。
+     */
     pub fn set_token_limit(&mut self, token_limit: usize) -> crate::error::Result<()> {
         let mut context = self.memory.context.try_lock().map_err(|_| {
             crate::error::AgentError::ContextLimitExceeded(
@@ -685,51 +751,54 @@ impl ReactAgent {
         Ok(())
     }
 
-    /// Set agent-level default tools hidden from the LLM on subsequent runs.
-    ///
-    /// Tools whose names appear in `names` are filtered out of the tool list
-    /// sent to the model, so the model cannot call them. The tools remain
-    /// registered (unlike `remove_tool`, which mutates the shared registry).
-    /// Pass `None` or an empty set to clear.
-    ///
-    /// The value is captured when an `AgentRunSnapshot` is created. Existing
-    /// runs are unaffected. Per-invocation exclusions should be supplied via
-    /// `AgentInvocationContext::disabled_tools`.
+    /**
+     * 设置在后续运行中对 LLM 隐藏的 agent 级默认工具。
+     *
+     * 名称出现在 `names` 中的工具会从发送给模型的工具列表中过滤掉，
+     * 使模型无法调用它们。这些工具仍保持已注册状态（不同于会
+     * 修改共享注册表的 `remove_tool`）。传入 `None` 或空集合即可清空。
+     *
+     * 该取值会在创建 `AgentRunSnapshot` 时被捕获，已有的运行不受影响。
+     * 单次调用级别的排除项应通过 `AgentInvocationContext::disabled_tools` 提供。
+     */
     pub fn set_disabled_tools(&self, names: Option<std::collections::HashSet<String>>) {
         self.tools.set_disabled_tools(names);
     }
 
-    /// Snapshot the agent-wide tools currently hidden from future model calls.
+    /// 快照当前对未来模型调用隐藏的 agent 级工具集合。
     pub fn disabled_tool_names(&self) -> std::collections::HashSet<String> {
         self.tools.disabled_tool_names()
     }
 
-    /// Return the shareable tool-visibility authority used by future runs.
+    /// 返回后续运行使用的可共享工具可见性权限对象。
     pub fn tool_visibility_policy(&self) -> echo_core::agent::ToolVisibilityPolicy {
         self.tools.tool_visibility.clone()
     }
 
-    /// Bind this Agent to an existing tool-visibility authority.
+    /// 将该 Agent 绑定到一个已有的工具可见性权限对象上。
     pub fn use_tool_visibility_policy(&mut self, policy: echo_core::agent::ToolVisibilityPolicy) {
         self.tools.tool_visibility = policy;
     }
 
-    /// Add Agent callback
-    ///
-    /// # Parameters
-    /// * `callback` - Callback instance implementing the `AgentCallback` trait
-    ///
-    /// # Description
-    /// Callbacks are invoked when different events are triggered during Agent execution, for monitoring, logging, etc.
-    /// Unlike the config builder's `with_callback`, this method can add callbacks dynamically at runtime.
+    /**
+     * 添加 Agent 回调
+     *
+     * # 参数
+     * * `callback` - 实现了 `AgentCallback` trait 的回调实例
+     *
+     * # 说明
+     * 回调会在 Agent 执行过程中触发不同事件时被调用，用于监控、日志记录等。
+     * 与配置构建器的 `with_callback` 不同，该方法可以在运行时动态添加回调。
+     */
     pub fn add_callback(&mut self, callback: Arc<dyn crate::agent::AgentCallback>) {
         self.config.callbacks.push(callback);
     }
 
-    /// Remove all callbacks whose type name matches the given string.
-    ///
-    /// Useful for cleaning up temporary callbacks (e.g., progress bridges)
-    /// after a task completes.
+    /**
+     * 移除所有类型名称匹配给定字符串的回调。
+     *
+     * 适用于任务结束后清理临时回调（例如进度桥接器）。
+     */
     pub fn remove_callbacks_by_type_name(&mut self, type_name: &str) {
         self.config.callbacks.retain(|cb| {
             let name = std::any::type_name_of_val(cb.as_ref()).to_string();
@@ -741,10 +810,12 @@ impl ReactAgent {
         });
     }
 
-    /// Remove callbacks of a given type whose stable callback ID matches.
-    ///
-    /// Useful for task-scoped temporary callbacks such as `ProgressBridge`,
-    /// where removing by type alone can delete another active task's callback.
+    /**
+     * 移除给定类型中，稳定回调 ID 匹配的回调。
+     *
+     * 适用于像 `ProgressBridge` 这样任务作用域的临时回调，
+     * 因为仅按类型移除可能会误删另一个活跃任务的回调。
+     */
     pub fn remove_callbacks_by_type_name_and_id(&mut self, type_name: &str, callback_id: &str) {
         self.config.callbacks.retain(|cb| {
             let name = std::any::type_name_of_val(cb.as_ref()).to_string();
@@ -756,22 +827,22 @@ impl ReactAgent {
         });
     }
 
-    /// Access the execution serializer.
-    ///
-    /// Use this when you need to hold the execution lock across multiple
-    /// agent operations (e.g., registering a temporary callback then
-    /// executing, where both steps must be atomic with respect to other
-    /// concurrent executions).
-    ///
-    /// For normal `execute()` / `chat()` / `chat_stream()` calls, the
-    /// lock is acquired automatically inside `run_react_loop` / `run_loop`.
+    /**
+     * 访问执行序列化锁。
+     *
+     * 当你需要在多个 agent 操作之间持有执行锁时使用（例如，先注册一个
+     * 临时回调再执行，这两步相对于其他并发执行必须是原子的）。
+     *
+     * 对于普通的 `execute()` / `chat()` / `chat_stream()` 调用，
+     * 该锁会在 `run_react_loop` / `run_loop` 内部自动获取。
+     */
     pub fn execution_mutex(&self) -> &Arc<tokio::sync::Mutex<()>> {
         &self.execution_mutex
     }
 
-    // ── Skills (code-based) ──────────────────────────────────────────────────
+    // ── 技能（基于代码）──────────────────────────────────────────────────
 
-    /// Install a code-based skill (eager: tools + prompt injected immediately).
+    /// 安装一个基于代码的技能（立即生效：工具与提示词立刻被注入）。
     pub fn add_skill(&mut self, skill: Box<dyn Skill>) {
         let name = skill.name().to_string();
 
@@ -823,27 +894,30 @@ impl ReactAgent {
         );
     }
 
-    /// Install multiple code-based skills.
+    /// 批量安装多个基于代码的技能。
     pub fn add_skills(&mut self, skills: Vec<Box<dyn Skill>>) {
         for skill in skills {
             self.add_skill(skill);
         }
     }
 
-    // ── Skills (file-based, progressive disclosure) ──────────────────────────
+    // ── 技能（基于文件，渐进式披露）──────────────────────────────
 
-    /// Discover file-based skills from the given scopes.
-    ///
-    /// Implements the agentskills.io progressive disclosure model:
-    /// 1. Parse `SKILL.md` frontmatter (name + description) from each scope
-    /// 2. Build a compact **catalog** and inject it into the system prompt
-    /// 3. Register `activate_skill` and `read_skill_resource` tools
-    ///
-    /// The LLM can then decide which skills to activate on demand.
+    /**
+     * 从给定的多个作用域中发现基于文件的技能。
+     *
+     * 实现了 agentskills.io 的渐进式披露模型：
+     * 1. 从每个作用域解析 `SKILL.md` 的 frontmatter（名称 + 描述）
+     * 2. 构建一份紧凑的**目录**并注入到系统提示词中
+     * 3. 注册 `activate_skill` 和 `read_skill_resource` 工具
+     *
+     * 之后 LLM 就可以按需决定激活哪些技能。
+     */
     pub async fn discover_skills(&mut self, scopes: &[DiscoveryScope]) -> Result<Vec<String>> {
         self.discover_skills_inner(scopes, None).await
     }
 
+    /// `discover_skills` 的内部实现，额外支持传入插件来源信息。
     async fn discover_skills_inner(
         &mut self,
         scopes: &[DiscoveryScope],
@@ -878,6 +952,7 @@ impl ReactAgent {
             .await
     }
 
+    /// 将一批 Skill 注册项写入目录及渐进式披露工具的定义视图。
     async fn register_skill_descriptors(
         &mut self,
         registrations: Vec<SkillRegistration>,
@@ -894,10 +969,9 @@ impl ReactAgent {
 
         let mut names = Vec::new();
 
-        // Build a concurrent definition view for progressive disclosure tools.
-        // Descriptors/documents remain local to this adapter, while activation
-        // and activation-derived sandbox policy use the primary registry's
-        // shared runtime authority.
+        // 为渐进式披露工具构建一个并发的定义视图。描述符/文档保留在
+        // 本适配器本地，而激活及激活衍生出的沙箱策略则使用主注册表的
+        // 共享运行时权限。
         let shared = if let Some(existing) = &self.tools.progressive_skill_registry {
             existing.clone()
         } else {
@@ -951,7 +1025,7 @@ impl ReactAgent {
                     registration.set_registration_source(source);
                 }
 
-                // Register hooks from a programmatic descriptor if present.
+                // 若程序化描述符中存在 hook 定义，则一并注册。
                 if let Some(hooks_def) = &registration.descriptor().hooks {
                     let skill_dir = registration
                         .descriptor()
@@ -1002,9 +1076,8 @@ impl ReactAgent {
             return Ok(names);
         }
 
-        // Keep the catalog independently replaceable. Mutating the root system
-        // prompt on every discovery pass duplicates content and invalidates the
-        // provider's longest cacheable prefix.
+        // 让目录保持可独立替换。若每次发现都修改根系统提示词，
+        // 会导致内容重复，并使 provider 最长可缓存前缀失效。
         if let Some(catalog) = self.tools.skill_registry.catalog_prompt() {
             self.memory.context.lock().await.replace_projection(
                 SKILL_CATALOG_PROJECTION,
@@ -1012,7 +1085,7 @@ impl ReactAgent {
             );
         }
 
-        // Fire InstructionsLoaded hook
+        // 触发 InstructionsLoaded hook
         {
             let hook_ctx = crate::skills::hooks::HookContext::for_instructions_loaded(
                 "startup",
@@ -1043,10 +1116,10 @@ impl ReactAgent {
             }
         }
 
-        // Register progressive disclosure tools with shared registry.
-        // We refresh these tool instances on every discovery pass so their internal
-        // registry and available skill name list stay in sync with newly discovered
-        // skills across repeated `discover_skills()` calls.
+        // 用共享注册表注册渐进式披露工具。
+        // 每次发现都会刷新这些工具实例，以确保其内部注册表和
+        // 可用技能名称列表，能够与多次 `discover_skills()` 调用中
+        // 新发现的技能保持同步。
         let available_names = self.tools.skill_registry.available_names();
 
         self.replace_tool(Box::new(ActivateSkillTool::new(
@@ -1071,6 +1144,7 @@ impl ReactAgent {
         Ok(names)
     }
 
+    /// 用一个新的 Skill 注册项替换同名的现有注册（不允许与代码技能冲突）。
     async fn replace_skill_registration(&mut self, registration: SkillRegistration) -> Result<()> {
         let name = registration.descriptor().name.clone();
         if self.tools.skill_registry.has_code_skill(&name) {
@@ -1099,15 +1173,13 @@ impl ReactAgent {
         }
     }
 
-    /// Register or replace one file-backed descriptor across the catalog and
-    /// progressive tool definition views.
+    /// 在目录与渐进式披露工具定义视图中，注册或替换一个基于文件的描述符。
     pub async fn register_skill_descriptor(&mut self, descriptor: SkillDescriptor) -> Result<()> {
         self.replace_skill_registration(SkillRegistration::Filesystem(descriptor))
             .await
     }
 
-    /// Register or replace one immutable prepared Skill document across every
-    /// runtime definition view.
+    /// 在每一个运行时定义视图中，注册或替换一份不可变的已预备 Skill 文档。
     pub async fn register_prepared_skill(
         &mut self,
         document: crate::skills::external::SkillDocument,
@@ -1116,15 +1188,17 @@ impl ReactAgent {
             .await
     }
 
-    /// Record code-skill metadata through the Agent authority.
+    /// 通过 Agent 权限记录代码技能的元数据。
     pub fn record_code_skill_info(&mut self, info: SkillInfo) {
         self.tools.skill_registry.record_code_skill(info);
     }
 
-    /// Register plugin Skills captured by an immutable prepared generation.
-    ///
-    /// This path performs no discovery or document reads. A target-specific
-    /// load policy is still evaluated before the frozen descriptor is applied.
+    /**
+     * 注册由一次不可变的已预备生成所捕获的插件 Skill。
+     *
+     * 该路径不执行任何发现或文档读取。在应用冻结的描述符之前，
+     * 仍会评估针对该目标的加载策略。
+     */
     pub async fn register_prepared_plugin_skills(
         &mut self,
         source: &str,
@@ -1139,8 +1213,7 @@ impl ReactAgent {
             .await
     }
 
-    /// Remove already-discovered skills that are no longer allowed by the
-    /// current product policy, then refresh catalog and progressive tools.
+    /// 移除已发现但不再被当前产品策略允许的技能，然后刷新目录与渐进式工具。
     pub async fn reconcile_skill_load_policy(&mut self) -> Vec<String> {
         let Some(policy) = &self.skill_load_policy else {
             return Vec::new();
@@ -1166,12 +1239,13 @@ impl ReactAgent {
         removed
     }
 
-    /// Remove named file-based Skills from every runtime projection.
-    ///
-    /// This is the replacement primitive used by reload and policy
-    /// reconciliation. It clears descriptor, Hook, progressive-resource, and
-    /// prompt projections together so a subsequent discovery can replace a
-    /// changed `SKILL.md` without leaving stale metadata behind.
+    /**
+     * 从每一个运行时投影中移除指定名称的基于文件的 Skill。
+     *
+     * 这是重新加载与策略协调所使用的替换基础操作。它会一并清除
+     * 描述符、Hook、渐进式资源以及提示词投影，从而使后续的发现
+     * 能够替换已变更的 `SKILL.md`，而不会遗留过期的元数据。
+     */
     pub async fn unregister_skill_names(&mut self, names: &[String]) -> Vec<String> {
         let mut removed = Vec::new();
         for name in names {
@@ -1225,21 +1299,22 @@ impl ReactAgent {
         removed
     }
 
-    /// Replace every Skill currently sourced from `skills_dir`.
-    ///
-    /// Discovery normally preserves an existing same-name descriptor. This
-    /// explicit reload API removes the directory's old registrations first,
-    /// allowing changed descriptions, triggers, resources, and Hooks to take
-    /// effect atomically on the next registration pass.
+    /**
+     * 替换所有当前来源于 `skills_dir` 的 Skill。
+     *
+     * 正常的发现流程会保留已存在的同名描述符。这个显式的重新加载 API
+     * 会先移除该目录下的旧注册项，使变更后的描述、触发器、资源和
+     * Hook 能够在下一次注册时原子地生效。
+     */
     pub async fn reload_skills_from_dir(
         &mut self,
         skills_dir: impl Into<std::path::PathBuf>,
     ) -> Result<Vec<String>> {
         let skills_dir = skills_dir.into();
-        // Discovery canonicalizes every SKILL.md location (resolving symlinked
-        // path components), so the reload filter must compare canonical forms
-        // or a non-canonical argument silently matches nothing and the reload
-        // degrades to a no-op against the already-installed descriptors.
+        // 发现流程会将每个 SKILL.md 的路径规范化（解析符号链接路径部分），
+        // 因此重新加载的过滤逻辑必须比较规范化后的形式，否则传入
+        // 非规范化参数会静默匹配不到任何内容，导致重新加载相对于
+        // 已安装的描述符退化为空操作。
         let skills_dir = tokio::fs::canonicalize(&skills_dir)
             .await
             .unwrap_or(skills_dir);
@@ -1253,7 +1328,7 @@ impl ReactAgent {
         self.load_skills_from_dir(skills_dir).await
     }
 
-    /// Discover skills from one explicit directory.
+    /// 从某一个显式目录中发现技能。
     pub async fn load_skills_from_dir(
         &mut self,
         skills_dir: impl Into<std::path::PathBuf>,
@@ -1262,9 +1337,11 @@ impl ReactAgent {
             .await
     }
 
-    /// Discover plugin-owned skills with variable substitution applied before
-    /// standard frontmatter and body parsing. Plugin Hooks are registered by
-    /// the plugin Hook component, not by the Skill file.
+    /**
+     * 发现插件所拥有的技能，在标准 frontmatter 与正文解析之前
+     * 先应用变量替换。插件 Hook 由插件 Hook 组件负责注册，
+     * 而不是由 Skill 文件负责。
+     */
     pub async fn load_plugin_skills_from_dir(
         &mut self,
         skills_dir: impl Into<std::path::PathBuf>,
@@ -1278,10 +1355,11 @@ impl ReactAgent {
         .await
     }
 
-    /// Mark newly discovered skills with one component source in both live
-    /// registries. The progressive registry powers activation/resource tools;
-    /// tagging only the catalog registry would leave disabled plugin skills
-    /// executable through those tools.
+    /**
+     * 在两个存活注册表中，为新发现的技能标记同一个组件来源。
+     * 渐进式注册表驱动着激活/资源工具；如果只标记目录注册表，
+     * 已被禁用的插件技能仍可通过这些工具被执行。
+     */
     pub async fn tag_skills_source(&mut self, names: &[String], source: &str) {
         self.tools.skill_registry.tag_source(names, source);
         if let Some(shared) = &self.tools.progressive_skill_registry {
@@ -1289,8 +1367,7 @@ impl ReactAgent {
         }
     }
 
-    /// Tag Skill definitions with source and plugin variables in every live
-    /// registry view.
+    /// 在每一个存活的注册表视图中，为 Skill 定义标记来源与插件变量。
     pub async fn tag_skills_source_with_variables(
         &mut self,
         names: &[String],
@@ -1308,7 +1385,7 @@ impl ReactAgent {
         }
     }
 
-    /// Remove every skill owned by `source` and refresh all projections/tools.
+    /// 移除所有归属于 `source` 的技能，并刷新所有投影/工具。
     pub async fn unregister_skills_by_source(&mut self, source: &str) -> Vec<String> {
         let removed = self.tools.skill_registry.unregister_names_by_source(source);
         if removed.is_empty() {
@@ -1354,15 +1431,18 @@ impl ReactAgent {
         removed
     }
 
-    /// Activate one installed skill and inject its instructions into context.
-    ///
-    /// All activation paths should use this method so registry state and model
-    /// context cannot diverge.
+    /**
+     * 激活一个已安装的技能，并将其指令注入到上下文中。
+     *
+     * 所有激活路径都应使用该方法，以避免注册表状态与模型上下文出现分歧。
+     */
     pub async fn activate_skill(&self, skill_name: &str) -> Result<()> {
         if !self.tools.skill_registry.is_installed(skill_name) {
-            // 报错而非静默返回:用户命令路径(TUI /skill、GUI 激活按钮)需要
-            // 区分"激活成功"与"skill 根本不在注册表里(未发现或被禁用)"。
-            // 容忍失败的调用方(如 workspace 路由)自行忽略该错误即可。
+            /*
+             * 报错而非静默返回：用户命令路径（TUI /skill、GUI 激活按钮）需要
+             * 区分“激活成功”与“skill 根本不在注册表里（未发现或被禁用）”。
+             * 容忍失败的调用方（如 workspace 路由）自行忽略该错误即可。
+             */
             return Err(crate::error::ReactError::Other(format!(
                 "skill '{skill_name}' is not installed (not discovered, disabled, or removed)"
             )));
@@ -1392,12 +1472,13 @@ impl ReactAgent {
         Ok(())
     }
 
-    /// Replace or remove a named system-context projection.
-    ///
-    /// Product runtimes use this for user-selectable instruction artifacts
-    /// such as output styles. The marker is the stable ownership boundary, so
-    /// replacing or unloading one projection never mutates the base prompt or
-    /// unrelated runtime context.
+    /**
+     * 替换或移除一个具名的系统上下文投影。
+     *
+     * 产品运行时会用它来处理用户可选择的指令类内容（例如输出风格）。
+     * marker 是稳定的所有权边界，因此替换或卸载某个投影
+     * 不会修改基础提示词或无关的运行时上下文。
+     */
     pub async fn replace_system_context_projection(
         &self,
         marker: impl Into<String>,
@@ -1411,7 +1492,7 @@ impl ReactAgent {
             .replace_projection(marker.into(), message);
     }
 
-    /// List all installed code-based skills.
+    /// 列出所有已安装的基于代码的技能。
     pub fn list_skills(&self) -> Vec<SkillInfo> {
         self.tools
             .skill_registry
@@ -1421,73 +1502,77 @@ impl ReactAgent {
             .collect()
     }
 
-    /// Check if a skill (code or file-based) is installed.
+    /// 检查某个技能（代码或文件形式）是否已安装。
     pub fn has_skill(&self, name: &str) -> bool {
         self.tools.skill_registry.is_installed(name)
     }
 
-    /// Total number of installed skills (code + file-based).
+    /// 已安装技能的总数（代码 + 文件形式）。
     pub fn skill_count(&self) -> usize {
         self.tools.skill_registry.count()
     }
 
-    /// Get the canonical Skill registry for read and activation operations.
-    ///
-    /// Agent-owned definition mutations use the reconciliation methods above
-    /// so progressive tools cannot retain a stale descriptor view.
+    /**
+     * 获取用于读取和激活操作的权威 Skill 注册表。
+     *
+     * Agent 拥有的定义变更会使用上面提到的协调方法，
+     * 以避免渐进式工具保留过期的描述符视图。
+     */
     pub fn skill_registry(&self) -> &crate::skills::SkillRegistry {
         &self.tools.skill_registry
     }
 
-    /// Get the shared hook registry handle.
+    /// 获取共享的 hook 注册表句柄。
     pub fn hook_registry(&self) -> &Arc<tokio::sync::RwLock<crate::skills::hooks::HookRegistry>> {
         &self.tools.hook_registry
     }
 
-    /// Get the shared tool manager handle.
+    /// 获取共享的工具管理器句柄。
     pub fn tool_manager(&self) -> &Arc<echo_execution::tools::ToolManager> {
         &self.tools.tool_manager
     }
 
-    /// Get the sandbox manager, if configured.
+    /// 获取沙箱管理器（如果已配置）。
     pub fn sandbox_manager(&self) -> Option<&Arc<dyn crate::sandbox::SandboxExecutor>> {
         self.tools.sandbox_manager.as_ref()
     }
 
-    /// Get the tool execution pipeline, if configured.
+    /// 获取工具执行流水线（如果已配置）。
     pub fn tool_execution_pipeline(
         &self,
     ) -> &Option<Arc<crate::agent::react::run::pipeline::ToolExecutionPipeline>> {
         &self.tool_execution_pipeline
     }
 
-    /// Get the runtime state store, if configured.
+    /// 获取运行时状态存储（如果已配置）。
     pub fn state_store(&self) -> &Option<Arc<dyn crate::state::RuntimeStateStore>> {
         &self.memory.state_store
     }
 
-    /// Get the conversation store, if configured.
+    /// 获取对话存储（如果已配置）。
     pub fn conversation_store(&self) -> &Option<Arc<dyn crate::memory::ConversationStore>> {
         &self.memory.conversation_store
     }
 
     #[cfg(feature = "human-loop")]
-    /// Get the permission service, if configured.
+    /// 获取权限服务（如果已配置）。
     pub fn permission_service(
         &self,
     ) -> Option<&Arc<crate::human_loop::service::PermissionService>> {
         self.approval.permission_service.as_ref()
     }
 
-    /// Create a `TaskHookBridge` that lets an application-owned task runtime
-    /// translate its durable lifecycle events into the central registry.
-    ///
-    /// Task runtime adapters invoke lifecycle hooks at `TaskRevisionService`
-    /// commit and `RuntimeDagController` execution boundaries.
-    ///
-    /// The bridge fires task lifecycle events
-    /// (`TaskCreated`, `TaskStarted`, and terminal `TaskCompleted`) into the
-    /// central `HookRegistry`. Terminal reason is carried by status.
+    /**
+     * 创建一个 `TaskHookBridge`，让应用层拥有的任务运行时能够将其
+     * 持久化的生命周期事件转译到中心注册表中。
+     *
+     * 任务运行时适配器会在 `TaskRevisionService` 提交以及
+     * `RuntimeDagController` 执行边界处调用生命周期 hook。
+     *
+     * 该桥接器会将任务生命周期事件（`TaskCreated`、`TaskStarted`，
+     * 以及终态的 `TaskCompleted`）触发到中心 `HookRegistry` 中。
+     * 终止原因通过状态字段携带。
+     */
     pub fn create_task_hook_bridge(&self) -> crate::hooks_bridge::TaskHookBridge {
         crate::hooks_bridge::TaskHookBridge::new(
             self.tools.hook_registry.clone(),
@@ -1499,10 +1584,13 @@ impl ReactAgent {
         )
     }
 
-    /// Create a `SubagentHookBridge` that fires subagent lifecycle events
-    /// (SubagentStart, SubagentStop) into the central `HookRegistry`.
-    /// SubagentStop carries a terminal status (completed/failed/cancelled/
-    /// timed_out); there is no separate SubagentCancelled event.
+    /**
+     * 创建一个 `SubagentHookBridge`，将子代理生命周期事件
+     * （SubagentStart、SubagentStop）触发到中心 `HookRegistry` 中。
+     * SubagentStop 携带一个终态状态
+     * （completed/failed/cancelled/timed_out）；并不存在单独的
+     * SubagentCancelled 事件。
+     */
     pub fn create_subagent_hook_bridge(&self) -> crate::hooks_bridge::SubagentHookBridge {
         crate::hooks_bridge::SubagentHookBridge::new(
             self.tools.hook_registry.clone(),
@@ -1516,17 +1604,20 @@ impl ReactAgent {
 
     // ── MCP ──────────────────────────────────────────────────────────────────
 
-    /// Register MCP (Model Context Protocol) tools
-    ///
-    /// # Parameters
-    /// * `tools` - List of MCP tool instances
-    ///
-    /// # Description
-    /// Registers MCP tools into the Agent's tool manager, making them available for tool calls.
+    /**
+     * 注册 MCP（Model Context Protocol）工具
+     *
+     * # 参数
+     * * `tools` - MCP 工具实例列表
+     *
+     * # 说明
+     * 将 MCP 工具注册到 Agent 的工具管理器中，使其可用于工具调用。
+     */
     pub fn register_mcp_tools(&mut self, tools: Vec<Box<dyn Tool>>) {
         self.add_tools(tools);
     }
 
+    /// 移除旧的 MCP 资源工具，并根据当前 MCP 管理器重新注册最新的资源工具。
     #[cfg(feature = "mcp")]
     fn sync_mcp_resource_tools(&mut self) {
         for name in crate::mcp::MCP_RESOURCE_TOOL_NAMES {
@@ -1537,17 +1628,19 @@ impl ReactAgent {
     }
 
     #[cfg(feature = "mcp")]
-    /// Connect to an MCP server based on MCP server configuration
-    ///
-    /// # Parameters
-    /// * `config` - MCP server configuration
-    ///
-    /// # Returns
-    /// Returns the `McpClient` instance created after successful connection
-    ///
-    /// # Description
-    /// This method connects to the MCP server based on the configuration, retrieves the tools provided by the server,
-    /// and registers them into the Agent's tool manager.
+    /**
+     * 根据 MCP 服务器配置连接到 MCP 服务器
+     *
+     * # 参数
+     * * `config` - MCP 服务器配置
+     *
+     * # 返回值
+     * 返回连接成功后创建的 `McpClient` 实例
+     *
+     * # 说明
+     * 该方法根据配置连接到 MCP 服务器，获取该服务器提供的工具，
+     * 并将其注册到 Agent 的工具管理器中。
+     */
     pub async fn connect_mcp_from_config(
         &mut self,
         config: McpServerConfig,
@@ -1565,8 +1658,8 @@ impl ReactAgent {
         Ok(client)
     }
 
-    /// Connect a plugin-owned MCP server without collapsing its authority into
-    /// the direct server namespace.
+    /// 连接一个由插件拥有的 MCP 服务器，且不会将其权限并入直接的
+    /// 服务器命名空间中。
     #[cfg(feature = "mcp")]
     pub async fn connect_mcp_owned(
         &mut self,
@@ -1632,12 +1725,14 @@ impl ReactAgent {
     }
 
     #[cfg(feature = "mcp")]
-    /// Reconcile one named MCP entry without tearing down a working target
-    /// before the replacement has been prepared.
-    ///
-    /// `Some(entry)` connects, replaces, or keeps the named server according
-    /// to the framework `McpManager` contract. `None` removes it. The Agent
-    /// owns only the exposed tool registration around that manager operation.
+    /**
+     * 协调一个具名的 MCP 条目，在替换项准备完成之前，不会先拆除
+     * 正在工作的目标。
+     *
+     * `Some(entry)` 会根据框架 `McpManager` 的约定连接、替换或保留该
+     * 具名服务器；`None` 表示移除它。Agent 仅负责该管理器操作周边的
+     * 已暴露工具注册。
+     */
     pub async fn reconcile_mcp_entry(
         &mut self,
         name: &str,
@@ -1650,15 +1745,16 @@ impl ReactAgent {
         self.reconcile_mcp_target(name, desired).await
     }
 
+    /// 协调一个具名 MCP 目标：连接、替换、保留或移除，并同步暴露的工具投影。
     #[cfg(feature = "mcp")]
     async fn reconcile_mcp_target(
         &mut self,
         name: &str,
         desired: Option<McpServerConfig>,
     ) -> crate::error::Result<McpTargetChange> {
-        // McpManager prepares replacements before swapping the client. Remove
-        // old exposed tools only after that operation succeeds, otherwise a
-        // failed replacement leaves the last-known-good target untouched.
+        // McpManager 会在切换客户端之前先准备好替换项。只有该操作成功后
+        // 才移除旧的已暴露工具，否则一次失败的替换会让最后已知可用的
+        // 目标保持未被触碰的状态。
         let previous_client = self.tools.mcp_manager.get_client(name);
         let previous_tool_names = previous_client
             .as_ref()
@@ -1671,10 +1767,9 @@ impl ReactAgent {
             })
             .unwrap_or_default();
         let result = self.tools.mcp_manager.reconcile_target(name, desired).await;
-        // The manager withdraws the named client on cleanup failure (it is
-        // moved into cleanup debt) but keeps the last-known-good client when
-        // target preparation fails. Only the withdrawn case leaves stale
-        // projections that must be revoked to match the resulting topology.
+        // 当清理失败时，管理器会撤下该具名客户端（转入清理欠账状态），
+        // 但当目标准备失败时，会保留最后已知可用的客户端。只有“已撤下”
+        // 这种情况会留下过期投影，需要被撤销以匹配最终的拓扑结果。
         let withdrawn = result.is_err()
             && previous_client.is_some()
             && !self
@@ -1724,18 +1819,20 @@ impl ReactAgent {
     }
 
     #[cfg(feature = "mcp")]
-    /// Connect to an MCP server from a JSON string configuration
-    ///
-    /// # Parameters
-    /// * `name` - MCP server name
-    /// * `json_config_str` - JSON-formatted MCP server configuration string
-    ///
-    /// # Returns
-    /// Returns the `McpClient` instance created after successful connection
-    ///
-    /// # Description
-    /// This method parses the JSON-formatted configuration string, converts it to MCP server configuration,
-    /// then calls `connect_mcp_from_config` to connect.
+    /**
+     * 从 JSON 字符串配置连接到 MCP 服务器
+     *
+     * # 参数
+     * * `name` - MCP 服务器名称
+     * * `json_config_str` - JSON 格式的 MCP 服务器配置字符串
+     *
+     * # 返回值
+     * 返回连接成功后创建的 `McpClient` 实例
+     *
+     * # 说明
+     * 该方法解析 JSON 格式的配置字符串，将其转换为 MCP 服务器配置，
+     * 然后调用 `connect_mcp_from_config` 进行连接。
+     */
     pub async fn connect_mcp_from_json(
         &mut self,
         name: &str,
@@ -1747,40 +1844,42 @@ impl ReactAgent {
     }
 
     #[cfg(feature = "mcp")]
-    /// Load and connect to multiple MCP servers from a configuration file
-    ///
-    /// # Parameters
-    /// * `path` - MCP configuration file path (supports `.json` or `.yaml` format)
-    ///
-    /// # Returns
-    /// Returns a list of successfully connected `McpClient` instances
-    ///
-    /// # Description
-    /// 1. Parse the MCP configuration file (supports JSON or YAML format)
-    /// 2. Call `connect_mcp_from_config` for each server configuration
-    /// 3. Collect all successfully connected clients
-    /// 4. Failed server connections are skipped with a warning log
-    ///
-    /// # Example
-    /// ```rust
-    /// use echo_agent::prelude::*;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> echo_agent::error::Result<()> {
-    /// let path = std::env::temp_dir().join(format!(
-    ///     "echo-agent-doctest-mcp-{}.json",
-    ///     std::process::id()
-    /// ));
-    /// std::fs::write(&path, r#"{"mcpServers":{}}"#)?;
-    ///
-    /// let config = AgentConfig::new("qwen3-max", "mcp_agent", "You are a helpful assistant");
-    /// let mut agent = ReactAgent::new(config);
-    /// let clients = agent.load_mcp_from_file(&path).await?;
-    /// assert!(clients.is_empty());
-    /// let _ = std::fs::remove_file(&path);
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+     * 从配置文件中加载并连接多个 MCP 服务器
+     *
+     * # 参数
+     * * `path` - MCP 配置文件路径（支持 `.json` 或 `.yaml` 格式）
+     *
+     * # 返回值
+     * 返回成功连接的 `McpClient` 实例列表
+     *
+     * # 说明
+     * 1. 解析 MCP 配置文件（支持 JSON 或 YAML 格式）
+     * 2. 为每个服务器配置调用 `connect_mcp_from_config`
+     * 3. 收集所有连接成功的客户端
+     * 4. 连接失败的服务器会被跳过，并记录一条警告日志
+     *
+     * # 示例
+     * ```rust
+     * use echo_agent::prelude::*;
+     *
+     * # #[tokio::main]
+     * # async fn main() -> echo_agent::error::Result<()> {
+     * let path = std::env::temp_dir().join(format!(
+     *     "echo-agent-doctest-mcp-{}.json",
+     *     std::process::id()
+     * ));
+     * std::fs::write(&path, r#"{"mcpServers":{}}"#)?;
+     *
+     * let config = AgentConfig::new("qwen3-max", "mcp_agent", "You are a helpful assistant");
+     * let mut agent = ReactAgent::new(config);
+     * let clients = agent.load_mcp_from_file(&path).await?;
+     * assert!(clients.is_empty());
+     * let _ = std::fs::remove_file(&path);
+     * # Ok(())
+     * # }
+     * ```
+     */
     pub async fn load_mcp_from_file(
         &mut self,
         path: impl AsRef<std::path::Path>,
@@ -1789,7 +1888,7 @@ impl ReactAgent {
         self.load_mcp_config(config).await
     }
 
-    /// Connect every enabled server from an already parsed MCP config.
+    /// 连接一份已解析的 MCP 配置中所有已启用的服务器。
     #[cfg(feature = "mcp")]
     pub async fn load_mcp_config(
         &mut self,
@@ -1815,47 +1914,53 @@ impl ReactAgent {
     }
 
     #[cfg(feature = "mcp")]
-    /// Get a connected MCP client
-    ///
-    /// # Parameters
-    /// * `name` - MCP server name
-    ///
-    /// # Returns
-    /// Returns the shared MCP client with the given name, or `None` if not found
-    ///
-    /// # Description
-    /// This method retrieves a connected MCP client for direct method invocation.
-    /// Clients are connected via `connect_mcp_from_config` or `load_mcp_from_file`.
+    /**
+     * 获取一个已连接的 MCP 客户端
+     *
+     * # 参数
+     * * `name` - MCP 服务器名称
+     *
+     * # 返回值
+     * 返回指定名称的共享 MCP 客户端，若不存在则返回 `None`
+     *
+     * # 说明
+     * 该方法获取一个已连接的 MCP 客户端，用于直接调用其方法。
+     * 客户端通过 `connect_mcp_from_config` 或 `load_mcp_from_file` 建立连接。
+     */
     pub fn mcp_client(&self, name: &str) -> Option<Arc<McpClient>> {
         self.tools.mcp_manager.get_client(name)
     }
 
     #[cfg(feature = "mcp")]
-    /// List all connected MCP server names
-    ///
-    /// # Returns
-    /// List of connected MCP server names
-    ///
-    /// # Description
-    /// This method returns the names of all currently successfully connected MCP servers,
-    /// useful for displaying connection status or letting users select a specific server.
+    /**
+     * 列出所有已连接的 MCP 服务器名称
+     *
+     * # 返回值
+     * 已连接的 MCP 服务器名称列表
+     *
+     * # 说明
+     * 该方法返回当前所有成功连接的 MCP 服务器名称，
+     * 可用于展示连接状态或让用户选择某个特定服务器。
+     */
     pub fn list_mcp_servers(&self) -> Vec<String> {
         self.tools.mcp_manager.server_names()
     }
 
     #[cfg(feature = "mcp")]
-    /// Disconnect from a specified MCP server
-    ///
-    /// # Parameters
-    /// * `name` - Name of the MCP server to disconnect
-    ///
-    /// # Returns
-    /// `Ok(true)` if disconnected, `Ok(false)` if the server name was not found,
-    /// or a cleanup error if the transport did not settle.
-    ///
-    /// # Description
-    /// This method disconnects from the specified MCP server and removes related tool registrations.
-    /// After disconnection, tools provided by that server will no longer be available.
+    /**
+     * 断开与指定 MCP 服务器的连接
+     *
+     * # 参数
+     * * `name` - 要断开的 MCP 服务器名称
+     *
+     * # 返回值
+     * 若已断开则返回 `Ok(true)`；若未找到该服务器名称则返回 `Ok(false)`；
+     * 若传输层未能正常收尾，则返回清理错误。
+     *
+     * # 说明
+     * 该方法断开与指定 MCP 服务器的连接，并移除相关的工具注册。
+     * 断开后，该服务器提供的工具将不再可用。
+     */
     pub async fn disconnect_mcp(&mut self, name: &str) -> Result<bool> {
         let previous_client = self.tools.mcp_manager.get_client(name);
         let tool_names = previous_client
@@ -1869,9 +1974,9 @@ impl ReactAgent {
             })
             .unwrap_or_default();
         let result = self.tools.mcp_manager.disconnect(name).await;
-        // A cleanup failure still withdraws the client from the manager, so
-        // the old projections would reference a client that is no longer part
-        // of the topology; revoke them best-effort even when returning Err.
+        // 即使清理失败，管理器依然会撤下该客户端，所以旧的投影会
+        // 引用一个已不属于当前拓扑的客户端；即使返回 Err，也要尽力
+        // 撤销这些投影。
         let withdrawn = result.is_err()
             && !self
                 .tools
@@ -1909,8 +2014,7 @@ impl ReactAgent {
         }
     }
 
-    /// Disconnect one owner-qualified MCP server and revoke only its exposed
-    /// tool projections.
+    /// 断开一个带所有权限定的 MCP 服务器，并仅撤销其已暴露的工具投影。
     #[cfg(feature = "mcp")]
     pub async fn disconnect_mcp_owned(&mut self, id: &McpServerId) -> Result<bool> {
         let previous_client = self.tools.mcp_manager.get_client_by_id(id);
@@ -1959,31 +2063,34 @@ impl ReactAgent {
         }
     }
 
-    /// Retry withdrawn MCP cleanup without touching a newer active client.
+    /// 重试已撤下的 MCP 清理操作，且不会影响更新的活跃客户端。
     #[cfg(feature = "mcp")]
     pub async fn retry_mcp_cleanup_debt(&self, name: &str) -> Result<()> {
         self.tools.mcp_manager.retry_cleanup_debt(name).await
     }
 
+    /// 重试一个带所有权限定的 MCP 服务器的清理操作。
     #[cfg(feature = "mcp")]
     pub async fn retry_mcp_cleanup_owned(&self, id: &McpServerId) -> Result<()> {
         self.tools.mcp_manager.retry_cleanup_server(id).await
     }
 
-    // ── System Prompt ────────────────────────────────────────────────────────
+    // ── 系统提示词 ────────────────────────────────────────────────────────
 
-    /// Set the Agent's system prompt
-    ///
-    /// # Parameters
-    /// * `prompt` - New system prompt
-    ///
-    /// # Description
-    /// This method updates the Agent's system prompt and synchronizes the update in the context manager.
-    /// The system prompt defines the Agent's role, behavior guidelines, and task instructions.
-    ///
-    /// # Note
-    /// Setting the system prompt overwrites all previous system prompt content.
-    /// If prompts were previously injected via skills, they will also be overwritten.
+    /**
+     * 设置 Agent 的系统提示词
+     *
+     * # 参数
+     * * `prompt` - 新的系统提示词
+     *
+     * # 说明
+     * 该方法更新 Agent 的系统提示词，并在上下文管理器中同步该更新。
+     * 系统提示词定义了 Agent 的角色、行为准则与任务指令。
+     *
+     * # 注意
+     * 设置系统提示词会覆盖之前所有的系统提示词内容。
+     * 若之前有通过技能注入的提示词，也会一并被覆盖。
+     */
     pub async fn set_system_prompt(&mut self, prompt: String) {
         self.config.system_prompt = prompt.clone();
         self.memory.context.lock().await.update_system(prompt);
@@ -2265,9 +2372,9 @@ mod tests {
         assert!(agent.tools.tool_manager.list_tools().contains(&exposed));
         assert_mcp_projections(&agent, "context", true).await;
 
-        // Replacement with a different config (so the manager prepares a real
-        // replacement) and failing old-close: target withdrawn, error
-        // returned, but stale tool projections must be revoked.
+        // 使用不同的配置进行替换（这样管理器会准备一次真正的替换），
+        // 且旧客户端关闭失败：目标被撤下、返回错误，但过期的工具
+        // 投影必须被撤销。
         let mut different = replacement_config("context");
         different.transport = crate::mcp::TransportConfig::Stdio {
             command: "/bin/sh".to_string(),
@@ -2288,7 +2395,7 @@ mod tests {
         assert!(!agent.tools.tool_manager.list_tools().contains(&exposed));
         assert_mcp_projections(&agent, "context", false).await;
 
-        // Disconnect with failing old-close revokes projections as well.
+        // 关闭失败时进行断开操作，同样会撤销投影。
         let again = failing_close_client("context", 1).await?;
         registered_target(&mut agent, "context", &again).await?;
         assert!(agent.tools.tool_manager.list_tools().contains(&exposed));
@@ -2421,8 +2528,8 @@ mod tests {
         assert!(agent.tools.tool_manager.list_tools().contains(&exposed));
         assert_mcp_projections(&agent, "context", true).await;
 
-        // A replacement whose preparation fails (empty stdio command) keeps
-        // the old target and its projections untouched.
+        // 一次准备失败的替换（stdio 命令为空）应保持旧目标及其
+        // 投影不受影响。
         let mut broken = replacement_config("context");
         broken.transport = crate::mcp::TransportConfig::Stdio {
             command: "   ".to_string(),

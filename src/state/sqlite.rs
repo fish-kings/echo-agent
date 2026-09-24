@@ -1,4 +1,4 @@
-//! SQLite-backed [`RuntimeStateStore`] implementation.
+//! 基于 SQLite 实现的 [`RuntimeStateStore`]。
 
 use super::{
     AgentCheckpoint, ManagedRuntimeStateSnapshot, RuntimeCheckpointCasReceipt,
@@ -22,42 +22,62 @@ use std::path::Path;
 
 const MAX_CONVERSATION_EPOCH: u64 = i64::MAX as u64;
 
+/// SQLite 中持久化的运行时作用域（scope）记录，包含作用域权威信息及其退役状态。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SqliteRuntimeScopeRecord {
+    /// 该作用域当前的权威信息（版本号、生命周期等）。
     authority: RuntimeScopeAuthority,
+    /// 正在进行中的退役清单（如果作用域当前处于退役流程中）。
     current_retirement: Option<ScopeRetirementManifest>,
+    /// 已完成的退役回执历史列表。
     completed_retirements: Vec<ScopeRetirementReceipt>,
 }
 
+/// SQLite 中持久化的单个运行时状态记录，对应一次生成（generation）的完整状态。
 #[derive(Clone, Debug)]
 struct SqliteRuntimeStateRecord {
+    /// 该运行时状态的唯一标识。
     runtime_state_id: String,
+    /// 该运行时状态所属的作用域标识。
     scope_id: String,
+    /// 当前的运行时状态版本（未托管/已托管/已退役等）。
     version: RuntimeStateVersion,
+    /// 关联的会话纪元（epoch），用于防止跨纪元误用。
     conversation_epoch: Option<u64>,
+    /// 保存该状态时所属作用域的修订号。
     scope_revision: u64,
+    /// 保存该状态时所属作用域的生命周期阶段。
     scope_lifecycle: RuntimeScopeLifecycle,
+    /// 执行比较并保存（CAS）时预期的前一个状态版本。
     cas_expected_state_version: Option<RuntimeStateExpectedVersion>,
+    /// 执行比较并保存（CAS）时预期的前一个作用域修订号。
     cas_expected_scope_revision: u64,
+    /// 记录已确认的转录（transcript）投影证明，用于校验幂等提交。
     transcript_ack_proof: Option<SqliteRuntimeTranscriptAckProof>,
+    /// 该运行时状态对应的检查点数据（未托管/已托管状态下存在）。
     checkpoint: Option<AgentCheckpoint>,
 }
 
+/// 转录投影已被确认（acknowledge）的证明，用于校验重放请求是否与已提交结果一致。
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct SqliteRuntimeTranscriptAckProof {
+    /// 触发该次确认的操作标识。
     operation_id: String,
+    /// 已确认负载的摘要（用于校验一致性）。
     payload_digest: String,
 }
 
-/// SQLite-backed runtime checkpoint store.
+/// 基于 SQLite 实现的运行时检查点存储。
 #[derive(Clone)]
 pub struct SqliteRuntimeStateStore {
+    /// SQLite 数据库文件的规范化路径。
     path: std::path::PathBuf,
+    /// 当前调用附带的持久化调用上下文（用于截止时间检查等）。
     call_context: Option<crate::memory::PersistenceCallContext>,
 }
 
 impl SqliteRuntimeStateStore {
-    /// Create a SQLite state store at `path`.
+    /// 在 `path` 路径下创建一个 SQLite 状态存储。
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
@@ -76,6 +96,7 @@ impl SqliteRuntimeStateStore {
         Ok(store)
     }
 
+    /// 打开一个到 SQLite 数据库文件的新连接，并配置忙等待超时。
     fn open_conn(&self) -> Result<Connection> {
         let connection = Connection::open(&self.path).map_err(|error| {
             crate::error::ReactError::from(RuntimeStateError::Io(format!(
@@ -90,7 +111,7 @@ impl SqliteRuntimeStateStore {
         Ok(connection)
     }
 
-    /// Initialize the checkpoint table.
+    /// 初始化检查点相关的数据表（如果尚不存在）。
     pub fn init_tables(&self) -> Result<()> {
         let conn = self.open_conn()?;
         conn.execute_batch(
@@ -138,9 +159,9 @@ impl SqliteRuntimeStateStore {
         )
         .map_err(|error| RuntimeStateError::Io(format!("failed to init tables: {error}")))?;
 
-        // Databases created before working-directory restoration lack this
-        // column. SQLite has no `ADD COLUMN IF NOT EXISTS`, so only the exact
-        // duplicate-column outcome is accepted.
+        /* 在引入工作目录（working-directory）恢复功能之前创建的数据库缺少该列。
+           SQLite 没有 `ADD COLUMN IF NOT EXISTS` 语法，因此这里只接受“列已存在”
+           这一种确切的报错结果，其余错误仍会被抛出。 */
         if let Err(error) = conn.execute(
             "ALTER TABLE agent_checkpoints ADD COLUMN working_dir TEXT",
             [],
@@ -171,6 +192,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 以 `Immediate` 模式开启一个事务，尽早获取写锁以避免竞态升级失败。
     fn immediate_transaction(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
         conn.transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| {
@@ -181,16 +203,19 @@ impl SqliteRuntimeStateStore {
             })
     }
 
+    /// 构造一个“托管状态要求使用比较并保存（CAS）”的错误。
     fn managed_state_error(message: impl Into<String>) -> crate::error::ReactError {
         RuntimeStateError::ManagedStateRequiresCas(message.into()).into()
     }
 
+    /// 返回一个携带指定持久化调用上下文的存储副本。
     fn with_call_context(&self, context: crate::memory::PersistenceCallContext) -> Self {
         let mut store = self.clone();
         store.call_context = Some(context);
         store
     }
 
+    /// 校验给定的持久化调用上下文尚未超过截止时间，超时或非法截止时间会转换为对应错误。
     fn ensure_call_deadline(
         context: crate::memory::PersistenceCallContext,
         operation: &str,
@@ -206,18 +231,21 @@ impl SqliteRuntimeStateStore {
         })
     }
 
+    /// 若当前存储携带调用上下文，则校验其截止时间是否仍然有效。
     fn ensure_active_deadline(&self, operation: &str) -> Result<()> {
         self.call_context.map_or(Ok(()), |context| {
             Self::ensure_call_deadline(context, operation)
         })
     }
 
+    /// 将修订号加一，若已达到 `u64` 上限则返回“修订号耗尽”错误。
     fn next_revision(current: u64, identity: &str) -> Result<u64> {
         current
             .checked_add(1)
             .ok_or_else(|| RuntimeStateError::RevisionExhausted(identity.to_string()).into())
     }
 
+    /// 计算检查点内容的 SHA-256 摘要，用于比较未托管检查点是否发生变化。
     fn checkpoint_digest(checkpoint: &AgentCheckpoint) -> Result<String> {
         let encoded = serde_json::to_vec(checkpoint).map_err(|error| {
             RuntimeStateError::SerializationError(format!(
@@ -227,6 +255,7 @@ impl SqliteRuntimeStateStore {
         Ok(format!("{:x}", Sha256::digest(encoded)))
     }
 
+    /// 通过序列化后的 JSON 字节比较两个值是否相等。
     fn serialized_eq<T: Serialize>(left: &T, right: &T) -> Result<bool> {
         let left = serde_json::to_vec(left).map_err(|error| {
             RuntimeStateError::SerializationError(format!(
@@ -241,6 +270,7 @@ impl SqliteRuntimeStateStore {
         Ok(left == right)
     }
 
+    /// 校验未托管检查点不携带待处理的转录投影（该场景必须走比较并保存流程）。
     fn validate_unmanaged_checkpoint(checkpoint: &AgentCheckpoint) -> Result<()> {
         let payload = checkpoint.restore_managed_runtime_payload()?;
         if payload.pending_transcript_projection.is_some() {
@@ -251,6 +281,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 将值序列化为 JSON 字符串，`label` 用于错误信息中标识该值的用途。
     fn encode<T: Serialize>(value: &T, label: &str) -> Result<String> {
         serde_json::to_string(value).map_err(|error| {
             RuntimeStateError::SerializationError(format!("failed to serialize {label}: {error}"))
@@ -258,6 +289,7 @@ impl SqliteRuntimeStateStore {
         })
     }
 
+    /// 将 JSON 字符串反序列化为目标类型，`label` 用于错误信息中标识该值的用途。
     fn decode<T: serde::de::DeserializeOwned>(value: &str, label: &str) -> Result<T> {
         serde_json::from_str(value).map_err(|error| {
             RuntimeStateError::SerializationError(format!("failed to deserialize {label}: {error}"))
@@ -265,6 +297,7 @@ impl SqliteRuntimeStateStore {
         })
     }
 
+    /// 提取运行时状态版本中的修订号，未托管或缺失状态视为 0。
     fn state_revision(version: &RuntimeStateVersion) -> u64 {
         match version {
             RuntimeStateVersion::Absent => 0,
@@ -274,6 +307,7 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 判断当前状态版本是否与比较并保存（CAS）请求中预期的版本一致。
     fn state_matches_expected(
         current: Option<&RuntimeStateVersion>,
         expected: &RuntimeStateExpectedVersion,
@@ -292,10 +326,12 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 校验会话纪元（epoch）是否在受支持的范围内（`None` 视为合法）。
     fn epoch_is_valid(epoch: Option<u64>) -> bool {
         epoch.is_none_or(|epoch| (1..=MAX_CONVERSATION_EPOCH).contains(&epoch))
     }
 
+    /// 校验检查点比较并保存（CAS）请求的基本合法性（标识非空、纪元合法、待处理投影匹配等）。
     fn validate_checkpoint_cas_request(request: &RuntimeCheckpointCasRequest) -> Result<()> {
         if request.scope_id.trim().is_empty() || request.runtime_state_id.trim().is_empty() {
             return Err(RuntimeStateError::SerializationError(
@@ -330,6 +366,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验从当前状态到新检查点的“待处理转录投影”状态迁移是否合法。
     fn validate_pending_transition(
         state: Option<&SqliteRuntimeStateRecord>,
         checkpoint: &AgentCheckpoint,
@@ -419,6 +456,7 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 校验待处理转录投影的“尝试次数（attempt）”状态迁移是否合法（同次失败记录或按规则重试）。
     fn valid_pending_attempt_transition(
         current: &super::PendingTranscriptProjection,
         next: &super::PendingTranscriptProjection,
@@ -445,6 +483,7 @@ impl SqliteRuntimeStateStore {
         same_attempt_failure || retry_dispatch
     }
 
+    /// 判断某次转录投影尝试的失败分类是否属于可重试的类别。
     fn retryable_attempt_class(class: &super::TranscriptProjectionAttemptClass) -> bool {
         matches!(
             class,
@@ -455,6 +494,7 @@ impl SqliteRuntimeStateStore {
         )
     }
 
+    /// 校验转录确认请求与当前状态记录中待处理的转录投影是否完全匹配。
     fn validate_transcript_ack(
         state: &SqliteRuntimeStateRecord,
         request: &RuntimeTranscriptAckRequest,
@@ -498,6 +538,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 判断该比较并保存（CAS）请求是否是对已成功应用的同一次写入的重放（幂等重试）。
     fn is_direct_cas_replay(
         state: &SqliteRuntimeStateRecord,
         request: &RuntimeCheckpointCasRequest,
@@ -509,6 +550,7 @@ impl SqliteRuntimeStateStore {
             && Self::checkpoint_is_current(state, &request.checkpoint)?)
     }
 
+    /// 判断该退役请求是否是对已成功执行的同一次退役操作的重放（幂等重试）。
     fn is_direct_retirement_replay(
         state: &SqliteRuntimeStateRecord,
         request: &RuntimeGenerationRetireRequest,
@@ -522,6 +564,7 @@ impl SqliteRuntimeStateStore {
             && request.expected_scope_revision.checked_add(1) == Some(state.scope_revision)
     }
 
+    /// 在给定的连接上按会话（conversation）标识加载检查点记录。
     fn load_checkpoint_on_connection(
         conn: &Connection,
         conversation_id: &str,
@@ -580,6 +623,7 @@ impl SqliteRuntimeStateStore {
         }))
     }
 
+    /// 在给定的连接上按作用域标识加载运行时作用域记录，并对其内容做一致性校验。
     fn load_scope_record_on_connection(
         conn: &Connection,
         scope_id: &str,
@@ -631,6 +675,7 @@ impl SqliteRuntimeStateStore {
         Ok(Some(record))
     }
 
+    /// 在给定的连接上写入（插入或更新）运行时作用域记录。
     fn save_scope_record_on_connection(
         conn: &Connection,
         record: &SqliteRuntimeScopeRecord,
@@ -660,6 +705,8 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验作用域记录内部一致性：退役中的作用域必须携带清单，非退役中的作用域不得携带清单，
+    /// 且已完成的退役回执必须归属该作用域并处于已完成/已墓碑化状态。
     fn validate_scope_record(record: &SqliteRuntimeScopeRecord) -> Result<()> {
         match (
             record.authority.lifecycle,
@@ -712,6 +759,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验退役清单中标记为“因删除而丢弃”的每个运行时状态，都确实拥有匹配的退役墓碑记录。
     fn validate_retirement_tombstones_on_connection(
         conn: &Connection,
         record: &SqliteRuntimeScopeRecord,
@@ -753,6 +801,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 在给定的连接上加载运行时状态记录，兼容已托管记录与旧版（legacy）未托管检查点两种情形。
     fn load_state_record_on_connection(
         conn: &Connection,
         runtime_state_id: &str,
@@ -887,6 +936,7 @@ impl SqliteRuntimeStateStore {
         Ok(Some(record))
     }
 
+    /// 在给定的连接上写入（插入或更新）运行时状态记录及其绑定的检查点；若无检查点则清除旧记录。
     fn save_state_record_on_connection(
         conn: &Connection,
         record: &SqliteRuntimeStateRecord,
@@ -952,6 +1002,8 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 校验运行时状态记录内部一致性：不同版本（未托管/已托管/已退役/缺失）分别要求
+    /// 检查点存在与否、待处理投影的基准修订号匹配等约束；同时校验转录确认证明的合法性。
     fn validate_state_record(record: &SqliteRuntimeStateRecord) -> Result<()> {
         match &record.version {
             RuntimeStateVersion::Unmanaged { .. } => {
@@ -1026,6 +1078,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 加载某个作用域下所有已绑定的运行时状态记录，并兼容旧版同名 ID 的隐式绑定。
     fn scope_state_records_on_connection(
         conn: &Connection,
         scope_id: &str,
@@ -1088,6 +1141,8 @@ impl SqliteRuntimeStateStore {
         Ok(records)
     }
 
+    /// 推导作用域的权威信息：优先使用已持久化的作用域记录，否则从其下修订号最高的状态
+    /// 记录推断，都不存在时退回到未托管场景下的默认权威信息。
     fn authority_or_unmanaged(
         scope_id: &str,
         scope: Option<&SqliteRuntimeScopeRecord>,
@@ -1114,6 +1169,7 @@ impl SqliteRuntimeStateStore {
             })
     }
 
+    /// 提取该状态记录中待处理转录投影批次的操作标识（若存在）。
     fn pending_operation_id(record: &SqliteRuntimeStateRecord) -> Result<Option<String>> {
         let Some(checkpoint) = record.checkpoint.as_ref() else {
             return Ok(None);
@@ -1124,6 +1180,7 @@ impl SqliteRuntimeStateStore {
             .map(|pending| pending.batch.operation_id))
     }
 
+    /// 判断给定检查点内容是否与状态记录中当前保存的检查点一致（通过摘要比较）。
     fn checkpoint_is_current(
         record: &SqliteRuntimeStateRecord,
         checkpoint: &AgentCheckpoint,
@@ -1136,6 +1193,7 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 根据作用域权威信息、退役清单和状态，组装一份退役回执。
     fn retirement_receipt(
         scope: RuntimeScopeAuthority,
         manifest: ScopeRetirementManifest,
@@ -1163,6 +1221,8 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 查找与指定删除操作标识匹配的已完成退役回执，并根据留存下限纪元刷新其状态
+    /// （区分“已完成”与“回执已过期”两种情形）。
     fn completed_retirement(
         record: &SqliteRuntimeScopeRecord,
         delete_operation_id: &str,
@@ -1197,6 +1257,7 @@ impl SqliteRuntimeStateStore {
             })
     }
 
+    /// 判断一次会话删除操作的回执是否表示删除成功（含幂等的“已删除”场景）。
     fn successful_conversation_delete(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> bool {
@@ -1207,6 +1268,7 @@ impl SqliteRuntimeStateStore {
         ) && receipt.retention_floor_epoch < receipt.deleted_epoch
     }
 
+    /// 将会话删除失败的状态映射为对应的作用域退役状态；成功场景返回 `None`。
     fn conversation_delete_failure_status(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> Option<ScopeRetirementStatus> {
@@ -1225,6 +1287,7 @@ impl SqliteRuntimeStateStore {
         }
     }
 
+    /// 判断两份会话删除回执是否描述同一次成功的删除效果（操作标识、摘要、纪元均一致）。
     fn same_conversation_delete_effect(
         left: &crate::memory::ManagedConversationDeleteReceipt,
         right: &crate::memory::ManagedConversationDeleteReceipt,
@@ -1236,7 +1299,7 @@ impl SqliteRuntimeStateStore {
             && Self::successful_conversation_delete(right)
     }
 
-    /// Delete a conversation checkpoint synchronously.
+    /// 同步删除一个会话的检查点。
     pub fn clear_conversation_sync(&self, conversation_id: &str) -> Result<()> {
         let mut conn = self.open_conn()?;
         let transaction = Self::immediate_transaction(&mut conn)?;
@@ -1293,6 +1356,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 在给定的连接上写入（插入或更新）单条检查点记录。
     fn save_checkpoint_on_connection(
         conn: &Connection,
         checkpoint: &AgentCheckpoint,
@@ -1330,6 +1394,7 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
+    /// 在按 `scope` 排队的阻塞文件操作中运行 `operation`，运行前后均校验调用截止时间。
     fn run_blocking<'a, T, F>(
         &'a self,
         scope: BlockingFileOperationScope,
@@ -1353,10 +1418,12 @@ impl SqliteRuntimeStateStore {
         })
     }
 
+    /// 为单个实体（单条运行时状态记录）构造阻塞文件操作作用域。
     fn entity_scope(value: &str) -> BlockingFileOperationScope {
         BlockingFileOperationScope::Entity(echo_core::utils::fs::encode_utf8_path_identity(value))
     }
 
+    /// 为一组集合（如同一作用域下的多条记录）构造阻塞文件操作作用域。
     fn collection_scope(value: &str) -> BlockingFileOperationScope {
         BlockingFileOperationScope::Collection(echo_core::utils::fs::encode_utf8_path_identity(
             value,
@@ -1365,14 +1432,17 @@ impl SqliteRuntimeStateStore {
 }
 
 impl RuntimeStateStore for SqliteRuntimeStateStore {
+    /// 声明本存储支持的运行时状态能力等级（带修订号的第一版）。
     fn runtime_state_capability(&self) -> RuntimeStateCapability {
         RuntimeStateCapability::RevisionedV1
     }
 
+    /// 声明本存储支持的持久化调用能力等级（绝对截止时间第一版）。
     fn persistence_call_capability(&self) -> crate::memory::PersistenceCallCapability {
         crate::memory::PersistenceCallCapability::AbsoluteDeadlineV1
     }
 
+    /// 携带调用上下文加载运行时状态快照，调用前先校验截止时间。
     fn load_runtime_state_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1388,6 +1458,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.load_runtime_state(&scope_id, &runtime_state_id).await })
     }
 
+    /// 携带调用上下文加载作用域权威信息，调用前先校验截止时间。
     fn load_scope_authority_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1401,6 +1472,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.load_scope_authority(&scope_id).await })
     }
 
+    /// 携带调用上下文执行检查点比较并保存（CAS），调用前先校验截止时间。
     fn compare_and_save_checkpoint_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1413,6 +1485,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.compare_and_save_checkpoint(request).await })
     }
 
+    /// 携带调用上下文确认转录投影，调用前先校验截止时间。
     fn acknowledge_transcript_projection_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1427,6 +1500,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.acknowledge_transcript_projection(request).await })
     }
 
+    /// 携带调用上下文退役一次运行时生成（generation），调用前先校验截止时间。
     fn retire_runtime_generation_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1439,6 +1513,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.retire_runtime_generation(request).await })
     }
 
+    /// 携带调用上下文启动作用域退役流程，调用前先校验截止时间。
     fn begin_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1451,6 +1526,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         Box::pin(async move { store.begin_scope_retirement(request).await })
     }
 
+    /// 携带调用上下文推进作用域退役流程，调用前先校验截止时间。
     fn continue_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1478,6 +1554,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 加载指定运行时状态的托管快照（版本、作用域权威信息与检查点）。
     fn load_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1521,6 +1598,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 加载指定作用域的权威信息，若没有持久化的作用域记录则从其下的状态推断。
     fn load_scope_authority<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1546,6 +1624,8 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 以比较并保存（CAS）语义持久化检查点：校验作用域纪元与修订号后原子性地写入新版本，
+    /// 并处理已退役、作用域受限、修订冲突及幂等重放等各类边界情况。
     fn compare_and_save_checkpoint<'a>(
         &'a self,
         request: RuntimeCheckpointCasRequest,
@@ -1682,6 +1762,8 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 确认一次转录投影已成功应用：校验其与当前待处理投影一致后推进状态版本，
+    /// 同样需要处理已退役、作用域受限、修订冲突及幂等重放等边界情况。
     fn acknowledge_transcript_projection<'a>(
         &'a self,
         request: RuntimeTranscriptAckRequest,
@@ -1832,6 +1914,8 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 退役一次运行时生成（generation）：校验其无待处理投影且修订号匹配后，将版本
+    /// 标记为已退役并清除其检查点，同样需要处理作用域受限与幂等重放等边界情况。
     fn retire_runtime_generation<'a>(
         &'a self,
         request: RuntimeGenerationRetireRequest,
@@ -1959,6 +2043,8 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 为一个活跃作用域启动退役流程：生成包含其下全部运行时状态的退役清单，并将
+    /// 作用域生命周期切换为“退役中”；对已存在的同一次退役请求做幂等处理。
     fn begin_scope_retirement<'a>(
         &'a self,
         request: ScopeRetirementRequest,
@@ -2097,6 +2183,8 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 推进一个进行中的作用域退役流程：根据 `advance` 记录会话删除回执、标记某个
+    /// 运行时生成已被丢弃，或在所有条件满足时将作用域标记为已墓碑化并归档回执。
     fn continue_scope_retirement<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2358,6 +2446,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 按会话标识读取检查点内容（无论其是否处于托管状态）。
     fn get_checkpoint<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -2372,10 +2461,12 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 保存一个未托管检查点，作用域即会话自身的标识。
     fn save_checkpoint<'a>(&'a self, checkpoint: &'a AgentCheckpoint) -> BoxFuture<'a, Result<()>> {
         self.save_checkpoint_for_scope(&checkpoint.conversation_id, checkpoint)
     }
 
+    /// 在指定作用域下保存一个未托管检查点；若该运行时状态已被版本托管则拒绝写入。
     fn save_checkpoint_for_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2425,6 +2516,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         )
     }
 
+    /// 列出某个作用域下所有已绑定的运行时状态标识（按标识排序）。
     fn runtime_state_ids<'a>(&'a self, scope_id: &'a str) -> BoxFuture<'a, Result<Vec<String>>> {
         let scope_id = scope_id.to_string();
         self.run_blocking(Self::collection_scope(&scope_id), move |store| {
@@ -2451,6 +2543,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 清除单个未托管运行时状态的检查点及其作用域绑定；若该状态已被版本托管则拒绝清除。
     fn clear_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2529,6 +2622,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 清除某个作用域下全部未托管运行时状态的检查点；若作用域或其下任一状态已被版本托管则拒绝清除。
     fn clear_runtime_state_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2585,9 +2679,9 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
                 .map_err(|error| {
                     RuntimeStateError::Io(format!("failed to inspect legacy owner: {error}"))
                 })?;
-            // A foreign scope may legitimately own a runtime ID equal to this
-            // scope's name. That only disables the legacy same-ID fallback; it
-            // must not block deletion of rows actually owned by `scope_id`.
+            /* 另一个作用域可能合法地拥有一个与本作用域同名的运行时 ID。
+               这种情况只会禁用旧版“同名 ID”兜底逻辑，不应阻止删除那些
+               确实归属于 `scope_id` 的记录。 */
             let legacy_exists = legacy_owner.is_none()
                 && transaction
                 .query_row(
@@ -2639,6 +2733,7 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
+    /// 清除一个会话（将会话标识同时视作作用域标识与运行时状态标识）的检查点。
     fn clear_conversation<'a>(&'a self, conversation_id: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.clear_runtime_state(conversation_id, conversation_id)
@@ -2654,6 +2749,7 @@ mod tests {
     use chrono::Utc;
     use std::time::Duration;
 
+    /// 构造一个用于测试的普通（未托管格式）检查点。
     fn checkpoint(runtime_state_id: &str, marker: &str) -> Result<AgentCheckpoint> {
         Ok(AgentCheckpoint {
             conversation_id: runtime_state_id.to_string(),
@@ -2669,6 +2765,7 @@ mod tests {
         })
     }
 
+    /// 构造一个用于测试的已托管格式检查点（不带待处理转录投影）。
     fn managed_checkpoint(runtime_state_id: &str, marker: &str) -> Result<AgentCheckpoint> {
         let mut checkpoint = checkpoint(runtime_state_id, marker)?;
         checkpoint.messages_json = AgentCheckpoint::serialize_payload(
@@ -2678,10 +2775,12 @@ mod tests {
         Ok(checkpoint)
     }
 
+    /// 构造一个携带待处理转录投影（基准修订号为 1）的测试检查点。
     fn pending_checkpoint(runtime_state_id: &str, scope_id: &str) -> Result<AgentCheckpoint> {
         pending_checkpoint_at_revision(runtime_state_id, scope_id, 1)
     }
 
+    /// 构造一个携带待处理转录投影、且基准修订号可指定的测试检查点。
     fn pending_checkpoint_at_revision(
         runtime_state_id: &str,
         scope_id: &str,
@@ -2740,6 +2839,7 @@ mod tests {
         })
     }
 
+    /// 根据一个携带待处理转录投影的检查点，构造对应的转录确认请求。
     fn transcript_ack_request(
         checkpoint: &AgentCheckpoint,
         scope_revision: u64,
@@ -2783,6 +2883,7 @@ mod tests {
         })
     }
 
+    /// 对检查点中待处理转录投影应用给定的修改函数，并返回更新后的检查点。
     fn update_pending_checkpoint(
         checkpoint: &AgentCheckpoint,
         update: impl FnOnce(&mut super::super::PendingTranscriptProjection),
@@ -2802,6 +2903,7 @@ mod tests {
         Ok(updated)
     }
 
+    /// 构造一个用于测试的空退役清单（不含任何待退役条目）。
     fn retirement_manifest(scope_id: &str, epoch: u64) -> Result<ScopeRetirementManifest> {
         let delete = crate::memory::ManagedConversationDelete::prepare(scope_id, epoch)?;
         Ok(ScopeRetirementManifest {
@@ -2813,6 +2915,7 @@ mod tests {
         })
     }
 
+    /// 绕过正常的保存路径，直接向数据库注入一条作用域权威与退役清单记录，用于测试构造异常前置状态。
     fn inject_scope_record(
         store: &SqliteRuntimeStateStore,
         authority: &RuntimeScopeAuthority,

@@ -1,11 +1,10 @@
-//! Prompt template management system
+//! 提示词模板管理系统
 //!
-//! Provides a centralized `PromptTemplateManager` for registering, storing, and
-//! rendering prompt templates with variable substitution. Templates use
-//! `{{variable_name}}` syntax and support nested variable resolution, default
-//! values, and conditional sections.
+//! 提供一个集中式的 `PromptTemplateManager`，用于注册、存储以及渲染带变量替换功能的
+//! 提示词模板。模板使用 `{{variable_name}}` 语法，支持嵌套变量解析、默认值以及
+//! 条件区块。
 //!
-//! # Quick Start
+//! # 快速开始
 //!
 //! ```rust
 //! use echo_core::agent::prompt_template::PromptTemplateManager;
@@ -17,68 +16,72 @@
 //! assert_eq!(result.unwrap(), "Hello, Alice! Welcome to EchoAgent.");
 //! ```
 //!
-//! # Template Syntax
+//! # 模板语法
 //!
-//! - **Variable**: `{{variable_name}}` — substituted with the provided value.
-//! - **Default value**: `{{variable_name:default_value}}` — uses `default_value`
-//!   when the variable is not provided.
-//! - **Conditional block**: `{{#if variable_name}}...{{#endif}}` — includes the
-//!   block only when `variable_name` is present and non-empty.
-//! - **Conditional with alternative**: `{{#if variable_name}}...{{#else}}...{{#endif}}`
-//!   — includes the first block when the variable is present, otherwise the
-//!   alternative block.
+//! - **变量**：`{{variable_name}}` —— 替换为提供的值。
+//! - **默认值**：`{{variable_name:default_value}}` —— 未提供该变量时使用
+//!   `default_value`。
+//! - **条件块**：`{{#if variable_name}}...{{#endif}}` —— 仅当 `variable_name`
+//!   存在且非空时才包含该块。
+//! - **带备选分支的条件块**：`{{#if variable_name}}...{{#else}}...{{#endif}}`
+//!   —— 变量存在时包含第一个块，否则包含备选块。
 
 use crate::error::{ReactError, Result};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-// ── Template Syntax Parsing ───────────────────────────────────────────────────
+// ── 模板语法解析 ───────────────────────────────────────────────────
 
-/// A parsed template element within a prompt template string.
+/// 提示词模板字符串中解析出的一个模板元素。
 #[derive(Debug, Clone, PartialEq)]
 enum TemplateElement {
-    /// Literal text segment (no substitution needed).
+    /// 字面文本片段（无需替换）。
     Literal(String),
-    /// Variable placeholder: `{{name}}` or `{{name:default}}`.
+    /// 变量占位符：`{{name}}` 或 `{{name:default}}`。
     Variable {
+        /// 变量名。
         name: String,
+        /// 变量未提供时使用的默认值。
         default: Option<String>,
     },
-    /// Conditional block start: `{{#if name}}`.
-    ConditionalStart { name: String },
-    /// Conditional else marker: `{{#else}}`.
+    /// 条件块起始标记：`{{#if name}}`。
+    ConditionalStart {
+        /// 用于判断条件是否成立的变量名。
+        name: String,
+    },
+    /// 条件块的 else 标记：`{{#else}}`。
     ConditionalElse,
-    /// Conditional block end: `{{#endif}}`.
+    /// 条件块结束标记：`{{#endif}}`。
     ConditionalEnd,
 }
 
-/// Parse a template string into a sequence of `TemplateElement`s.
+/// 将模板字符串解析为一串 `TemplateElement`。
 fn parse_template(template: &str) -> Vec<TemplateElement> {
     let mut elements = Vec::new();
     let mut remaining = template;
 
     while !remaining.is_empty() {
-        // Find the next `{{` marker
+        // 查找下一个 `{{` 标记
         let open_pos = remaining.find("{{");
         match open_pos {
             None => {
-                // No more markers; the rest is literal text
+                // 没有更多标记；剩余部分全部作为字面文本
                 if !remaining.is_empty() {
                     elements.push(TemplateElement::Literal(remaining.to_string()));
                 }
                 break;
             }
             Some(pos) => {
-                // Emit literal text before the marker
+                // 输出标记之前的字面文本
                 if pos > 0 {
                     elements.push(TemplateElement::Literal(remaining[..pos].to_string()));
                 }
-                // Find the closing `}}`
+                // 查找闭合的 `}}`
                 let after_open = &remaining[pos + 2..];
                 let close_pos = after_open.find("}}");
                 match close_pos {
                     None => {
-                        // Unclosed marker — treat the rest as literal
+                        // 标记未闭合 —— 将剩余部分整体作为字面文本处理
                         elements.push(TemplateElement::Literal(remaining.to_string()));
                         break;
                     }
@@ -87,7 +90,7 @@ fn parse_template(template: &str) -> Vec<TemplateElement> {
                         let tag_content_trimmed = tag_content.trim();
 
                         if let Some(if_variable) = tag_content_trimmed.strip_prefix("#if ") {
-                            // Conditional start: {{#if variable_name}}
+                            // 条件块起始：{{#if variable_name}}
                             let var_name = if_variable.trim();
                             elements.push(TemplateElement::ConditionalStart {
                                 name: var_name.to_string(),
@@ -97,7 +100,7 @@ fn parse_template(template: &str) -> Vec<TemplateElement> {
                         } else if tag_content_trimmed == "#endif" {
                             elements.push(TemplateElement::ConditionalEnd);
                         } else if !tag_content_trimmed.is_empty() {
-                            // Variable: {{name}} or {{name:default}}
+                            // 变量：{{name}} 或 {{name:default}}
                             let colon_pos = tag_content_trimmed.find(':');
                             match colon_pos {
                                 None => {
@@ -116,7 +119,7 @@ fn parse_template(template: &str) -> Vec<TemplateElement> {
                                 }
                             }
                         }
-                        // else: empty {{}} tag, skip it
+                        // 否则：空的 {{}} 标记，跳过
 
                         remaining = &after_open[cpos + 2..];
                     }
@@ -128,7 +131,7 @@ fn parse_template(template: &str) -> Vec<TemplateElement> {
     elements
 }
 
-/// Render a sequence of parsed template elements using the provided variables.
+/// 使用提供的变量渲染一串已解析的模板元素。
 fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, String>) -> String {
     let mut result = String::new();
     let mut i = 0;
@@ -148,7 +151,7 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
                 i += 1;
             }
             TemplateElement::ConditionalStart { name } => {
-                // Find matching #else and #endif
+                // 查找匹配的 #else 和 #endif
                 let mut else_index = None;
                 let mut end_index = None;
                 let mut depth = 0;
@@ -173,12 +176,12 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
                 let end = end_index.unwrap_or(elements.len());
 
                 if has_value {
-                    // Render the block between #if and #else/#endif
+                    // 渲染 #if 与 #else/#endif 之间的块
                     let block_end = else_index.unwrap_or(end);
                     let block = &elements[i + 1..block_end];
                     result.push_str(&render_elements(block, variables));
                 } else if let Some(else_idx) = else_index {
-                    // Render the block between #else and #endif
+                    // 渲染 #else 与 #endif 之间的块
                     let block = &elements[else_idx + 1..end];
                     result.push_str(&render_elements(block, variables));
                 }
@@ -186,8 +189,8 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
                 i = end.saturating_add(1);
             }
             TemplateElement::ConditionalElse | TemplateElement::ConditionalEnd => {
-                // These should be consumed by ConditionalStart rendering above.
-                // If we encounter them at the top level, just skip.
+                // 这些标记本应在上面的 ConditionalStart 渲染逻辑中被消耗掉。
+                // 如果在顶层遇到它们，直接跳过即可。
                 i += 1;
             }
         }
@@ -198,19 +201,18 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
 
 // ── PromptTemplateManager ──────────────────────────────────────────────────────
 
-/// Centralized prompt template registry and rendering engine.
+/// 集中式提示词模板注册表与渲染引擎。
 ///
-/// `PromptTemplateManager` stores named prompt templates and renders them with
-/// variable substitution. It supports:
+/// `PromptTemplateManager` 存储具名的提示词模板，并对其进行变量替换渲染。支持：
 ///
-/// - Simple variable substitution: `{{name}}`
-/// - Default values: `{{name:default}}`
-/// - Conditional blocks: `{{#if var}}...{{#else}}...{{#endif}}`
+/// - 简单变量替换：`{{name}}`
+/// - 默认值：`{{name:default}}`
+/// - 条件块：`{{#if var}}...{{#else}}...{{#endif}}`
 ///
-/// The manager is thread-safe (uses `RwLock` internally) and is typically
-/// shared across agents via `Arc<PromptTemplateManager>`.
+/// 该管理器是线程安全的（内部使用 `RwLock`），通常通过 `Arc<PromptTemplateManager>`
+/// 在多个 agent 之间共享。
 ///
-/// # Example
+/// # 示例
 ///
 /// ```rust
 /// use echo_core::agent::prompt_template::PromptTemplateManager;
@@ -226,60 +228,60 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
 /// assert_eq!(rendered.unwrap(), "You are a coding assistant for Rust development.");
 /// ```
 pub struct PromptTemplateManager {
+    /// 按名称索引的已注册模板集合。
     templates: RwLock<HashMap<String, String>>,
 }
 
 impl PromptTemplateManager {
-    /// Create an empty template manager.
+    /// 创建一个空的模板管理器。
     pub fn new() -> Self {
         Self {
             templates: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Register a named prompt template.
+    /// 注册一个具名的提示词模板。
     ///
-    /// If a template with the same name already exists, it is overwritten.
+    /// 如果同名模板已存在，则会被覆盖。
     pub fn register(&self, name: &str, template: &str) {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let mut guard = self.templates.write().unwrap_or_else(|e| e.into_inner());
         guard.insert(name.to_string(), template.to_string());
     }
 
-    /// Remove a named template.
+    /// 移除一个具名模板。
     ///
-    /// Returns `true` if the template existed and was removed.
+    /// 若该模板存在并被移除，返回 `true`。
     pub fn remove(&self, name: &str) -> bool {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let mut guard = self.templates.write().unwrap_or_else(|e| e.into_inner());
         guard.remove(name).is_some()
     }
 
-    /// Check whether a template with the given name is registered.
+    /// 检查给定名称的模板是否已注册。
     pub fn contains(&self, name: &str) -> bool {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         guard.contains_key(name)
     }
 
-    /// List all registered template names.
+    /// 列出所有已注册模板的名称。
     pub fn template_names(&self) -> Vec<String> {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         guard.keys().cloned().collect()
     }
 
-    /// Render a named template with the provided variable substitutions.
+    /// 使用提供的变量替换渲染一个具名模板。
     ///
-    /// Variables are provided as a slice of `(name, value)` pairs. Missing
-    /// variables are either replaced with their default value (if specified
-    /// in the template via `{{name:default}}`) or left empty.
+    /// 变量以 `(name, value)` 对组成的切片形式提供。缺失的变量要么使用模板中
+    /// 通过 `{{name:default}}` 指定的默认值替换，要么保留为空。
     ///
-    /// # Errors
+    /// # 错误
     ///
-    /// Returns `ReactError::Other` if the template name is not registered.
+    /// 若模板名未注册，返回 `ReactError::Other`。
     pub fn render(&self, name: &str, variables: &[(&str, &str)]) -> Result<String> {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         let template = guard
             .get(name)
@@ -294,10 +296,9 @@ impl PromptTemplateManager {
         Ok(render_elements(&elements, &vars))
     }
 
-    /// Render a template string directly (without looking up by name).
+    /// 直接渲染一个模板字符串（不通过名称查找）。
     ///
-    /// This is useful for one-off rendering where the template is not
-    /// registered in the manager.
+    /// 适用于模板未在管理器中注册的一次性渲染场景。
     pub fn render_template(&self, template: &str, variables: &[(&str, &str)]) -> String {
         let vars: HashMap<String, String> = variables
             .iter()
@@ -308,22 +309,21 @@ impl PromptTemplateManager {
         render_elements(&elements, &vars)
     }
 
-    /// Get the raw template string for a registered template.
+    /// 获取一个已注册模板的原始模板字符串。
     ///
-    /// Returns `None` if the template name is not registered.
+    /// 若模板名未注册，返回 `None`。
     pub fn get_template(&self, name: &str) -> Option<String> {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         guard.get(name).cloned()
     }
 
-    /// Render a named template, falling back to the raw template string
-    /// if no substitution is needed (i.e., the template contains no `{{`
-    /// markers).
+    /// 渲染一个具名模板；当不需要任何替换时（即模板中不包含 `{{` 标记），
+    /// 直接回退返回原始模板字符串。
     ///
-    /// This is an optimization for templates that are static text.
+    /// 这是针对静态文本模板的一种性能优化。
     pub fn render_or_raw(&self, name: &str, variables: &[(&str, &str)]) -> Result<String> {
-        // recover from poison — data is still valid
+        // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         let template = guard
             .get(name)
@@ -344,12 +344,13 @@ impl PromptTemplateManager {
 }
 
 impl Default for PromptTemplateManager {
+    /// 等价于 `PromptTemplateManager::new()`。
     fn default() -> Self {
         Self::new()
     }
 }
 
-// ── Unit Tests ──────────────────────────────────────────────────────────────────
+// ── 单元测试 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -381,10 +382,10 @@ mod tests {
     fn test_default_value() {
         let manager = PromptTemplateManager::new();
         manager.register("fallback", "Hello, {{name:Guest}}!");
-        // Without providing 'name', defaults to "Guest"
+        // 不提供 'name' 时，默认使用 "Guest"
         let result = manager.render("fallback", &[]).unwrap();
         assert_eq!(result, "Hello, Guest!");
-        // With 'name' provided, uses the provided value
+        // 提供 'name' 时，使用提供的值
         let result = manager.render("fallback", &[("name", "Alice")]).unwrap();
         assert_eq!(result, "Hello, Alice!");
     }
@@ -428,10 +429,10 @@ mod tests {
             "cond_else",
             "{{#if premium}}Premium features enabled.{{#else}}Standard features only.{{#endif}}",
         );
-        // Premium present
+        // 存在 premium
         let result = manager.render("cond_else", &[("premium", "true")]).unwrap();
         assert_eq!(result, "Premium features enabled.");
-        // Premium absent
+        // 不存在 premium
         let result = manager.render("cond_else", &[]).unwrap();
         assert_eq!(result, "Standard features only.");
     }
@@ -440,7 +441,7 @@ mod tests {
     fn test_conditional_empty_value_acts_as_absent() {
         let manager = PromptTemplateManager::new();
         manager.register("cond_empty", "{{#if var}}Present{{#else}}Absent{{#endif}}");
-        // Empty string value triggers the else branch
+        // 空字符串值会触发 else 分支
         let result = manager.render("cond_empty", &[("var", "")]).unwrap();
         assert_eq!(result, "Absent");
     }
@@ -452,15 +453,15 @@ mod tests {
             "nested",
             "{{#if a}}A is present. {{#if b}}B too.{{#else}}B missing.{{#endif}}{{#else}}A missing.{{#endif}}",
         );
-        // Both present
+        // 两者都存在
         let result = manager
             .render("nested", &[("a", "yes"), ("b", "yes")])
             .unwrap();
         assert_eq!(result, "A is present. B too.");
-        // Only A present
+        // 仅 A 存在
         let result = manager.render("nested", &[("a", "yes")]).unwrap();
         assert_eq!(result, "A is present. B missing.");
-        // A absent
+        // A 不存在
         let result = manager.render("nested", &[]).unwrap();
         assert_eq!(result, "A missing.");
     }
@@ -488,7 +489,7 @@ mod tests {
         manager.register("key", "Value");
         assert!(manager.remove("key"));
         assert!(!manager.contains("key"));
-        assert!(!manager.remove("key")); // Already removed
+        assert!(!manager.remove("key")); // 已经被移除过
     }
 
     #[test]
@@ -534,7 +535,7 @@ mod tests {
         let manager = Arc::new(PromptTemplateManager::new());
         manager.register("shared", "Hello, {{name}}!");
 
-        // Can be used from multiple references
+        // 可以从多个引用中使用
         let m1 = Arc::clone(&manager);
         let m2 = Arc::clone(&manager);
         let r1 = m1.render("shared", &[("name", "A")]).unwrap();

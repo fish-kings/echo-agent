@@ -1,7 +1,8 @@
-//! Subagent executor — unified dispatch engine for Sync / Fork / Teammate modes
-//!
-//! The executor receives a [`DispatchRequest`] and routes it to the appropriate
-//! execution strategy based on the definition's [`ExecutionMode`].
+/*! 子代理执行器 —— Sync / Fork / Teammate 三种模式的统一调度引擎。
+
+执行器接收一个 [`DispatchRequest`],并根据定义中的 [`ExecutionMode`] 将其
+路由到对应的执行策略。
+*/
 
 use crate::error::{AgentError, ReactError, Result};
 use echo_core::agent::{
@@ -42,45 +43,44 @@ use crate::tasks::{
 
 // ── Dispatch Request ──────────────────────────────────────────────────────────
 
-/// A request to dispatch a task to a subagent.
+/// 一次向子代理派发任务的请求。
 #[derive(Clone)]
 pub struct DispatchRequest {
-    /// Target subagent name.
+    /// 目标子代理名称。
     pub agent_name: String,
-    /// Task description.
+    /// 任务描述。
     pub task: String,
-    /// Override the definition's default execution mode.
+    /// 覆盖定义中默认的执行模式。
     pub mode_override: Option<ExecutionMode>,
-    /// Cancellation token (propagated from parent).
+    /// 取消令牌（从父级传播而来）。
     pub cancel: CancellationToken,
-    /// Parent agent name (for logging and topology).
+    /// 父代理名称（用于日志与拓扑关系）。
     pub parent_agent: String,
-    /// Parent context for inheritance (Fork mode).
+    /// 用于继承的父级上下文（Fork 模式使用）。
     pub parent_context: Option<SubagentContext>,
-    /// Nested delegation policy (prevents unbounded delegation chains).
+    /// 嵌套委派策略（防止无限制的委派链）。
     pub delegation_policy: NestedDelegationPolicy,
     /// 应用层 run 级上下文（跨 spawn 安全，值传递）。
     ///
     /// dispatch_fork 将它放入本次 `AgentInvocationContext`，使 subagent 内的工具
     /// 能经 ToolContext 读到 run_id/cancel/trace_sink——不修改共享 agent。
     pub runtime_context: Option<echo_core::tools::ExternalRunContext>,
-    /// Optional multimodal message (images/files). When `Some`, the subagent is
-    /// dispatched via `execute_stream_message_with_invocation_context` instead of the text
-    /// `task` path, so it sees user-uploaded attachments. `None` = plain text
-    /// dispatch (the default for all existing callers).
+    /// 可选的多模态消息（图片/文件）。当为 `Some` 时，子代理通过
+    /// `execute_stream_message_with_invocation_context` 而非纯文本 `task`
+    /// 路径进行派发，从而能看到用户上传的附件。`None` 表示纯文本派发
+    /// （所有现有调用方的默认行为）。
     pub message: Option<Message>,
-    /// Opaque structured payload consumed only by an injected product compiler.
+    /// 仅由注入的产品编译器消费的不透明结构化负载。
     pub prompt_payload: Option<serde_json::Value>,
-    /// Typed task facts consumed by every prompt compiler.
+    /// 供每个提示词编译器使用的、有类型的任务事实信息。
     pub prompt_context: Option<SubagentTaskContext>,
-    /// Explicit task constraints / boundaries from the dispatch caller (e.g.
-    /// the `agent_tool` `constraints` parameter). Rendered by the invocation
-    /// compiler independently of `parent_context`, so fresh-context dispatches
-    /// can still carry boundaries.
+    /// 派发方提供的显式任务约束/边界（例如 `agent_tool` 的 `constraints`
+    /// 参数）。由调用编译器独立于 `parent_context` 渲染，因此即便是全新
+    /// 上下文的派发也能携带边界约束。
     pub constraints: Vec<String>,
-    /// When true, this dispatch was (or will be) started via
-    /// [`SubagentExecutor::dispatch_background`]. Propagated onto
-    /// [`SubagentEvent::DispatchStarted`] so UI can mark background cards.
+    /// 为 `true` 时表示本次派发是（或将会）通过
+    /// [`SubagentExecutor::dispatch_background`] 启动的。该标记会传播到
+    /// [`SubagentEvent::DispatchStarted`]，供 UI 标记后台卡片。
     pub background: bool,
 }
 
@@ -103,8 +103,7 @@ impl std::fmt::Debug for DispatchRequest {
 }
 
 impl DispatchRequest {
-    /// Build a request delegation policy from the legacy depth parameter used
-    /// by older public helper methods.
+    /// 从旧版公共辅助方法所使用的 depth 参数构造出一个委派策略。
     pub fn policy_from_depth(depth: u32) -> NestedDelegationPolicy {
         NestedDelegationPolicy {
             can_spawn_subagents: true,
@@ -114,6 +113,8 @@ impl DispatchRequest {
     }
 }
 
+/// 根据允许工具白名单计算出本次调用需要禁用的工具集合；
+/// 若 `allowed_tools` 为空或未提供，则返回 `None`（不做限制）。
 fn invocation_disabled_tools(
     tool_names: Vec<String>,
     allowed_tools: Option<&[String]>,
@@ -131,6 +132,7 @@ fn invocation_disabled_tools(
     )
 }
 
+/// 计算某个代理在应用了可选工具白名单之后的实际工具能力快照。
 fn effective_capabilities(
     agent: &dyn Agent,
     allowed_tools: Option<&[String]>,
@@ -149,7 +151,7 @@ fn effective_capabilities(
     ToolCapabilitySnapshot::from_definitions(&definitions, &disabled)
 }
 
-/// Map framework errors to the runtime-owned subagent terminal status.
+/// 将框架错误映射为运行时所持有的子代理终态状态。
 pub fn subagent_status_from_error(error: &ReactError) -> SubagentStatus {
     match error {
         ReactError::Agent(agent_error) => match agent_error.as_ref() {
@@ -165,12 +167,16 @@ pub fn subagent_status_from_error(error: &ReactError) -> SubagentStatus {
 mod typed_error_mapping_tests {
     use super::*;
 
+    /// 即使错误文本中偶然包含 "cancelled"/"timeout" 等字样，只要错误的实际
+    /// 类型不是取消/超时，映射结果也不应被误导为对应状态。
     #[test]
     fn terminal_status_ignores_misleading_error_text() {
         let error = ReactError::Other("cancelled timeout are ordinary words here".to_string());
         assert_eq!(subagent_status_from_error(&error), SubagentStatus::Failed);
     }
 
+    /// 验证控制层错误在投影为运行时中断错误类型时，容量超限与身份冲突这两类
+    /// 错误的字段信息被完整保留。
     #[test]
     fn attempt_control_projection_preserves_capacity_and_identity_conflict() {
         assert_eq!(
@@ -195,6 +201,9 @@ mod typed_error_mapping_tests {
         );
     }
 
+    /// 验证 `bind_exact_dispatch_context` 会保留取消令牌、trace_sink、uplink、
+    /// 资源守卫等运行时资源，并在遇到不一致的身份字段（如 run_id 冲突）时
+    /// 拒绝绑定。
     #[test]
     fn exact_dispatch_context_preserves_resources_and_rejects_identity_conflicts()
     -> std::result::Result<(), String> {
@@ -310,6 +319,7 @@ mod typed_error_mapping_tests {
     }
 }
 
+/// 将子代理运行时状态映射为统一钩子系统所使用的 SubagentStop 状态。
 fn hook_stop_status(status: SubagentStatus) -> echo_core::hooks::SubagentStopStatus {
     match status {
         SubagentStatus::Running => echo_core::hooks::SubagentStopStatus::Failed,
@@ -320,6 +330,7 @@ fn hook_stop_status(status: SubagentStatus) -> echo_core::hooks::SubagentStopSta
     }
 }
 
+/// 为钩子上下文附加 run_id/execution_id/attempt 关联信息，便于跨系统追踪。
 fn correlate_subagent_hook(
     ctx: crate::skills::hooks::HookContext,
     run_id: Option<&str>,
@@ -329,14 +340,16 @@ fn correlate_subagent_hook(
     ctx.with_run_correlation(run_id, None, execution_id, Some(attempt))
 }
 
+/// 将文本截断为最多 500 个字符，用于生成长度受限的证据详情。
 fn bounded_detail(text: &str) -> String {
     text.chars().take(500).collect()
 }
 
-/// Merge runtime-observed evidence into a parsed result.
-///
-/// Observed facts replace older evidence with the same kind, subject, and
-/// attributes, while distinct invocations and artifacts are preserved.
+/** 将运行时观测到的证据合并进已解析的结果中。
+
+具有相同 kind、subject 与 attributes 的旧证据会被观测到的新事实替换，
+而不同的调用与产出物则会被保留下来。
+*/
 pub fn merge_observed_evidence(
     outcome: &mut SubagentOutcome,
     evidence: Vec<SubagentEvidence>,
@@ -362,48 +375,56 @@ pub fn merge_observed_evidence(
 
 // ── Teammate Handle ───────────────────────────────────────────────────────────
 
-/// Handle to a running teammate agent.
-///
-/// Used to poll for results or cancel execution.
+/** 指向一个正在运行的 Teammate 代理的句柄。
+
+用于轮询结果或取消其执行。
+*/
 #[derive(Debug)]
 pub struct TeammateHandle {
-    /// Unique handle ID.
+    /// 唯一的句柄 ID。
     pub id: String,
-    /// The teammate agent name.
+    /// 该 Teammate 代理的名称。
     pub agent_name: String,
-    /// Cancellation token for this teammate.
+    /// 该 Teammate 的取消令牌。
     pub cancel: CancellationToken,
-    /// Join handle for the spawned task.
+    /// 所派生任务的 Join 句柄。
     join_handle: tokio::task::JoinHandle<Result<SubagentResult>>,
 }
 
-/// Handle returned immediately by [`SubagentExecutor::dispatch_background`].
-///
-/// The subagent continues on a spawned task; lifecycle events
-/// (`DispatchStarted` / `DispatchCompleted` / `DispatchFailed`) still fire on
-/// the registry event bus. The handle also owns cancellation and the eventual
-/// result so direct API callers do not have to depend on a lossy event stream.
+/** [`SubagentExecutor::dispatch_background`] 立即返回的句柄。
+
+子代理会继续在被派生的任务上执行；生命周期事件（`DispatchStarted` /
+`DispatchCompleted` / `DispatchFailed`）仍会在注册表的事件总线上触发。
+该句柄同时持有取消能力与最终结果，因此直接调用 API 的调用方不必依赖
+可能丢失事件的事件流。
+*/
 #[derive(Debug, Clone)]
 pub struct BackgroundSubagentHandle {
-    /// Stable execution id (also on `DispatchStarted.execution_id`).
+    /// 稳定的 execution id（与 `DispatchStarted.execution_id` 一致）。
     pub execution_id: String,
-    /// Target subagent name.
+    /// 目标子代理名称。
     pub agent_name: String,
+    /// 用于取消本次后台派发的令牌。
     cancel: CancellationToken,
+    /// 派生任务的 Join 句柄；结果只能被消费一次。
     join_handle: Arc<Mutex<Option<tokio::task::JoinHandle<Result<SubagentResult>>>>>,
 }
 
-/// Scope-bound live control for TaskClaim-derived Subagent attempts.
-///
-/// Durable claim validation and Task terminal settlement remain owned by
-/// [`crate::tasks::RuntimeTaskService`]. This handle only projects a controller's
-/// already-validated claim into the same process-local registry used by dispatch.
+/** 针对由 TaskClaim 派生出的子代理执行尝试的、限定作用域的实时控制句柄。
+
+持久化的 claim 校验与 Task 终态落定仍由 [`crate::tasks::RuntimeTaskService`]
+拥有。此句柄只是将控制器已校验通过的 claim 投影到派发所使用的同一个
+进程内注册表中。
+*/
 pub struct SubagentAttemptControlHandle {
+    /// 底层执行器，用于实际发起派发、预留与中断等操作。
     executor: SubagentExecutor,
+    /// 本句柄所限定的控制作用域标识。
     control_scope_id: String,
 }
 
 impl Clone for SubagentAttemptControlHandle {
+    /// 克隆句柄：底层执行器以可跨 spawn 安全共享的方式克隆，控制作用域 id 保持不变。
     fn clone(&self) -> Self {
         Self {
             executor: self.executor.clone_for_spawn(),
@@ -413,6 +434,7 @@ impl Clone for SubagentAttemptControlHandle {
 }
 
 impl std::fmt::Debug for SubagentAttemptControlHandle {
+    /// 仅输出 control_scope_id，避免打印内部执行器细节。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("SubagentAttemptControlHandle")
@@ -422,12 +444,12 @@ impl std::fmt::Debug for SubagentAttemptControlHandle {
 }
 
 impl BackgroundSubagentHandle {
-    /// Request cancellation of the background dispatch.
+    /// 请求取消该后台派发。
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
-    /// Check whether the spawned dispatch has reached a terminal state.
+    /// 检查被派生的派发是否已到达终态。
     pub fn is_finished(&self) -> bool {
         self.join_handle
             .lock()
@@ -436,10 +458,11 @@ impl BackgroundSubagentHandle {
             .is_none_or(tokio::task::JoinHandle::is_finished)
     }
 
-    /// Await and consume the background result.
-    ///
-    /// Cloned handles share one result slot; only the first `join` call
-    /// consumes it. Later calls return an explicit error.
+    /** 等待并消费后台结果。
+
+    被克隆出的多个句柄共享同一个结果槽位；只有第一次调用 `join` 会真正
+    消费该结果，之后的调用会返回一个明确的错误。
+    */
     pub async fn join(&self) -> Result<SubagentResult> {
         let handle = self
             .join_handle
@@ -454,12 +477,12 @@ impl BackgroundSubagentHandle {
 }
 
 impl TeammateHandle {
-    /// Check if the teammate has completed.
+    /// 检查该 Teammate 是否已完成。
     pub fn is_finished(&self) -> bool {
         self.join_handle.is_finished()
     }
 
-    /// Await the teammate's result.
+    /// 等待该 Teammate 的结果。
     pub async fn join(self) -> Result<SubagentResult> {
         self.join_handle
             .await
@@ -469,30 +492,37 @@ impl TeammateHandle {
 
 // ── Executor Config ───────────────────────────────────────────────────────────
 
-/// Configuration for the subagent executor.
+/// 子代理执行器的配置。
 pub struct SubagentExecutorConfig {
-    /// Maximum concurrent Fork dispatches.
+    /// Fork 模式下允许的最大并发派发数。
     pub max_concurrent_forks: usize,
-    /// Default timeout (seconds) for ALL dispatch modes (Sync/Fork/Teammate).
-    /// 0 = no timeout. Sourced from `AgentConfig.subagent_timeout_secs` (default
-    /// 600 = 10 min). Per-subagent `SubagentDefinition.timeout_secs` (>0) overrides.
+    /** 所有派发模式（Sync/Fork/Teammate）共用的默认超时时间（秒）。
+
+    0 表示不超时。来源为 `AgentConfig.subagent_timeout_secs`（默认为
+    600，即 10 分钟）。若某个子代理定义了 `SubagentDefinition.timeout_secs`
+    （且 >0），则以该值覆盖此默认值。
+    */
     pub default_timeout_secs: u64,
-    /// Enable hooks.
+    /// 是否启用钩子。
     pub enable_hooks: bool,
-    /// Optional bridge to the unified lifecycle hook system (echo-core).
-    /// When set, SubagentStart/SubagentStop events are fired into the
-    /// unified HookRegistry alongside the trait-based SubagentHooks.
+    /** 可选的、桥接到统一生命周期钩子系统（echo-core）的执行器。
+
+    设置后，SubagentStart/SubagentStop 事件会与基于 trait 的 SubagentHooks
+    一起被投递进统一的 HookRegistry。
+    */
     pub unified_hook_executor: Option<crate::skills::hooks::UnifiedHookExecutorFn>,
-    /// Optional application-owned provider for product-defined isolation kinds.
+    /// 可选的、由应用层提供的产品自定义隔离类型的提供者。
     pub isolation_provider: Option<super::isolation::SharedIsolationProvider>,
-    /// Compiler shared by direct `agent_tool` and programmatic delegation.
+    /// 由直接的 `agent_tool` 调用与程序化委派共用的提示词编译器。
     pub prompt_compiler: Arc<dyn SubagentPromptCompiler>,
-    /// Optional shared process admission. When absent, Fork uses its local
-    /// `max_concurrent_forks` semaphore for standalone compatibility.
+    /// 可选的共享进程级准入控制。缺省时 Fork 使用其自身的
+    /// `max_concurrent_forks` 信号量以保持独立可用。
     pub shared_admission: Option<Arc<ExecutionAdmission>>,
 }
 
 impl Default for SubagentExecutorConfig {
+    /// 构造带有合理默认值的执行器配置（Fork 并发上限 5，默认超时 600 秒，
+    /// 启用钩子，使用默认提示词编译器，不带隔离提供者/共享准入）。
     fn default() -> Self {
         Self {
             max_concurrent_forks: 5,
@@ -508,25 +538,38 @@ impl Default for SubagentExecutorConfig {
 
 // ── Subagent Executor ─────────────────────────────────────────────────────────
 
-/// Unified dispatch engine for all subagent execution modes.
+/// 面向所有子代理执行模式的统一调度引擎。
 pub struct SubagentExecutor {
+    /// 子代理定义与实例注册表。
     registry: Arc<SubagentRegistry>,
+    /// 派发生命周期钩子注册表。
     hooks: Arc<SubagentHookRegistry>,
+    /// 执行器配置。
     config: SubagentExecutorConfig,
+    /// Fork 模式在没有共享准入时使用的本地并发信号量。
     semaphore: Arc<Semaphore>,
+    /// 实时控制注册表（追踪进行中的尝试、guidance、interrupt 等）。
     control_registry: Arc<SubagentControlRegistry>,
+    /// 可被外部注入的共享进程级准入控制。
     shared_admission: Arc<tokio::sync::RwLock<Option<Arc<ExecutionAdmission>>>>,
+    /// 已保留的 Team 运行时句柄索引，按业务 run 分组、限量保留。
     team_runtimes: Arc<Mutex<TeamRuntimeIndex>>,
 }
 
+/// Team 运行时索引最多保留的非活跃句柄数量。
 const TEAM_RUNTIME_RETENTION: usize = 64;
 
+/// Team 运行时句柄的进程内索引：既能按 handle_id 查找，也维持一个用于
+/// 淘汰非活跃句柄的插入顺序队列。
 #[derive(Default)]
 struct TeamRuntimeIndex {
+    /// 按 handle_id 索引的运行时句柄。
     handles: HashMap<String, Arc<super::team::TeamRuntimeHandle>>,
+    /// 插入顺序队列，用于按先入先出的顺序淘汰非活跃句柄。
     order: VecDeque<String>,
 }
 
+/// 淘汰超出 [`TEAM_RUNTIME_RETENTION`] 上限的非活跃 Team 运行时句柄。
 fn prune_team_runtime_index(index: &Arc<Mutex<TeamRuntimeIndex>>) {
     let mut runtimes = index
         .lock()
@@ -556,27 +599,30 @@ fn prune_team_runtime_index(index: &Arc<Mutex<TeamRuntimeIndex>>) {
     }
 }
 
+/// 作用域守卫：其 `Drop` 会触发一次 Team 运行时索引的淘汰整理。
 struct TeamRuntimeRetentionGuard {
+    /// 待整理的 Team 运行时索引。
     index: Arc<Mutex<TeamRuntimeIndex>>,
 }
 
 impl Drop for TeamRuntimeRetentionGuard {
+    /// 守卫离开作用域时触发一次索引淘汰整理。
     fn drop(&mut self) {
         prune_team_runtime_index(&self.index);
     }
 }
 
-/// Framework-default uplink sink.
-///
-/// Behavior per target:
-/// - `Parent`: when the sender's lineage carries `parent_execution_id` and
-///   that attempt is live in the shared control registry, the message steers
-///   the parent's active turn (queue-only; the parent drains it at its next
-///   model boundary). Otherwise the message is still accepted and surfaced as
-///   [`SubagentEvent::UplinkReceived`] for host-side listeners.
-/// - `Sibling`: delivered queue-only via the shared control registry; a
-///   non-active sibling reports `sibling_not_active` so the model can retry
-///   or escalate instead of assuming delivery.
+/** 框架默认的 uplink（上行消息）投递器。
+
+各投递目标的行为：
+- `Parent`：当发送方的血缘信息带有 `parent_execution_id`，且该尝试在共享
+  控制注册表中仍处于存活状态时，消息会引导父级的活跃回合（仅入队，父级
+  会在其下一次模型边界处取出消费）。否则消息仍会被接受，并以
+  [`SubagentEvent::UplinkReceived`] 的形式呈现给宿主端监听者。
+- `Sibling`：通过共享控制注册表仅入队投递；若目标兄弟节点当前并非活跃
+  状态，则报告 `sibling_not_active`，以便模型据此重试或升级处理，而不是
+  误以为已投递成功。
+*/
 pub fn default_uplink_sink(registry: Arc<SubagentRegistry>) -> echo_core::tools::SubagentUplinkFn {
     use echo_core::tools::{SubagentUplinkMessage, SubagentUplinkReceipt, SubagentUplinkTarget};
     Arc::new(move |message: SubagentUplinkMessage| {
@@ -709,10 +755,12 @@ pub fn default_uplink_sink(registry: Arc<SubagentRegistry>) -> echo_core::tools:
 }
 
 impl SubagentAttemptControlHandle {
+    /// 返回此句柄所绑定的控制作用域标识。
     pub fn control_scope_id(&self) -> &str {
         &self.control_scope_id
     }
 
+    /// 从任务子代理上下文推导出对应的执行尝试身份标识。
     fn identity_from_context(
         &self,
         context: &TaskSubagentContext,
@@ -732,6 +780,7 @@ impl SubagentAttemptControlHandle {
         )
     }
 
+    /// 根据 run_id、task_id 与 TaskClaim 直接构造出执行尝试身份标识。
     fn identity_from_claim(
         &self,
         run_id: &str,
@@ -747,7 +796,7 @@ impl SubagentAttemptControlHandle {
         )
     }
 
-    /// Reserve one exact TaskClaim attempt before it waits for admission.
+    /// 在某个精确的 TaskClaim 执行尝试进入准入等待之前，先为其预留位置。
     pub fn reserve(
         &self,
         context: &TaskSubagentContext,
@@ -757,7 +806,7 @@ impl SubagentAttemptControlHandle {
             .reserve_attempt(identity, context.cancellation_token().clone())
     }
 
-    /// Dispatch one exact TaskClaim attempt through this handle's registry.
+    /// 通过此句柄所属的注册表，派发某个精确的 TaskClaim 执行尝试。
     pub async fn dispatch(
         &self,
         mut request: DispatchRequest,
@@ -770,10 +819,11 @@ impl SubagentAttemptControlHandle {
         self.executor.dispatch_attempt(request, identity).await
     }
 
-    /// Project an interrupt that has already passed durable TaskClaim checks.
-    ///
-    /// Durable callers must invoke this only from
-    /// [`crate::tasks::RuntimeDagController::request_live_interrupt`].
+    /** 投影一个已经通过持久化 TaskClaim 校验的中断请求。
+
+    持久化侧调用方只能从
+    [`crate::tasks::RuntimeDagController::request_live_interrupt`] 调用此方法。
+    */
     pub fn project_interrupt(
         &self,
         run_id: &str,
@@ -792,7 +842,7 @@ impl SubagentAttemptControlHandle {
             .map_err(runtime_interrupt_projection_error)
     }
 
-    /// Retire one live projection after its durable claim has advanced.
+    /// 在某个持久化 claim 状态推进之后，退役对应的实时投影。
     pub fn retire(
         &self,
         run_id: &str,
@@ -816,7 +866,7 @@ impl SubagentAttemptControlHandle {
         }
     }
 
-    /// Reconcile only this handle's fixed control scope.
+    /// 仅对此句柄固定的控制作用域执行一次状态核对。
     pub fn reconcile(
         &self,
         run_id: &str,
@@ -830,6 +880,7 @@ impl SubagentAttemptControlHandle {
     }
 }
 
+/// 从任务子代理上下文中提取精确的派发身份信息，并将其绑定到派发请求上。
 fn bind_task_dispatch_context(
     request: &mut DispatchRequest,
     context: &TaskSubagentContext,
@@ -838,17 +889,28 @@ fn bind_task_dispatch_context(
     bind_exact_dispatch_context(request, &exact)
 }
 
+/// 一次任务派发所需的精确身份与运行时信息（run/execution/task id、
+/// 尝试次数、计划版本、取消令牌与委派策略）。
 struct ExactTaskDispatchContext {
+    /// 所属的业务 run 标识。
     run_id: String,
+    /// 本次执行尝试的 execution id。
     execution_id: String,
+    /// 所属任务的 task id。
     task_id: String,
+    /// 当前尝试次数。
     attempt: u32,
+    /// 当前计划（DAG）版本号。
     plan_revision: u64,
+    /// 本次尝试的取消令牌。
     cancel: CancellationToken,
+    /// 委派策略（限制嵌套委派深度）。
     delegation_policy: NestedDelegationPolicy,
 }
 
 impl ExactTaskDispatchContext {
+    /// 从任务子代理上下文中提取出精确派发上下文；若缺少必要的身份信息
+    /// （execution id、task id 或 claim）则返回错误。
     fn from_task_context(context: &TaskSubagentContext) -> Result<Self> {
         let execution_id = context.execution_id().ok_or_else(|| {
             ReactError::Other("exact task dispatch requires an execution identity".to_string())
@@ -871,6 +933,8 @@ impl ExactTaskDispatchContext {
     }
 }
 
+/// 将精确的派发身份信息绑定进派发请求的运行时上下文与血缘信息中；
+/// 若已存在的字段与精确身份不一致，则返回错误而不做覆盖。
 fn bind_exact_dispatch_context(
     request: &mut DispatchRequest,
     exact: &ExactTaskDispatchContext,
@@ -921,6 +985,7 @@ fn bind_exact_dispatch_context(
     Ok(())
 }
 
+/// 校验某个字符串身份字段（若已存在）与期望值一致，否则返回不匹配错误。
 fn ensure_string_identity(field: &str, actual: Option<&str>, expected: &str) -> Result<()> {
     if let Some(actual) = actual
         && actual != expected
@@ -932,6 +997,7 @@ fn ensure_string_identity(field: &str, actual: Option<&str>, expected: &str) -> 
     Ok(())
 }
 
+/// 校验某个数值型身份字段（若已存在）与期望值一致，否则返回不匹配错误。
 fn ensure_numeric_identity<T>(field: &str, actual: Option<T>, expected: T) -> Result<()>
 where
     T: Copy + PartialEq + std::fmt::Display,
@@ -946,6 +1012,7 @@ where
     Ok(())
 }
 
+/// 将控制层的中断请求处理结果映射为运行时任务尝试中断的处理结果类型。
 fn runtime_interrupt_disposition(
     disposition: SubagentInterruptRequestDisposition,
 ) -> RuntimeTaskAttemptInterruptDisposition {
@@ -970,6 +1037,7 @@ fn runtime_interrupt_disposition(
     }
 }
 
+/// 将子代理控制层错误映射为运行时任务尝试中断投影所使用的错误类型。
 fn runtime_interrupt_projection_error(
     error: SubagentControlError,
 ) -> RuntimeTaskAttemptInterruptProjectionError {
@@ -995,7 +1063,7 @@ fn runtime_interrupt_projection_error(
 }
 
 impl SubagentExecutor {
-    /// Create a new executor backed by the given registry.
+    /// 创建一个由给定注册表支撑的新执行器。
     pub fn new(registry: Arc<SubagentRegistry>, config: SubagentExecutorConfig) -> Self {
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_forks));
         let shared_admission = config.shared_admission.clone();
@@ -1010,7 +1078,7 @@ impl SubagentExecutor {
         }
     }
 
-    /// Create with a specific hook registry.
+    /// 使用指定的钩子注册表创建执行器。
     pub fn with_hooks(
         registry: Arc<SubagentRegistry>,
         config: SubagentExecutorConfig,
@@ -1029,17 +1097,17 @@ impl SubagentExecutor {
         }
     }
 
-    /// Get the hook registry (for external registration).
+    /// 获取钩子注册表（供外部注册钩子使用）。
     pub fn hooks(&self) -> &SubagentHookRegistry {
         &self.hooks
     }
 
-    /// Shared registry handle (for callers that need definition lookups).
+    /// 共享的注册表句柄（供需要查询定义的调用方使用）。
     pub fn registry(&self) -> &Arc<SubagentRegistry> {
         &self.registry
     }
 
-    /// Create one complete live-control capability for an external task adapter.
+    /// 为外部任务适配器创建一个完整的实时控制能力句柄。
     pub fn attempt_control_handle(
         &self,
         control_scope_id: impl Into<String>,
@@ -1056,7 +1124,7 @@ impl SubagentExecutor {
         })
     }
 
-    /// Return one retained Team runtime by its unique handle identity.
+    /// 按唯一的句柄标识返回一个已保留的 Team 运行时。
     pub fn team_runtime_handle(
         &self,
         handle_id: &str,
@@ -1069,8 +1137,8 @@ impl SubagentExecutor {
             .cloned()
     }
 
-    /// Return every retained Team runtime for a business run. Multiple nested
-    /// or concurrent Team executions can legitimately share the same run ID.
+    /// 返回某个业务 run 下所有已保留的 Team 运行时。多个嵌套或并发的 Team
+    /// 执行完全可能合法地共享同一个 run ID。
     pub fn team_runtime_handles(&self, run_id: &str) -> Vec<Arc<super::team::TeamRuntimeHandle>> {
         let runtimes = self
             .team_runtimes
@@ -1085,6 +1153,7 @@ impl SubagentExecutor {
             .collect()
     }
 
+    /// 保留一个 Team 运行时句柄，并触发一次索引淘汰整理。
     fn retain_team_runtime(&self, handle: Arc<super::team::TeamRuntimeHandle>) {
         let mut runtimes = self
             .team_runtimes
@@ -1099,23 +1168,25 @@ impl SubagentExecutor {
         prune_team_runtime_index(&self.team_runtimes);
     }
 
-    /// Inject an application-owned process admission for direct dispatches.
+    /// 为直接派发注入一个由应用层持有的进程级准入控制器。
     pub async fn set_shared_admission(&self, admission: Arc<ExecutionAdmission>) {
         *self.shared_admission.write().await = Some(admission);
     }
 
-    /// Main dispatch entry point.
-    ///
-    /// Routes to the appropriate mode based on the definition or override.
-    /// Uses a loop for retry/delegation instead of recursion to prevent stack overflow.
+    /** 主派发入口。
+
+    根据定义或覆盖值路由到相应的执行模式。使用循环而非递归来实现
+    重试/委派，以避免栈溢出。
+    */
     pub async fn dispatch(&self, req: DispatchRequest) -> Result<SubagentResult> {
         self.dispatch_inner(req, None).await
     }
 
-    /// Dispatch one explicitly identified task attempt under live control.
-    ///
-    /// The identity is process-scoped. Durable run/revision/command validation
-    /// remains the responsibility of the framework consumer.
+    /** 在实时控制下，派发一个身份已被显式指定的任务执行尝试。
+
+    该身份的作用域仅限于当前进程。持久化的 run/revision/命令校验仍由
+    框架的消费方负责。
+    */
     pub async fn dispatch_attempt(
         &self,
         req: DispatchRequest,
@@ -1125,6 +1196,7 @@ impl SubagentExecutor {
         self.dispatch_admitted_attempt(req, admission).await
     }
 
+    /// 将派发请求绑定到给定身份，并向控制注册表申请该尝试的准入。
     fn admit_attempt(
         &self,
         mut req: DispatchRequest,

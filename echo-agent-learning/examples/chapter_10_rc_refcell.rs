@@ -1,6 +1,7 @@
 use echo_agent_learning::errors::LearningError;
 use echo_agent_learning::smart_pointers::rc_refcell::SharedNotebook;
 
+/// 演示使用 `Rc<RefCell<T>>` 实现多个所有者共享并可变更同一份数据。
 fn main() -> Result<(), LearningError> {
     let first_view = SharedNotebook::new();
     let second_view = first_view.clone();

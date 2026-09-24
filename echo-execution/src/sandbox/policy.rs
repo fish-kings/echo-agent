@@ -28,7 +28,7 @@ pub struct SandboxPolicy {
     pub default_level: SecurityLevel,
     /// 是否自动升级不安全命令
     pub auto_escalate: bool,
-    /// Optional cap for products that intentionally use only local backends.
+    /// 可选的隔离级别上限，供只希望使用本地后端的产品显式设置。
     pub max_isolation_level: Option<IsolationLevel>,
     /// 需要容器隔离的语言
     pub container_required_languages: HashSet<String>,
@@ -87,11 +87,11 @@ static DANGEROUS_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(
 });
 
 impl Default for SandboxPolicy {
+    /// 构造默认策略：默认级别为 Strict（Docker），实现默认即安全；
+    /// 当 Docker 不可用时会回退到本地沙箱（因为 auto_escalate=true）；
+    /// 开发环境请使用 `SandboxPolicy::trusted()`。
     fn default() -> Self {
         Self {
-            // Default to Strict (Docker) for safe-by-default operation.
-            // Falls back to Local sandbox when Docker is unavailable (auto_escalate=true).
-            // Use SandboxPolicy::trusted() for development environments.
             default_level: SecurityLevel::Strict,
             auto_escalate: true,
             max_isolation_level: None,
@@ -114,7 +114,7 @@ impl SandboxPolicy {
         }
     }
 
-    /// Local OS-only policy: cap risk escalation at the platform sandbox layer.
+    /// 仅本地 OS 沙箱策略：将风险升级上限封顶在平台沙箱层。
     pub fn local_os() -> Self {
         Self {
             default_level: SecurityLevel::Standard,
@@ -124,7 +124,7 @@ impl SandboxPolicy {
         }
     }
 
-    /// Local process-only policy for platforms without a native lightweight sandbox.
+    /// 仅本地进程隔离策略，供没有原生轻量沙箱的平台使用。
     pub fn local_process() -> Self {
         Self {
             default_level: SecurityLevel::Standard,
@@ -207,6 +207,8 @@ impl SandboxPolicy {
         }
     }
 
+    /// 分析 shell 命令字符串所需的隔离级别：先匹配危险模式，
+    /// 再检查是否为受信命令或脚本解释器，否则默认返回进程隔离。
     fn analyze_shell_command(&self, cmd: &str) -> IsolationLevel {
         let base_cmd = cmd.split_whitespace().next().unwrap_or("");
 
@@ -231,6 +233,7 @@ impl SandboxPolicy {
         IsolationLevel::Process
     }
 
+    /// 分析可执行程序（按文件名）所需的隔离级别。
     fn analyze_program(&self, program: &str) -> IsolationLevel {
         let name = std::path::Path::new(program)
             .file_name()
@@ -246,6 +249,7 @@ impl SandboxPolicy {
         }
     }
 
+    /// 分析内联代码执行所需的隔离级别；代码执行至少需要 OS 沙箱。
     fn analyze_code(&self, language: &str, _code: &str) -> IsolationLevel {
         // 代码执行始终需要至少 OS 沙箱
         if self.container_required_languages.contains(language) {
@@ -262,23 +266,26 @@ impl SandboxPolicy {
 mod tests {
     use super::*;
 
+    /// 验证默认策略下，安全命令仍取默认基础级别 Container（因为基础级别高于命令本身所需级别）。
     #[test]
     fn test_default_policy_safe_command() {
         let policy = SandboxPolicy::default();
         let cmd = SandboxCommand::shell("ls -la");
-        // default_level = Strict -> base = Container, safe command -> None
-        // evaluate() takes max(Container, None) = Container
+        // default_level = Strict -> base = Container，安全命令 -> None
+        // evaluate() 取 max(Container, None) = Container
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证受信策略下，安全命令的评估结果为 None（无隔离）。
     #[test]
     fn test_trusted_policy_safe_command() {
         let policy = SandboxPolicy::trusted();
         let cmd = SandboxCommand::shell("ls -la");
-        // trusted -> base = None, safe command -> None -> result = None
+        // trusted -> base = None，安全命令 -> None -> 结果 = None
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::None);
     }
 
+    /// 验证默认策略下，危险命令会被评估为需要 Container 级别隔离。
     #[test]
     fn test_default_policy_dangerous_command() {
         let policy = SandboxPolicy::default();
@@ -286,6 +293,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证默认策略下，执行代码会被评估为需要 Container 级别隔离。
     #[test]
     fn test_default_policy_code_execution() {
         let policy = SandboxPolicy::default();
@@ -293,6 +301,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证受信策略不会对危险命令（如 `rm -rf`）自动升级隔离级别。
     #[test]
     fn test_trusted_policy() {
         let policy = SandboxPolicy::trusted();
@@ -301,6 +310,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::None);
     }
 
+    /// 验证即使在受信策略下，命令自带的最低隔离级别要求仍会被遵守。
     #[test]
     fn trusted_policy_honors_command_minimum_isolation() {
         let policy = SandboxPolicy::trusted();
@@ -309,6 +319,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::OsSandbox);
     }
 
+    /// 验证严格策略下的基础隔离级别即为 Container。
     #[test]
     fn test_strict_policy() {
         let policy = SandboxPolicy::strict();
@@ -317,15 +328,17 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证脚本解释器命令会被升级隔离级别，但结果仍受基础级别约束取较大值。
     #[test]
     fn test_script_interpreter_escalation() {
         let policy = SandboxPolicy::default();
         let cmd = SandboxCommand::shell("python3 script.py");
-        // default_level = Strict -> base = Container, python3 -> OsSandbox
-        // evaluate() takes max(Container, OsSandbox) = Container
+        // default_level = Strict -> base = Container，python3 -> OsSandbox
+        // evaluate() 取 max(Container, OsSandbox) = Container
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证命令替换语法（如 `$(...)`）会被识别为危险模式并升级隔离级别。
     #[test]
     fn test_command_substitution_detection() {
         let policy = SandboxPolicy::default();
@@ -333,6 +346,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
+    /// 验证 Standard 安全级别下，安全命令的评估结果为 Process。
     #[test]
     fn test_standard_level_safe_command() {
         let policy = SandboxPolicy {
@@ -340,10 +354,11 @@ mod tests {
             ..Default::default()
         };
         let cmd = SandboxCommand::shell("ls -la");
-        // Standard -> base = Process, safe command -> None -> max(Process, None) = Process
+        // Standard -> base = Process，安全命令 -> None -> max(Process, None) = Process
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Process);
     }
 
+    /// 验证 Standard 安全级别下，脚本解释器命令会被升级到 OsSandbox。
     #[test]
     fn test_standard_level_script_interpreter() {
         let policy = SandboxPolicy {
@@ -351,10 +366,11 @@ mod tests {
             ..Default::default()
         };
         let cmd = SandboxCommand::shell("python3 script.py");
-        // Standard -> base = Process, python3 -> OsSandbox -> max(Process, OsSandbox) = OsSandbox
+        // Standard -> base = Process，python3 -> OsSandbox -> max(Process, OsSandbox) = OsSandbox
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::OsSandbox);
     }
 
+    /// 验证 `local_os` 策略会将代码执行的隔离级别封顶在 OsSandbox。
     #[test]
     fn test_local_policy_caps_code_at_os_sandbox() {
         let policy = SandboxPolicy::local_os();
@@ -362,6 +378,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::OsSandbox);
     }
 
+    /// 验证 `local_os` 策略会将危险的 shell 命令的隔离级别封顶在 OsSandbox。
     #[test]
     fn test_local_policy_caps_dangerous_shell_at_os_sandbox() {
         let policy = SandboxPolicy::local_os();
@@ -369,6 +386,7 @@ mod tests {
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::OsSandbox);
     }
 
+    /// 验证 `local_process` 策略会将代码执行的隔离级别封顶在 Process。
     #[test]
     fn test_local_process_policy_caps_code_at_process() {
         let policy = SandboxPolicy::local_process();

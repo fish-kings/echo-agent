@@ -19,6 +19,7 @@ use serde_json::json;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+/// 断言旧版 checkpoint 中残留的 plan 字段在恢复后可被读取，但不会被重新写回存储。
 async fn assert_legacy_plan_is_not_republished(
     store: Arc<dyn crate::state::RuntimeStateStore>,
     reopen: impl FnOnce() -> crate::error::Result<Arc<dyn crate::state::RuntimeStateStore>>,
@@ -92,6 +93,7 @@ async fn sqlite_checkpoint_legacy_plan_is_readable_but_not_republished() -> crat
     .await
 }
 
+/// 构造一个仅携带资源守卫（resource_guards）、其余字段均为默认值的外部运行上下文，供测试复用。
 fn external_context_with_guards(
     resource_guards: Vec<echo_core::tools::InvocationResourceGuard>,
 ) -> echo_core::tools::ExternalRunContext {
@@ -111,8 +113,11 @@ fn external_context_with_guards(
     }
 }
 
+/// 用于探测在 drop 时资源守卫锁是否已被释放（即未发生重入死锁）的探针。
 struct ReentrantGuardProbe {
+    /// 指向被测 agent 的弱引用，避免探针本身延长其生命周期。
     agent: std::sync::Weak<ReactAgent>,
+    /// 记录 drop 时是否观察到锁处于未锁定状态。
     observed_unlocked: Arc<AtomicBool>,
 }
 
@@ -132,8 +137,11 @@ impl Drop for ReentrantGuardProbe {
     }
 }
 
+/// 一个 drop 过程被人为阻塞的资源守卫，用于模拟慢速释放场景。
 struct SlowGuardDrop {
+    /// drop 开始时用于通知"已进入 drop"的发送端。
     entered: std::sync::mpsc::Sender<()>,
+    /// drop 过程中用于等待外部放行信号的接收端。
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -205,7 +213,7 @@ async fn react_agent_initializes_subagent_hook_executor() {
 
 // ── ReactAgent::reset() ───────────────────────────────────────────────────────
 
-/// reset() should clear all messages, keeping only the system prompt (1 message)
+/// reset() 应清空所有消息，仅保留系统提示词（1 条消息）
 #[tokio::test]
 async fn react_agent_reset_clears_to_system_only() {
     let config = AgentConfig::new("test-model", "test_agent", "You are a test assistant");
@@ -246,7 +254,7 @@ async fn react_agent_reset_clears_to_system_only() {
     );
 }
 
-/// Multiple consecutive reset() calls should be idempotent, not producing duplicate system prompts
+/// 连续多次调用 reset() 应具有幂等性，不会产生重复的系统提示词
 #[tokio::test]
 async fn react_agent_reset_is_idempotent() {
     let config = AgentConfig::new("test-model", "test_agent", "System prompt");
@@ -263,7 +271,7 @@ async fn react_agent_reset_is_idempotent() {
     );
 }
 
-/// After reset() the system prompt content should remain unchanged
+/// reset() 之后系统提示词的内容应保持不变
 #[tokio::test]
 async fn react_agent_reset_preserves_system_prompt() {
     let system = "This is a custom system prompt";
@@ -284,9 +292,9 @@ async fn react_agent_reset_preserves_system_prompt() {
     assert_eq!(messages[0].content.as_text_ref().unwrap_or(""), system);
 }
 
-// ── ReactAgent tool registration tests ─────────────────────────────────────────
+// ── ReactAgent 工具注册测试 ─────────────────────────────────────────
 
-/// Note: ReactAgent::new automatically registers FinalAnswerTool
+/// 注意：ReactAgent::new 会自动注册 FinalAnswerTool
 #[test]
 fn react_agent_add_tool_enables_tool_flag() {
     let config = AgentConfig::minimal("test-model", "helper");
@@ -302,7 +310,7 @@ fn react_agent_add_tool_enables_tool_flag() {
         agent.config().is_tool_enabled(),
         "after add_tool, tools should be enabled"
     );
-    // FinalAnswerTool + test_tool
+    // FinalAnswerTool + test_tool（即内置工具 + 测试工具）
     let tool_names = agent.tool_names();
     assert!(tool_names.contains(&String::from("test_tool")));
     assert!(tool_names.contains(&String::from("final_answer")));
@@ -322,7 +330,7 @@ fn react_agent_add_tools_batch() {
     agent.add_tools(tools);
 
     let tool_names = agent.tool_names();
-    // built-in tools + 3 custom tools
+    // 内置工具 + 3 个自定义工具
     assert!(tool_names.len() >= 4);
     assert!(tool_names.contains(&String::from("tool1")));
     assert!(tool_names.contains(&String::from("tool2")));
@@ -356,19 +364,19 @@ fn react_agent_add_tools_with_allowed_list() {
     agent.add_tools(tools);
 
     let tool_names = agent.tool_names();
-    // built-in tools + allowed_tool (whitelist only filters user-added tools)
+    // 内置工具 + allowed_tool（白名单仅过滤用户新增的工具）
     assert!(tool_names.len() >= 2);
     assert!(tool_names.contains(&String::from("allowed_tool")));
 }
 
-// ── ReactAgent getter method tests ─────────────────────────────────────────────
+// ── ReactAgent 获取器方法测试 ─────────────────────────────────────────────
 
 #[test]
 fn react_agent_tool_names() {
     let config = AgentConfig::minimal("test-model", "helper");
     let mut agent = ReactAgent::new(config);
 
-    // ReactAgent::new registers built-in tools (at least FinalAnswerTool)
+    // ReactAgent::new 会注册内置工具（至少包含 FinalAnswerTool）
     let initial_len = agent.tool_names().len();
     assert!(initial_len >= 1);
 
@@ -467,7 +475,7 @@ async fn react_agent_context_stats() {
     assert!(tokens > 0, "token estimate should be greater than 0");
 }
 
-// ── ReactAgent configuration tests ─────────────────────────────────────────────
+// ── ReactAgent 配置测试 ─────────────────────────────────────────────
 
 #[test]
 fn react_agent_set_model() {
@@ -489,16 +497,15 @@ async fn react_agent_set_system_prompt() {
     let original_prompt = agent.system_prompt().to_string();
     assert_eq!(original_prompt, "helper");
 
-    // set_system_prompt stores a runtime override in mutable_system_prompt.
-    // The system_prompt() getter returns the base config prompt (cannot return
-    // a reference into RwLock). The override is applied at turn-start via
-    // build_system_prompt().
+    /* set_system_prompt 会将运行时覆盖值存储到 mutable_system_prompt 中。
+    system_prompt() 这个 getter 返回的是配置中的基础提示词（因为无法返回指向
+    RwLock 内部的引用）。该覆盖值会在每轮开始时通过 build_system_prompt() 应用。 */
     agent.set_system_prompt("New system prompt");
 
-    // Base prompt is unchanged (by design — getter returns config value)
+    // 基础提示词未发生变化（这是设计使然——getter 返回的是配置值）
     assert_eq!(agent.system_prompt(), "helper");
 
-    // The override IS stored internally
+    // 覆盖值确实被存储在内部
     let override_val = agent.mutable_system_prompt.read().unwrap();
     assert_eq!(override_val.as_deref(), Some("New system prompt"));
 }
@@ -527,10 +534,11 @@ fn react_agent_system_prompt() {
     assert_eq!(agent.system_prompt(), "Be helpful");
 }
 
-// ── ReactAgent callback tests ──────────────────────────────────────────────────
+// ── ReactAgent 回调测试 ──────────────────────────────────────────────────
 
-/// Simple callback counter
+/// 简单的回调计数器
 struct CounterCallback {
+    /// 已触发的回调次数。
     count: AtomicUsize,
 }
 
@@ -575,14 +583,13 @@ fn react_agent_add_callback() {
     let callback = Arc::new(CounterCallback::new());
     agent.add_callback(callback.clone());
 
-    // Verify the callback has been added (by checking internal state)
-    // Since callbacks are private, we can only verify through execution
-    // Here we simply verify the method does not panic
+    /* 验证回调已被添加（通过检查内部状态）。由于回调是私有的，
+    我们只能通过执行行为来验证，这里仅验证该方法不会 panic。 */
 }
 
-// ── Agent trait contract ───────────────────────────────────────────────────────
+// ── Agent trait 契约 ───────────────────────────────────────────────────────
 
-/// reset() is callable via &mut dyn Agent (trait object safety verification)
+/// reset() 可通过 &mut dyn Agent 调用（trait 对象安全性验证）
 #[tokio::test]
 async fn trait_reset_callable_via_dyn_agent() {
     let agent: Box<dyn Agent> = Box::new(
@@ -610,7 +617,7 @@ fn trait_name_callable() {
 #[test]
 fn trait_model_name_callable() {
     let agent: Box<dyn Agent> = Box::new(MockAgent::new("agent"));
-    // MockAgent default model_name returns "mock-model"
+    // MockAgent 默认的 model_name 返回 "mock-model"
     assert_eq!(agent.model_name(), "mock-model");
 }
 
@@ -628,9 +635,9 @@ fn trait_skill_names_default() {
     assert!(agent.skill_names().is_empty());
 }
 
-// ── MockAgent contract ─────────────────────────────────────────────────────────
+// ── MockAgent 契约 ─────────────────────────────────────────────────────────
 
-/// chat() should record calls and consume the preset response queue
+/// chat() 应记录调用并消费预设的响应队列
 #[tokio::test]
 async fn mock_agent_chat_records_calls_and_consumes_responses() {
     let agent = MockAgent::new("test")
@@ -649,7 +656,7 @@ async fn mock_agent_chat_records_calls_and_consumes_responses() {
     assert_eq!(agent.calls(), vec!["Message1", "Message2", "Message3"]);
 }
 
-/// reset() should clear MockAgent's call history (simulating conversation reset semantics)
+/// reset() 应清空 MockAgent 的调用历史（模拟会话重置语义）
 #[tokio::test]
 async fn mock_agent_reset_clears_call_history() {
     let agent = MockAgent::new("test")
@@ -677,7 +684,7 @@ async fn mock_agent_reset_clears_call_history() {
     assert_eq!(agent.calls(), vec!["Round2 Message1"]);
 }
 
-/// execute() and chat() share the same response queue
+/// execute() 与 chat() 共享同一个响应队列
 #[tokio::test]
 async fn mock_agent_execute_and_chat_share_response_queue() {
     let agent = MockAgent::new("test")
@@ -692,7 +699,7 @@ async fn mock_agent_execute_and_chat_share_response_queue() {
     assert_eq!(agent.call_count(), 2);
 }
 
-/// Callers can explicitly opt into a reusable default response.
+/// 调用方可以显式选择使用可复用的默认响应。
 #[tokio::test]
 async fn mock_agent_chat_falls_back_to_default_when_queue_empty() {
     let agent = MockAgent::new("test").with_default_success("mock agent response");
@@ -704,7 +711,7 @@ async fn mock_agent_chat_falls_back_to_default_when_queue_empty() {
     );
 }
 
-/// FailingMockAgent::reset() clears call history
+/// FailingMockAgent::reset() 会清空调用历史
 #[tokio::test]
 async fn failing_mock_agent_reset_clears_calls() {
     let agent = FailingMockAgent::new("failing", "Always fails");
@@ -721,9 +728,9 @@ async fn failing_mock_agent_reset_clears_calls() {
     );
 }
 
-// ── chat + reset full lifecycle ────────────────────────────────────────────────
+// ── chat + reset 完整生命周期 ────────────────────────────────────────────────
 
-/// Simulate a typical multi-turn conversation lifecycle: chat → reset → chat
+/// 模拟一个典型的多轮对话生命周期：chat → reset → chat
 #[tokio::test]
 async fn mock_agent_full_chat_lifecycle() {
     let agent = MockAgent::new("assistant").with_responses([
@@ -749,7 +756,7 @@ async fn mock_agent_full_chat_lifecycle() {
     );
 }
 
-// ── ReactAgentBuilder Tests ───────────────────────────────────────────────────────
+// ── ReactAgentBuilder 测试 ───────────────────────────────────────────────────────
 
 #[test]
 fn react_agent_builder_basic() {
@@ -776,7 +783,7 @@ fn react_agent_builder_with_tools() {
         .unwrap();
 
     assert!(agent.config().is_tool_enabled());
-    // FinalAnswerTool + built-in tools (count depends on enabled features) + tool1 + tool2
+    // FinalAnswerTool + 内置工具（数量取决于启用的特性）+ tool1 + tool2
     let names = agent.tool_names();
     assert!(
         names.contains(&String::from("tool1")),
@@ -1128,7 +1135,7 @@ fn react_agent_builder_split_thread_and_conversation_ids() {
     );
 }
 
-// ── ReactAgent Config Preset Tests ───────────────────────────────────────────────────────
+// ── ReactAgent 配置预设测试 ───────────────────────────────────────────────────────
 
 #[test]
 fn react_agent_builder_simple() {
@@ -1154,20 +1161,20 @@ fn react_agent_builder_full_featured() {
     assert!(error.to_string().contains("llm_client"));
 }
 
-// ── Subagent Tests ───────────────────────────────────────────────────────────────
+// ── Subagent 测试 ───────────────────────────────────────────────────────────────
 
 #[cfg(feature = "subagent")]
 #[test]
 fn react_agent_register_subagent_requires_enable_flag() {
-    // Do not enable subagent feature
+    // 不启用 subagent 特性
     let config = AgentConfig::minimal("test-model", "main_agent");
     let mut agent = ReactAgent::new(config);
 
     let sub_agent = Box::new(MockAgent::new("sub_agent"));
     agent.register_agent(sub_agent);
 
-    // Since enable_subagent = false, subagent should not be registered
-    // There is no public method to directly check subagent list, but can verify through behavior
+    /* 由于 enable_subagent = false，subagent 不应被注册。
+    没有公开方法可以直接检查 subagent 列表，但可以通过行为间接验证。 */
 }
 
 #[cfg(feature = "subagent")]
@@ -1179,8 +1186,8 @@ fn react_agent_register_subagent_when_enabled() {
     let sub_agent = Box::new(MockAgent::new("sub_agent"));
     agent.register_agent(sub_agent);
 
-    // subagent should be successfully registered
-    // Can indirectly verify by checking if agent_dispatch tool is available
+    /* subagent 应被成功注册，可以通过检查 agent_dispatch
+    工具是否可用来间接验证。 */
 }
 
 #[cfg(feature = "subagent")]
@@ -1197,17 +1204,17 @@ fn react_agent_register_multiple_subagents() {
 
     agent.register_agents(sub_agents);
 
-    // All subagents should be successfully registered
+    // 所有 subagent 都应被成功注册
 }
 
 #[tokio::test]
 async fn subagent_context_isolation() {
-    // Create parent agent
+    // 创建父 agent
     let parent_config =
         AgentConfig::new("qwen3-max", "parent", "You are the parent agent").enable_subagent(true);
     let parent = ReactAgent::new(parent_config);
 
-    // Parent agent adds message to context
+    // 父 agent 向上下文添加消息
     parent
         .memory
         .context
@@ -1215,9 +1222,9 @@ async fn subagent_context_isolation() {
         .await
         .push(Message::user("Parent message".to_string()));
     let (parent_count_before, _) = parent.context_stats().await;
-    assert_eq!(parent_count_before, 2); // system + user message
+    assert_eq!(parent_count_before, 2); // system + user 消息
 
-    // Create independent child agent
+    // 创建独立的子 agent
     let sub_config = AgentConfig::new("qwen3-max", "child", "You are a child agent");
     let child = ReactAgent::new(sub_config);
 
@@ -1227,11 +1234,11 @@ async fn subagent_context_isolation() {
     ));
     assert!(!Arc::ptr_eq(&parent.memory.context, &child.memory.context));
 
-    // Child agent has its own independent context
+    // 子 agent 拥有自己独立的上下文
     let (child_count, _) = child.context_stats().await;
-    assert_eq!(child_count, 1); // only system message
+    assert_eq!(child_count, 1); // 仅 system 消息
 
-    // Child agent adding messages does not affect parent agent
+    // 子 agent 添加消息不会影响父 agent
     child
         .memory
         .context
@@ -1241,14 +1248,14 @@ async fn subagent_context_isolation() {
     let (child_count_after, _) = child.context_stats().await;
     assert_eq!(child_count_after, 2);
 
-    // Parent agent's context is unaffected
+    // 父 agent 的上下文不受影响
     let (parent_count_after, _) = parent.context_stats().await;
     assert_eq!(parent_count_after, 2);
 }
 
 #[tokio::test]
 async fn subagent_reset_independence() {
-    // Create parent agent and child agent
+    // 创建父 agent 和子 agent
     let parent_config =
         AgentConfig::new("qwen3-max", "parent", "Parent system").enable_subagent(true);
     let parent = ReactAgent::new(parent_config);
@@ -1256,7 +1263,7 @@ async fn subagent_reset_independence() {
     let child_config = AgentConfig::new("qwen3-max", "child", "Child system");
     let child = ReactAgent::new(child_config);
 
-    // Both add messages
+    // 两者都添加消息
     parent
         .memory
         .context
@@ -1270,14 +1277,14 @@ async fn subagent_reset_independence() {
         .await
         .push(Message::user("Child msg".to_string()));
 
-    // Reset parent agent
+    // 重置父 agent
     parent.reset().await;
 
-    // Parent agent context is cleared
+    // 父 agent 的上下文被清空
     let (parent_count, _) = parent.context_stats().await;
     assert_eq!(parent_count, 1);
 
-    // Child agent context is unaffected
+    // 子 agent 的上下文不受影响
     let (child_count, _) = child.context_stats().await;
     assert_eq!(child_count, 2);
 }
@@ -1290,7 +1297,7 @@ fn react_agent_register_agent_dispatch_tool() {
         .register_agent_dispatch_tool(true);
     let agent = ReactAgent::new(config);
 
-    // When register_agent_dispatch_tool is enabled, agent_tool should be registered
+    // 启用 register_agent_dispatch_tool 后，agent_tool 应被注册
     let tool_names = agent.tool_names();
     assert!(tool_names.contains(&String::from("agent_tool")));
 }
@@ -1427,23 +1434,23 @@ fn react_agent_no_agent_dispatch_without_subagent() {
     let config = AgentConfig::minimal("test-model", "main_agent").enable_subagent(false);
     let agent = ReactAgent::new(config);
 
-    // When subagent is not enabled, agent_tool should not be registered
+    // 未启用 subagent 时，agent_tool 不应被注册
     let tool_names = agent.tool_names();
     assert!(!tool_names.contains(&String::from("agent_tool")));
 }
 
-// ── Agent Config Isolation Tests ───────────────────────────────────────────────────────
+// ── Agent 配置隔离测试 ───────────────────────────────────────────────────────
 
 #[test]
 fn agent_config_isolation() {
-    // Create two agents with independent configurations
+    // 创建两个配置相互独立的 agent
     let config1 = AgentConfig::new("model-a", "agent1", "System A");
     let config2 = AgentConfig::new("model-b", "agent2", "System B");
 
     let agent1 = ReactAgent::new(config1);
     let agent2 = ReactAgent::new(config2);
 
-    // Verify configurations are completely independent
+    // 验证配置完全相互独立
     assert_eq!(agent1.model_name(), "model-a");
     assert_eq!(agent2.model_name(), "model-b");
     assert_eq!(agent1.name(), "agent1");
@@ -1460,14 +1467,14 @@ fn agent_tool_registration_isolation() {
     let mut agent1 = ReactAgent::new(config1);
     let agent2 = ReactAgent::new(config2);
 
-    // agent1 registers a tool
+    // agent1 注册一个工具
     agent1.add_tool(Box::new(MockTool::new("tool1")));
 
-    // agent2 should not be affected
+    // agent2 不应受到影响
     let tools1 = agent1.tool_names();
     let tools2 = agent2.tool_names();
 
-    // agent1 has built-in tools + tool1; agent2 only has built-in tools
+    // agent1 拥有内置工具 + tool1；agent2 只拥有内置工具
     assert!(
         tools1.len() >= 2,
         "agent1 should have at least 2 tools (built-in + tool1)"
@@ -1491,16 +1498,16 @@ fn agent_callbacks_isolation() {
     let mut agent1 = ReactAgent::new(config1);
     let agent2 = ReactAgent::new(config2);
 
-    // agent1 adds a callback
+    // agent1 添加一个回调
     let callback = Arc::new(CounterCallback::new());
     agent1.add_callback(callback);
 
-    // agent2 should not be affected (verified through execution behavior)
-    // Since callbacks are private, only verify the method doesn't panic
+    /* agent2 不应受到影响（通过执行行为验证）。
+    由于回调是私有的，这里只验证该方法不会 panic。 */
     let _ = agent2;
 }
 
-// ── Agent Human-in-Loop Tool Tests ───────────────────────────────────────────────
+// ── Agent Human-in-Loop 工具测试 ───────────────────────────────────────────────
 
 #[cfg(feature = "human-loop")]
 #[test]
@@ -1508,7 +1515,7 @@ fn react_agent_human_in_loop_tool_registration() {
     let config = AgentConfig::minimal("model", "agent").enable_human_in_loop(true);
     let agent = ReactAgent::new(config);
 
-    // After enabling human_in_loop, the human_in_loop tool should be registered
+    // 启用 human_in_loop 后，human_in_loop 工具应被注册
     let tool_names = agent.tool_names();
     assert!(tool_names.contains(&String::from("human_in_loop")));
 }
@@ -1519,7 +1526,7 @@ fn react_agent_no_human_in_loop_without_flag() {
     let config = AgentConfig::minimal("model", "agent").enable_human_in_loop(false);
     let agent = ReactAgent::new(config);
 
-    // When human_in_loop is not enabled, the tool should not be registered
+    // 未启用 human_in_loop 时，该工具不应被注册
     let tool_names = agent.tool_names();
     assert!(!tool_names.contains(&String::from("human_in_loop")));
 }
@@ -1596,7 +1603,7 @@ async fn add_need_appeal_tool_does_not_nest_runtime_with_permission_service() {
     let mut agent = ReactAgent::new(config);
     agent.set_permission_service(service.clone());
 
-    // Before fix, this would trigger Handle::current().block_on(...) panic in async context.
+    // 在修复之前，这里会在异步上下文中触发 Handle::current().block_on(...) panic。
     agent.add_need_appeal_tool(Box::new(MockTool::new("dangerous_tool")));
 
     let snapshot = crate::agent::snapshot::AgentRunSnapshot::from_agent(&agent);
@@ -2147,9 +2154,8 @@ async fn activate_skill_enforces_context_path_for_conditional_skills() {
         .await
         .unwrap();
 
-    // The standard frontmatter has no `paths` source; conditional activation
-    // is a programmatic descriptor field, so replace it through the Agent
-    // reconciliation API used by every registry mutation surface.
+    /* 标准 frontmatter 没有 `paths` 来源；条件激活是一个程序化的描述符字段，
+    因此需要通过所有注册表变更入口都会使用的 Agent 协调 API 来替换它。 */
     let mut conditional = agent
         .skill_registry()
         .get_descriptor("python-linter")
@@ -2223,17 +2229,16 @@ async fn activate_skill_enforces_context_path_for_conditional_skills() {
     let _ = tokio::fs::remove_dir_all(base).await;
 }
 
-// ── Agent Task Planning Tool Tests ───────────────────────────────────────────────────────
+// ── Agent 任务规划工具测试 ───────────────────────────────────────────────────────
 
 #[test]
 fn react_agent_planning_tools_registration() {
     let config = AgentConfig::minimal("model", "agent").enable_tool(true);
     let agent = ReactAgent::new(config);
 
-    // The revisioned task-relation tools are always part of the default tool
-    // surface (the old enable_task-gated background-task trio was replaced by
-    // the injected command-cell tools; see
-    // react_agent_builder_registers_cell_tools_with_injected_registry).
+    /* 经过修订的任务相关工具始终是默认工具集的一部分（旧的由 enable_task
+    控制的后台任务三件套已被注入的 command-cell 工具取代；参见
+    react_agent_builder_registers_cell_tools_with_injected_registry）。 */
     let tool_names = agent.tool_names();
     assert!(tool_names.contains(&String::from("task_create")));
     assert!(tool_names.contains(&String::from("task_update")));
@@ -2246,14 +2251,13 @@ fn react_agent_no_planning_tools_without_flag() {
     let agent = ReactAgent::new(config);
 
     let tool_names = agent.tool_names();
-    // The revisioned task-relation tools are part of the default surface
-    // (registered unconditionally; no enable flag since the old background
-    // trio was replaced by the injected command-cell tools).
+    /* 经过修订的任务相关工具是默认工具集的一部分（无条件注册；
+    由于旧的后台三件套已被注入的 command-cell 工具取代，因此不再需要 enable 标志）。 */
     assert!(tool_names.contains(&String::from("task_create")));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Feature 1: Memory Tool auto-injection (with_memory_tools + SearchMemoryTool)
+// 特性 1：Memory 工具自动注入（with_memory_tools + SearchMemoryTool）
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -2370,7 +2374,7 @@ async fn search_memory_tool_returns_empty_for_no_matches() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Feature 2: Token budget management (max_tool_output_tokens)
+// 特性 2：Token 预算管理（max_tool_output_tokens）
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -2443,7 +2447,7 @@ async fn truncate_tool_output_exceeds_limit() {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Feature 5: Dynamic Tool Registration/Deregistration
+// 特性 5：动态工具的注册/注销
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -2509,9 +2513,8 @@ fn replace_tool_when_not_exists() {
 async fn invocation_history_is_inserted_before_current_input() -> Result<(), String> {
     use crate::agent::react::run::types::StreamMode;
 
-    // Disable workspace rule injection: this test asserts exact message
-    // content ordering, which must not depend on whether the checkout
-    // directory happens to carry project rule files (e.g. AGENTS.md).
+    /* 禁用工作区规则注入：该测试断言的是消息内容的精确顺序，
+    这一结果不应取决于检出目录是否恰好带有项目规则文件（例如 AGENTS.md）。 */
     let config =
         AgentConfig::new("test-model", "history-order", "system prompt").auto_project_rules(false);
     let agent = ReactAgent::new(config);
@@ -2780,11 +2783,11 @@ async fn warm_chat_history_is_not_replaced_by_checkpoint() -> Result<(), String>
     Ok(())
 }
 
-// ── recall_long_term_memories injects into the current user turn ─────────────
+// ── recall_long_term_memories 注入到当前用户轮次 ─────────────
 
-/// Recalled memories are dynamic per turn, so they must not be appended as
-/// permanent system messages where they destabilize the provider's prompt-cache
-/// prefix. The current turn owns one replaceable projection before the request.
+/** 被召回的记忆是按轮次动态变化的，因此不能作为永久性的系统消息追加，
+否则会破坏 provider 的 prompt-cache 前缀稳定性。当前轮次在请求发出前
+拥有一个可替换的记忆投影。 */
 #[tokio::test]
 async fn recall_injects_memories_into_current_user_message() -> Result<(), String> {
     use crate::agent::react::run::types::StreamMode;
@@ -2795,9 +2798,9 @@ async fn recall_injects_memories_into_current_user_message() -> Result<(), Strin
     let config = AgentConfig::new("test-model", agent_name, "system prompt").enable_memory(false);
     let mut agent = ReactAgent::new(config);
 
-    // Seed the long-term store with a fact that will be recalled by exact-text search.
-    // (stage4 A2) Seed the unified namespace ["agent","memories"] — recall no
-    // longer reads the legacy per-agent namespace.
+    /* 向长期存储中写入一条事实，该事实之后会通过精确文本检索被召回。
+    (stage4 A2) 写入统一命名空间 ["agent","memories"] —— recall 不再
+    读取旧版的按 agent 命名空间。 */
     let store: Arc<dyn crate::memory::Store> = Arc::new(InMemoryStore::new());
     store
         .put(
@@ -2809,7 +2812,7 @@ async fn recall_injects_memories_into_current_user_message() -> Result<(), Strin
         .map_err(|error| error.to_string())?;
     agent.set_memory_store(store);
 
-    // Drive prepare_stream_context with a query that should hit the seeded fact.
+    // 使用一个能命中已写入事实的查询来驱动 prepare_stream_context。
     let recalled = agent
         .prepare_stream_context(StreamMode::Chat, "Rust", &[], None, None)
         .await
@@ -2819,9 +2822,8 @@ async fn recall_injects_memories_into_current_user_message() -> Result<(), Strin
         "expected at least one memory to be recalled, got {recalled}"
     );
 
-    // The context keeps stable workspace/runtime state before the current user
-    // request so provider prefix caches can reuse the shared project context
-    // across different requests.
+    /* 上下文会把稳定的工作区/运行时状态放在当前用户请求之前，
+    这样 provider 的前缀缓存就能在不同请求之间复用共享的项目上下文。 */
     let ctx = agent.memory.context.lock().await;
     let messages = ctx.messages();
 
@@ -3144,7 +3146,7 @@ async fn managed_force_checkpoint_settles_transcript_before_returning() -> crate
     Ok(())
 }
 
-/// Third-party stores remain source-compatible but cannot claim atomic support.
+/// 第三方存储在源码层面仍然兼容，但不能声称支持原子写入。
 #[tokio::test]
 async fn legacy_conversation_store_defaults_to_unsupported_projection() {
     use crate::memory::{
@@ -3155,10 +3157,13 @@ async fn legacy_conversation_store_defaults_to_unsupported_projection() {
     use futures::future::BoxFuture;
     use std::sync::Mutex as StdMutex;
 
-    /// Minimal in-memory ConversationStore that records every save_messages call.
+    /// 一个最简单的内存版 ConversationStore，会记录每一次 save_messages 调用。
     struct RecordingStore {
+        /// 每次 save_messages 调用的记录（会话 ID + 本次写入的消息）。
         saves: StdMutex<Vec<(String, Vec<StoredMessage>)>>,
+        /// 已创建的会话列表。
         conversations: StdMutex<Vec<Conversation>>,
+        /// 累计持久化下来的消息。
         persisted: StdMutex<Vec<StoredMessage>>,
     }
 

@@ -1,44 +1,45 @@
-//! 三层沙箱执行系统
-//!
-//! 提供 Local / Docker / K8s 三种隔离级别的代码执行环境，
-//! 统一通过 [`SandboxExecutor`] trait 抽象，由 [`SandboxManager`] 自动选择最佳执行层。
-//!
-//! 当前实现约定：
-//! - [`ResourceLimits::cpu_time_secs`] 表示 wall-clock timeout，而不是 CPU request / quota
-//! - [`SandboxCommand::stdin`] 会透传到 Local / Docker / K8s 三个执行器
-//! - K8s 执行器会显式删除临时 Pod；无法逐 Pod 强制断网时，`network=false` 会明确拒绝执行
-//! - Local 受控取消会等待进程回收；Docker 各 terminal 路径会检查容器清理结果
-//!
-//! ## 架构
-//!
-//! | 层 | 实现 | 隔离强度 | 开销 | 适用场景 |
-//! |----|------|----------|------|----------|
-//! | Local | [`LocalSandbox`] | macOS/Linux OS 级；Windows 暂不可用 | 极低 | 开发调试、受信操作 |
-//! | Docker | [`DockerSandbox`] | 容器级（namespace + cgroups） | 中等 | 不可信代码、环境隔离 |
-//! | K8s | [`K8sSandbox`] | 编排工作负载级（Pod） | 较高 | 大规模并发、企业级 |
-//!
-//! ## 快速上手
-//!
-//! ```rust,no_run
-//! use echo_execution::sandbox::*;
-//!
-//! # async fn example() -> echo_core::error::Result<()> {
-//! // 自动检测最佳执行环境
-//! let manager = SandboxManager::auto_detect().await;
-//! let result = manager.execute(
-//!     SandboxCommand::shell("echo hello world"),
-//! ).await?;
-//! println!("stdout: {}", result.stdout);
-//!
-//! // 指定 Docker 执行
-//! let docker = DockerSandbox::new(DockerConfig::default());
-//! if docker.is_available().await {
-//!     let result = docker.execute(SandboxCommand::shell("python3 -c 'print(1+1)'")).await?;
-//!     println!("result: {}", result.stdout);
-//! }
-//! # Ok(())
-//! # }
-//! ```
+/*! 三层沙箱执行系统
+
+提供 Local / Docker / K8s 三种隔离级别的代码执行环境，
+统一通过 [`SandboxExecutor`] trait 抽象，由 [`SandboxManager`] 自动选择最佳执行层。
+
+当前实现约定：
+- [`ResourceLimits::cpu_time_secs`] 表示 wall-clock timeout，而不是 CPU request / quota
+- [`SandboxCommand::stdin`] 会透传到 Local / Docker / K8s 三个执行器
+- K8s 执行器会显式删除临时 Pod；无法逐 Pod 强制断网时，`network=false` 会明确拒绝执行
+- Local 受控取消会等待进程回收；Docker 各 terminal 路径会检查容器清理结果
+
+## 架构
+
+| 层 | 实现 | 隔离强度 | 开销 | 适用场景 |
+|----|------|----------|------|----------|
+| Local | [`LocalSandbox`] | macOS/Linux OS 级；Windows 暂不可用 | 极低 | 开发调试、受信操作 |
+| Docker | [`DockerSandbox`] | 容器级（namespace + cgroups） | 中等 | 不可信代码、环境隔离 |
+| K8s | [`K8sSandbox`] | 编排工作负载级（Pod） | 较高 | 大规模并发、企业级 |
+
+## 快速上手
+
+```rust,no_run
+use echo_execution::sandbox::*;
+
+# async fn example() -> echo_core::error::Result<()> {
+// 自动检测最佳执行环境
+let manager = SandboxManager::auto_detect().await;
+let result = manager.execute(
+    SandboxCommand::shell("echo hello world"),
+).await?;
+println!("stdout: {}", result.stdout);
+
+// 指定 Docker 执行
+let docker = DockerSandbox::new(DockerConfig::default());
+if docker.is_available().await {
+    let result = docker.execute(SandboxCommand::shell("python3 -c 'print(1+1)'")).await?;
+    println!("result: {}", result.stdout);
+}
+# Ok(())
+# }
+```
+*/
 
 pub mod docker;
 pub mod k8s;
@@ -57,7 +58,7 @@ pub use local::{LocalConfig, LocalSandbox};
 pub use manager::SandboxManager;
 pub use policy::{SandboxPolicy, SecurityLevel};
 
-// Re-export core types from echo_core
+// 重导出 echo_core 中的核心类型
 pub use echo_core::sandbox::{
     CommandKind, ExecutionResult, IsolationLevel, ResourceLimits, SandboxCommand, SandboxExecutor,
     SandboxOutputChannel, SandboxStreamEvent, SandboxStreamFailure,
@@ -90,11 +91,12 @@ pub fn default_language_image(lang: &str) -> Option<&'static str> {
     }
 }
 
-/// 为命令选择合适的镜像（通用逻辑）。
-///
-/// 按优先级：语言精确匹配 -> 语言前缀匹配 -> 默认镜像。
-/// 对 `CommandKind::Shell`，如果首个 token 看起来像路径（包含 `/` 或 `\`），
-/// 则直接回退到默认镜像，避免把宿主机路径误判成语言标识。
+/** 为命令选择合适的镜像（通用逻辑）。
+
+按优先级：语言精确匹配 -> 语言前缀匹配 -> 默认镜像。
+对 `CommandKind::Shell`，如果首个 token 看起来像路径（包含 `/` 或 `\`），
+则直接回退到默认镜像，避免把宿主机路径误判成语言标识。
+*/
 pub fn select_image_for_command(
     command: &SandboxCommand,
     language_images: &HashMap<String, String>,
@@ -145,12 +147,13 @@ pub fn select_image_for_command(
     }
 }
 
-// ── 核心类型 (defined in echo_core::sandbox, re-exported above) ───────────
+// ── 核心类型（定义于 echo_core::sandbox，已在上方重导出）───────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // 当 shell 命令的首个 token 看起来像路径时，应回退到默认镜像。
     #[test]
     fn test_select_image_shell_path_uses_default_image() {
         let mut language_images = HashMap::new();
@@ -162,6 +165,7 @@ mod tests {
         assert_eq!(image, "ubuntu:22.04");
     }
 
+    // shell 命令的二进制名应能正确映射到对应语言镜像。
     #[test]
     fn test_select_image_shell_binary_name_mapping() {
         let mut language_images = HashMap::new();

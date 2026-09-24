@@ -1,7 +1,7 @@
-//! Semantic Scholar paper search tool.
+//! Semantic Scholar 论文搜索工具。
 //!
-//! Queries the Semantic Scholar API for academic papers with rich metadata
-//! (citation counts, references, fields of study).
+//! 查询 Semantic Scholar API 获取学术论文，返回包含引用数、参考文献数、
+//! 研究领域等在内的丰富元数据。
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -10,13 +10,18 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// 该工具在工具注册表中的名称。
 const TOOL_NAME: &str = "semantic_scholar_search";
+/// Semantic Scholar 图谱 API 的基础地址。
 const S2_API_URL: &str = "https://api.semanticscholar.org/graph/v1";
-// Rate limit: 100 requests per 5 minutes without API key
+// 速率限制：未使用 API key 时，每 5 分钟最多 100 次请求
+/// 未显式指定 `fields` 参数时，默认请求返回的字段列表。
 const DEFAULT_FIELDS: &str = "title,abstract,authors,citationCount,referenceCount,year,url,externalIds,fieldsOfStudy,venue,publicationDate";
 
+/// 进程内全局复用的 HTTP 客户端（延迟初始化，避免重复创建连接池）。
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// 获取（必要时初始化）共享的 HTTP 客户端实例，配置了 30 秒超时与 SSRF 安全的重定向策略。
 fn shared_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -27,21 +32,26 @@ fn shared_client() -> &'static reqwest::Client {
     })
 }
 
+/// Semantic Scholar 论文搜索工具，无状态。
 pub struct SemanticScholarSearchTool;
 
 impl Tool for SemanticScholarSearchTool {
+    /// 返回该工具在工具注册表中的名称。
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 声明该工具所需的权限：需要访问网络。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 返回展示给模型/调用方的工具功能描述。
     fn description(&self) -> &str {
         "Search Semantic Scholar for academic papers. Returns rich metadata including citation count, references, fields of study. No API key required (rate-limited). Supports keyword search and paper ID lookup. Example: semantic_scholar_search(query='large language models', limit=20)"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -75,6 +85,7 @@ impl Tool for SemanticScholarSearchTool {
         })
     }
 
+    /// 执行论文搜索：拼接查询参数请求 Semantic Scholar API，并将返回结果归一化为简化的 JSON 结构。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -97,7 +108,7 @@ impl Tool for SemanticScholarSearchTool {
             let fields_of_study = parameters.get("fields_of_study").and_then(|v| v.as_str());
             let sort = parameters.get("sort").and_then(|v| v.as_str());
 
-            // Build URL
+            // 构造请求 URL
             let mut url = format!(
                 "{}/paper/search?query={}&limit={}&fields={}",
                 S2_API_URL,
@@ -159,7 +170,7 @@ impl Tool for SemanticScholarSearchTool {
                 .cloned()
                 .unwrap_or_default();
 
-            // Normalize paper format
+            // 归一化论文数据格式
             let normalized: Vec<Value> = papers
                 .iter()
                 .map(|p| {

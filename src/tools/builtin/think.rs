@@ -1,30 +1,31 @@
-/// Think tool (optional registration, not enabled by default).
-///
-/// # Background
-///
-/// The framework has switched to **(CoT via system prompt)**:
-/// `ReactAgent` automatically appends CoT guidance to the system prompt when `enable_tool=true`,
-/// letting the LLM output reasoning as text content, natively compatible with streaming (Token events).
-///
-/// This tool is **no longer registered by default**, only for manual opt-in in these scenarios:
-/// - When structured tool-call records of each reasoning step are needed in the conversation history
-/// - Non-streaming tasks where reasoning should be stored as tool_result in context
-///
-/// # Usage
-///
-/// ```rust,no_run
-/// use echo_agent::tools::builtin::think::ThinkTool;
-/// use echo_agent::prelude::{AgentConfig, ReactAgent};
-///
-/// let config = AgentConfig::new("qwen3-max", "assistant", "You are a helpful assistant");
-/// let mut agent = ReactAgent::new(config);
-/// agent.add_tool(Box::new(ThinkTool));
-/// ```
-///
-/// > **Note**: In the `execute_stream` streaming path, registering this tool causes model reasoning
-/// > content to be written to tool call parameters instead of the `content` field, resulting in no
-/// > `AgentEvent::Token` events during the reasoning phase.
-/// > For streaming scenarios, rely on the CoT system prompt (default behavior); no need to register this tool.
+/** Think 工具（可选注册，默认不启用）。
+
+# 背景
+
+框架已切换为 **（通过系统提示词实现 CoT）** 的方式：当 `enable_tool=true`
+时，`ReactAgent` 会自动在系统提示词中追加 CoT 引导语，让 LLM 以文本内容
+的形式输出推理过程，天然兼容流式（Token 事件）。
+
+该工具**默认不再注册**，仅在以下场景中手动启用：
+- 需要在会话历史中保留每一步推理的结构化工具调用记录时
+- 非流式任务中，希望将推理过程以 tool_result 的形式存入上下文时
+
+# 用法
+
+```rust,no_run
+use echo_agent::tools::builtin::think::ThinkTool;
+use echo_agent::prelude::{AgentConfig, ReactAgent};
+
+let config = AgentConfig::new("qwen3-max", "assistant", "You are a helpful assistant");
+let mut agent = ReactAgent::new(config);
+agent.add_tool(Box::new(ThinkTool));
+```
+
+> **注意**：在 `execute_stream` 流式路径中，注册该工具会导致模型的推理内容
+> 被写入工具调用参数而非 `content` 字段，从而使推理阶段不再产生
+> `AgentEvent::Token` 事件。
+> 对于流式场景，请依赖 CoT 系统提示词（默认行为）；无需注册该工具。
+*/
 use futures::future::BoxFuture;
 
 use crate::error::ToolError;
@@ -32,7 +33,7 @@ use crate::tools::{Tool, ToolParameters, ToolResult};
 use serde_json::Value;
 use tracing::info;
 
-/// Tool for internal reasoning and reflection.
+/// 用于内部推理与反思的工具。
 pub struct ThinkTool;
 
 impl Tool for ThinkTool {
@@ -69,7 +70,7 @@ impl Tool for ThinkTool {
 
             info!("Think: {}", reasoning);
 
-            // Echo reasoning back to context so the next LLM call can see the full reasoning record
+            // 将推理内容回显到上下文中，使下一次 LLM 调用能看到完整的推理记录
             Ok(ToolResult::success(reasoning.to_string()))
         })
     }

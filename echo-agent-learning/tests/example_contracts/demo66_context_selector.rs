@@ -9,6 +9,8 @@ use echo_agent::context::ContextSelector;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// demo66 契约测试：依次运行基本用法、自定义权重、多任务场景、实际项目场景
+/// 四个示例，演示 `ContextSelector` 如何基于符号匹配、最近修改、Git 变更对文件评分与筛选。
 #[test]
 fn contract_demo66_context_selector() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== demo66: Context Selector ===\n");
@@ -297,6 +299,7 @@ fn real_world_scenario() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// 根据文件路径中的关键词猜测文件类型（测试 / 配置 / 源码），返回带图标的分类标签。
 fn classify_file(file: &Path) -> &'static str {
     let display = file.to_string_lossy();
     if display.contains("test") {

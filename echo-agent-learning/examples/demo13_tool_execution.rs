@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::{Duration, sleep};
 
+/// 工具函数：计算两数之和，用于验证正常配置下的工具执行流程。
 #[tool(name = "add", description = "两数相加")]
 async fn add(
     /// 第一个数
@@ -20,6 +21,8 @@ async fn add(
     Ok(ToolResult::success(format!("{}", a + b)))
 }
 
+/// demo13 主入口：依次演示 `ToolExecutionConfig` 的默认配置、超时、自动重试、
+/// 并发限流共 4 种场景。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -52,20 +55,26 @@ async fn main() -> Result<()> {
 
 // ── 自定义测试工具 ──────────────────────────────────────────────────────────────
 
+/// 故意执行缓慢的加法工具，用于验证 `timeout_ms` 超时配置是否生效。
 struct SlowTool {
+    /// 执行前需要睡眠的秒数，用于模拟耗时操作。
     delay_secs: u64,
 }
 
 impl Tool for SlowTool {
+    /// 返回工具名称 `slow_add`。
     fn name(&self) -> &str {
         "slow_add"
     }
+    /// 返回工具描述。
     fn description(&self) -> &str {
         "一个故意很慢的加法工具"
     }
+    /// 返回工具入参的 JSON Schema：整数参数 `a`、`b`，均为必填。
     fn parameters(&self) -> Value {
         serde_json::json!({ "type": "object", "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } }, "required": ["a", "b"] })
     }
+    /// 先睡眠 `delay_secs` 秒模拟耗时，再计算并返回 `a + b` 的结果。
     fn execute(
         &self,
         params: ToolParameters,
@@ -79,12 +88,16 @@ impl Tool for SlowTool {
     }
 }
 
+/// 偶尔出错的乘法工具，前 `fail_times` 次调用会失败，用于验证自动重试配置。
 struct FlakyTool {
+    /// 累计调用次数，每次执行时自增。
     call_count: Arc<AtomicUsize>,
+    /// 需要失败的调用次数，超过该次数后开始正常返回结果。
     fail_times: usize,
 }
 
 impl FlakyTool {
+    /// 创建一个新的 `FlakyTool`，前 `fail_times` 次调用会返回失败结果。
     fn new(fail_times: usize) -> Self {
         Self {
             call_count: Arc::new(AtomicUsize::new(0)),
@@ -94,15 +107,19 @@ impl FlakyTool {
 }
 
 impl Tool for FlakyTool {
+    /// 返回工具名称 `flaky_multiply`。
     fn name(&self) -> &str {
         "flaky_multiply"
     }
+    /// 返回工具描述。
     fn description(&self) -> &str {
         "一个偶尔出错的乘法工具"
     }
+    /// 返回工具入参的 JSON Schema：整数参数 `a`、`b`，均为必填。
     fn parameters(&self) -> Value {
         serde_json::json!({ "type": "object", "properties": { "a": { "type": "integer" }, "b": { "type": "integer" } }, "required": ["a", "b"] })
     }
+    /// 执行乘法：调用次数未超过 `fail_times` 时返回模拟错误，之后计算并返回 `a * b` 的结果。
     fn execute(
         &self,
         params: ToolParameters,
@@ -125,6 +142,7 @@ impl Tool for FlakyTool {
 
 // ── Part 1 ──────────────────────────────────────────────────────────────────────
 
+/// 演示默认的 `ToolExecutionConfig` 配置下正常执行工具调用的流程。
 async fn demo_default() -> Result<()> {
     println!("配置：ToolExecutionConfig::default()\n");
 
@@ -151,6 +169,7 @@ async fn demo_default() -> Result<()> {
 
 // ── Part 2 ──────────────────────────────────────────────────────────────────────
 
+/// 演示 `timeout_ms = 1_500` 配置下工具执行超时的行为。
 async fn demo_timeout() -> Result<()> {
     println!("配置：timeout_ms = 1_500\n");
 
@@ -182,6 +201,7 @@ async fn demo_timeout() -> Result<()> {
 
 // ── Part 3 ──────────────────────────────────────────────────────────────────────
 
+/// 演示 `retry_on_fail = true` 配置下工具失败自动重试并最终成功的行为。
 async fn demo_retry() -> Result<()> {
     println!("配置：retry_on_fail = true, max_retries = 2\n");
 
@@ -221,6 +241,7 @@ async fn demo_retry() -> Result<()> {
 
 // ── Part 4 ──────────────────────────────────────────────────────────────────────
 
+/// 演示 `max_concurrency = 2` 配置下的并发限流场景。
 async fn demo_concurrency() -> Result<()> {
     println!("配置：max_concurrency = 2\n");
 
@@ -246,6 +267,7 @@ async fn demo_concurrency() -> Result<()> {
 
 // ── 辅助 ────────────────────────────────────────────────────────────────────────
 
+/// 打印 demo13 的开场横幅。
 fn print_banner() {
     println!("{}", "═".repeat(64));
     println!("  demo13 — ToolExecutionConfig 演示");
@@ -253,6 +275,7 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线和小节标题。
 fn sep(title: &str) {
     println!("\n{}", "─".repeat(64));
     println!("  {}", title);

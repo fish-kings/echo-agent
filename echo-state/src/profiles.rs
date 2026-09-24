@@ -1,8 +1,8 @@
-//! Agent and User profiles — dynamic capability and preference models.
+//! Agent 与用户画像 —— 动态的能力与偏好模型。
 //!
-//! Provides `AgentProfile` (tracks skill proficiency and tool usage statistics)
-//! and `UserProfile` (tracks user preferences, expertise areas, and common tasks).
-//! Both are persisted via the framework `Store` trait.
+//! 提供 `AgentProfile`（跟踪技能熟练度和工具使用统计）
+//! 与 `UserProfile`（跟踪用户偏好、擅长领域和常见任务）。
+//! 两者都通过框架的 `Store` trait 持久化。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -13,19 +13,19 @@ use echo_core::memory::Store;
 
 use crate::skill_telemetry::SkillTelemetry;
 
-/// Agent capability profile — tracks skill proficiency and tool usage over time.
+/// Agent 能力画像 —— 随时间跟踪技能熟练度和工具使用情况。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfile {
-    /// Per-skill capability scores.
+    /// 按技能划分的能力评分。
     pub capabilities: HashMap<String, CapabilityScore>,
-    /// Per-tool usage statistics.
+    /// 按工具划分的使用统计。
     pub tool_usage: HashMap<String, ToolUsageStats>,
-    /// Last update timestamp (epoch milliseconds).
+    /// 最后更新时间戳（epoch 毫秒）。
     pub last_updated: u64,
 }
 
 impl AgentProfile {
-    /// Create a new empty profile.
+    /// 创建一个新的空画像。
     pub fn new() -> Self {
         Self {
             capabilities: HashMap::new(),
@@ -34,7 +34,7 @@ impl AgentProfile {
         }
     }
 
-    /// Update capabilities from a batch of skill telemetry data.
+    /// 根据一批技能遥测数据更新能力评分。
     pub fn update_from_telemetry(&mut self, telemetry: &[SkillTelemetry]) {
         for t in telemetry {
             let score = self
@@ -50,7 +50,7 @@ impl AgentProfile {
             score.usage_count = t.activation_count;
             score.success_rate = t.success_rate();
 
-            // proficiency = success_rate × min(1.0, log10(usage_count) / 2.0)
+            // 熟练度 = 成功率 × min(1.0, log10(使用次数) / 2.0)
             let usage_factor = if t.activation_count > 1 {
                 (t.activation_count as f64).log10() / 2.0
             } else {
@@ -59,7 +59,7 @@ impl AgentProfile {
             score.proficiency = score.success_rate * usage_factor.min(1.0);
         }
 
-        // Update tool usage from telemetry common_tools
+        // 根据遥测数据中的 common_tools 更新工具使用情况
         for t in telemetry {
             for (tool_name, count) in &t.common_tools {
                 let stats =
@@ -71,7 +71,7 @@ impl AgentProfile {
                             common_skills: Vec::new(),
                         });
                 stats.usage_count += count;
-                // Estimate success_count from skill success rate
+                // 根据技能成功率估算成功次数
                 stats.success_count += (*count as f64 * t.success_rate()) as u64;
                 if !stats.common_skills.contains(&t.skill_name) {
                     stats.common_skills.push(t.skill_name.clone());
@@ -82,7 +82,7 @@ impl AgentProfile {
         self.last_updated = epoch_millis();
     }
 
-    /// Get top N capabilities sorted by proficiency (descending).
+    /// 获取按熟练度降序排列的前 N 项能力。
     pub fn top_capabilities(&self, n: usize) -> Vec<&CapabilityScore> {
         let mut caps: Vec<_> = self.capabilities.values().collect();
         caps.sort_by(|a, b| {
@@ -94,7 +94,7 @@ impl AgentProfile {
         caps
     }
 
-    /// Get top N tools sorted by usage count (descending).
+    /// 获取按使用次数降序排列的前 N 个工具。
     pub fn top_tools(&self, n: usize) -> Vec<&ToolUsageStats> {
         let mut tools: Vec<_> = self.tool_usage.values().collect();
         tools.sort_by_key(|tool| std::cmp::Reverse(tool.usage_count));
@@ -102,7 +102,7 @@ impl AgentProfile {
         tools
     }
 
-    /// Format as a system prompt block for LLM injection.
+    /// 格式化为用于注入 LLM 系统提示词的文本块。
     pub fn to_prompt_block(&self) -> String {
         if self.capabilities.is_empty() && self.tool_usage.is_empty() {
             return String::new();
@@ -158,45 +158,45 @@ impl Default for AgentProfile {
     }
 }
 
-/// Per-skill capability score.
+/// 单项技能的能力评分。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapabilityScore {
-    /// Skill name.
+    /// 技能名称。
     pub skill_name: String,
-    /// Proficiency score (0.0 to 1.0), computed as success_rate × log(usage).
+    /// 熟练度评分（0.0 到 1.0），由 成功率 × log(使用次数) 计算得出。
     pub proficiency: f64,
-    /// Total activation count.
+    /// 总激活次数。
     pub usage_count: u64,
-    /// Success rate (0.0 to 1.0).
+    /// 成功率（0.0 到 1.0）。
     pub success_rate: f64,
 }
 
-/// Per-tool usage statistics.
+/// 单个工具的使用统计。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolUsageStats {
-    /// Total usage count across all skills.
+    /// 所有技能中该工具的总使用次数。
     pub usage_count: u64,
-    /// Estimated successful usage count.
+    /// 估算的成功使用次数。
     pub success_count: u64,
-    /// Skills that commonly use this tool.
+    /// 常用到该工具的技能列表。
     pub common_skills: Vec<String>,
 }
 
-/// User preference profile — tracks user preferences, expertise, and common tasks.
+/// 用户偏好画像 —— 跟踪用户偏好、擅长领域和常见任务。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserProfile {
-    /// User-set preferences (key-value pairs).
+    /// 用户设置的偏好（键值对）。
     pub preferences: HashMap<String, String>,
-    /// Areas of expertise.
+    /// 擅长的领域。
     pub expertise_areas: Vec<String>,
-    /// Common task patterns with frequency.
+    /// 常见任务模式及其频次。
     pub common_tasks: Vec<TaskPattern>,
-    /// Last update timestamp (epoch milliseconds).
+    /// 最后更新时间戳（epoch 毫秒）。
     pub last_updated: u64,
 }
 
 impl UserProfile {
-    /// Create a new empty profile.
+    /// 创建一个新的空画像。
     pub fn new() -> Self {
         Self {
             preferences: HashMap::new(),
@@ -206,7 +206,7 @@ impl UserProfile {
         }
     }
 
-    /// Record a task type occurrence.
+    /// 记录一次任务类型的发生。
     pub fn record_task(&mut self, task_type: &str) {
         if let Some(pattern) = self
             .common_tasks
@@ -225,13 +225,13 @@ impl UserProfile {
         self.last_updated = epoch_millis();
     }
 
-    /// Set a user preference.
+    /// 设置一项用户偏好。
     pub fn set_preference(&mut self, key: &str, value: &str) {
         self.preferences.insert(key.to_string(), value.to_string());
         self.last_updated = epoch_millis();
     }
 
-    /// Get top N common tasks sorted by frequency (descending).
+    /// 获取按频次降序排列的前 N 个常见任务。
     pub fn top_tasks(&self, n: usize) -> Vec<&TaskPattern> {
         let mut tasks: Vec<_> = self.common_tasks.iter().collect();
         tasks.sort_by_key(|task| std::cmp::Reverse(task.frequency));
@@ -239,7 +239,7 @@ impl UserProfile {
         tasks
     }
 
-    /// Format as a system prompt block for LLM injection.
+    /// 格式化为用于注入 LLM 系统提示词的文本块。
     pub fn to_prompt_block(&self) -> String {
         if self.preferences.is_empty()
             && self.expertise_areas.is_empty()
@@ -282,29 +282,30 @@ impl Default for UserProfile {
     }
 }
 
-/// A recurring task pattern.
+/// 一种反复出现的任务模式。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskPattern {
-    /// Task type identifier (e.g., "coding", "data-analysis").
+    /// 任务类型标识（例如 "coding"、"data-analysis"）。
     pub task_type: String,
-    /// How many times this task type has been performed.
+    /// 该任务类型已执行的次数。
     pub frequency: u64,
-    /// Last performed timestamp (epoch milliseconds).
+    /// 最后一次执行的时间戳（epoch 毫秒）。
     pub last_performed: u64,
 }
 
-/// Store for profile data, backed by the framework `Store` trait.
+/// 基于框架 `Store` trait 实现的画像数据存储。
 pub struct ProfileStore {
+    /// 底层的通用 KV 存储。
     store: Arc<dyn Store>,
 }
 
 impl ProfileStore {
-    /// Create a new profile store backed by the given `Store`.
+    /// 用给定的 `Store` 创建一个新的画像存储。
     pub fn new(store: Arc<dyn Store>) -> Self {
         Self { store }
     }
 
-    /// Load the agent profile.
+    /// 加载 Agent 画像。
     pub async fn load_agent_profile(&self) -> echo_core::error::Result<Option<AgentProfile>> {
         match self.store.get(&["agent", "profile"], "current").await {
             Ok(Some(item)) => {
@@ -321,7 +322,7 @@ impl ProfileStore {
         }
     }
 
-    /// Save the agent profile.
+    /// 保存 Agent 画像。
     pub async fn save_agent_profile(&self, profile: &AgentProfile) -> echo_core::error::Result<()> {
         let value = serde_json::to_value(profile).map_err(|e| {
             echo_core::error::ReactError::Other(format!("Failed to serialize agent profile: {}", e))
@@ -334,7 +335,7 @@ impl ProfileStore {
             })
     }
 
-    /// Load the user profile.
+    /// 加载用户画像。
     pub async fn load_user_profile(&self) -> echo_core::error::Result<Option<UserProfile>> {
         match self.store.get(&["user", "profile"], "current").await {
             Ok(Some(item)) => {
@@ -351,7 +352,7 @@ impl ProfileStore {
         }
     }
 
-    /// Save the user profile.
+    /// 保存用户画像。
     pub async fn save_user_profile(&self, profile: &UserProfile) -> echo_core::error::Result<()> {
         let value = serde_json::to_value(profile).map_err(|e| {
             echo_core::error::ReactError::Other(format!("Failed to serialize user profile: {}", e))
@@ -365,7 +366,7 @@ impl ProfileStore {
     }
 }
 
-/// Get current time as epoch milliseconds.
+/// 获取当前时间的 epoch 毫秒数。
 fn epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -378,6 +379,7 @@ mod tests {
     use super::*;
     use crate::skill_telemetry::SkillTelemetry;
 
+    /// 构造一条用于测试的技能遥测记录。
     fn make_telemetry(name: &str, count: u64, success: u64) -> SkillTelemetry {
         SkillTelemetry {
             skill_name: name.to_string(),
@@ -422,7 +424,7 @@ mod tests {
         assert!((coding.success_rate - 0.92).abs() < f64::EPSILON);
         assert!(coding.proficiency > 0.0);
 
-        // bash used by both skills
+        // bash 被两个技能共用
         let bash = p.tool_usage.get("bash").unwrap();
         assert_eq!(bash.usage_count, 110); // 100 + 10
     }
@@ -439,7 +441,7 @@ mod tests {
 
         let top = p.top_capabilities(2);
         assert_eq!(top.len(), 2);
-        // coding should be first (highest proficiency due to high usage + success)
+        // coding 应排第一（因使用次数和成功率都很高，熟练度最高）
         assert_eq!(top[0].skill_name, "coding");
     }
 

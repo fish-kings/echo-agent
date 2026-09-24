@@ -1,41 +1,41 @@
-//! Background task state management
+//! 后台任务状态管理
 //!
-//! This module provides state management for background tasks,
-//! allowing them to be tracked, checkpointed, and resumed.
+//! 本模块为后台任务提供状态管理能力，
+//! 使其可以被追踪、生成检查点并恢复。
 
 use serde::{Deserialize, Serialize};
 
 use crate::tasks::TaskStatus;
 
-/// Background task state
+/// 后台任务状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackgroundTaskState {
-    /// Task ID
+    /// 任务 ID
     pub task_id: String,
-    /// Parent task ID (if this is a sub-task)
+    /// 父任务 ID（如果这是一个子任务）
     pub parent_task_id: Option<String>,
-    /// Task status
+    /// 任务状态
     pub status: TaskStatus,
-    /// Shell command (if command mode)
+    /// Shell 命令（命令模式下使用）
     pub command: Option<String>,
-    /// Exit code (if command completed)
+    /// 退出码（命令执行完成后）
     pub exit_code: Option<i32>,
-    /// Standard output
+    /// 标准输出
     pub stdout: String,
-    /// Standard error
+    /// 标准错误
     pub stderr: String,
-    /// Task start timestamp
+    /// 任务开始时间戳
     pub started_at: u64,
-    /// Task completion timestamp
+    /// 任务完成时间戳
     pub completed_at: Option<u64>,
-    /// Task duration in milliseconds
+    /// 任务耗时（毫秒）
     pub duration_ms: u64,
-    /// Checkpoint timestamp
+    /// 检查点时间戳
     pub checkpoint_at: u64,
 }
 
 impl BackgroundTaskState {
-    /// Create a new background task state
+    /// 创建一个新的后台任务状态
     pub fn new(task_id: impl Into<String>) -> Self {
         let now = super::time::now_secs();
         Self {
@@ -53,25 +53,25 @@ impl BackgroundTaskState {
         }
     }
 
-    /// Set parent task ID
+    /// 设置父任务 ID
     pub fn with_parent_task_id(mut self, parent_id: impl Into<String>) -> Self {
         self.parent_task_id = Some(parent_id.into());
         self
     }
 
-    /// Set command
+    /// 设置命令
     pub fn with_command(mut self, command: impl Into<String>) -> Self {
         self.command = Some(command.into());
         self
     }
 
-    /// Mark task as started
+    /// 将任务标记为已启动
     pub fn mark_started(&mut self) {
         self.status = TaskStatus::Running;
         self.started_at = super::time::now_secs();
     }
 
-    /// Mark task as completed
+    /// 将任务标记为已完成
     pub fn mark_completed(&mut self, exit_code: i32, stdout: String, stderr: String) {
         self.status = if exit_code == 0 {
             TaskStatus::Completed
@@ -89,7 +89,7 @@ impl BackgroundTaskState {
         self.checkpoint_at = completed_at;
     }
 
-    /// Mark task as failed
+    /// 将任务标记为失败
     pub fn mark_failed(&mut self, error: impl Into<String>) {
         self.status = TaskStatus::Failed(error.into());
         let completed_at = super::time::now_secs();
@@ -100,7 +100,7 @@ impl BackgroundTaskState {
         self.checkpoint_at = completed_at;
     }
 
-    /// Mark task as cancelled
+    /// 将任务标记为已取消
     pub fn mark_cancelled(&mut self) {
         self.status = TaskStatus::Cancelled;
         let completed_at = super::time::now_secs();
@@ -111,21 +111,21 @@ impl BackgroundTaskState {
         self.checkpoint_at = completed_at;
     }
 
-    /// Check if task is terminal
+    /// 检查任务是否已处于终止状态
     pub fn is_terminal(&self) -> bool {
         self.status.is_terminal()
     }
 }
 
-/// Checkpoint store trait for persisting task states.
+/// 用于持久化任务状态的检查点存储 trait。
 pub trait CheckpointStore: Send + Sync {
-    /// Save a task state
+    /// 保存一个任务状态
     fn save_task_state(
         &self,
         state: &BackgroundTaskState,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>;
 
-    /// Load a task state by task ID
+    /// 根据任务 ID 加载任务状态
     fn load_task_state(
         &self,
         task_id: &str,
@@ -137,14 +137,14 @@ pub trait CheckpointStore: Send + Sync {
         >,
     >;
 
-    /// Load all task states
+    /// 加载所有任务状态
     fn load_all_states(
         &self,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<Vec<BackgroundTaskState>, String>> + Send + '_>,
     >;
 
-    /// Delete a task state
+    /// 删除一个任务状态
     fn delete_task_state(
         &self,
         task_id: &str,

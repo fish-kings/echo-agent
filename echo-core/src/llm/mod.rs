@@ -1,4 +1,4 @@
-//! LLM client core trait and request/response types
+//! LLM 客户端核心 trait 及请求/响应类型
 
 pub mod cache;
 pub mod capabilities;
@@ -18,14 +18,19 @@ use futures::stream::BoxStream;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+/// 非流式请求的默认超时时间。
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// 从请求发出到首个响应字节到达的默认超时时间。
 const DEFAULT_FIRST_CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 流式响应中相邻数据块之间的默认最大空闲时间。
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 用于以毫秒数序列化/反序列化 `Option<Duration>` 的 serde 辅助模块。
 mod optional_duration_millis {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::time::Duration;
 
+    /// 将 `Option<Duration>` 序列化为毫秒数（`None` 序列化为 `null`）。
     pub fn serialize<S>(value: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -35,6 +40,7 @@ mod optional_duration_millis {
             .serialize(serializer)
     }
 
+    /// 从毫秒数反序列化为 `Option<Duration>`；值为 0 时视为未设置（`None`）。
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
     where
         D: Deserializer<'de>,
@@ -45,40 +51,47 @@ mod optional_duration_millis {
     }
 }
 
+/// 非流式请求超时的默认值提供函数（供 serde `default` 使用）。
 fn default_request_timeout() -> Option<Duration> {
     Some(DEFAULT_REQUEST_TIMEOUT)
 }
 
+/// 首字节超时的默认值提供函数（供 serde `default` 使用）。
 fn default_first_chunk_timeout() -> Option<Duration> {
     Some(DEFAULT_FIRST_CHUNK_TIMEOUT)
 }
 
+/// 空闲超时的默认值提供函数（供 serde `default` 使用）。
 fn default_idle_timeout() -> Option<Duration> {
     Some(DEFAULT_IDLE_TIMEOUT)
 }
 
+/// 将超时值归一化：零值视为“禁用”并转换为 `None`。
 fn normalize_timeout(timeout: Duration) -> Option<Duration> {
     (!timeout.is_zero()).then_some(timeout)
 }
 
-/// Provider-neutral timeout policy for LLM requests and streaming responses.
+/// 与具体 provider 无关的 LLM 请求及流式响应超时策略。
 ///
-/// `request` applies to non-streaming calls. Streaming calls use independent
-/// first-chunk, idle, and overall boundaries so a long healthy stream is not
-/// mistaken for a stalled request. A `None` boundary is disabled; zero values
-/// are normalized to `None`. Serialized values use milliseconds.
+/// `request` 应用于非流式调用。流式调用则使用独立的首字节、空闲和
+/// 整体边界，以避免将一个健康的长流误判为请求卡死。边界值为 `None`
+/// 表示禁用该超时；零值会被归一化为 `None`。序列化后的值以毫秒为单位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct LlmTimeouts {
+    /// 非流式请求的超时时间。
     #[serde(default = "default_request_timeout", with = "optional_duration_millis")]
     request: Option<Duration>,
+    /// 从请求发出到首个响应字节到达的超时时间。
     #[serde(
         default = "default_first_chunk_timeout",
         with = "optional_duration_millis"
     )]
     first_chunk: Option<Duration>,
+    /// 流式响应中相邻数据块之间的最大空闲时间。
     #[serde(default = "default_idle_timeout", with = "optional_duration_millis")]
     idle: Option<Duration>,
+    /// 覆盖整个流（包括启动阶段）的总体超时时间。
     #[serde(default, with = "optional_duration_millis")]
     overall: Option<Duration>,
 }
@@ -95,69 +108,69 @@ impl Default for LlmTimeouts {
 }
 
 impl LlmTimeouts {
-    /// Return the non-streaming request timeout.
+    /// 返回非流式请求的超时时间。
     pub fn request_timeout(self) -> Option<Duration> {
         self.request
     }
 
-    /// Return the timeout from request start through the first response bytes.
+    /// 返回从请求开始到首个响应字节到达的超时时间。
     pub fn first_chunk_timeout(self) -> Option<Duration> {
         self.first_chunk
     }
 
-    /// Return the maximum idle duration between streaming byte chunks.
+    /// 返回流式数据块之间允许的最大空闲时长。
     pub fn idle_timeout(self) -> Option<Duration> {
         self.idle
     }
 
-    /// Return the timeout covering the complete stream, including startup.
+    /// 返回覆盖整个流（包含启动阶段）的超时时间。
     pub fn overall_timeout(self) -> Option<Duration> {
         self.overall
     }
 
-    /// Configure the non-streaming request timeout. Zero disables it.
+    /// 设置非流式请求的超时时间；传入零值将禁用该超时。
     pub fn with_request_timeout(mut self, timeout: Duration) -> Self {
         self.request = normalize_timeout(timeout);
         self
     }
 
-    /// Disable the non-streaming request timeout.
+    /// 禁用非流式请求的超时。
     pub fn without_request_timeout(mut self) -> Self {
         self.request = None;
         self
     }
 
-    /// Configure the request-to-first-chunk timeout. Zero disables it.
+    /// 设置请求到首字节的超时时间；传入零值将禁用该超时。
     pub fn with_first_chunk_timeout(mut self, timeout: Duration) -> Self {
         self.first_chunk = normalize_timeout(timeout);
         self
     }
 
-    /// Disable the request-to-first-chunk timeout.
+    /// 禁用请求到首字节的超时。
     pub fn without_first_chunk_timeout(mut self) -> Self {
         self.first_chunk = None;
         self
     }
 
-    /// Configure the inter-chunk idle timeout. Zero disables it.
+    /// 设置数据块间的空闲超时时间；传入零值将禁用该超时。
     pub fn with_idle_timeout(mut self, timeout: Duration) -> Self {
         self.idle = normalize_timeout(timeout);
         self
     }
 
-    /// Disable the inter-chunk idle timeout.
+    /// 禁用数据块间的空闲超时。
     pub fn without_idle_timeout(mut self) -> Self {
         self.idle = None;
         self
     }
 
-    /// Configure the complete-stream timeout. Zero disables it.
+    /// 设置覆盖整个流的超时时间；传入零值将禁用该超时。
     pub fn with_overall_timeout(mut self, timeout: Duration) -> Self {
         self.overall = normalize_timeout(timeout);
         self
     }
 
-    /// Disable the complete-stream timeout.
+    /// 禁用覆盖整个流的超时。
     pub fn without_overall_timeout(mut self) -> Self {
         self.overall = None;
         self
@@ -221,52 +234,55 @@ mod timeout_tests {
     }
 }
 
-/// Input modalities accepted by one configured model.
+/// 单个已配置模型所接受的输入模态。
 ///
-/// Provider transports describe how content is encoded; this model-level set
-/// describes what a concrete model is allowed to receive.
+/// Provider 传输层描述内容是如何编码的；而这个模型级别的集合
+/// 描述的是某个具体模型被允许接收哪些类型的输入。
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ModelInputModality {
+    /// 文本输入。
     Text,
+    /// 图像输入。
     Image,
+    /// 音频输入。
     Audio,
+    /// 视频输入。
     Video,
 }
 
 impl ModelInputModality {
-    /// Text-only defaults keep unknown models conservative.
+    /// 仅文本的默认集合，用于对未知模型保持保守假设。
     pub fn text_only() -> Vec<Self> {
         vec![Self::Text]
     }
 
-    /// Preserve the framework constructors' historical multimodal behavior.
+    /// 保留框架构造函数历史上的多模态行为（支持全部模态）。
     pub fn all_supported() -> Vec<Self> {
         vec![Self::Text, Self::Image, Self::Audio, Self::Video]
     }
 }
 
-/// HTTP API protocol used by an LLM provider endpoint.
+/// LLM provider 端点所使用的 HTTP API 协议。
 ///
-/// This is deliberately separate from provider identity. A provider selects a
-/// default protocol, while custom and compatible endpoints can explicitly
-/// select any supported wire format.
+/// 这一概念被有意与 provider 身份区分开来。一个 provider 会选择一个
+/// 默认协议，而自定义或兼容端点则可以显式选择任意受支持的线上格式。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmApiProtocol {
-    /// OpenAI-compatible `/chat/completions` request and stream schema.
+    /// 兼容 OpenAI 的 `/chat/completions` 请求与流式响应模式。
     #[default]
     ChatCompletions,
-    /// OpenAI Responses request and semantic SSE event schema.
+    /// OpenAI Responses 请求及其语义化 SSE 事件模式。
     Responses,
-    /// Anthropic Messages request and semantic SSE event schema.
+    /// Anthropic Messages 请求及其语义化 SSE 事件模式。
     Anthropic,
 }
 
 impl LlmApiProtocol {
-    /// Standard endpoint path appended to a provider API root.
+    /// 附加在 provider API 根路径之后的标准端点路径。
     pub const fn endpoint_path(self) -> &'static str {
         match self {
             Self::ChatCompletions => "chat/completions",
@@ -275,11 +291,11 @@ impl LlmApiProtocol {
         }
     }
 
-    /// Identify the protocol spoken by a complete endpoint URL.
+    /// 根据一个完整的端点 URL 识别其所使用的协议。
     ///
-    /// Returns `None` for provider roots such as `https://api.example.com/v1`
-    /// because selecting a wire protocol from an incomplete path would turn the
-    /// Chat Completions fallback into a false positive.
+    /// 对于像 `https://api.example.com/v1` 这样的 provider 根路径会返回
+    /// `None`，因为从一个不完整的路径中猜测线上协议，会把 Chat
+    /// Completions 这个兜底选项变成一个误判。
     pub fn try_from_endpoint(endpoint: &str) -> Option<Self> {
         let path = endpoint
             .split(['?', '#'])
@@ -297,7 +313,7 @@ impl LlmApiProtocol {
         }
     }
 
-    /// Infer the protocol from a complete endpoint URL.
+    /// 从一个完整的端点 URL 推断协议。
     pub fn from_endpoint(endpoint: &str) -> Self {
         if let Some(protocol) = Self::try_from_endpoint(endpoint) {
             protocol
@@ -361,12 +377,12 @@ mod protocol_tests {
     }
 }
 
-/// Options for [`LlmClient::chat_simple_with_options`].
+/// [`LlmClient::chat_simple_with_options`] 的可选参数。
 #[derive(Debug, Clone)]
 pub struct SimpleChatOptions {
-    /// Sampling temperature (0.0–2.0). Defaults to `0.7`.
+    /// 采样温度（0.0–2.0）。默认为 `0.7`。
     pub temperature: Option<f32>,
-    /// Maximum tokens to generate. Defaults to `2048`.
+    /// 最大生成 token 数。默认为 `2048`。
     pub max_tokens: Option<u32>,
 }
 
@@ -380,46 +396,46 @@ impl Default for SimpleChatOptions {
 }
 
 impl SimpleChatOptions {
-    /// Create options with a specific temperature.
+    /// 创建带有指定温度值的选项。
     pub fn with_temperature(mut self, temp: f32) -> Self {
         self.temperature = Some(temp);
         self
     }
 
-    /// Create options with a specific max_tokens.
+    /// 创建带有指定 max_tokens 的选项。
     pub fn with_max_tokens(mut self, max: u32) -> Self {
         self.max_tokens = Some(max);
         self
     }
 }
 
-/// LLM client unified interface
+/// LLM 客户端的统一接口
 pub trait LlmClient: Send + Sync {
-    /// Execute a non-streaming chat request.
+    /// 执行一次非流式的聊天请求。
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>>;
 
-    /// Execute a streaming chat request.
+    /// 执行一次流式的聊天请求。
     ///
-    /// The returned stream is `'static` (does not borrow `&self`): all
-    /// provider implementations produce an owned, boxed stream so the caller
-    /// can move it across awaits / into spawned tasks. This also lets the
-    /// streaming core loop route through a trait object (`Arc<dyn LlmClient>`)
-    /// and have the resulting stream outlive the trait-method borrow — which
-    /// is what makes the loop testable with a mock client.
+    /// 返回的流是 `'static` 的（不借用 `&self`）：所有 provider
+    /// 实现都会生成一个拥有所有权的、装箱的流，这样调用方就可以将它
+    /// 跨 await 点移动 / 移入被 spawn 的任务中。这也使得流式核心循环
+    /// 能够通过一个 trait object（`Arc<dyn LlmClient>`）进行路由，
+    /// 并让返回的流的生命周期超出该 trait 方法调用本身的借用 ——
+    /// 这正是让该循环可以用一个 mock 客户端进行测试的关键所在。
     fn chat_stream(
         &self,
         request: ChatRequest,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<ChatChunk>>>>;
 
-    /// Convenience helper for simple text-only calls.
+    /// 用于简单纯文本调用的便捷辅助方法。
     ///
-    /// Accepts optional overrides via [`SimpleChatOptions`]; defaults are
-    /// `temperature: 0.7` and `max_tokens: 2048`.
+    /// 可通过 [`SimpleChatOptions`] 传入可选的覆盖参数；默认值为
+    /// `temperature: 0.7`、`max_tokens: 2048`。
     fn chat_simple(&self, messages: Vec<Message>) -> BoxFuture<'_, Result<String>> {
         self.chat_simple_with_options(messages, SimpleChatOptions::default())
     }
 
-    /// Convenience helper with configurable options.
+    /// 带可配置选项的便捷辅助方法。
     fn chat_simple_with_options(
         &self,
         messages: Vec<Message>,
@@ -438,44 +454,47 @@ pub trait LlmClient: Send + Sync {
         })
     }
 
-    /// Model identifier used by this client.
+    /// 该客户端使用的模型标识符。
     fn model_name(&self) -> &str;
 
-    /// Provider capabilities for this client.
+    /// 该客户端对应的 provider 能力集。
     ///
-    /// Default returns OpenAI-compatible capabilities. Override for
-    /// Anthropic, Ollama, or custom providers.
+    /// 默认返回兼容 OpenAI 的能力集。对于 Anthropic、Ollama 或
+    /// 自定义 provider，需要重写此方法。
     fn capabilities(&self) -> capabilities::ProviderCapabilities {
         capabilities::ProviderCapabilities::openai_compatible()
     }
 }
 
-/// Controls how the model uses tools during inference.
+/// 控制模型在推理过程中如何使用工具。
 ///
-/// Maps to provider-specific APIs:
-/// - OpenAI: `"auto"`, `"none"`, `"required"`, `{"type": "function", "function": {"name": "..."}}`
-/// - Anthropic: `{"type": "auto"}`, `{"type": "any"}`, `{"type": "tool", "name": "..."}`
+/// 映射到各 provider 特定的 API：
+/// - OpenAI：`"auto"`、`"none"`、`"required"`、`{"type": "function", "function": {"name": "..."}}`
+/// - Anthropic：`{"type": "auto"}`、`{"type": "any"}`、`{"type": "tool", "name": "..."}`
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ToolChoice {
-    /// Let the model decide whether to call tools (default).
+    /// 由模型自行决定是否调用工具（默认值）。
     #[default]
     Auto,
-    /// Force the model NOT to call any tools.
+    /// 强制模型不调用任何工具。
     None,
-    /// Require the model to call at least one tool.
+    /// 要求模型至少调用一个工具。
     Required,
-    /// Force the model to call a specific tool by name.
-    Function { name: String },
+    /// 强制模型调用指定名称的工具。
+    Function {
+        /// 被强制调用的工具名称。
+        name: String,
+    },
 }
 
 impl ToolChoice {
-    /// Create a ToolChoice that forces a specific function call.
+    /// 创建一个强制调用指定函数的 ToolChoice。
     pub fn function(name: impl Into<String>) -> Self {
         Self::Function { name: name.into() }
     }
 
-    /// Convert to the OpenAI wire format (`"auto"`, `"none"`, `"required"`,
-    /// or `{"type":"function","function":{"name":"..."}}`).
+    /// 转换为 OpenAI 的线上格式（`"auto"`、`"none"`、`"required"`，
+    /// 或 `{"type":"function","function":{"name":"..."}}`）。
     pub fn to_openai_value(&self) -> serde_json::Value {
         match self {
             Self::Auto => serde_json::Value::String("auto".into()),
@@ -489,52 +508,51 @@ impl ToolChoice {
     }
 }
 
-/// Chat request parameters
+/// 聊天请求参数
 #[derive(Debug, Clone, Default)]
 pub struct ChatRequest {
-    /// Ordered chat history sent to the model.
+    /// 发送给模型的有序聊天历史。
     pub messages: Vec<Message>,
-    /// Optional sampling temperature.
+    /// 可选的采样温度。
     pub temperature: Option<f32>,
-    /// Optional response token limit.
+    /// 可选的响应 token 数上限。
     pub max_tokens: Option<u32>,
-    /// Optional tool definitions exposed to the model.
+    /// 可选的、暴露给模型的工具定义。
     pub tools: Option<Vec<ToolDefinition>>,
-    /// Controls how the model uses tools (OpenAI wire format).
-    /// Prefer [`ToolChoice`] for type-safe construction; convert via
-    /// [`ToolChoice::to_openai_value`] when building a [`ChatCompletionRequest`].
+    /// 控制模型如何使用工具（OpenAI 线上格式）。
+    /// 优先使用 [`ToolChoice`] 以获得类型安全的构造方式；在构建
+    /// [`ChatCompletionRequest`] 时通过 [`ToolChoice::to_openai_value`] 转换。
     pub tool_choice: Option<String>,
-    /// Optional structured output format hint.
+    /// 可选的结构化输出格式提示。
     pub response_format: Option<ResponseFormat>,
-    /// Optional reasoning-depth / "thinking" control.
+    /// 可选的推理深度 / “思考”控制。
     ///
-    /// When set, providers translate it to their native thinking wire field
-    /// (`reasoning_effort` for OpenAI reasoning models, `thinking.budget_tokens`
-    /// for Claude 3.7–4.5, `enable_thinking` for Qwen3/GLM). Models that do not
-    /// support a thinking control silently drop it (with a `warn!`). `None`
-    /// (the default) means "use the model's default behavior" — no field sent.
+    /// 设置该字段后，各 provider 会将其转换为自身原生的思考线上字段
+    /// （OpenAI 推理模型对应 `reasoning_effort`，Claude 3.7–4.5 对应
+    /// `thinking.budget_tokens`，Qwen3/GLM 对应 `enable_thinking`）。
+    /// 不支持思考控制的模型会静默丢弃该字段（并输出一条 `warn!` 日志）。
+    /// `None`（默认值）表示“使用模型的默认行为” —— 不发送该字段。
     pub thinking: Option<ThinkingConfig>,
-    /// Optional cancellation token for aborting in-flight requests.
-    /// When set and cancelled, streaming responses stop at the next SSE boundary and
-    /// non-streaming requests abort while waiting for headers, reading the body, or
-    /// decoding the JSON response.
+    /// 用于中止进行中请求的可选取消令牌。
+    /// 设置并被取消后，流式响应会在下一个 SSE 边界处停止，非流式请求
+    /// 则会在等待响应头、读取响应体或解析 JSON 响应的过程中中止。
     pub cancel_token: Option<CancellationToken>,
-    /// Optional timeout override for this call.
+    /// 本次调用的可选超时覆盖值。
     ///
-    /// `None` uses the provider client's configured default. The same value
-    /// controls non-streaming and streaming boundaries.
+    /// `None` 表示使用 provider 客户端的默认配置。同一个值同时
+    /// 控制非流式与流式的超时边界。
     pub timeouts: Option<LlmTimeouts>,
-    /// Optional user identifier for KVCache isolation (DeepSeek, etc.).
-    /// A stable, session-scoped ID enables the provider to reuse prompt cache
-    /// entries across requests. Without this, cache hit rate can drop to <1%.
+    /// 用于 KVCache 隔离的可选用户标识符（DeepSeek 等场景使用）。
+    /// 一个稳定的、绑定到会话的 ID 可以让 provider 在多次请求间
+    /// 复用 prompt 缓存条目。若不设置，缓存命中率可能会降到 1% 以下。
     pub user_id: Option<String>,
-    /// Optional cache hints (breakpoint targets, stable prefix hash, segment ranges).
-    /// Providers consume this to place cache breakpoints and log diagnostics.
+    /// 可选的缓存提示（断点目标、稳定前缀哈希、分段范围）。
+    /// Provider 使用这些信息来放置缓存断点并记录诊断日志。
     pub cache_hints: Option<crate::llm::cache::CacheHints>,
 }
 
 impl ChatRequest {
-    /// Create a request from a message list.
+    /// 从消息列表创建一个请求。
     pub fn new(messages: Vec<Message>) -> Self {
         Self {
             messages,
@@ -542,44 +560,44 @@ impl ChatRequest {
         }
     }
 
-    /// Attach tool definitions to the request.
+    /// 为请求附加工具定义。
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
         self.tools = Some(tools);
         self
     }
 
-    /// Override the provider client's timeout policy for this request.
+    /// 为本次请求覆盖 provider 客户端的超时策略。
     pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
         self.timeouts = Some(timeouts);
         self
     }
 }
 
-/// Chat response
+/// 聊天响应
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
-    /// Primary assistant message returned by the provider.
+    /// provider 返回的主助手消息。
     pub message: Message,
-    /// Provider-specific finish reason.
+    /// provider 特定的结束原因。
     pub finish_reason: Option<String>,
-    /// Provider-normalized token usage, symmetric with [`ChatChunk::usage`].
+    /// 经过 provider 归一化的 token 用量，与 [`ChatChunk::usage`] 对称。
     pub usage: Option<types::Usage>,
-    /// Raw provider response for callers needing extra metadata.
+    /// 原始的 provider 响应，供需要额外元数据的调用方使用。
     pub raw: ChatCompletionResponse,
 }
 
 impl ChatResponse {
-    /// Extract the assistant text content.
+    /// 提取助手文本内容。
     pub fn content(&self) -> Option<String> {
         self.message.content.as_text()
     }
 
-    /// Borrow tool calls if the assistant emitted any.
+    /// 若助手发出了工具调用，则借用其引用。
     pub fn tool_calls(&self) -> Option<&Vec<ToolCall>> {
         self.message.tool_calls.as_ref()
     }
 
-    /// Whether the response includes at least one tool call.
+    /// 该响应是否包含至少一个工具调用。
     pub fn has_tool_calls(&self) -> bool {
         self.message
             .tool_calls
@@ -588,13 +606,13 @@ impl ChatResponse {
     }
 }
 
-/// Streaming response chunk
+/// 流式响应数据块
 #[derive(Debug, Clone)]
 pub struct ChatChunk {
-    /// Incremental message delta.
+    /// 增量消息差异。
     pub delta: DeltaMessage,
-    /// Finish reason emitted with the chunk, if any.
+    /// 随该数据块一起发出的结束原因（若有）。
     pub finish_reason: Option<String>,
-    /// Token usage (present in the final chunk when stream_options.include_usage is set).
+    /// token 用量（仅当设置了 stream_options.include_usage 时，出现在最后一个数据块中）。
     pub usage: Option<types::Usage>,
 }

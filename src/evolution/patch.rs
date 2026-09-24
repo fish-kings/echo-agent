@@ -1,7 +1,7 @@
-//! Skill patch generation based on failure patterns.
+//! 基于失败模式生成技能补丁。
 //!
-//! Analyzes skill telemetry to identify common failure modes and generates
-//! patch proposals to improve skill instructions with better error handling.
+//! 分析技能遥测数据以识别常见的失败模式，并生成补丁提案，
+//! 通过更完善的错误处理来改进技能说明。
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -17,45 +17,45 @@ use crate::evolution::skill_mutation::{
     SkillMutationOutcome, SkillMutationPreview, SkillMutationRequest,
 };
 
-// Re-export SkillDescriptor for use in this module.
+// 重新导出 SkillDescriptor，供本模块使用。
 pub use echo_execution::skills::external::SkillDescriptor;
 
-/// Type of patch to apply to a skill.
+/// 应用到某个技能的补丁类型。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PatchType {
-    /// Add error handling instructions for a specific failure pattern.
+    /// 针对某个特定失败模式，添加错误处理说明。
     ErrorHandling {
-        /// The failure pattern to handle.
+        /// 要处理的失败模式。
         failure_pattern: String,
-        /// Suggested error handling instructions.
+        /// 建议的错误处理说明。
         handling_instructions: String,
     },
-    /// Add prerequisite checks before execution.
+    /// 在执行前添加前置条件检查。
     PrerequisiteCheck {
-        /// Description of the prerequisite.
+        /// 前置条件的描述。
         check_description: String,
-        /// How to verify the prerequisite.
+        /// 如何验证该前置条件。
         verification_steps: Vec<String>,
     },
-    /// Add fallback strategy for when primary approach fails.
+    /// 当主要方案失败时，添加兜底（fallback）策略。
     FallbackStrategy {
-        /// When to use the fallback.
+        /// 何时使用该兜底策略。
         trigger_condition: String,
-        /// Fallback instructions.
+        /// 兜底说明。
         fallback_instructions: String,
     },
-    /// Improve existing instructions with more detail.
+    /// 为已有说明补充更多细节，加以改进。
     InstructionEnhancement {
-        /// Which part of the instructions to enhance.
+        /// 要改进的说明部分。
         target_section: String,
-        /// Enhancement details.
+        /// 改进细节。
         enhancement: String,
     },
 }
 
 impl PatchType {
-    /// Human-readable label for this patch type (used in markdown headings).
+    /// 该补丁类型的可读标签（用于 markdown 标题）。
     pub fn label(&self) -> &'static str {
         match self {
             PatchType::ErrorHandling { .. } => "Error Handling",
@@ -66,35 +66,35 @@ impl PatchType {
     }
 }
 
-/// A proposed patch for a skill.
+/// 针对某个技能提出的一个补丁提案。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillPatch {
-    /// Skill name.
+    /// 技能名称。
     pub skill_name: String,
-    /// Type of patch.
+    /// 补丁类型。
     pub patch_type: PatchType,
-    /// Rationale for this patch.
+    /// 该补丁的理由说明。
     pub rationale: String,
-    /// Confidence score (0.0-1.0) based on failure frequency.
+    /// 基于失败频率得出的置信度分数（0.0-1.0）。
     pub confidence: f64,
-    /// Priority score (0-10) for ordering patches.
+    /// 用于排序补丁的优先级分数（0-10）。
     pub priority: u8,
-    /// When this patch was proposed.
+    /// 该补丁提出的时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub proposed_at: DateTime<Utc>,
-    /// SHA-256 of the exact SKILL.md content reviewed for this proposal.
+    /// 本次提案所审查的 SKILL.md 精确内容的 SHA-256 哈希。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_hash: Option<String>,
 }
 
 impl SkillPatch {
-    /// Bind this proposal to the exact current source revision.
+    /// 将该提案绑定到当前的精确源版本。
     pub async fn bind_to_source(mut self, path: &std::path::Path) -> Result<Self> {
         let content = tokio::fs::read(path).await?;
         self.source_hash = Some(sha256_hex(&content));
         Ok(self)
     }
-    /// Generate a human-readable summary of the patch.
+    /// 生成该补丁的可读摘要。
     pub fn summary(&self) -> String {
         match &self.patch_type {
             PatchType::ErrorHandling {
@@ -142,11 +142,12 @@ impl SkillPatch {
         }
     }
 
-    /// Render the patch as a markdown section suitable for appending to SKILL.md.
-    ///
-    /// The section is placed after the frontmatter and existing body content.
-    /// It includes a timestamped heading, the rationale, and the structured
-    /// instructions derived from the patch type.
+    /**
+    将该补丁渲染为一个适合追加到 SKILL.md 的 markdown 小节。
+
+    该小节会被放在 frontmatter 与已有正文内容之后。它包含一个带
+    时间戳的标题、理由说明，以及从补丁类型推导出的结构化说明。
+    */
     pub fn to_markdown(&self) -> String {
         let ts = self.proposed_at.format("%Y-%m-%d").to_string();
         let mut lines = vec![
@@ -198,19 +199,24 @@ impl SkillPatch {
     }
 }
 
-/// Generates skill patches based on telemetry analysis.
+/// 基于遥测分析生成技能补丁。
 pub struct SkillPatcher {
+    /// 技能遥测数据存储。
     telemetry_store: SkillTelemetryStore,
+    /// 可选的、已绑定的技能变更权威。
     authority: Option<Arc<SkillMutationAuthority>>,
 }
 
+/// 一次已生成预览、待审批的技能补丁变更。
 pub struct SkillPatchPreview {
+    /// 提交给变更权威的原始请求。
     pub request: SkillMutationRequest,
+    /// 变更权威返回的预览结果。
     pub preview: SkillMutationPreview,
 }
 
 impl SkillPatcher {
-    /// Create a new skill patcher.
+    /// 创建一个新的技能补丁生成器。
     pub fn new(store: Arc<dyn Store>) -> Self {
         let telemetry_store = SkillTelemetryStore::new(store);
         Self {
@@ -219,12 +225,13 @@ impl SkillPatcher {
         }
     }
 
+    /// 绑定一个技能变更权威，使该补丁生成器可以执行预览/应用流程。
     pub fn with_authority(mut self, authority: Arc<SkillMutationAuthority>) -> Self {
         self.authority = Some(authority);
         self
     }
 
-    /// Analyze a skill's failure patterns and generate patch proposals.
+    /// 分析某个技能的失败模式，并生成补丁提案。
     pub async fn analyze_and_propose(&self, skill_name: &str) -> Result<Vec<SkillPatch>> {
         let telemetry = match self.telemetry_store.get_telemetry(skill_name).await? {
             Some(t) => t,
@@ -233,14 +240,14 @@ impl SkillPatcher {
 
         let mut patches = Vec::new();
 
-        // Analyze common failures
+        // 分析常见失败
         for failure in &telemetry.common_failures {
             if let Some(patch) = self.generate_patch_for_failure(skill_name, failure) {
                 patches.push(patch);
             }
         }
 
-        // Sort by priority (descending) then confidence (descending)
+        // 先按优先级（降序）、再按置信度（降序）排序
         patches.sort_by(|a, b| {
             b.priority.cmp(&a.priority).then(
                 b.confidence
@@ -252,7 +259,7 @@ impl SkillPatcher {
         Ok(patches)
     }
 
-    /// Generate patches for all skills with failure patterns.
+    /// 为所有存在失败模式的技能生成补丁。
     pub async fn analyze_all_skills(&self) -> Result<Vec<SkillPatch>> {
         let all_telemetry = self.telemetry_store.list_all().await?;
         let mut all_patches = Vec::new();
@@ -269,7 +276,7 @@ impl SkillPatcher {
             }
         }
 
-        // Sort by priority then confidence
+        // 先按优先级、再按置信度排序
         all_patches.sort_by(|a, b| {
             b.priority.cmp(&a.priority).then(
                 b.confidence
@@ -281,16 +288,17 @@ impl SkillPatcher {
         Ok(all_patches)
     }
 
-    /// Apply a patch to a skill's SKILL.md file.
-    ///
-    /// Appends the patch instructions as a markdown section to the body
-    /// (after any existing frontmatter). Does NOT modify the YAML frontmatter.
-    /// The legacy direct entry point fails closed; use `preview_patch` and
-    /// `apply_preview` on the bound authority.
-    ///
-    /// # Arguments
-    /// * `patch` — The patch to apply (from `analyze_and_propose`).
-    /// * `descriptor` — The skill descriptor (provides `.location` = SKILL.md path).
+    /**
+    将一个补丁应用到某个技能的 SKILL.md 文件。
+
+    会把补丁说明作为一个 markdown 小节追加到正文中（位于已有 frontmatter
+    之后）。**不会**修改 YAML frontmatter。这个旧版直接入口会失败关闭
+    （fail closed）；请改用绑定权威上的 `preview_patch` 与 `apply_preview`。
+
+    # 参数
+    * `patch` — 要应用的补丁（来自 `analyze_and_propose`）。
+    * `descriptor` — 技能描述符（提供 `.location`，即 SKILL.md 路径）。
+    */
     pub async fn apply_patch(
         &self,
         patch: &SkillPatch,
@@ -302,6 +310,10 @@ impl SkillPatcher {
         ))
     }
 
+    /**
+    为一次补丁变更生成预览：校验源哈希、拼装新内容，
+    并向绑定的变更权威提交一份待审批的变更请求。
+    */
     pub async fn preview_patch(
         &self,
         request_id: impl Into<String>,
@@ -346,11 +358,11 @@ impl SkillPatcher {
             )));
         }
 
-        // Split frontmatter (--- ... ---) from body. If no frontmatter, treat
-        // the entire content as body.
+        // 将 frontmatter（--- ... ---）与正文拆分开。若没有 frontmatter，
+        // 则将全部内容都当作正文处理。
         let (frontmatter, body) = if let Some(rest) = content.strip_prefix("---\n") {
             if let Some(end) = rest.find("\n---\n") {
-                let fm_end = end + 8; // 4 (prefix) + content + 4 (\n---\n)
+                let fm_end = end + 8; // 4（前缀）+ 内容 + 4（\n---\n）
                 let (fm, rest) = content.split_at(fm_end);
                 (fm.to_string(), rest.to_string())
             } else {
@@ -360,7 +372,7 @@ impl SkillPatcher {
             (String::new(), content.clone())
         };
 
-        // Append the patch markdown section to the body.
+        // 将补丁 markdown 小节追加到正文中。
         let patch_md = patch.to_markdown();
         let new_body = format!("{}\n{}", body.trim_end(), patch_md);
         let new_content = if frontmatter.is_empty() {
@@ -392,6 +404,7 @@ impl SkillPatcher {
         Ok(SkillPatchPreview { request, preview })
     }
 
+    /// 使用给定的审批凭证，应用一次已生成预览的补丁变更。
     pub async fn apply_preview(
         &self,
         preview: SkillPatchPreview,
@@ -410,7 +423,7 @@ impl SkillPatcher {
         }
     }
 
-    /// Generate a patch proposal for a specific failure pattern.
+    /// 针对某个特定失败模式生成补丁提案。
     fn generate_patch_for_failure(
         &self,
         skill_name: &str,
@@ -418,7 +431,7 @@ impl SkillPatcher {
     ) -> Option<SkillPatch> {
         let snippet_lower = failure.error_snippet.to_lowercase();
 
-        // Calculate confidence based on failure frequency
+        // 根据失败频率计算置信度
         let confidence = if failure.count >= 10 {
             0.95
         } else if failure.count >= 5 {
@@ -429,7 +442,7 @@ impl SkillPatcher {
             0.60
         };
 
-        // Determine patch type based on error pattern analysis
+        // 根据错误模式分析确定补丁类型
         let (patch_type, priority) = if snippet_lower.contains("permission denied")
             || snippet_lower.contains("access denied")
         {
@@ -514,7 +527,7 @@ impl SkillPatcher {
                 8,
             )
         } else {
-            // Generic error handling for unrecognized patterns
+            // 针对无法识别的模式使用通用错误处理
             (
                 PatchType::ErrorHandling {
                     failure_pattern: failure.error_snippet.clone(),
@@ -633,7 +646,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new()) as Arc<dyn Store>;
         let patcher = SkillPatcher::new(store.clone());
 
-        // Record permission denied errors
+        // 记录权限拒绝错误
         let telemetry_store = SkillTelemetryStore::new(store.clone());
         for _ in 0..5 {
             telemetry_store
@@ -734,7 +747,7 @@ mod tests {
 
         let telemetry_store = SkillTelemetryStore::new(store.clone());
 
-        // Low priority error
+        // 低优先级错误
         telemetry_store
             .record_execution(&make_record(
                 "test-skill",
@@ -744,7 +757,7 @@ mod tests {
             .await
             .unwrap();
 
-        // High priority error
+        // 高优先级错误
         for _ in 0..5 {
             telemetry_store
                 .record_execution(&make_record("test-skill", false, Some("Permission denied")))
@@ -755,7 +768,7 @@ mod tests {
         let patches = patcher.analyze_and_propose("test-skill").await.unwrap();
         assert!(patches.len() >= 2);
 
-        // First patch should have higher or equal priority
+        // 第一个补丁的优先级应更高或相等
         assert!(patches[0].priority >= patches[1].priority);
     }
 

@@ -1,8 +1,7 @@
-//! Plugin registry — discovery, installation, lifecycle management.
+//! 插件注册表 —— 发现、安装、生命周期管理。
 //!
-//! The `PluginRegistry` is the central hub for managing plugins.
-//! It handles scanning, installing, uninstalling, enabling/disabling,
-//! and dependency resolution.
+//! `PluginRegistry` 是管理插件的中枢。它负责扫描、安装、卸载、启用/禁用，
+//! 以及依赖解析。
 
 use crate::plugin::PluginCapability;
 use crate::plugin::manifest::PluginManifest;
@@ -11,30 +10,30 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Unique identifier for a plugin (format: `name` or `name@scope`).
+/// 插件的唯一标识符（格式：`name` 或 `name@scope`）。
 pub type PluginId = String;
 
-/// State of an installed plugin, persisted to disk.
+/// 一个已安装插件的状态，持久化到磁盘。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginEntry {
-    /// Plugin manifest metadata.
+    /// 插件清单元数据。
     pub manifest: PluginManifest,
-    /// Absolute path to the plugin's install directory.
+    /// 插件安装目录的绝对路径。
     pub root: PathBuf,
-    /// Which scope this plugin was installed to.
+    /// 该插件被安装到的作用域。
     pub scope: PluginScope,
-    /// Whether the plugin is currently enabled.
+    /// 该插件当前是否启用。
     pub enabled: bool,
-    /// Validated user configuration, including manifest defaults.
+    /// 经校验的用户配置，包含清单中的默认值。
     #[serde(default)]
     pub user_config: HashMap<String, serde_json::Value>,
-    /// Resolved component paths (absolute, populated at load time).
+    /// 已解析的组件路径（绝对路径，在加载时填充）。
     #[serde(skip)]
     pub resolved_components: Option<ResolvedComponents>,
 }
 
 impl PluginEntry {
-    /// Infer supported capabilities from their fixed package locations.
+    /// 根据插件包内固定的位置推断其支持的能力。
     pub fn inferred_capabilities(&self) -> Vec<PluginCapability> {
         let mut capabilities = Vec::new();
         if self.root.join("skills").is_dir() {
@@ -56,32 +55,37 @@ impl PluginEntry {
     }
 }
 
-/// Resolved absolute paths for all plugin components.
+/// 一个插件全部组件已解析的绝对路径。
 ///
-/// Populated after the manifest is loaded and fixed locations are resolved
-/// relative to the plugin root. `None` fields mean the component is absent.
+/// 在清单加载完毕、固定位置相对于插件根目录解析完成后填充。
+/// `None` 字段表示该组件不存在。
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedComponents {
-    /// Standard root `skills/` directory.
+    /// 标准的根级 `skills/` 目录。
     pub skill_dirs: Vec<PathBuf>,
-    /// Agent definition markdown files.
+    /// Agent 定义的 markdown 文件。
     pub agent_files: Vec<PathBuf>,
-    /// Hook configuration file.
+    /// Hook 配置文件。
     pub hooks_file: Option<PathBuf>,
-    /// MCP server configuration file.
+    /// MCP 服务器配置文件。
     pub mcp_config_file: Option<PathBuf>,
-    /// LSP server configuration file.
+    /// LSP 服务器配置文件。
     pub lsp_config_file: Option<PathBuf>,
-    /// Non-fatal standard component diagnostics.
+    /// 非致命性的标准组件诊断信息。
     pub diagnostics: Vec<String>,
 }
 
+/// 一个可选路径期望的文件系统类型。
 #[derive(Clone, Copy)]
 enum ExpectedPathKind {
+    /// 期望是普通文件。
     File,
+    /// 期望是目录。
     Directory,
 }
 
+/// 在不阻塞异步执行器的前提下，检查某个可选路径是否存在且类型是否符合预期；
+/// 类型不符或读取失败时记录一条诊断信息。返回该路径是否符合预期类型。
 async fn classify_optional_path(
     path: &Path,
     expected: ExpectedPathKind,
@@ -118,43 +122,48 @@ async fn classify_optional_path(
     }
 }
 
-/// Persistent registry state, serialized to `plugins.json`.
+/// 持久化的注册表状态，序列化为 `plugins.json`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RegistryState {
-    /// Map from plugin ID to its entry.
+    /// 插件 ID 到其条目的映射。
     plugins: HashMap<String, PluginEntry>,
 }
 
-/// The plugin registry — manages discovery, installation, and lifecycle.
+/// 插件注册表 —— 负责管理发现、安装与生命周期。
 pub struct PluginRegistry {
-    /// Loaded plugin entries, keyed by plugin ID.
+    /// 已加载的插件条目，按插件 ID 索引。
     plugins: HashMap<PluginId, PluginEntry>,
-    /// Persistent state file path.
+    /// 持久化状态文件路径。
     state_file: PathBuf,
-    /// Persistent data directory root.
+    /// 持久化数据目录根路径。
     data_dir: PathBuf,
-    /// Application-supplied user plugin installation directory.
+    /// 应用层提供的用户插件安装目录。
     user_plugins_dir: PathBuf,
-    /// Project root for resolving Project/Local scopes.
+    /// 用于解析 Project/Local 作用域的项目根目录。
     project_root: Option<PathBuf>,
-    /// Per-instance cache fence used by the facade preparation manager.
+    /// facade 准备管理器使用的、按实例区分的缓存屏障。
     preparation_cache_id: String,
-    /// Monotonic revision advanced by every explicit reload or committed mutation.
+    /// 每次显式重新加载或成功提交的变更都会推进的单调修订号。
     revision: u64,
-    /// Scope policy from the last complete discovery view.
+    /// 上一次完整发现视图所使用的作用域策略。
     last_successful_scopes: Vec<PluginScope>,
+    /// 最近一次扫描产生的诊断信息。
     scan_diagnostics: Vec<PluginRegistryDiagnostic>,
 }
 
+/// 一条扫描诊断信息：某个路径存在问题及其严重程度。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginRegistryDiagnostic {
+    /// 触发该诊断的路径。
     pub path: PathBuf,
+    /// 诊断信息文本。
     pub message: String,
+    /// 是否为错误（而非仅为警告）。
     pub is_error: bool,
 }
 
 impl PluginRegistry {
-    /// Create a registry under an explicit application data root.
+    /// 在给定的应用数据根目录下创建一个注册表。
     pub fn new(data_root: impl Into<PathBuf>, project_root: Option<PathBuf>) -> Self {
         let base = data_root.into();
         let user_plugins_dir = base.join("plugins");
@@ -174,7 +183,7 @@ impl PluginRegistry {
         }
     }
 
-    /// Create a registry with custom paths (useful for testing).
+    /// 使用自定义路径创建一个注册表（便于测试）。
     pub fn with_paths(
         state_file: PathBuf,
         data_dir: PathBuf,
@@ -197,26 +206,27 @@ impl PluginRegistry {
         }
     }
 
-    /// Current committed registry revision.
+    /// 当前已提交的注册表修订号。
     ///
-    /// Scans advance the revision even when discovery later fails because the
-    /// in-memory registry may already have been cleared or partially rebuilt.
-    /// Successful install, uninstall, enable, disable, and configure mutations
-    /// advance it after their durable state commit.
+    /// 即使发现过程后续失败，扫描操作也会推进修订号，因为内存中的注册表
+    /// 此时可能已经被清空或部分重建。安装、卸载、启用、禁用与配置变更
+    /// 只有在其持久化状态成功提交后才会推进修订号。
     pub fn revision(&self) -> u64 {
         self.revision
     }
 
-    /// Opaque per-instance identity for the shared preparation cache.
+    /// 供共享准备缓存使用的、不透明的按实例身份标识。
     #[doc(hidden)]
     pub fn preparation_cache_id(&self) -> &str {
         &self.preparation_cache_id
     }
 
+    /// 返回最近一次扫描产生的诊断信息。
     pub fn scan_diagnostics(&self) -> &[PluginRegistryDiagnostic] {
         &self.scan_diagnostics
     }
 
+    /// 检查修订号是否仍有空间递增，避免溢出。
     fn ensure_revision_available(&self) -> Result<(), String> {
         self.revision
             .checked_add(1)
@@ -224,11 +234,13 @@ impl PluginRegistry {
             .ok_or_else(|| "Plugin registry revision exhausted".to_string())
     }
 
+    /// 与 [`Self::ensure_revision_available`] 相同，但返回 `std::io::Result`。
     fn ensure_revision_available_io(&self) -> std::io::Result<()> {
         self.ensure_revision_available()
             .map_err(std::io::Error::other)
     }
 
+    /// 将修订号加一；若已到达上限则返回错误。
     fn advance_revision(&mut self) -> Result<(), String> {
         self.revision = self
             .revision
@@ -237,22 +249,21 @@ impl PluginRegistry {
         Ok(())
     }
 
-    // ── Discovery ──────────────────────────────────────────────────────
+    // ── 发现 ──────────────────────────────────────────────────────
 
-    /// Scan all scopes for installed plugins and load them.
+    /// 扫描所有作用域下已安装的插件并加载它们。
     ///
-    /// Returns the number of plugins discovered.
+    /// 返回发现的插件数量。
     pub fn scan_all(&mut self) -> std::io::Result<usize> {
         self.scan_scopes(PluginScope::all())
     }
 
-    /// Refresh the last successful scope view and commit it only on success.
+    /// 刷新「上一次成功的作用域视图」，仅在成功时提交。
     ///
-    /// A normal scan clears the receiver before walking package directories,
-    /// so an I/O error can leave a partially discovered in-memory view. A
-    /// lifecycle retry must keep its previous desired-state authority until a
-    /// complete replacement view is available. Retaining the selected scopes
-    /// also prevents a restricted host view from widening during retry.
+    /// 一次正常扫描会在遍历各个包目录之前清空接收方，因此一次 I/O 错误
+    /// 可能让内存中的视图处于「部分发现」的状态。生命周期重试逻辑必须
+    /// 在获得一个完整的替换视图之前，保留此前的期望状态权威性。
+    /// 保留已选定的作用域也能防止一次受限的宿主视图在重试过程中被放宽。
     pub fn refresh_current_view(&mut self) -> std::io::Result<usize> {
         let scopes = self.last_successful_scopes.clone();
         let mut refreshed = Self {
@@ -271,10 +282,9 @@ impl PluginRegistry {
         Ok(count)
     }
 
-    /// Scan only the requested installation scopes.
+    /// 只扫描请求中指定的安装作用域。
     ///
-    /// This is useful for embedded runtimes and isolated integration tests
-    /// that intentionally expose a subset of the standard plugin scopes.
+    /// 这对于内嵌运行时和有意只暴露标准插件作用域子集的隔离集成测试很有用。
     pub fn scan_scopes(&mut self, scopes: &[PluginScope]) -> std::io::Result<usize> {
         self.ensure_revision_available_io()?;
         self.advance_revision().map_err(std::io::Error::other)?;
@@ -288,14 +298,14 @@ impl PluginRegistry {
             total += count;
         }
 
-        // Load persisted enabled/disabled state
+        // 加载持久化的启用/禁用状态
         self.load_state()?;
         self.last_successful_scopes = scopes.to_vec();
         Ok(total)
     }
 
-    /// Validate a plugin directory and resolve every supported component found
-    /// at its fixed package location. Missing optional locations remain valid.
+    /// 校验一个插件目录，并解析其固定包位置上发现的每一个受支持组件。
+    /// 缺失的可选位置仍然视为有效。
     pub fn validate_plugin_dir(
         root: &Path,
     ) -> Result<(PluginManifest, ResolvedComponents), Vec<String>> {
@@ -335,7 +345,7 @@ impl PluginRegistry {
             .map_err(|error| vec![error])
     }
 
-    /// Scan a single directory for plugin subdirectories.
+    /// 扫描单个目录下的插件子目录。
     fn scan_scope_dir(&mut self, scope: PluginScope, dir: &Path) -> std::io::Result<usize> {
         if !dir.exists() {
             return Ok(0);
@@ -351,7 +361,7 @@ impl PluginRegistry {
                 continue;
             }
 
-            // Agent Plugins manifests live at the package root.
+            // Agent Plugins 的清单位于包根目录下。
             let manifest_path = path.join("plugin.json");
             if !manifest_path.exists() {
                 continue;
@@ -408,7 +418,7 @@ impl PluginRegistry {
                         manifest,
                         root: path.clone(),
                         scope,
-                        enabled, // overridden by persisted state when present
+                        enabled, // 若存在已持久化状态，会被其覆盖
                         user_config,
                         resolved_components: None,
                     };
@@ -443,14 +453,14 @@ impl PluginRegistry {
         Ok(count)
     }
 
-    // ── Installation ───────────────────────────────────────────────────
+    // ── 安装 ───────────────────────────────────────────────────
 
-    /// Install a plugin from a source into the given scope.
+    /// 从某个来源将插件安装到指定作用域。
     ///
-    /// For local sources, copies the directory.
-    /// For git sources, clones the repository (shallow).
+    /// 对于本地来源，直接复制目录。
+    /// 对于 git 来源，克隆仓库（浅克隆）。
     ///
-    /// Returns the plugin ID on success.
+    /// 成功时返回插件 ID。
     pub fn install(
         &mut self,
         source: &InstallSource,
@@ -471,13 +481,14 @@ impl PluginRegistry {
         Ok(plugin_id)
     }
 
+    /// 从本地目录安装插件：校验清单、暂存复制、校验暂存结果，再原子性地提交。
     fn install_local(
         &mut self,
         src: &Path,
         target_dir: &Path,
         scope: PluginScope,
     ) -> Result<PluginId, String> {
-        // Validate source has a manifest
+        // 校验来源目录包含清单文件
         let manifest_path = src.join("plugin.json");
         if !manifest_path.exists() {
             return Err(format!(
@@ -563,6 +574,7 @@ impl PluginRegistry {
         Ok(plugin_id)
     }
 
+    /// 从 git 仓库安装插件：先浅克隆到临时目录，再复用本地安装逻辑。
     fn install_git(
         &mut self,
         url: &str,
@@ -570,9 +582,8 @@ impl PluginRegistry {
         target_dir: &Path,
         scope: PluginScope,
     ) -> Result<PluginId, String> {
-        // embedding application is a local user-controlled application. Accept the standard
-        // encrypted Git transports, including private repositories over SSH;
-        // reject only cleartext/obviously malformed remote inputs.
+        // 宿主应用是一个本地、由用户自行掌控的应用。接受标准的加密 Git
+        // 传输方式，包括通过 SSH 访问私有仓库；只拒绝明文/明显畸形的远程输入。
         let supported = url.starts_with("https://")
             || url.starts_with("ssh://")
             || (url.starts_with("git@") && url.contains(':'));
@@ -583,7 +594,7 @@ impl PluginRegistry {
             ));
         }
 
-        // Clone to a temporary directory
+        // 克隆到临时目录
         let tmp_dir = target_dir.join(".tmp-clone");
         if tmp_dir.exists() {
             std::fs::remove_dir_all(&tmp_dir)
@@ -610,16 +621,15 @@ impl PluginRegistry {
 
         let result = self.install_local(&src, target_dir, scope);
 
-        // Clean up temp directory
+        // 清理临时目录
         let _ = std::fs::remove_dir_all(&tmp_dir);
 
         result
     }
 
-    // ── Uninstallation ─────────────────────────────────────────────────
+    // ── 卸载 ─────────────────────────────────────────────────────
 
-    /// Uninstall a plugin. If `keep_data` is false, the persistent data
-    /// directory is also removed.
+    /// 卸载一个插件。若 `keep_data` 为 false，则同时删除其持久化数据目录。
     pub fn uninstall(&mut self, plugin_id: &str, keep_data: bool) -> Result<(), String> {
         self.ensure_no_enabled_dependents(plugin_id)?;
         let entry = self
@@ -667,9 +677,9 @@ impl PluginRegistry {
         self.advance_revision()
     }
 
-    // ── Enable / Disable ───────────────────────────────────────────────
+    // ── 启用 / 禁用 ───────────────────────────────────────────────
 
-    /// Enable a disabled plugin.
+    /// 启用一个已禁用的插件。
     pub fn enable(&mut self, plugin_id: &str) -> Result<(), String> {
         let entry = self
             .plugins
@@ -710,7 +720,7 @@ impl PluginRegistry {
         self.advance_revision()
     }
 
-    /// Disable an enabled plugin without uninstalling it.
+    /// 禁用一个已启用的插件，但不卸载它。
     pub fn disable(&mut self, plugin_id: &str) -> Result<(), String> {
         let was_enabled = self
             .plugins
@@ -735,6 +745,7 @@ impl PluginRegistry {
         self.advance_revision()
     }
 
+    /// 确认没有已启用的插件依赖于 `plugin_id`；否则返回列出这些依赖方的错误。
     fn ensure_no_enabled_dependents(&self, plugin_id: &str) -> Result<(), String> {
         let mut dependents = self
             .plugins
@@ -760,14 +771,14 @@ impl PluginRegistry {
         }
     }
 
-    // ── Queries ────────────────────────────────────────────────────────
+    // ── 查询 ────────────────────────────────────────────────────────
 
-    /// Get a plugin entry by ID.
+    /// 按 ID 获取一个插件条目。
     pub fn get(&self, plugin_id: &str) -> Option<&PluginEntry> {
         self.plugins.get(plugin_id)
     }
 
-    /// Replace and persist a plugin's user configuration.
+    /// 替换并持久化一个插件的用户配置。
     pub fn configure(
         &mut self,
         plugin_id: &str,
@@ -807,7 +818,7 @@ impl PluginRegistry {
         self.advance_revision()
     }
 
-    /// Build the substitution context for a plugin's component files.
+    /// 为一个插件的组件文件构建变量替换上下文。
     pub fn variables_for(&self, plugin_id: &str) -> Result<super::PluginVariables, String> {
         let entry = self
             .plugins
@@ -825,19 +836,19 @@ impl PluginRegistry {
         .with_json_user_config(&entry.user_config))
     }
 
-    /// List all installed plugins.
+    /// 列出所有已安装的插件。
     pub fn list(&self) -> Vec<&PluginEntry> {
         let mut entries: Vec<_> = self.plugins.values().collect();
         entries.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
         entries
     }
 
-    /// List enabled plugins only.
+    /// 仅列出已启用的插件。
     pub fn list_enabled(&self) -> Vec<&PluginEntry> {
         self.list().into_iter().filter(|e| e.enabled).collect()
     }
 
-    /// Search plugins by keyword (matches name, description, keywords).
+    /// 按关键字搜索插件（匹配名称、描述、关键词）。
     pub fn search(&self, query: &str) -> Vec<&PluginEntry> {
         let q = query.to_lowercase();
         self.list()
@@ -853,18 +864,17 @@ impl PluginRegistry {
             .collect()
     }
 
-    /// Get the total number of installed plugins.
+    /// 获取已安装插件的总数。
     pub fn count(&self) -> usize {
         self.plugins.len()
     }
 
-    // ── Component Resolution ───────────────────────────────────────────
+    // ── 组件解析 ───────────────────────────────────────────────
 
-    /// Resolve component paths for a plugin, making them absolute.
+    /// 解析一个插件的组件路径，使其变为绝对路径。
     ///
-    /// Component locations are fixed by the flat package layout. Missing
-    /// optional locations are valid; a location with the wrong filesystem
-    /// kind is isolated to that component and reported as a diagnostic.
+    /// 组件位置由扁平的包布局固定不变。缺失的可选位置视为有效；
+    /// 若某个位置的文件系统类型不符，只会隔离影响该组件，并作为诊断信息上报。
     pub fn resolve_components(&mut self, plugin_id: &str) -> Result<ResolvedComponents, String> {
         let entry = self
             .plugins
@@ -874,9 +884,8 @@ impl PluginRegistry {
         let root = &entry.root;
         let mut resolved = ResolvedComponents::default();
 
-        // Agent Plugins uses fixed portable component locations. Missing
-        // locations are valid; the wrong filesystem kind disables only that
-        // component type and is reported as a non-fatal diagnostic.
+        // Agent Plugins 使用固定的可移植组件位置。缺失的位置视为有效；
+        // 文件系统类型不符只会禁用该类型的组件，并作为非致命诊断上报。
         let skills_dir = root.join("skills");
         if skills_dir.is_dir() {
             resolved.skill_dirs.push(skills_dir);
@@ -940,7 +949,7 @@ impl PluginRegistry {
             ));
         }
 
-        // Store resolved components back
+        // 把已解析的组件写回存储
         if let Some(entry) = self.plugins.get_mut(plugin_id) {
             entry.resolved_components = Some(resolved.clone());
         }
@@ -948,7 +957,7 @@ impl PluginRegistry {
         Ok(resolved)
     }
 
-    /// Resolve fixed component paths without blocking an async executor.
+    /// 在不阻塞异步执行器的前提下解析固定的组件路径。
     pub async fn resolve_components_async(
         &mut self,
         plugin_id: &str,
@@ -1060,23 +1069,23 @@ impl PluginRegistry {
         Ok(resolved)
     }
 
-    // ── Dependency Resolution ──────────────────────────────────────────
+    // ── 依赖解析 ──────────────────────────────────────────────
 
-    /// Resolve plugin dependencies via topological sort.
+    /// 通过拓扑排序解析插件依赖关系。
     ///
-    /// Returns plugin IDs in dependency order (dependencies first).
-    /// Returns an error if there are circular dependencies or missing deps.
+    /// 按依赖顺序（依赖项在前）返回插件 ID 列表。
+    /// 若存在循环依赖或缺失依赖，则返回错误。
     pub fn resolve_dependencies(&self) -> Result<Vec<PluginId>, String> {
         self.resolve_dependencies_matching(|_| true)
     }
 
-    /// Resolve only enabled plugins and require every dependency of an enabled
-    /// plugin to be enabled as well. Disabled plugins cannot poison startup,
-    /// and an enabled plugin cannot silently consume a disabled dependency.
+    /// 只解析已启用的插件，并要求一个已启用插件的每一个依赖也必须是启用状态。
+    /// 已禁用的插件不会污染启动流程，一个已启用插件也不能悄悄依赖一个已禁用的插件。
     pub fn resolve_enabled_dependencies(&self) -> Result<Vec<PluginId>, String> {
         self.resolve_dependencies_matching(|entry| entry.enabled)
     }
 
+    /// 依赖解析的共享实现：`include` 决定哪些插件条目参与图构建。
     fn resolve_dependencies_matching(
         &self,
         include: impl Fn(&PluginEntry) -> bool,
@@ -1084,7 +1093,7 @@ impl PluginRegistry {
         let mut graph: HashMap<&str, Vec<&str>> = HashMap::new();
         let mut in_degree: HashMap<&str, usize> = HashMap::new();
 
-        // Initialize
+        // 初始化
         for (id, entry) in &self.plugins {
             if !include(entry) {
                 continue;
@@ -1093,7 +1102,7 @@ impl PluginRegistry {
             in_degree.entry(id.as_str()).or_insert(0);
         }
 
-        // Build edges + enforce version constraints
+        // 构建边 + 强制版本约束
         for (id, entry) in &self.plugins {
             if !include(entry) {
                 continue;
@@ -1108,9 +1117,8 @@ impl PluginRegistry {
                         "Plugin '{id}' depends on '{dep_name}' which is disabled"
                     ));
                 }
-                // Enforce the declared version constraint (P1 — previously the
-                // name-exists check ignored version entirely, so any version
-                // satisfied the dependency).
+                // 强制执行声明的版本约束（P1 —— 此前的「名称存在即可」检查
+                // 完全忽略版本，导致任意版本都能满足依赖）。
                 match dep.satisfies(dep_entry.manifest.version.as_deref()) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -1131,7 +1139,7 @@ impl PluginRegistry {
             }
         }
 
-        // Kahn's algorithm
+        // Kahn 算法
         let mut queue: Vec<&str> = in_degree
             .iter()
             .filter(|(_, deg)| **deg == 0)
@@ -1162,9 +1170,9 @@ impl PluginRegistry {
         Ok(sorted)
     }
 
-    // ── Persistence ────────────────────────────────────────────────────
+    // ── 持久化 ────────────────────────────────────────────────────
 
-    /// Save the current enabled/disabled state to disk.
+    /// 将当前的启用/禁用状态保存到磁盘。
     fn save_state(&self) -> Result<(), String> {
         let state = RegistryState {
             plugins: self
@@ -1202,7 +1210,7 @@ impl PluginRegistry {
             .map_err(|error| format!("Failed to replace plugin state: {error}"))
     }
 
-    /// Load persisted state and merge with discovered plugins.
+    /// 加载持久化状态并与已发现的插件合并。
     fn load_state(&mut self) -> std::io::Result<()> {
         let state: RegistryState = match std::fs::read_to_string(&self.state_file) {
             Ok(content) => match serde_json::from_str(&content) {
@@ -1221,7 +1229,7 @@ impl PluginRegistry {
             Err(error) => return Err(error),
         };
 
-        // Merge enabled/disabled state and validated config from persisted file.
+        // 从持久化文件中合并启用/禁用状态以及经校验的配置。
         for (id, saved_entry) in &state.plugins {
             if let Some(entry) = self.plugins.get_mut(id) {
                 match entry.manifest.resolve_user_config(&saved_entry.user_config) {
@@ -1243,14 +1251,14 @@ impl PluginRegistry {
         Ok(())
     }
 
-    /// Get the persistent data directory for a plugin.
+    /// 获取一个插件的持久化数据目录。
     pub fn data_dir_for(&self, plugin_id: &str) -> PathBuf {
         PluginEntry::data_dir_for(plugin_id, &self.data_dir)
     }
 }
 
 impl PluginEntry {
-    /// Compute the data directory path for a plugin.
+    /// 计算一个插件的数据目录路径。
     fn data_dir_for(name: &str, base_data_dir: &Path) -> PathBuf {
         let sanitized: String = name
             .chars()
@@ -1266,9 +1274,9 @@ impl PluginEntry {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────────
 
-/// Recursively copy a directory.
+/// 递归复制一个目录。
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -1277,7 +1285,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
         let dst_path = dst.join(entry.file_name());
 
         if file_type.is_dir() {
-            // Skip hidden directories like .git
+            // 跳过如 .git 之类的隐藏目录
             if entry.file_name().to_string_lossy().starts_with(".git") {
                 continue;
             }
@@ -1453,4 +1461,4 @@ mod tests {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────────

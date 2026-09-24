@@ -1,18 +1,18 @@
-//! demo55 — LSP Tools
+//! demo55 —— LSP 工具
 //!
-//! Demonstrates the Language Server Protocol integration that gives agents
-//! IDE-like code understanding:
+//! 演示为 Agent 提供类 IDE 代码理解能力的 Language Server Protocol（语言服务器协议）集成：
 //!
-//! 1. `LspConfig` — parse `.lsp.yaml` configuration
-//! 2. `LspManager` — manage multiple language server processes
-//! 3. LSP tool types — diagnostics, goto_definition, find_references, hover, status
-//! 4. File-extension → language server routing
+//! 1. `LspConfig` —— 解析 `.lsp.yaml` 配置
+//! 2. `LspManager` —— 管理多个语言服务器进程
+//! 3. LSP 工具类型 —— diagnostics（诊断）、goto_definition（跳转定义）、
+//!    find_references（查找引用）、hover（悬浮提示）、status（状态）
+//! 4. 文件扩展名 → 语言服务器路由
 //!
-//! **Note:** Actually running language servers requires the corresponding
-//! server binaries (e.g., `rust-analyzer`, `pyright-langserver`) to be installed.
-//! This demo shows configuration and tool construction without starting servers.
+//! **说明：** 真正运行语言服务器需要安装对应的服务器可执行文件
+//! （例如 `rust-analyzer`、`pyright-langserver`）。
+//! 本示例只演示配置和工具构造，不实际启动服务器。
 //!
-//! Feature flags required: `lsp`
+//! 所需 Feature flag：`lsp`
 //!
 //! ```sh
 //! cargo test --features lsp --test example_contracts contract_demo55_lsp_tools
@@ -30,6 +30,7 @@ mod demo {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    /// 打印场景编号与标题的分隔横幅。
     macro_rules! section {
         ($n:expr, $title:expr) => {
             println!("\n══════════════════════════════════════════════════");
@@ -38,6 +39,8 @@ mod demo {
         };
     }
 
+    /// 依次运行全部 6 个 LSP 工具演示场景（配置解析、扩展名路由、Manager 创建、
+    /// 工具描述、参数 Schema、编程式配置构建）。
     pub async fn run() -> Result<(), String> {
         println!("╔══════════════════════════════════════════════════╗");
         println!("║       echo-agent  LSP Tools Demo                 ║");
@@ -57,7 +60,7 @@ mod demo {
         Ok(())
     }
 
-    /// Scenario 1: Parse LspConfig from YAML
+    /// 场景 1：从 YAML 解析 LspConfig
     fn demo_config_from_yaml() -> Result<(), String> {
         section!(1, "LspConfig from YAML (.lsp.yaml)");
 
@@ -97,7 +100,7 @@ languages:
         Ok(())
     }
 
-    /// Scenario 2: Extension-based routing
+    /// 场景 2：基于扩展名的路由
     fn demo_config_extension_routing() -> Result<(), String> {
         section!(2, "File Extension → Language Server Routing");
 
@@ -135,7 +138,7 @@ languages:
         Ok(())
     }
 
-    /// Scenario 3: Create an LspManager
+    /// 场景 3：创建 LspManager
     fn demo_manager_creation() -> Result<(), String> {
         section!(3, "LspManager Creation");
 
@@ -154,11 +157,11 @@ languages:
         manager.load_config(&config)?;
         println!("  Loaded rust-analyzer config");
 
-        // Set project root
+        // 设置项目根目录
         manager.set_project_root(std::path::Path::new("/tmp/my-rust-project"));
         println!("  Set project root: /tmp/my-rust-project");
 
-        // Wrap in Arc<RwLock<>> for sharing with tools
+        // 包装为 Arc<RwLock<>> 以便与工具共享
         let shared_manager = Arc::new(RwLock::new(manager));
         println!("  Wrapped in Arc<RwLock<LspManager>> for tool sharing");
 
@@ -167,7 +170,7 @@ languages:
         Ok(())
     }
 
-    /// Scenario 4: Tool descriptions and names
+    /// 场景 4：工具描述与名称
     fn demo_tool_descriptions() {
         section!(4, "LSP Tool Descriptions");
 
@@ -185,7 +188,7 @@ languages:
         for tool in &tools {
             println!("  Tool: {}", tool.name());
             let desc = tool.description();
-            // Show first 80 chars of description
+            // 只展示描述的前 80 个字符
             let short_desc = if desc.chars().count() > 80 {
                 let truncated: String = desc.chars().take(80).collect();
                 format!("{truncated}...")
@@ -196,7 +199,7 @@ languages:
             println!("    Risk level:  {:?}\n", tool.risk_level());
         }
 
-        // Verify all tools are read-only
+        // 验证所有工具均为只读
         for tool in &tools {
             assert_eq!(
                 format!("{:?}", tool.risk_level()),
@@ -208,7 +211,7 @@ languages:
         println!("  ✅ All LSP tools are ReadOnly (safe for analysis)");
     }
 
-    /// Scenario 5: Tool parameter schemas
+    /// 场景 5：工具参数 Schema（JSON Schema）
     fn demo_tool_parameters() -> Result<(), String> {
         section!(5, "Tool Parameter Schemas (JSON Schema)");
 
@@ -232,11 +235,11 @@ languages:
         Ok(())
     }
 
-    /// Scenario 6: Programmatic config construction
+    /// 场景 6：以编程方式构建配置
     fn demo_programmatic_config() -> Result<(), String> {
         section!(6, "Programmatic LspServerConfig");
 
-        // Build config without YAML
+        // 不使用 YAML，直接构建配置
         let mut servers = HashMap::new();
         servers.insert(
             "rust".to_string(),
@@ -266,6 +269,7 @@ languages:
 
 #[cfg(not(feature = "lsp"))]
 mod demo {
+    /// `lsp` feature 未启用时的占位实现：打印说明信息，提示如何启用该 feature 运行完整演示。
     pub async fn run() -> Result<(), String> {
         println!("╔══════════════════════════════════════════════════╗");
         println!("║       echo-agent  LSP Tools Demo                 ║");
@@ -290,6 +294,7 @@ mod demo {
     }
 }
 
+/// demo55 契约测试：运行 LSP 工具演示（`lsp` feature 开启时运行完整场景，否则运行占位说明）。
 #[tokio::test]
 async fn contract_demo55_lsp_tools() -> Result<(), String> {
     demo::run().await

@@ -1,23 +1,25 @@
-//! AgentHandle — scoped access wrapper around a shared ReactAgent.
-//!
-//! Replaces raw `Arc<RwLock<ReactAgent>>` so that callers never lock
-//! or import `ReactAgent` directly. The handle provides:
-//!
-//! | Method | Lock | Closure |
-//! |--------|------|---------|
-//! | [`read`](AgentHandle::read) | read (async) | sync |
-//! | [`read_async`](AgentHandle::read_async) | read (async) | async (boxed) |
-//! | [`write`](AgentHandle::write) | write (async) | sync |
-//! | [`write_async`](AgentHandle::write_async) | write (async) | async (boxed) |
-//! | [`try_write`](AgentHandle::try_write) | write (try) | sync |
-//! | [`inner`](AgentHandle::inner) | none | escape hatch |
-//!
-//! `read_async` and `write_async` hold the lock across `.await`; do not use them
-//! for long-running streams or request/response loops.
-//!
-//! Execution serialization is handled internally by `ReactAgent.execution_mutex`
-//! — callers do NOT need to acquire any additional lock before calling
-//! `execute()`, `chat()`, or streaming methods.
+/*!
+ * AgentHandle —— 围绕共享 ReactAgent 的作用域访问包装器。
+ *
+ * 取代原始的 `Arc<RwLock<ReactAgent>>`，使调用方无需直接加锁
+ * 或引入 `ReactAgent`。该 handle 提供：
+ *
+ * | 方法 | 锁 | 闭包 |
+ * |--------|------|---------|
+ * | [`read`](AgentHandle::read) | 读锁（异步） | 同步 |
+ * | [`read_async`](AgentHandle::read_async) | 读锁（异步） | 异步（装箱） |
+ * | [`write`](AgentHandle::write) | 写锁（异步） | 同步 |
+ * | [`write_async`](AgentHandle::write_async) | 写锁（异步） | 异步（装箱） |
+ * | [`try_write`](AgentHandle::try_write) | 写锁（尝试） | 同步 |
+ * | [`inner`](AgentHandle::inner) | 无 | 逃生舱口 |
+ *
+ * `read_async` 和 `write_async` 会在 `.await` 期间持有锁；不要将它们
+ * 用于长时间运行的流式操作或请求/响应循环。
+ *
+ * 执行串行化由 `ReactAgent.execution_mutex` 内部处理
+ * —— 调用方在调用 `execute()`、`chat()` 或流式方法之前
+ * 不需要额外加锁。
+ */
 
 use crate::agent::{Agent, AgentEvent, AgentInvocationContext, CancellationToken};
 use crate::error::Result;
@@ -35,23 +37,28 @@ use super::ReactAgent;
 
 // ── RwLockAgentWrapper ─────────────────────────────────────────────────────────
 
-/// Wrapper that implements [`Agent`] by delegating through a `RwLock<ReactAgent>`.
-///
-/// This enables `AgentHandle -> SharedAgent` conversion for use with
-/// Graph workflow methods. Each `Agent` trait method acquires a read lock,
-/// calls the corresponding `ReactAgent` method, and awaits the result
-/// within the lock scope.
-///
-/// Immutable fields (`name`, `model_name`, `system_prompt`) are cached at
-/// construction time to avoid holding the lock for sync trait methods that
-/// return `&str`.
+/**
+ * 通过委托给 `RwLock<ReactAgent>` 来实现 [`Agent`] 的包装器。
+ *
+ * 这使得 `AgentHandle -> SharedAgent` 的转换得以用于
+ * Graph 工作流方法。每个 `Agent` trait 方法都会获取读锁，
+ * 调用对应的 `ReactAgent` 方法，并在持锁范围内等待结果。
+ *
+ * 不可变字段（`name`、`model_name`、`system_prompt`）会在构造时
+ * 缓存下来，以避免为返回 `&str` 的同步 trait 方法持有锁。
+ */
 struct RwLockAgentWrapper {
+    /// 底层共享的 Agent 实例
     inner: Arc<RwLock<ReactAgent>>,
+    /// 缓存的 Agent 名称
     name: String,
+    /// 缓存的模型名称
     model_name: String,
+    /// 缓存的系统提示词
     system_prompt: String,
 }
 
+/// 一次需要在持锁状态下转发的流式调用
 enum LockedStreamCall {
     Execute(String),
     ExecuteWithCancel(String, CancellationToken),
@@ -64,6 +71,7 @@ enum LockedStreamCall {
     ChatMessageWithInvocation(Message, CancellationToken, AgentInvocationContext),
 }
 
+/// 将 Agent 的流式结果转发到 mpsc 通道
 async fn relay_agent_stream(
     result: Result<BoxStream<'_, Result<AgentEvent>>>,
     tx: &tokio::sync::mpsc::Sender<Result<AgentEvent>>,
@@ -474,21 +482,23 @@ impl Agent for RwLockAgentWrapper {
 
 // ── AgentHandle ────────────────────────────────────────────────────────────────
 
-/// Scoped-access handle for a shared [`ReactAgent`].
-///
-/// Provides safe, ergonomic access to the agent without requiring callers
-/// to manage locks directly. Execution serialization (preventing concurrent
-/// `execute`/`chat`/stream calls) is handled internally by `ReactAgent`'s
-/// `execution_mutex`.
-///
-/// Clone is cheap (Arc clone).
+/**
+ * 面向共享 [`ReactAgent`] 的作用域访问句柄。
+ *
+ * 提供对 Agent 的安全、符合人体工程学的访问方式，调用方无需直接管理锁。
+ * 执行串行化（防止并发的 `execute`/`chat`/流式调用）由 `ReactAgent`
+ * 的 `execution_mutex` 内部处理。
+ *
+ * Clone 的开销很低（仅是 Arc 克隆）。
+ */
 #[derive(Clone)]
 pub struct AgentHandle {
+    /// 底层共享的 ReactAgent 实例
     agent: Arc<RwLock<ReactAgent>>,
 }
 
 impl AgentHandle {
-    /// Inject user input into the active turn without waiting for its stream.
+    /// 向当前活跃轮次注入用户输入，而不等待其流式结果。
     pub async fn steer_input(
         &self,
         expected_turn_id: Option<&str>,
@@ -498,8 +508,10 @@ impl AgentHandle {
         guard.steer_input(expected_turn_id, message)
     }
 
-    /// Inject input and retain a receipt driven by the active turn's real
-    /// mailbox-drain and terminal boundaries.
+    /**
+     * 注入输入并保留一份回执（receipt），该回执由当前活跃轮次真实的
+     * 邮箱清空（mailbox-drain）和终止边界驱动。
+     */
     pub async fn steer_input_tracked(
         &self,
         expected_turn_id: Option<&str>,
@@ -509,32 +521,34 @@ impl AgentHandle {
         guard.steer_input_tracked(expected_turn_id, message)
     }
 
-    /// Wrap an existing `Arc<RwLock<ReactAgent>>`.
+    /// 包装一个已存在的 `Arc<RwLock<ReactAgent>>`。
     pub fn from_arc(agent: Arc<RwLock<ReactAgent>>) -> Self {
         Self { agent }
     }
 
-    /// Build from an owned `ReactAgent`.
+    /// 从一个拥有所有权的 `ReactAgent` 构建。
     pub fn new(agent: ReactAgent) -> Self {
         Self {
             agent: Arc::new(RwLock::new(agent)),
         }
     }
 
-    /// Escape hatch — return the inner `Arc<RwLock<ReactAgent>>`.
+    /// 逃生舱口 —— 返回内部的 `Arc<RwLock<ReactAgent>>`。
     pub fn inner(&self) -> &Arc<RwLock<ReactAgent>> {
         &self.agent
     }
 
-    /// Produce a [`SharedAgent`] view of the same underlying `ReactAgent`.
-    ///
-    /// The returned `SharedAgent` delegates all [`Agent`] trait calls through
-    /// the `RwLock`. Immutable fields are cached at conversion time.
+    /**
+     * 生成同一个底层 `ReactAgent` 的 [`SharedAgent`] 视图。
+     *
+     * 返回的 `SharedAgent` 会将所有 [`Agent`] trait 调用通过 `RwLock`
+     * 委托出去。不可变字段会在转换时被缓存。
+     */
     pub async fn as_shared_agent(&self) -> SharedAgent {
         Arc::new(RwLockAgentWrapper::from_handle(self).await) as SharedAgent
     }
 
-    /// Acquire read lock, run a **sync** closure, return its result.
+    /// 获取读锁，执行一个**同步**闭包，并返回其结果。
     pub async fn read<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&ReactAgent) -> R,
@@ -543,10 +557,12 @@ impl AgentHandle {
         f(&guard)
     }
 
-    /// Acquire read lock, run a closure that returns a boxed future,
-    /// and `.await` that future while still holding the lock.
-    ///
-    /// Do not use this for streams or other long-running operations.
+    /**
+     * 获取读锁，执行一个返回装箱 future 的闭包，
+     * 并在持锁状态下 `.await` 该 future。
+     *
+     * 不要将此方法用于流式操作或其他长时间运行的操作。
+     */
     pub async fn read_async<F, R>(&self, f: F) -> R
     where
         F: for<'a> FnOnce(&'a ReactAgent) -> Pin<Box<dyn Future<Output = R> + Send + 'a>>,
@@ -555,7 +571,7 @@ impl AgentHandle {
         f(&guard).await
     }
 
-    /// Acquire write lock, run a **sync** closure, return its result.
+    /// 获取写锁，执行一个**同步**闭包，并返回其结果。
     pub async fn write<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut ReactAgent) -> R,
@@ -564,11 +580,13 @@ impl AgentHandle {
         f(&mut guard)
     }
 
-    /// Acquire write lock, run a closure that returns a boxed future,
-    /// and `.await` that future while still holding the lock.
-    ///
-    /// Do not use this for streams or other long-running operations; it blocks
-    /// all readers and writers until the awaited future completes.
+    /**
+     * 获取写锁，执行一个返回装箱 future 的闭包，
+     * 并在持锁状态下 `.await` 该 future。
+     *
+     * 不要将此方法用于流式操作或其他长时间运行的操作；在被 await 的
+     * future 完成之前，它会阻塞所有读者和写者。
+     */
     pub async fn write_async<F, R>(&self, f: F) -> R
     where
         F: for<'a> FnOnce(&'a mut ReactAgent) -> Pin<Box<dyn Future<Output = R> + Send + 'a>>,
@@ -577,8 +595,10 @@ impl AgentHandle {
         f(&mut guard).await
     }
 
-    /// Non-blocking write attempt — returns `None` if the lock is
-    /// already held by another caller.
+    /**
+     * 非阻塞的写入尝试 —— 如果锁已被其他调用方持有，
+     * 则返回 `None`。
+     */
     pub fn try_write<F, R>(&self, f: F) -> Option<R>
     where
         F: FnOnce(&mut ReactAgent) -> R,
@@ -587,14 +607,16 @@ impl AgentHandle {
         Some(f(&mut guard))
     }
 
-    /// Convert this handle into a `Box<dyn Agent>` that delegates through the
-    /// `RwLock` at runtime. Immutable fields (name, model_name, system_prompt)
-    /// are cached at conversion time; all other [`Agent`] trait methods acquire
-    /// a read lock for each call.
-    ///
-    /// This is useful when an agent must be both:
-    /// - accessible through an `AgentHandle` (for tool registration / lifecycle),
-    /// - passable as `Box<dyn Agent>` (e.g. to a subagent registry).
+    /**
+     * 将该 handle 转换为一个在运行时通过 `RwLock` 进行委托的
+     * `Box<dyn Agent>`。不可变字段（name、model_name、system_prompt）
+     * 会在转换时被缓存；其余所有 [`Agent`] trait 方法都会在每次调用时
+     * 获取一次读锁。
+     *
+     * 当一个 Agent 必须同时满足以下两点时，这个方法会很有用：
+     * - 可以通过 `AgentHandle` 访问（用于工具注册/生命周期管理），
+     * - 可以作为 `Box<dyn Agent>` 传递（例如传给子 Agent 注册表）。
+     */
     pub async fn to_boxed_agent(&self) -> Box<dyn Agent> {
         Box::new(RwLockAgentWrapper::from_handle(self).await)
     }

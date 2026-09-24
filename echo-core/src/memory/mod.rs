@@ -1,16 +1,15 @@
-//! Memory system traits and data types
+//! 记忆系统的 trait 与数据类型
 //!
-//! Core trait definitions for the memory subsystem. Concrete implementations
-//! live in `echo_state`.
+//! 记忆子系统的核心 trait 定义。具体实现位于 `echo_state` 中。
 //!
-//! | Trait | Purpose |
+//! | Trait | 用途 |
 //! |-------|---------|
-//! | [`Store`] | Long-term KV storage with namespace isolation |
-//! | [`Embedder`] | Text-to-vector embedding interface |
-//! | [`ConversationStore`] | Conversation persistence (transcript read-model) |
+//! | [`Store`] | 具备命名空间隔离的长期 KV 存储 |
+//! | [`Embedder`] | 文本转向量的嵌入接口 |
+//! | [`ConversationStore`] | 会话持久化（对话记录的读模型） |
 //!
-//! Runtime checkpointing (resume across process restarts) is handled by
-//! `RuntimeStateStore` in `echo_agent::state`, not by this module.
+//! 运行时检查点（跨进程重启恢复）由 `echo_agent::state` 中的
+//! `RuntimeStateStore` 负责，不属于本模块的职责。
 
 pub mod conversation;
 pub mod embedder;

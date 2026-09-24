@@ -1,6 +1,8 @@
-//! Terminal-state phases: tools-branch verifier-pass, text-branch
-//! `FinalAnswer` emission with `Stop`-hook continuation handling, the
-//! `NoResponse` failure, and the `MaxIterationsExceeded` failure.
+/*!
+ * 终止态阶段：工具分支的校验通过态、文本分支中带 `Stop` 钩子
+ * 续跑处理的 `FinalAnswer` 产出、`NoResponse` 失败态，
+ * 以及 `MaxIterationsExceeded` 失败态。
+ */
 
 use super::{LoopState, with_reasoning_content};
 use crate::agent::AgentEvent;
@@ -73,8 +75,9 @@ pub(crate) async fn settle_terminal_projection(
         .save_transcript_projection(context, blocked_reason)
         .await?;
     if snap.conversation_store.is_some() {
-        // The settlement fact was already persisted to the trace by the
-        // coordinator. Event delivery is a separate observer boundary.
+        /* 结算事实（settlement fact）已经由协调器持久化到 trace 中，
+         * 事件投递属于另一个独立的观察者边界。
+         */
         snap.mark_transcript_settlement_observed();
         if tx
             .send(Ok(AgentEvent::TranscriptProjectionSettlement(
@@ -104,10 +107,12 @@ pub(crate) async fn settle_terminal_projection(
     }
 }
 
-/// Tools-branch terminal: a `final_answer` tool call has passed verifier.
-/// Applies the one-shot `Stop` continuation first, then final callbacks and
-/// interventions, audit, durable transcript settlement, trace finalization,
-/// the single `FinalAnswer`, and `SessionEnd("complete")`.
+/**
+ * 工具分支的终止态：`final_answer` 工具调用已通过校验。
+ * 首先应用一次性的 `Stop` 续跑逻辑，然后依次执行最终回调、
+ * 干预（intervention）、审计、持久化的会话记录结算、
+ * trace 终结化、单次 `FinalAnswer` 产出，以及 `SessionEnd("complete")`。
+ */
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finalize_completed_run(
     snap: &AgentRunSnapshot,
@@ -179,18 +184,20 @@ pub(crate) async fn finalize_completed_run(
     ))
 }
 
-/// Text-branch terminal: the LLM produced content that passed verification.
-/// Pushes the assistant message, applies the one-shot `Stop` continuation,
-/// then runs final callbacks and interventions, takes an auto-snapshot, audits
-/// and durably settles the transcript, finalizes the trace, and emits the
-/// single `FinalAnswer` followed by `SessionEnd("complete")`.
-///
-/// Returns:
-/// - [`ControlFlow::Continue`] when the `Stop` hook returned a
-///   `continue_reason` and `state.stop_hook_continued` was previously
-///   `false` — the flag is flipped and the caller should keep looping.
-/// - [`ControlFlow::Break`] otherwise — `SessionEnd("complete")` has been
-///   fired and the caller should return `Ok(())`.
+/**
+ * 文本分支的终止态：LLM 产出的内容已通过校验。
+ * 推送 assistant 消息，应用一次性的 `Stop` 续跑逻辑，
+ * 然后依次运行最终回调与干预、生成自动快照、审计并持久化结算
+ * 会话记录、终结化 trace，最后产出单次 `FinalAnswer`，
+ * 紧接着触发 `SessionEnd("complete")`。
+ *
+ * 返回值：
+ * - [`ControlFlow::Continue`]：当 `Stop` 钩子返回了 `continue_reason`
+ *   且此前 `state.stop_hook_continued` 为 `false` 时 —— 该标志会被
+ *   翻转，调用方应当继续循环。
+ * - [`ControlFlow::Break`]：其他情况 —— `SessionEnd("complete")`
+ *   已被触发，调用方应当返回 `Ok(())`。
+ */
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn emit_final_text(
     snap: &AgentRunSnapshot,
@@ -253,11 +260,12 @@ pub(crate) async fn emit_final_text(
         snap.record_audit_event(ev).await;
     }
     settle_terminal_projection(snap, context, None, tx).await?;
-    // Finalize trace before moving the answer into the event
+    // 在把 answer 移入事件之前先终结化 trace
     snap.finalize_run(crate::trace::RunStatus::Completed, Some(&answer), None)
         .await;
-    // Sending FinalAnswer is mandatory; on a closed receiver the macro
-    // returns Ok(()) from this fn — but we model that as ControlFlow::Break.
+    /* 发送 FinalAnswer 是强制性的；当接收端已关闭时，宏会从本函数
+     * 返回 Ok(())——但我们将其建模为 ControlFlow::Break。
+     */
     if tx.send(Ok(AgentEvent::FinalAnswer(answer))).await.is_err() {
         return Ok(ControlFlow::Break(
             crate::agent::AgentSteerTurnOutcome::Completed,
@@ -273,7 +281,7 @@ pub(crate) async fn emit_final_text(
     ))
 }
 
-/// LLM produced neither tool calls nor content — terminal failure.
+/// LLM 既未产出工具调用也未产出内容 —— 终止失败态。
 pub(crate) async fn finalize_no_response(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -295,7 +303,7 @@ pub(crate) async fn finalize_no_response(
     Ok(())
 }
 
-/// `max_iterations` hit — terminal failure with full hook fan-out.
+/// 达到 `max_iterations` —— 终止失败态，并完整触发钩子扇出。
 pub(crate) async fn finalize_max_iterations(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -333,7 +341,7 @@ pub(crate) async fn finalize_max_iterations(
     Ok(())
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -412,8 +420,10 @@ mod tests {
         Ok(())
     }
 
-    /// Build a snapshot whose `trace_run_id` is wired up so trace
-    /// finalization can update the in-memory run store.
+    /**
+     * 构建一个已经接好 `trace_run_id` 的快照，以便 trace
+     * 终结化时可以更新内存中的 run store。
+     */
     async fn snap_with_trace(
         agent_name: &str,
     ) -> (AgentRunSnapshot, Arc<InMemoryRunStore>, ReactAgent) {
@@ -427,8 +437,10 @@ mod tests {
         (snap, store, agent)
     }
 
-    /// `finalize_no_response` sends a `NoResponse` error onto the channel
-    /// and finalizes the trace as `Failed`.
+    /**
+     * `finalize_no_response` 会向通道发送一个 `NoResponse` 错误，
+     * 并将 trace 终结化为 `Failed`。
+     */
     #[tokio::test]
     async fn finalize_no_response_sends_error_and_marks_trace_failed() {
         let (snap, store, agent) = snap_with_trace("agent-noresp").await;
@@ -455,7 +467,7 @@ mod tests {
             "error should carry the model name, got: {msg}",
         );
 
-        // Trace should be marked Failed.
+        // trace 应当被标记为 Failed。
         let run_id = snap.trace_run_id.clone().expect("run_id must be set");
         let run = store
             .load(&run_id)
@@ -466,9 +478,11 @@ mod tests {
         assert_eq!(run.error.as_deref(), Some("No response from LLM"));
     }
 
-    /// `finalize_max_iterations` sends a `MaxIterationsExceeded` error,
-    /// runs its hook fan-out without panicking, and marks the trace
-    /// `Failed` with the canonical error string.
+    /**
+     * `finalize_max_iterations` 会发送一个 `MaxIterationsExceeded`
+     * 错误，运行其钩子扇出且不会 panic，并用规范的错误字符串
+     * 将 trace 标记为 `Failed`。
+     */
     #[tokio::test]
     async fn finalize_max_iterations_sends_error_and_marks_trace_failed() {
         let (snap, store, agent) = snap_with_trace("agent-maxiter").await;

@@ -1,8 +1,8 @@
-//! Programmatic IM channel composition.
-//!
-//! Product config-file discovery belongs to the embedding application. This
-//! framework example reads explicit environment values and constructs channel
-//! configs directly.
+/*! 以编程方式组合 IM 渠道的示例。
+
+产品级配置文件的发现机制应由嵌入本框架的应用自行实现。本框架示例
+直接读取显式的环境变量并据此构造渠道配置。
+*/
 
 mod support;
 
@@ -15,6 +15,7 @@ use echo_agent::channels::{
 };
 use echo_agent::prelude::{AgentConfig, LlmClient};
 
+/// 演示根据环境变量按需注册 QQ 与飞书渠道，并为每个渠道会话构建带超时隔离能力的消息处理器。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -53,8 +54,8 @@ async fn main() -> echo_agent::error::Result<()> {
             session_config.clone(),
             move |instance: &ChannelSessionInstance| -> Box<dyn MessageHandler> {
                 let _runtime_incarnation = instance.incarnation_id();
-                // SessionHandler fences late output from this incarnation
-                // before a timeout/reset replacement is acknowledged.
+                // 在超时/重置替换被确认之前，SessionHandler 会拦截来自本次
+                // incarnation 的延迟输出。
                 Box::new(AgentChannelHandler::from_config_with_client(
                     AgentConfig::standard(&model, "im-assistant", "Answer the user clearly."),
                     Arc::clone(&llm_client),

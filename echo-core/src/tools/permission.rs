@@ -1,35 +1,36 @@
-//! Tool permission model
+//! 工具权限模型
 //!
-//! Provides a multi-level permission control system:
-//! - PermissionMode: permission mode (default/plan/auto/bypass etc.)
-//! - PermissionRule: rule system (allow/deny/ask)
-//! - RuleSource: rule source priority
-//! - RuleRegistry: rule registry
+//! 提供一套多层级的权限控制系统：
+//! - PermissionMode：权限模式（default/plan/auto/bypass 等）
+//! - PermissionRule：规则系统（allow/deny/ask）
+//! - RuleSource：规则来源优先级
+//! - RuleRegistry：规则注册表
 //!
-//! Referenced from Claude Code's permission architecture design
+//! 参考自 Claude Code 的权限架构设计
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-// ── Tool Permission Types ──────────────────────────────────────────────────────
+// ── 工具权限类型 ──────────────────────────────────────────────────────────────
 
-/// Tool permission types
+/// 工具权限类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ToolPermission {
-    /// Read files/directories permission
+    /// 读取文件/目录权限
     Read,
-    /// Write files/directories permission
+    /// 写入文件/目录权限
     Write,
-    /// Network access permission
+    /// 网络访问权限
     Network,
-    /// Execute commands/code permission
+    /// 执行命令/代码权限
     Execute,
-    /// Sensitive operation permission (e.g. access keys, environment variables, etc.)
+    /// 敏感操作权限（例如访问密钥、环境变量等）
     Sensitive,
 }
 
 impl std::fmt::Display for ToolPermission {
+    /// 将权限类型格式化为小写的字符串标识（如 `"read"`、`"write"`）。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ToolPermission::Read => write!(f, "read"),
@@ -41,29 +42,29 @@ impl std::fmt::Display for ToolPermission {
     }
 }
 
-// ── Permission Mode ────────────────────────────────────────────────────────────
+// ── 权限模式 ──────────────────────────────────────────────────────────────────
 
-/// Permission mode - controls permission check behavior
+/// 权限模式 - 控制权限检查行为
 ///
-/// Referenced from Claude Code's PermissionMode design:
-/// - Default: require user confirmation for dangerous operations
-/// - Plan: internal read-only execution mode (not a user-facing approval mode)
-/// - AcceptEdits: automatically accept edits
-/// - BypassPermissions: bypass all checks (can be disabled by bypass_disabled)
-/// - Auto: AI classifier auto-decides
-/// - Bubble: subagent permissions bubble up
-/// - DontAsk: silently reject tools not matching an allow rule (no user prompt)
-/// - StrictConfirm: ask before write/execute/network/sensitive operations
+/// 参考自 Claude Code 的 PermissionMode 设计：
+/// - Default：危险操作需要用户确认
+/// - Plan：内部只读执行模式（不是面向用户的审批模式）
+/// - AcceptEdits：自动接受编辑操作
+/// - BypassPermissions：绕过所有检查（可通过 bypass_disabled 禁用）
+/// - Auto：由 AI 分类器自动决策
+/// - Bubble：子 Agent 的权限向上冒泡给父进程
+/// - DontAsk：静默拒绝未命中允许规则的工具（不向用户提示）
+/// - StrictConfirm：写入/执行/网络/敏感操作前均需询问
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
-    /// Default mode: require user confirmation for dangerous operations
+    /// 默认模式：危险操作需要用户确认
     #[default]
     Default,
-    /// Internal read-only execution mode: disallow writes and executes.
-    /// User-facing planning/task routing should use interaction mode instead.
+    /// 内部只读执行模式：不允许写入和执行操作。
+    /// 面向用户的规划/任务路由场景应改用交互模式。
     Plan,
-    /// Automatically accept file edit operations
+    /// 自动接受文件编辑操作
     #[serde(
         rename = "auto-edit",
         alias = "accept-edits",
@@ -71,7 +72,7 @@ pub enum PermissionMode {
         alias = "acceptedits"
     )]
     AcceptEdits,
-    /// Bypass all permission checks (use with caution)
+    /// 绕过所有权限检查（请谨慎使用）
     #[serde(
         rename = "full-auto",
         alias = "fullauto",
@@ -80,17 +81,17 @@ pub enum PermissionMode {
         alias = "bypasspermissions"
     )]
     BypassPermissions,
-    /// AI classifier auto-decides (requires Classifier implementation)
+    /// 由 AI 分类器自动决策（需要实现 Classifier）
     Auto,
-    /// Sub-agent permissions bubble up to parent process
+    /// 子 Agent 的权限向上冒泡给父进程
     Bubble,
-    /// Silent mode: auto-allow rules that match, silently reject those that don't
+    /// 静默模式：匹配到的规则自动允许，未匹配的静默拒绝
     ///
-    /// An intermediate mode between Default and BypassPermissions,
-    /// suitable for CI/CD and other unattended execution scenarios.
+    /// 介于 Default 与 BypassPermissions 之间的中间模式，
+    /// 适用于 CI/CD 等无人值守的执行场景。
     #[serde(rename = "dont-ask", alias = "dontask")]
     DontAsk,
-    /// Strict interactive mode: reads are allowed, mutating or external operations ask.
+    /// 严格交互模式：读取操作被允许，变更或外部操作均需询问。
     #[serde(
         rename = "strict",
         alias = "strict-confirm",
@@ -100,7 +101,7 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
-    /// Stable kebab-case identifier used by configuration and UI transports.
+    /// 供配置和 UI 传输层使用的稳定 kebab-case 标识符。
     pub const fn id(self) -> &'static str {
         match self {
             Self::Default => "default",
@@ -119,8 +120,8 @@ impl PermissionMode {
         match self {
             PermissionMode::BypassPermissions => true,
             PermissionMode::AcceptEdits => true,
-            // DontAsk defers to rule matching: writes are only allowed
-            // if an explicit allow rule matches; otherwise silently rejected.
+            // DontAsk 依赖规则匹配来决定：只有命中显式允许规则的写入才被允许；
+            // 否则静默拒绝。
             PermissionMode::DontAsk => false,
             PermissionMode::Plan => false,
             PermissionMode::StrictConfirm => false,
@@ -133,8 +134,8 @@ impl PermissionMode {
         match self {
             PermissionMode::BypassPermissions => false,
             PermissionMode::Auto => false,
-            PermissionMode::DontAsk => false, // silently reject, no interaction
-            PermissionMode::AcceptEdits => false, // edits auto-accepted, others still need confirmation
+            PermissionMode::DontAsk => false, // 静默拒绝，无需交互
+            PermissionMode::AcceptEdits => false, // 编辑自动接受，其它操作仍需确认
             PermissionMode::StrictConfirm => true,
             _ => true,
         }
@@ -147,6 +148,7 @@ impl PermissionMode {
 }
 
 impl std::fmt::Display for PermissionMode {
+    /// 输出该模式的稳定 kebab-case 标识符。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.id())
     }
@@ -155,6 +157,7 @@ impl std::fmt::Display for PermissionMode {
 impl std::str::FromStr for PermissionMode {
     type Err = String;
 
+    /// 解析字符串标识符（含历史别名）为对应的权限模式。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim().to_ascii_lowercase().as_str() {
             "default" | "ask" => Ok(Self::Default),
@@ -174,23 +177,23 @@ impl std::str::FromStr for PermissionMode {
     }
 }
 
-// ── Permission Decision ────────────────────────────────────────────────────────
+// ── 权限决策 ──────────────────────────────────────────────────────────────────
 
-/// Permission decision
+/// 权限决策
 #[derive(Debug, Clone, PartialEq)]
 pub enum PermissionDecision {
-    /// Allow execution
+    /// 允许执行
     Allow,
-    /// Deny execution
+    /// 拒绝执行
     Deny {
-        /// Denial reason
+        /// 拒绝原因
         reason: String,
     },
-    /// Require user approval
+    /// 需要用户审批
     RequireApproval,
-    /// Require user approval with suggestions
+    /// 需要用户审批，并附带建议
     Ask {
-        /// Suggestion list
+        /// 建议列表
         suggestions: Vec<String>,
     },
 }
@@ -215,39 +218,39 @@ impl PermissionDecision {
     }
 }
 
-// ── Rule Source Priority ───────────────────────────────────────────────────────
+// ── 规则来源优先级 ─────────────────────────────────────────────────────────────
 
-/// Rule source priority (higher value = higher priority)
+/// 规则来源优先级（数值越大优先级越高）
 ///
-/// Referenced from Claude Code's PERMISSION_RULE_SOURCES design.
-/// In deny-first evaluation, source priority only affects ordering among
-/// rules of the same type (deny/ask/allow); deny rules always take
-/// precedence over ask and allow rules.
+/// 参考自 Claude Code 的 PERMISSION_RULE_SOURCES 设计。
+/// 在拒绝优先（deny-first）的评估策略下，来源优先级仅影响同类型规则
+/// （deny/ask/allow）之间的排序；deny 规则始终优先于 ask 和 allow 规则。
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum RuleSource {
-    /// Default rule (lowest priority)
+    /// 默认规则（最低优先级）
     #[default]
     Default = 0,
-    /// Local settings (.echo/settings.local.json)
+    /// 本地设置（.echo/settings.local.json）
     LocalSettings = 1,
-    /// Project settings (.echo/settings.json)
+    /// 项目设置（.echo/settings.json）
     ProjectSettings = 2,
-    /// User settings (~/.echo/settings.json)
+    /// 用户设置（~/.echo/settings.json）
     UserSettings = 3,
-    /// Admin policy (cannot be overridden by users, for enterprise deployment)
+    /// 管理员策略（用户不可覆盖，用于企业部署）
     Managed = 4,
-    /// CLI argument
+    /// CLI 命令行参数
     CliArg = 5,
-    /// Session temporary rule (highest priority)
+    /// 会话级临时规则（最高优先级）
     Session = 6,
 }
 
 impl std::str::FromStr for RuleSource {
     type Err = String;
 
+    /// 将 camelCase / snake_case 字符串标识符解析为对应的规则来源。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "default" => Ok(Self::Default),
@@ -263,6 +266,7 @@ impl std::str::FromStr for RuleSource {
 }
 
 impl std::fmt::Display for RuleSource {
+    /// 输出该来源对应的 camelCase 字符串标识符。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RuleSource::Default => write!(f, "default"),
@@ -276,25 +280,36 @@ impl std::fmt::Display for RuleSource {
     }
 }
 
-// ── Rule Matcher ───────────────────────────────────────────────────────────────
+// ── 规则匹配器 ────────────────────────────────────────────────────────────────
 
-/// Rule matcher - defines how a rule matches tool invocations
+/// 规则匹配器 - 定义一条规则如何匹配工具调用
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RuleMatcher {
-    /// Exact tool name match
-    Tool { name: String },
-    /// Wildcard pattern match (supports "Bash(git:*)" etc.)
-    Pattern { pattern: String },
-    /// Match by permission type
-    Permission { permission: ToolPermission },
-    /// Match all tools
+    /// 精确匹配工具名称
+    Tool {
+        /// 待匹配的工具名称
+        name: String,
+    },
+    /// 通配符模式匹配（支持 "Bash(git:*)" 等形式）
+    Pattern {
+        /// 通配符匹配模式
+        pattern: String,
+    },
+    /// 按权限类型匹配
+    Permission {
+        /// 待匹配的权限类型
+        permission: ToolPermission,
+    },
+    /// 匹配所有工具
     All,
 }
 
 impl std::str::FromStr for RuleMatcher {
     type Err = String;
 
+    /// 将字符串形式的匹配器规格（如 `"tool:xxx"`、`"pattern:xxx"`、`"perm:xxx"`、
+    /// `"*"`）解析为对应的匹配器。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value == "*" || value == "all" {
             return Ok(Self::All);
@@ -334,11 +349,11 @@ impl std::str::FromStr for RuleMatcher {
 }
 
 impl RuleMatcher {
-    /// Check whether a matcher string matches this matcher (for rule removal)
-    ///
-    /// Consistent with the `RuleMatcher::Pattern` construction semantics in
-    /// `parse_rule()`: uses the same matcher string for removal as for addition
-    /// to locate rules.
+    /** 检查一个匹配器字符串是否与当前匹配器一致（用于删除规则时定位）。
+
+    与 `parse_rule()` 中 `RuleMatcher::Pattern` 的构造语义保持一致：
+    删除规则时使用的匹配器字符串与新增规则时使用的完全相同，以便据此定位规则。
+    */
     pub fn matches_matcher_str(&self, matcher_str: &str) -> bool {
         match self {
             RuleMatcher::Tool { name } => name == matcher_str,
@@ -348,7 +363,7 @@ impl RuleMatcher {
         }
     }
 
-    /// Check whether this matches the specified tool
+    /// 检查是否与指定工具匹配
     pub fn matches(&self, tool_name: &str, permissions: &[ToolPermission]) -> bool {
         match self {
             RuleMatcher::Tool { name } => tool_name == name,
@@ -356,12 +371,12 @@ impl RuleMatcher {
                 if pattern == "*" {
                     return true;
                 }
-                // Exact match first
+                // 优先精确匹配
                 if tool_name == pattern {
                     return true;
                 }
-                // Use glob matching for patterns like "Bash(rm:*)"
-                // Only return true on glob match; fall through to prefix check on non-match.
+                /* 对形如 "Bash(rm:*)" 的模式使用 glob 匹配；
+                只有在 glob 匹配成功时才返回 true，未命中时继续走前缀检查。 */
                 #[cfg(feature = "permission")]
                 {
                     if let Ok(glob) = globset::Glob::new(pattern) {
@@ -371,15 +386,15 @@ impl RuleMatcher {
                         }
                     }
                 }
-                // Fallback: handle "prefix*)" patterns without globset.
-                // E.g., "Bash(rm:*)" matches "Bash(rm:rf)".
+                /* 兜底方案：在没有 globset 的情况下处理 "prefix*)" 形式的模式。
+                例如 "Bash(rm:*)" 匹配 "Bash(rm:rf)"。 */
                 if pattern.ends_with("*)") {
                     let prefix = &pattern[..pattern.len() - 2];
                     if tool_name.starts_with(prefix) {
                         return true;
                     }
                 }
-                // Fallback: prefix match for "Bash" matching "Bash(git:*)"
+                // 兜底方案："Bash" 前缀匹配 "Bash(git:*)"
                 if tool_name.starts_with(pattern)
                     && tool_name.len() > pattern.len()
                     && tool_name.as_bytes()[pattern.len()] == b'('
@@ -405,23 +420,30 @@ impl std::fmt::Display for RuleMatcher {
     }
 }
 
-// ── Rule Behavior ──────────────────────────────────────────────────────────────
+// ── 规则行为 ──────────────────────────────────────────────────────────────────
 
-/// Rule behavior - the action taken after a match
+/// 规则行为 - 匹配成功后采取的动作
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum RuleBehavior {
-    /// Allow execution
+    /// 允许执行
     Allow,
-    /// Deny execution
-    Deny { reason: String },
-    /// Require user confirmation
-    Ask { suggestions: Vec<String> },
+    /// 拒绝执行
+    Deny {
+        /// 拒绝原因
+        reason: String,
+    },
+    /// 需要用户确认
+    Ask {
+        /// 建议列表
+        suggestions: Vec<String>,
+    },
 }
 
 impl std::str::FromStr for RuleBehavior {
     type Err = String;
 
+    /// 将字符串标识符（`"allow"`、`"deny"`、`"ask"`）解析为对应的规则行为。
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "allow" => Ok(Self::Allow),
@@ -437,7 +459,7 @@ impl std::str::FromStr for RuleBehavior {
 }
 
 impl RuleBehavior {
-    /// Convert to PermissionDecision
+    /// 转换为 PermissionDecision
     pub fn to_decision(&self) -> PermissionDecision {
         match self {
             RuleBehavior::Allow => PermissionDecision::Allow,
@@ -451,24 +473,24 @@ impl RuleBehavior {
     }
 }
 
-// ── Permission Rule ────────────────────────────────────────────────────────────
+// ── 权限规则 ──────────────────────────────────────────────────────────────────
 
-/// Permission rule - complete definition of a single rule
+/// 权限规则 - 单条规则的完整定义
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PermissionRule {
-    /// Rule matcher
+    /// 规则匹配器
     pub matcher: RuleMatcher,
-    /// Rule behavior
+    /// 规则行为
     pub behavior: RuleBehavior,
-    /// Rule source
+    /// 规则来源
     pub source: RuleSource,
-    /// Rule description (optional)
+    /// 规则描述（可选）
     #[serde(default)]
     pub description: Option<String>,
 }
 
 impl PermissionRule {
-    /// Create an allow rule
+    /// 创建一条允许规则
     pub fn allow(matcher: RuleMatcher, source: RuleSource) -> Self {
         Self {
             matcher,
@@ -478,7 +500,7 @@ impl PermissionRule {
         }
     }
 
-    /// Create a deny rule
+    /// 创建一条拒绝规则
     pub fn deny(matcher: RuleMatcher, reason: String, source: RuleSource) -> Self {
         Self {
             matcher,
@@ -488,7 +510,7 @@ impl PermissionRule {
         }
     }
 
-    /// Create an ask rule
+    /// 创建一条询问规则
     pub fn ask(matcher: RuleMatcher, suggestions: Vec<String>, source: RuleSource) -> Self {
         Self {
             matcher,
@@ -498,32 +520,33 @@ impl PermissionRule {
         }
     }
 
-    /// Check whether this matches the specified tool invocation
+    /// 检查是否与指定的工具调用匹配
     pub fn matches(&self, tool_name: &str, permissions: &[ToolPermission]) -> bool {
         self.matcher.matches(tool_name, permissions)
     }
 }
 
-// ── Rule Registry ──────────────────────────────────────────────────────────────
+// ── 规则注册表 ────────────────────────────────────────────────────────────────
 
-/// Rule registry - manages all permission rules
-///
-/// Rules are sorted by source priority; higher priority rules match first.
-/// Matching order:
-/// 1. By source priority from high to low
-/// 2. Within the same source, by insertion order
+/** 规则注册表 - 管理所有权限规则
+
+规则按来源优先级排序；优先级更高的规则优先匹配。匹配顺序：
+1. 按来源优先级从高到低
+2. 同一来源内，按插入顺序
+*/
 #[derive(Debug, Clone, Default)]
 pub struct RuleRegistry {
+    /// 已注册的规则列表，按来源优先级排序
     rules: Vec<PermissionRule>,
 }
 
 impl RuleRegistry {
-    /// Create an empty rule registry
+    /// 创建一个空的规则注册表
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add a rule (auto-sorted by priority)
+    /// 添加一条规则（自动按优先级排序）
     pub fn add_rule(&mut self, rule: PermissionRule) {
         // 按来源优先级插入排序
         let pos = self
@@ -535,32 +558,32 @@ impl RuleRegistry {
         self.rules.insert(pos, rule);
     }
 
-    /// Batch add rules
+    /// 批量添加规则
     pub fn add_rules(&mut self, rules: Vec<PermissionRule>) {
         for rule in rules {
             self.add_rule(rule);
         }
     }
 
-    /// Remove one exact rule without affecting rules owned by other sources.
+    /// 精确移除一条规则，不影响其它来源所拥有的规则。
     pub fn remove_rule(&mut self, rule: &PermissionRule) -> bool {
         let before = self.rules.len();
         self.rules.retain(|candidate| candidate != rule);
         before != self.rules.len()
     }
 
-    /// Check a tool invocation and return the matching rule behavior
-    ///
-    /// Evaluation order follows deny-first principle (referenced from Claude Code):
-    /// 1. Deny rules — any deny from any source takes precedence over all allows
-    /// 2. Ask rules — by source priority
-    /// 3. Allow rules — by source priority
-    ///
-    /// This ensures that a low-priority deny rule can never be overridden by a
-    /// high-priority allow rule.
-    ///
-    /// Implemented as a single pass: deny returns immediately, ask and allow
-    /// are tracked and the highest-priority match is returned after the loop.
+    /** 检查一次工具调用，返回匹配到的规则行为
+
+    评估顺序遵循拒绝优先（deny-first）原则（参考自 Claude Code）：
+    1. 拒绝规则 —— 任意来源的拒绝都优先于所有允许
+    2. 询问规则 —— 按来源优先级
+    3. 允许规则 —— 按来源优先级
+
+    这保证了一条低优先级的拒绝规则永远不会被高优先级的允许规则覆盖。
+
+    实现为单次遍历：命中拒绝立即返回；询问与允许则先记录下来，
+    循环结束后返回其中优先级最高的匹配结果。
+    */
     pub fn check(&self, tool_name: &str, permissions: &[ToolPermission]) -> Option<RuleBehavior> {
         let mut first_ask: Option<RuleBehavior> = None;
         let mut first_allow: Option<RuleBehavior> = None;
@@ -587,20 +610,20 @@ impl RuleRegistry {
         first_ask.or(first_allow)
     }
 
-    /// Get all rules from the specified source
+    /// 获取指定来源的所有规则
     pub fn rules_by_source(&self, source: RuleSource) -> Vec<&PermissionRule> {
         self.rules.iter().filter(|r| r.source == source).collect()
     }
 
-    /// Remove all rules from the specified source
+    /// 移除指定来源的所有规则
     pub fn remove_by_source(&mut self, source: RuleSource) {
         self.rules.retain(|r| r.source != source);
     }
 
-    /// Remove all rules matching the specified matcher string
-    ///
-    /// Returns the number of removed rules. Matches with the same semantics as
-    /// `parse_rule()`'s `AddRule`.
+    /** 移除所有匹配指定匹配器字符串的规则
+
+    返回被移除的规则数量。匹配语义与 `parse_rule()` 中 `AddRule` 使用的语义相同。
+    */
     pub fn remove_by_matcher(&mut self, matcher_str: &str) -> usize {
         let before = self.rules.len();
         self.rules
@@ -608,31 +631,32 @@ impl RuleRegistry {
         before - self.rules.len()
     }
 
-    /// Clear all rules
+    /// 清空所有规则
     pub fn clear(&mut self) {
         self.rules.clear();
     }
 
-    /// Get the number of rules
+    /// 获取规则数量
     pub fn len(&self) -> usize {
         self.rules.len()
     }
 
-    /// Check whether it is empty
+    /// 检查是否为空
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
     }
 
-    /// Get all rules
+    /// 获取所有规则
     pub fn all_rules(&self) -> &[PermissionRule] {
         &self.rules
     }
 }
 
-// ── Permission Policy Trait ────────────────────────────────────────────────────
+// ── 权限策略 Trait ────────────────────────────────────────────────────────────
 
-/// Permission policy trait
+/// 权限策略 trait
 pub trait PermissionPolicy: Send + Sync {
+    /// 检查一次工具调用所需的权限，返回对应的权限决策。
     fn check<'a>(
         &'a self,
         tool_name: &'a str,
@@ -640,9 +664,11 @@ pub trait PermissionPolicy: Send + Sync {
     ) -> BoxFuture<'a, PermissionDecision>;
 }
 
-/// Default permission policy (retains backward compatibility)
+/// 默认权限策略（保留向后兼容性）
 pub struct DefaultPermissionPolicy {
+    /// 已直接授予、无需审批的权限集合
     granted: HashSet<ToolPermission>,
+    /// 需要用户审批的权限集合
     approval_required: HashSet<ToolPermission>,
 }
 
@@ -653,6 +679,7 @@ impl Default for DefaultPermissionPolicy {
 }
 
 impl DefaultPermissionPolicy {
+    /// 创建一个默认权限策略：Execute 和 Sensitive 权限需要审批，其余未授权权限将被拒绝。
     pub fn new() -> Self {
         let mut approval_required = HashSet::new();
         approval_required.insert(ToolPermission::Execute);
@@ -664,18 +691,21 @@ impl DefaultPermissionPolicy {
         }
     }
 
+    /// 直接授予指定权限（无需审批）
     pub fn grant(mut self, perm: ToolPermission) -> Self {
         self.granted.insert(perm);
         self.approval_required.remove(&perm);
         self
     }
 
+    /// 将指定权限标记为需要用户审批
     pub fn require_approval(mut self, perm: ToolPermission) -> Self {
         self.approval_required.insert(perm);
         self.granted.remove(&perm);
         self
     }
 
+    /// 授予全部权限类型（无需审批）
     pub fn grant_all(mut self) -> Self {
         self.granted.insert(ToolPermission::Read);
         self.granted.insert(ToolPermission::Write);
@@ -728,7 +758,7 @@ impl PermissionPolicy for DefaultPermissionPolicy {
     }
 }
 
-// ── Unit Tests ─────────────────────────────────────────────────────────────────
+// ── 单元测试 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

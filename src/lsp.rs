@@ -1,10 +1,10 @@
-//! LSP (Language Server Protocol) integration — re-exports.
+//! LSP（Language Server Protocol，语言服务器协议）集成 —— 重新导出。
 //!
-//! This module provides access to LSP types and the manager
-//! for communicating with language servers.
+//! 本模块提供对 LSP 类型以及用于与语言服务器通信的
+//! 管理器的访问。
 
-// Re-export core types
+// 重新导出核心类型
 pub use echo_core::lsp::*;
 
-// Re-export integration layer
+// 重新导出集成层
 pub use echo_integration::lsp::{LspConfig, LspManager, StdioLspClient};

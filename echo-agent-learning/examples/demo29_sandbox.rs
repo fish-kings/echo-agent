@@ -19,6 +19,8 @@
 use echo_agent::prelude::*;
 use std::time::Duration;
 
+/// demo29 主入口：依次演示安全策略评估、本地沙箱、Docker 沙箱、`SandboxManager`
+/// 自动路由，以及资源限制与超时控制共 5 个部分。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()
@@ -59,6 +61,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1 ──────────────────────────────────────────────────────────────────
 
+/// 演示安全策略对不同命令、代码执行请求的自动评估结果，并对比不同策略预设的差异。
 fn demo_policy_evaluation() {
     let policy = SandboxPolicy::default();
 
@@ -116,6 +119,7 @@ fn demo_policy_evaluation() {
 
 // ── Part 2 ──────────────────────────────────────────────────────────────────
 
+/// 演示本地沙箱（OS 原生隔离）执行 Shell 命令、程序、环境变量注入、超时和错误命令等场景。
 async fn demo_local_sandbox() -> echo_agent::error::Result<()> {
     use echo_agent::sandbox::local::LocalConfig;
 
@@ -177,6 +181,8 @@ async fn demo_local_sandbox() -> echo_agent::error::Result<()> {
 
 // ── Part 3 ──────────────────────────────────────────────────────────────────
 
+/// 演示 Docker 容器沙箱执行 Shell 命令、Python 代码以及带资源限制的执行；
+/// 若 Docker 不可用则跳过该部分演示。
 async fn demo_docker_sandbox() -> echo_agent::error::Result<()> {
     use echo_agent::sandbox::docker::DockerConfig;
 
@@ -239,6 +245,7 @@ async fn demo_docker_sandbox() -> echo_agent::error::Result<()> {
 
 // ── Part 4 ──────────────────────────────────────────────────────────────────
 
+/// 演示 `SandboxManager` 根据命令风险自动选择合适沙箱层级（自动路由）执行。
 async fn demo_manager() -> echo_agent::error::Result<()> {
     let manager = SandboxManager::auto_detect().await;
 
@@ -273,6 +280,7 @@ async fn demo_manager() -> echo_agent::error::Result<()> {
 
 // ── Part 5 ──────────────────────────────────────────────────────────────────
 
+/// 演示 `ResourceLimits` 各预设（默认、严格、无限制）的具体数值，以及限制资源后的执行效果。
 async fn demo_resource_limits() -> echo_agent::error::Result<()> {
     let manager = SandboxManager::auto_detect().await;
 
@@ -325,6 +333,7 @@ async fn demo_resource_limits() -> echo_agent::error::Result<()> {
 
 // ── 辅助 ────────────────────────────────────────────────────────────────────
 
+/// 打印 demo29 的开场横幅。
 fn print_banner() {
     println!("{}", "═".repeat(64));
     println!("      Echo Agent × 三层沙箱执行系统 (demo29)");
@@ -333,6 +342,7 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线和小节标题。
 fn separator(title: &str) {
     println!("{}", "─".repeat(64));
     println!("{title}\n");

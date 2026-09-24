@@ -1,41 +1,43 @@
-//! Evolution helpers and optional eval-driven improvement.
-//!
-//! # Overview
-//!
-//! The base `improve` feature provides explicit trajectory export. Eval-driven
-//! analysis is available only when the `eval` feature is enabled as well.
-//!
-//! # Safety
-//!
-//! All suggestions require human review. This module does NOT automatically:
-//! - Modify core runtime code
-//! - Relax security policies
-//! - Change permission rules
-//! - Publish or deploy anything
-//!
-//! # Components
-//!
-//! - [`TrajectorySaver`] — Optional ShareGPT JSONL export for framework consumers
-//!   that explicitly build fine-tuning datasets.
-//! ## Eval-Driven Improvement (`improve` + `eval`)
-//!
-//! - `Analyzer` — Statically analyzes Run traces to detect failure patterns.
-//! - `ImprovementLoop` — Iterative prompt optimization loop.
-//! - `EvalDrivenImprovement` — Unified entry point wrapping ImprovementLoop with HTML reports.
-//! - `PromptGenerator` — LLM-driven prompt improvement generator.
-//!
-//! # Complementary Module: `evolution`
-//!
-//! The [`evolution`](crate::evolution) module provides the memory/skill/rule
-//! lifecycle management system with typed metadata, change audit, and security.
-//! It complements this module's eval-driven improvement approach.
-//!
-//! # Data Storage Locations
-//!
-//! - Trajectories: `~/.echo-agent/trajectories/YYYY-MM-DD.jsonl`
-//! - Curator state: `~/.echo-agent/curator_state.json`
-//! - Background review candidates: returned to the caller; optional user-preference
-//!   persistence uses the configured evolution memory layer
+/*!
+演化（Evolution）辅助工具，以及可选的、基于评测驱动的改进能力。
+
+# 概述
+
+基础的 `improve` feature 提供显式的执行轨迹（trajectory）导出功能。
+只有当同时启用 `eval` feature 时，才能使用基于评测驱动的分析能力。
+
+# 安全性
+
+所有建议都需要人工审核。本模块不会自动执行以下操作：
+- 修改核心运行时代码
+- 放宽安全策略
+- 修改权限规则
+- 发布或部署任何内容
+
+# 组成部分
+
+- [`TrajectorySaver`] —— 可选的 ShareGPT JSONL 导出功能，供需要显式构建
+  微调数据集的框架使用方使用。
+## 基于评测驱动的改进（`improve` + `eval`）
+
+- `Analyzer` —— 静态分析 Run trace，检测失败模式。
+- `ImprovementLoop` —— 迭代式的提示词优化循环。
+- `EvalDrivenImprovement` —— 统一入口，在 ImprovementLoop 基础上封装了 HTML 报告能力。
+- `PromptGenerator` —— 由 LLM 驱动的提示词改进生成器。
+
+# 配套模块：`evolution`
+
+[`evolution`](crate::evolution) 模块提供了带有类型化元数据、变更审计与
+安全机制的记忆/技能/规则生命周期管理系统，与本模块基于评测驱动的改进
+方式互为补充。
+
+# 数据存储位置
+
+- 执行轨迹（Trajectories）：`~/.echo-agent/trajectories/YYYY-MM-DD.jsonl`
+- Curator 状态：`~/.echo-agent/curator_state.json`
+- 后台复核候选项：直接返回给调用方；可选的用户偏好持久化使用配置好的
+  evolution 记忆分层
+*/
 
 pub mod trajectory;
 
@@ -62,80 +64,103 @@ pub use r#loop::{ImprovementLoop, LoopResult};
 #[cfg(feature = "eval")]
 use serde::{Deserialize, Serialize};
 
-// ── CritiqueIssue ────────────────────────────────────────────────────
+// ── CritiqueIssue 问题项 ────────────────────────────────────────────────────
 
-/// A specific issue found in a run trace.
+/// 在 run trace 中发现的一个具体问题。
 #[cfg(feature = "eval")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CritiqueIssue {
-    /// Agent wrote to a file without reading it first.
-    WriteWithoutRead { tool: String, count: usize },
-    /// Tool was retried excessively.
-    ExcessiveRetries { tool: String, count: usize },
-    /// A tool error pattern (repeated failures of the same tool).
-    ToolErrorPattern { tool: String, message: String },
-    /// Context overflow — compression was triggered.
+    /// Agent 在未先读取文件的情况下就写入了文件。
+    WriteWithoutRead {
+        /// 涉及的工具名称
+        tool: String,
+        /// 触发次数
+        count: usize,
+    },
+    /// 工具被过度重试。
+    ExcessiveRetries {
+        /// 涉及的工具名称
+        tool: String,
+        /// 重试次数
+        count: usize,
+    },
+    /// 工具错误模式（同一个工具反复失败）。
+    ToolErrorPattern {
+        /// 涉及的工具名称
+        tool: String,
+        /// 错误信息
+        message: String,
+    },
+    /// 上下文溢出 —— 触发了压缩。
     ContextOverflow {
+        /// 压缩前的 token 数
         tokens_before: usize,
+        /// 压缩后的 token 数
         tokens_after: usize,
     },
-    /// The agent didn't use a tool that seemed necessary.
-    MissingTool { needed: String },
-    /// Too many tool calls for a simple task.
-    ExcessiveToolCalls { total: usize },
+    /// Agent 没有使用一个看起来是必要的工具。
+    MissingTool {
+        /// 本应使用但缺失的工具名称
+        needed: String,
+    },
+    /// 对于一个简单任务调用了过多工具。
+    ExcessiveToolCalls {
+        /// 工具调用总次数
+        total: usize,
+    },
 }
 
-// ── ImprovementSuggestion ────────────────────────────────────────────
+// ── ImprovementSuggestion 改进建议 ────────────────────────────────────────────
 
-/// A concrete, human-reviewable improvement suggestion.
+/// 一条具体的、可供人工审核的改进建议。
 #[cfg(feature = "eval")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ImprovementSuggestion {
-    /// Suggest changing the system prompt.
+    /// 建议修改 system prompt。
     PromptChange {
-        /// Which section to modify (e.g. "tools", "behavior", "constraints").
+        /// 要修改的部分（例如 "tools"、"behavior"、"constraints"）。
         section: String,
-        /// What to add or change.
+        /// 要新增或修改的具体内容。
         suggestion: String,
     },
-    /// Suggest a new or changed policy rule.
+    /// 建议新增或修改一条策略规则。
     PolicyChange {
-        /// The new rule description.
+        /// 新规则的描述。
         rule: String,
-        /// Why this rule is needed (based on observed failures).
+        /// 为什么需要这条规则（基于观察到的失败情况）。
         reason: String,
     },
-    /// Generate a new eval case from this run.
+    /// 基于本次运行生成一个新的评测用例。
     EvalGeneration {
-        /// Proposed case ID.
+        /// 建议使用的用例 ID。
         case_id: String,
-        /// The eval case content (JSON).
+        /// 评测用例内容（JSON 格式）。
         json: String,
     },
 }
 
-// ── RunCritique ──────────────────────────────────────────────────────
+// ── RunCritique 运行评述 ──────────────────────────────────────────────────────
 
-/// Complete analysis of a single run.
+/// 对单次运行的完整分析。
 #[cfg(feature = "eval")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunCritique {
-    /// The run being analyzed.
+    /// 被分析的运行。
     pub run_id: String,
-    /// Whether the run was successful overall.
+    /// 该运行整体上是否成功。
     pub success: bool,
-    /// Total score (0.0 - 1.0).
+    /// 总体评分（0.0 - 1.0）。
     pub score: f64,
-    /// Issues found.
+    /// 发现的问题列表。
     pub issues: Vec<CritiqueIssue>,
-    /// Improvement suggestions.
+    /// 改进建议列表。
     pub suggestions: Vec<ImprovementSuggestion>,
 }
 
 #[cfg(feature = "eval")]
 impl RunCritique {
-    /// Create an empty critique for a run.
+    /// 为一次运行创建一份空的评述。
     pub fn new(run_id: &str, success: bool) -> Self {
         Self {
             run_id: run_id.to_string(),
@@ -146,19 +171,19 @@ impl RunCritique {
         }
     }
 
-    /// Add an issue.
+    /// 添加一个问题。
     pub fn with_issue(mut self, issue: CritiqueIssue) -> Self {
         self.issues.push(issue);
         self
     }
 
-    /// Add a suggestion.
+    /// 添加一条建议。
     pub fn with_suggestion(mut self, suggestion: ImprovementSuggestion) -> Self {
         self.suggestions.push(suggestion);
         self
     }
 
-    /// Format as a human-readable report.
+    /// 格式化为人类可读的报告。
     pub fn format_report(&self) -> String {
         let mut lines = vec![
             format!("Run: {}", self.run_id),
@@ -220,3 +245,4 @@ impl RunCritique {
         lines.join("\n")
     }
 }
+</content>

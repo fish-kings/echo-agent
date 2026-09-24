@@ -1,13 +1,15 @@
-//! Change audit log — records all mutations to memories, skills, and rules.
-//!
-//! Every create, update, delete, promote, demote, and merge operation is
-//! recorded as a `ChangeEntry` in a JSONL file. This enables:
-//!
-//! - **Auditing**: review what changed and why
-//! - **Reconciliation**: stable change IDs let a prepared memory operation
-//!   finish its audit after restart; the canonical memory journal can later
-//!   append a typed inverse change while this log remains append-only.
-//! - **Trending**: detect patterns in evolution activity
+/*!
+变更审计日志——记录对 memories、skills、rules 的所有变更操作。
+
+每一次 create、update、delete、promote、demote 与 merge 操作都会作为一条
+`ChangeEntry` 记录进 JSONL 文件。这带来以下能力：
+
+- **审计（Auditing）**：回顾发生了什么变更、为什么变更
+- **对账（Reconciliation）**：稳定的 change ID 让一次已准备好的内存操作
+  可以在重启后继续完成其审计；标准内存日志之后还可以追加一条带类型的
+  逆向变更，而本日志始终保持仅追加（append-only）。
+- **趋势分析（Trending）**：检测演化活动中的模式
+*/
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,167 +19,170 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::Result;
 
-/// Per-process counter to disambiguate change_ids that share the same nanosecond.
+/// 进程内计数器，用于消除同一纳秒内产生的 change_id 的歧义。
 static CHANGE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // ── ChangeType ──────────────────────────────────────────────────────────
 
-/// The kind of mutation that was performed.
+/// 所执行的变更种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeType {
-    /// A new entity was created.
+    /// 创建了一个新实体。
     Create,
-    /// An existing entity was updated.
+    /// 更新了一个已有实体。
     Update,
-    /// An entity was deleted.
+    /// 删除了一个实体。
     Delete,
-    /// An entity was promoted to a higher layer or status.
+    /// 一个实体被提升到更高的层级或状态。
     Promote,
-    /// An entity was demoted to a lower layer or status.
+    /// 一个实体被降级到更低的层级或状态。
     Demote,
-    /// Two or more entities were merged into one.
+    /// 两个或多个实体被合并为一个。
     Merge,
 }
 
 // ── EntityType ──────────────────────────────────────────────────────────
 
-/// The type of entity that was changed.
+/// 被变更的实体类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityType {
-    /// A memory entry.
+    /// 一条内存条目。
     Memory,
-    /// A skill (SKILL.md or skill candidate).
+    /// 一个技能（SKILL.md 或候选技能）。
     Skill,
-    /// A rule (AGENTS.md or instruction file).
+    /// 一条规则（AGENTS.md 或指令文件）。
     Rule,
 }
 
 // ── ChangeEntry ─────────────────────────────────────────────────────────
 
-/// A single recorded change in the evolution audit log.
+/// 演化审计日志中记录的一次变更。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChangeEntry {
-    /// Unique identifier for this change.
+    /// 该变更的唯一标识符。
     pub change_id: String,
-    /// When the change occurred.
+    /// 变更发生的时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub timestamp: DateTime<Utc>,
-    /// What kind of entity was changed.
+    /// 被变更的实体类型。
     pub entity_type: EntityType,
-    /// The key/path of the entity that was changed.
+    /// 被变更实体的 key/path。
     pub entity_key: String,
-    /// The kind of mutation.
+    /// 变更的种类。
     pub change_type: ChangeType,
-    /// The entity state before the change (if available).
+    /// 变更前的实体状态（若可获得）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before: Option<serde_json::Value>,
-    /// The entity state after the change.
+    /// 变更后的实体状态。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<serde_json::Value>,
-    /// Human-readable reason for the change.
+    /// 该变更的可读原因说明。
     pub reason: String,
-    /// What triggered this change (e.g., "memory_reviewer", "user_command", "auto_trigger").
+    /// 触发本次变更的来源（例如 "memory_reviewer"、"user_command"、"auto_trigger"）。
     pub trigger: String,
 }
 
 // ── ChangeLog trait ─────────────────────────────────────────────────────
 
-/// Trait for recording and querying evolution changes.
+/// 用于记录与查询演化变更的 trait。
 pub trait ChangeLog: Send + Sync {
-    /// Stable durable identity of the concrete audit destination.
-    ///
-    /// Mutation journals use this to prevent pending operations from being
-    /// replayed into another ChangeLog. Implementations without a stable
-    /// destination must reject durable mutation authority binding.
+    /**
+    具体审计目的地的稳定持久标识。
+
+    变更（mutation）日志用它来防止一个待处理操作被重放进另一个
+    ChangeLog。没有稳定目的地的实现必须拒绝绑定持久变更权威。
+    */
     fn durable_destination_identity(&self) -> Result<Option<String>> {
         Ok(None)
     }
 
-    /// Record a change entry.
+    /// 记录一条变更。
     fn record(&self, entry: ChangeEntry) -> Result<()>;
 
-    /// Atomically record an entry identified by its stable `change_id`.
-    ///
-    /// Replaying an identical entry succeeds without appending a second line.
-    /// Reusing the ID for different content fails closed.
+    /**
+    以其稳定的 `change_id` 为标识，原子地记录一条条目。
+
+    重放一条完全相同的条目会成功且不会追加第二行；
+    对同一 ID 复用为不同内容则会失败关闭（fail closed）。
+    */
     fn record_idempotent(&self, entry: ChangeEntry) -> Result<ChangeRecordOutcome>;
 
-    /// Query changes matching the given filters.
+    /// 查询匹配给定过滤条件的变更。
     fn query(&self, filter: &ChangeFilter) -> Result<Vec<ChangeEntry>>;
 
-    /// Find the most recent change for a given entity.
+    /// 查找某个实体最近一次的变更。
     fn latest_for(&self, entity_type: EntityType, entity_key: &str) -> Result<Option<ChangeEntry>>;
 
-    /// Get the total number of recorded changes.
+    /// 获取已记录变更的总数。
     fn len(&self) -> usize;
 
-    /// Whether the log is empty.
+    /// 该日志是否为空。
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-/// Result of an idempotent audit append.
+/// 一次幂等审计追加操作的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeRecordOutcome {
-    /// The entry was durably appended.
+    /// 该条目已被持久化追加。
     Appended,
-    /// An identical entry with the same stable ID was already durable.
+    /// 拥有相同稳定 ID 的相同条目此前已经持久化过。
     AlreadyRecorded,
 }
 
 // ── ChangeFilter ────────────────────────────────────────────────────────
 
-/// Filter criteria for querying the change log.
+/// 查询变更日志时使用的过滤条件。
 #[derive(Debug, Clone, Default)]
 pub struct ChangeFilter {
-    /// Filter by entity type.
+    /// 按实体类型过滤。
     pub entity_type: Option<EntityType>,
-    /// Filter by change type.
+    /// 按变更类型过滤。
     pub change_type: Option<ChangeType>,
-    /// Filter by entity key prefix.
+    /// 按实体 key 前缀过滤。
     pub entity_key_prefix: Option<String>,
-    /// Only changes after this timestamp.
+    /// 只保留晚于该时间戳的变更。
     pub after: Option<DateTime<Utc>>,
-    /// Only changes before this timestamp.
+    /// 只保留早于该时间戳的变更。
     pub before: Option<DateTime<Utc>>,
-    /// Maximum number of results.
+    /// 结果数量上限。
     pub limit: Option<usize>,
 }
 
 impl ChangeFilter {
-    /// Create an empty filter (matches everything).
+    /// 创建一个空过滤条件（匹配所有内容）。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Filter by entity type.
+    /// 按实体类型过滤。
     pub fn with_entity_type(mut self, entity_type: EntityType) -> Self {
         self.entity_type = Some(entity_type);
         self
     }
 
-    /// Filter by change type.
+    /// 按变更类型过滤。
     pub fn with_change_type(mut self, change_type: ChangeType) -> Self {
         self.change_type = Some(change_type);
         self
     }
 
-    /// Filter by entity key prefix.
+    /// 按实体 key 前缀过滤。
     pub fn with_key_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.entity_key_prefix = Some(prefix.into());
         self
     }
 
-    /// Limit the number of results.
+    /// 限制结果数量。
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Check if a change entry matches this filter.
+    /// 检查一条变更是否匹配该过滤条件。
     pub fn matches(&self, entry: &ChangeEntry) -> bool {
         if let Some(ref et) = self.entity_type
             && entry.entity_type != *et
@@ -210,20 +215,24 @@ impl ChangeFilter {
 
 // ── JsonlChangeLog ──────────────────────────────────────────────────────
 
-/// JSONL-file-backed change log. Each line is a `ChangeEntry` JSON object.
-///
-/// Thread-safe via internal locking. Appends are atomic (one line per write).
+/**
+以 JSONL 文件为后端的变更日志。每一行是一个 `ChangeEntry` JSON 对象。
+
+通过内部锁实现线程安全。追加操作是原子的（每次写入一行）。
+*/
 pub struct JsonlChangeLog {
+    /// 日志文件路径。
     path: PathBuf,
-    /// In-memory cache of entries for fast querying.
+    /// 内存中的条目缓存，用于快速查询。
     entries: std::sync::Mutex<Vec<ChangeEntry>>,
 }
 
 impl JsonlChangeLog {
-    /// Create a new JSONL change log at the given path.
-    ///
-    /// Loads and validates existing entries. The data file is created on the
-    /// first durable record.
+    /**
+    在给定路径创建一个新的 JSONL 变更日志。
+
+    加载并校验已有条目。数据文件会在第一次持久化记录时创建。
+    */
     pub fn new(path: PathBuf) -> Result<Self> {
         let log = Self {
             path,
@@ -236,12 +245,14 @@ impl JsonlChangeLog {
         Ok(log)
     }
 
-    /// Load entries from the JSONL file.
-    ///
-    /// Every newline-terminated record must parse. Only a final record without
-    /// a newline can be a crash-torn append: a valid record receives its
-    /// missing newline, while an invalid tail is truncated to the last durable
-    /// record. Interior corruption is never skipped.
+    /**
+    从 JSONL 文件加载条目。
+
+    每一条以换行符结尾的记录都必须能被解析。只有最后一条没有换行符的
+    记录才可能是崩溃写坏的追加：一条有效记录会补上缺失的换行符，
+    而无效的结尾会被截断到最后一条持久化记录处。内部（非末尾）的损坏
+    永远不会被跳过。
+    */
     fn load_from_disk(path: &Path) -> std::io::Result<Vec<ChangeEntry>> {
         let content = match echo_core::utils::fs::read_existing(path) {
             Ok(content) => content,
@@ -322,6 +333,7 @@ impl JsonlChangeLog {
         Ok(entries)
     }
 
+    /// 持有跨进程的建议性文件锁（flock），在锁保护下执行给定操作。
     fn with_disk_lock<T>(
         &self,
         operation: impl FnOnce() -> std::io::Result<T>,
@@ -372,6 +384,7 @@ impl JsonlChangeLog {
         }
     }
 
+    /// 若日志文件尚不存在，则创建一个空文件。
     fn create_log_file_if_missing(&self) -> std::io::Result<()> {
         match std::fs::symlink_metadata(&self.path) {
             Ok(_) => Ok(()),
@@ -382,17 +395,19 @@ impl JsonlChangeLog {
         }
     }
 
-    /// Append an entry to the JSONL file.
-    ///
-    /// Holds a cross-process advisory `flock` on a sidecar file and calls
-    /// `sync_all` before returning, so:
-    /// - concurrent appenders (this process or another) cannot interleave two
-    ///   large JSON lines into a single corrupt line;
-    /// - a power-loss crash cannot lose the just-appended line (the OS flushes
-    ///   the durable write before we report success).
-    ///
-    /// `sync_all` per append is the durability/cost trade-off appropriate for
-    /// an *audit* log whose entire purpose is a complete, durable record.
+    /**
+    向 JSONL 文件追加一条条目。
+
+    在一个旁路（sidecar）文件上持有跨进程的建议性 `flock`，并在返回前
+    调用 `sync_all`，因此：
+    - 并发的追加者（本进程或其他进程）不会把两条较大的 JSON 行交织成
+      一行损坏的数据；
+    - 掉电崩溃不会丢失刚刚追加的那一行（操作系统会在我们报告成功之前
+      刷新这次持久化写入）。
+
+    每次追加都执行 `sync_all`，这是与*审计*日志的目标（完整、持久的
+    记录）相匹配的持久性/成本权衡。
+    */
     fn record_idempotent_inner(&self, entry: ChangeEntry) -> Result<ChangeRecordOutcome> {
         if entry.change_id.is_empty() {
             return Err(std::io::Error::new(
@@ -462,7 +477,7 @@ impl ChangeLog for JsonlChangeLog {
         *entries = self.with_disk_lock(|| Self::load_from_disk(&self.path))?;
         let mut results: Vec<ChangeEntry> = entries
             .iter()
-            .rev() // most recent first
+            .rev() // 最近的排在前面
             .filter(|e| filter.matches(e))
             .cloned()
             .collect();
@@ -488,6 +503,10 @@ impl ChangeLog for JsonlChangeLog {
     }
 }
 
+/**
+计算该路径的规范化形式；若路径尚不存在，则沿祖先目录向上查找存在的
+那一级再拼回后缀部分。
+*/
 fn canonical_destination_path(path: &Path) -> std::io::Result<PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path);
@@ -524,21 +543,28 @@ fn canonical_destination_path(path: &Path) -> std::io::Result<PathBuf> {
     Ok(canonical)
 }
 
-// ── Helper for creating change entries ──────────────────────────────────
+// ── 创建变更条目的辅助工具 ──────────────────────────────────────────────
 
-/// Builder helper for creating `ChangeEntry` instances.
+/// 用于创建 `ChangeEntry` 实例的 builder 辅助工具。
 pub struct ChangeEntryBuilder {
+    /// 实体类型。
     entity_type: EntityType,
+    /// 实体 key。
     entity_key: String,
+    /// 变更类型。
     change_type: ChangeType,
+    /// 变更前状态。
     before: Option<serde_json::Value>,
+    /// 变更后状态。
     after: Option<serde_json::Value>,
+    /// 变更原因。
     reason: String,
+    /// 触发来源。
     trigger: String,
 }
 
 impl ChangeEntryBuilder {
-    /// Start building a change entry.
+    /// 开始构建一条变更记录。
     pub fn new(
         entity_type: EntityType,
         entity_key: impl Into<String>,
@@ -555,38 +581,40 @@ impl ChangeEntryBuilder {
         }
     }
 
-    /// Set the before state.
+    /// 设置变更前状态。
     pub fn before(mut self, value: serde_json::Value) -> Self {
         self.before = Some(value);
         self
     }
 
-    /// Set the after state.
+    /// 设置变更后状态。
     pub fn after(mut self, value: serde_json::Value) -> Self {
         self.after = Some(value);
         self
     }
 
-    /// Set the reason.
+    /// 设置变更原因。
     pub fn reason(mut self, reason: impl Into<String>) -> Self {
         self.reason = reason.into();
         self
     }
 
-    /// Set the trigger source.
+    /// 设置触发来源。
     pub fn trigger(mut self, trigger: impl Into<String>) -> Self {
         self.trigger = trigger.into();
         self
     }
 
-    /// Build the change entry, assigning a new ID and timestamp.
-    ///
-    /// Uses nanosecond-precision timestamp for the ID to avoid the TOCTOU race
-    /// that existed with `log.len() + 1` (which was read outside the lock).
+    /**
+    构建该变更记录，分配新的 ID 与时间戳。
+
+    使用纳秒精度的时间戳来生成 ID，以避免此前 `log.len() + 1`
+    （在锁之外读取）所存在的 TOCTOU 竞态。
+    */
     pub fn build(self, _log: &dyn ChangeLog) -> ChangeEntry {
         let now = Utc::now();
-        // timestamp_nanos_opt() returns None only on extreme overflow; fall back
-        // to 0 so the id stays well-formed (uniqueness is still backed by `now`).
+        /* timestamp_nanos_opt() 只有在极端溢出时才会返回 None；
+        此时回退为 0，让 id 仍然是良构的（唯一性仍然由 `now` 保证）。 */
         let nanos = now.timestamp_nanos_opt().unwrap_or(0);
         ChangeEntry {
             change_id: format!(
@@ -605,10 +633,12 @@ impl ChangeEntryBuilder {
         }
     }
 
-    /// Build with a caller-owned stable ID and timestamp.
-    ///
-    /// Recovery workflows persist these values and replay the same complete
-    /// entry through [`ChangeLog::record_idempotent`].
+    /**
+    使用调用方持有的稳定 ID 与时间戳来构建。
+
+    恢复流程会持久化这些值，并通过 [`ChangeLog::record_idempotent`]
+    重放同一条完整记录。
+    */
     pub fn build_with(self, change_id: impl Into<String>, timestamp: DateTime<Utc>) -> ChangeEntry {
         ChangeEntry {
             change_id: change_id.into(),
@@ -624,10 +654,12 @@ impl ChangeEntryBuilder {
     }
 }
 
-// ── Shared test/mock implementations ──────────────────────────────────
+// ── 测试/mock 共享实现 ──────────────────────────────────────────────
 
-/// A no-op `ChangeLog` for tests and feature-disabled builds. Use this
-/// instead of defining per-module copies (P1 — nullChangeLog dedup).
+/**
+供测试与关闭相关 feature 时构建使用的空操作 `ChangeLog`。请直接使用它，
+而不要在各个模块中各自定义一份（P1 —— nullChangeLog 去重）。
+*/
 pub struct NullChangeLog;
 
 impl ChangeLog for NullChangeLog {
@@ -652,7 +684,7 @@ impl ChangeLog for NullChangeLog {
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── 测试 ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

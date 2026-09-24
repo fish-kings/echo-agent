@@ -1,35 +1,37 @@
-//! Concrete `DefaultAgentFactory` that creates agents via `ReactAgentBuilder`
-//!
-//! This module provides the facade-level implementation of the [`AgentFactory`] trait
-//! defined in `echo_core::agent::factory`. It reads the [`AgentFactoryConfig`] and
-//! creates a configured [`crate::agent::ReactAgent`].
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use echo_agent::agent::default_factory::DefaultAgentFactory;
-//! use echo_agent::agent::factory::AgentFactoryConfig;
-//! use echo_core::agent::factory::AgentFactory;
-//!
-//! # fn main() -> echo_agent::error::Result<()> {
-//! let config = AgentFactoryConfig::new()
-//!     .model("qwen3-max")
-//!     .name("coder")
-//!     .with_system_prompt("You are a coding assistant");
-//!
-//! let factory = DefaultAgentFactory;
-//! let agent = factory.create_agent(config)?;
-//!
-//! println!("Agent: {}, Model: {}", agent.name(), agent.model_name());
-//! # Ok(())
-//! # }
-//! ```
+/*!
+具体的 `DefaultAgentFactory` —— 通过 `ReactAgentBuilder` 创建 Agent。
+
+本模块提供 `echo_core::agent::factory` 中定义的 [`AgentFactory`] trait
+的 facade 层实现。它读取 [`AgentFactoryConfig`]，
+并创建一个配置好的 [`crate::agent::ReactAgent`]。
+
+# 示例
+
+```rust,no_run
+use echo_agent::agent::default_factory::DefaultAgentFactory;
+use echo_agent::agent::factory::AgentFactoryConfig;
+use echo_core::agent::factory::AgentFactory;
+
+# fn main() -> echo_agent::error::Result<()> {
+let config = AgentFactoryConfig::new()
+    .model("qwen3-max")
+    .name("coder")
+    .with_system_prompt("You are a coding assistant");
+
+let factory = DefaultAgentFactory;
+let agent = factory.create_agent(config)?;
+
+println!("Agent: {}, Model: {}", agent.name(), agent.model_name());
+# Ok(())
+# }
+```
+*/
 
 use crate::agent::Agent;
 use crate::agent::react::builder::ReactAgentBuilder;
 use crate::error::Result;
 
-/// Concrete factory that creates agents using [`ReactAgentBuilder`].
+/// 使用 [`ReactAgentBuilder`] 创建 Agent 的具体工厂。
 pub struct DefaultAgentFactory;
 
 impl AgentFactory for DefaultAgentFactory {
@@ -49,7 +51,7 @@ impl AgentFactory for DefaultAgentFactory {
     }
 }
 
-// ── Re-exports ──────────────────────────────────────────────────────────────
+// ── 重新导出 ──────────────────────────────────────────────────────────────
 
 pub use echo_core::agent::factory::{AgentFactory, AgentFactoryConfig};
 

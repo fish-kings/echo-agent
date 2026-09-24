@@ -1,10 +1,12 @@
-//! A2A HTTP client
-//!
-//! For discovering and invoking remote A2A-compatible Agents.
-//!
-//! Supports both sync and streaming task modes:
-//! - [`send_task`](A2AClient::send_task) — Synchronously wait for task completion
-//! - [`send_task_streaming`](A2AClient::send_task_streaming) — Receive real-time events via SSE streaming
+/*!
+A2A HTTP 客户端
+
+用于发现和调用远程 A2A 兼容的 Agent。
+
+支持同步和流式两种任务模式：
+- [`send_task`](A2AClient::send_task) —— 同步等待任务完成
+- [`send_task_streaming`](A2AClient::send_task_streaming) —— 通过 SSE 流式接收实时事件
+*/
 
 use super::types::*;
 use crate::error::{ReactError, Result};
@@ -13,39 +15,42 @@ use reqwest::Client;
 use std::pin::Pin;
 use tracing::{debug, info, warn};
 
-/// A2A client — discover and invoke remote Agents
+/// A2A 客户端 —— 发现和调用远程 Agent
 pub struct A2AClient {
+    /// 底层使用的 HTTP 客户端
     client: Client,
 }
 
 impl A2AClient {
-    /// Create a new A2A client instance.
+    /// 创建一个新的 A2A 客户端实例。
     pub fn new() -> Self {
         Self {
             client: Client::new(),
         }
     }
 
-    /// Discover a remote Agent: fetch Agent Card
-    ///
-    /// Fetches the Agent Card from `{base_url}/.well-known/agent.json`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_agent::a2a::A2AClient;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> echo_agent::error::Result<()> {
-    /// let client = A2AClient::new();
-    /// let card = client.discover("http://localhost:8080").await?;
-    /// println!("Discovered agent: {} - {:?}", card.name, card.description);
-    /// for skill in &card.skills {
-    ///     println!("  Skill: {} - {:?}", skill.name, skill.description);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    发现远程 Agent：获取 Agent Card
+
+    从 `{base_url}/.well-known/agent.json` 获取 Agent Card。
+
+    # 示例
+
+    ```rust,no_run
+    use echo_agent::a2a::A2AClient;
+
+    # #[tokio::main]
+    # async fn main() -> echo_agent::error::Result<()> {
+    let client = A2AClient::new();
+    let card = client.discover("http://localhost:8080").await?;
+    println!("Discovered agent: {} - {:?}", card.name, card.description);
+    for skill in &card.skills {
+        println!("  Skill: {} - {:?}", skill.name, skill.description);
+    }
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn discover(&self, base_url: &str) -> Result<AgentCard> {
         let url = format!("{}/.well-known/agent.json", base_url.trim_end_matches('/'));
 
@@ -83,28 +88,30 @@ impl A2AClient {
         Ok(card)
     }
 
-    /// Send a task to a remote Agent (wait synchronously for completion)
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_agent::a2a::A2AClient;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> echo_agent::error::Result<()> {
-    /// let client = A2AClient::new();
-    /// let result = client.send_task("http://localhost:8080", "Please translate 'hello' to Chinese").await?;
-    /// if let Some(task) = result {
-    ///     println!("Task status: {}", task.status.state);
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    向远程 Agent 发送一个任务（同步等待完成）
+
+    # 示例
+
+    ```rust,no_run
+    use echo_agent::a2a::A2AClient;
+
+    # #[tokio::main]
+    # async fn main() -> echo_agent::error::Result<()> {
+    let client = A2AClient::new();
+    let result = client.send_task("http://localhost:8080", "Please translate 'hello' to Chinese").await?;
+    if let Some(task) = result {
+        println!("Task status: {}", task.status.state);
+    }
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn send_task(&self, agent_url: &str, message: &str) -> Result<Option<A2ATask>> {
         self.send_task_with_session(agent_url, message, None).await
     }
 
-    /// Send a task to a remote Agent (with session ID)
+    /// 向远程 Agent 发送一个任务（带会话 ID）
     pub async fn send_task_with_session(
         &self,
         agent_url: &str,
@@ -156,42 +163,44 @@ impl A2AClient {
         Ok(task_response.result)
     }
 
-    /// Send a task to a remote Agent with SSE streaming
-    ///
-    /// Sends a `tasks/sendSubscribe` request and parses the SSE event stream returned by the server.
-    /// Returns an async stream of `A2AStreamEvent` that the caller can process event by event.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_agent::a2a::{A2AClient, A2AStreamEvent, TaskState};
-    /// use futures::StreamExt;
-    ///
-    /// # #[tokio::main]
-    /// # async fn main() -> echo_agent::error::Result<()> {
-    /// let client = A2AClient::new();
-    /// let mut stream = client
-    ///     .send_task_streaming("http://localhost:8080", "Translate 'hello'")
-    ///     .await?;
-    ///
-    /// while let Some(event) = stream.next().await {
-    ///     match event {
-    ///         A2AStreamEvent::StatusUpdate(e) => {
-    ///             println!("Status: {}", e.status.state);
-    ///             if e.is_final { break; }
-    ///         }
-    ///         A2AStreamEvent::ArtifactUpdate(e) => {
-    ///             for part in &e.artifact.parts {
-    ///                 if let echo_agent::a2a::A2APart::Text { text } = part {
-    ///                     print!("{}", text);
-    ///                 }
-    ///             }
-    ///         }
-    ///     }
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /**
+    向远程 Agent 发送一个任务，通过 SSE 流式接收结果
+
+    发送一个 `tasks/sendSubscribe` 请求，并解析服务端返回的 SSE 事件流。
+    返回一个 `A2AStreamEvent` 的异步流，调用方可以逐个事件处理。
+
+    # 示例
+
+    ```rust,no_run
+    use echo_agent::a2a::{A2AClient, A2AStreamEvent, TaskState};
+    use futures::StreamExt;
+
+    # #[tokio::main]
+    # async fn main() -> echo_agent::error::Result<()> {
+    let client = A2AClient::new();
+    let mut stream = client
+        .send_task_streaming("http://localhost:8080", "Translate 'hello'")
+        .await?;
+
+    while let Some(event) = stream.next().await {
+        match event {
+            A2AStreamEvent::StatusUpdate(e) => {
+                println!("Status: {}", e.status.state);
+                if e.is_final { break; }
+            }
+            A2AStreamEvent::ArtifactUpdate(e) => {
+                for part in &e.artifact.parts {
+                    if let echo_agent::a2a::A2APart::Text { text } = part {
+                        print!("{}", text);
+                    }
+                }
+            }
+        }
+    }
+    # Ok(())
+    # }
+    ```
+    */
     pub async fn send_task_streaming(
         &self,
         agent_url: &str,
@@ -201,7 +210,7 @@ impl A2AClient {
             .await
     }
 
-    /// Send a task to a remote Agent with SSE streaming (with session ID)
+    /// 向远程 Agent 发送一个任务，通过 SSE 流式接收结果（带会话 ID）
     pub async fn send_task_streaming_with_session(
         &self,
         agent_url: &str,
@@ -279,7 +288,7 @@ impl A2AClient {
                 }
             }
 
-            // flush remaining
+            // 处理缓冲区中剩余的内容
             if !buffer.is_empty() {
                 for line in buffer.lines() {
                     let line = line.trim();
@@ -294,7 +303,7 @@ impl A2AClient {
         Ok(Box::pin(event_stream))
     }
 
-    /// Query remote task status
+    /// 查询远程任务状态
     pub async fn get_task(&self, agent_url: &str, task_id: &str) -> Result<Option<A2ATask>> {
         let request = A2ATaskRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -330,7 +339,7 @@ impl A2AClient {
         Ok(task_response.result)
     }
 
-    /// Cancel a remote task
+    /// 取消远程任务
     pub async fn cancel_task(&self, agent_url: &str, task_id: &str) -> Result<Option<A2ATask>> {
         let request = A2ATaskRequest {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -366,10 +375,11 @@ impl A2AClient {
         Ok(task_response.result)
     }
 
-    // ── Internal helpers ─────────────────────────────────────────────────────
+    // ── 内部辅助函数 ─────────────────────────────────────────────────────
 
+    /// 将一条 SSE `data:` 内容解析为流事件
     fn parse_sse_data(data: &str) -> Option<A2AStreamEvent> {
-        // SSE data may be an A2AStreamResponse (with jsonrpc wrapper) or directly an A2AStreamEvent
+        // SSE 的 data 内容可能是一个 A2AStreamResponse（带 jsonrpc 包装），也可能直接就是 A2AStreamEvent
         if let Ok(stream_resp) = serde_json::from_str::<A2AStreamResponse>(data) {
             return stream_resp.result;
         }
@@ -382,3 +392,4 @@ impl Default for A2AClient {
         Self::new()
     }
 }
+</content>

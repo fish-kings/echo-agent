@@ -8,6 +8,8 @@
 use echo_agent::context::{ContextAssembler, ContextBudget, ContextSources};
 use echo_agent::llm::types::{Message, Role};
 
+/// demo65 契约测试：依次演示 `ContextAssembler` 的基本用法、预算配置、
+/// 优先级排序以及动态预算调整四个示例。
 #[test]
 fn contract_demo65_context_assembler() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== demo65: Context Assembler ===\n");
@@ -127,29 +129,29 @@ fn priority_ordering() -> Result<(), Box<dyn std::error::Error>> {
     let assembler = ContextAssembler::new();
 
     let sources = ContextSources {
-        // Critical (10) - System prompt
+        // Critical（优先级 10）—— 系统提示词
         system_prompt: Some("You are an expert Rust developer.".to_string()),
 
-        // High (8) - Developer instructions and project rules
+        // High（优先级 8）—— 开发者指令与项目规则
         developer_instructions: vec![
             "Always use idiomatic Rust".to_string(),
             "Prefer Result over panic".to_string(),
         ],
         project_rules: vec!["Focus on performance optimization".to_string()],
 
-        // High (8) - Task state
+        // High（优先级 8）—— 任务状态
         task_state: Some("Current task: Fix memory leak in connection pool".to_string()),
 
-        // Medium (5) - Conversation history
+        // Medium（优先级 5）—— 对话历史
         conversation_history: vec![
             Message::user("The program is slow".to_string()),
             Message::assistant("Let me analyze the performance profile".to_string()),
         ],
 
-        // Low (3) - Memory recall
+        // Low（优先级 3）—— 记忆召回
         memory_recall: Some("User prefers detailed explanations".to_string()),
 
-        // BestEffort (1) - Hook injected
+        // BestEffort（优先级 1）—— 由 Hook 注入的内容
         hook_injected: vec!["Additional context from lifecycle hook".to_string()],
 
         ..Default::default()

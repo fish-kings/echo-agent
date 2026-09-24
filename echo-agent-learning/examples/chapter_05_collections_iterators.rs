@@ -2,6 +2,7 @@ use echo_agent_learning::basics::{LearningTask, TaskState};
 use echo_agent_learning::collections::{TaskCatalog, normalize_owned, word_frequencies};
 use echo_agent_learning::errors::LearningError;
 
+/// 演示集合与迭代器的常见用法：任务目录、标签排序与词频统计。
 fn main() -> Result<(), LearningError> {
     let mut catalog = TaskCatalog::new();
     catalog.insert(LearningTask::new("阅读 Rust")?)?;

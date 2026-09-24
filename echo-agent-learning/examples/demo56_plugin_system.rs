@@ -1,6 +1,7 @@
-//! demo56 - Agent Plugins 1.0 package discovery and lifecycle.
-//!
-//! All operations are local; no LLM calls are made.
+/*! demo56 - Agent Plugins 1.0 的插件包发现与生命周期管理。
+
+所有操作均在本地完成，不会发起任何 LLM 调用。
+*/
 
 use echo_agent::agent::ReactAgentBuilder;
 use echo_agent::plugin::{
@@ -9,6 +10,7 @@ use echo_agent::plugin::{
 };
 use std::path::{Path, PathBuf};
 
+/// 在给定目录下创建一个最小化的示例插件（包含 skill、hooks 与 manifest），返回其根目录路径。
 fn create_plugin(base: &Path, name: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let root = base.join(name);
     std::fs::create_dir_all(root.join("skills/example"))?;
@@ -39,6 +41,7 @@ fn create_plugin(base: &Path, name: &str) -> Result<PathBuf, Box<dyn std::error:
     Ok(root)
 }
 
+/// 演示插件从创建、校验、安装、协调启用/禁用到卸载与关闭的完整生命周期。
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;

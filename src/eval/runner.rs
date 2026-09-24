@@ -1,4 +1,4 @@
-//! Eval runner — executes eval cases against an agent.
+//! Eval 运行器 —— 针对某个 agent 执行 eval 用例。
 
 use crate::agent::{
     AGENT_CANCELLATION_SETTLE_PERIOD, Agent, AgentInvocationContext, EventEnvelope, EventIdentity,
@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+/// 一个空的事件汇聚器，用于 eval 运行期间丢弃所有事件。
 struct EvalEventSink;
 
 #[async_trait::async_trait]
@@ -24,6 +25,7 @@ impl EventSink for EvalEventSink {
     }
 }
 
+/// 将一次轮次投递结果记录到 eval 结果中。
 fn record_delivery_result(result: &mut EvalResult, receipt: &TurnReceipt) {
     match &receipt.delivery {
         TurnDeliveryOutcome::Delivered => {}
@@ -49,11 +51,14 @@ fn record_delivery_result(result: &mut EvalResult, receipt: &TurnReceipt) {
     }
 }
 
+/// 一次 eval 运行专属的临时工作区。
 struct EvalWorkspaceGeneration {
+    /// 底层临时目录；结算前保持 `Some`。
     directory: Option<tempfile::TempDir>,
 }
 
 impl EvalWorkspaceGeneration {
+    /// 在 `parent` 目录下创建一个新的临时工作区。
     fn create(parent: &Path) -> std::io::Result<Self> {
         std::fs::create_dir_all(parent)?;
         let mut builder = tempfile::Builder::new();
@@ -64,10 +69,12 @@ impl EvalWorkspaceGeneration {
         })
     }
 
+    /// 返回该工作区的路径（若尚未结算）。
     fn path(&self) -> Option<&Path> {
         self.directory.as_ref().map(tempfile::TempDir::path)
     }
 
+    /// 正常结算：删除临时目录。
     fn close(mut self) -> std::io::Result<()> {
         match self.directory.take() {
             Some(directory) => directory.close(),
@@ -75,6 +82,7 @@ impl EvalWorkspaceGeneration {
         }
     }
 
+    /// 放弃自动清理，保留该工作区目录并返回其路径。
     fn retain(mut self) -> Option<PathBuf> {
         self.directory.take().map(tempfile::TempDir::keep)
     }
@@ -91,23 +99,23 @@ impl Drop for EvalWorkspaceGeneration {
     }
 }
 
-/// Runs eval cases against agents.
+/// 针对多个 agent 执行 eval 用例。
 #[derive(Clone)]
 pub struct EvalRunner {
-    /// Parent directory for unique per-run workspace generations.
+    /// 每次运行生成独立工作区所使用的父目录。
     pub workspace_root: PathBuf,
-    /// Maximum time per eval case in seconds.
+    /// 单个 eval 用例的最大耗时（秒）。
     pub timeout_secs: u64,
-    /// Optional LLM grader for assertion-based evaluation.
+    /// 用于基于断言评估的可选 LLM 评审器。
     pub grader: Option<Arc<LlmGrader>>,
-    /// Optional grading agent (shared across cases, used by LlmGraded criteria).
+    /// 可选的评审 agent（在各用例间共享，供 LlmGraded 判定标准使用）。
     pub grading_agent: Option<Arc<dyn crate::agent::Agent>>,
-    /// Optional run store for populating metrics from trace.
+    /// 用于从 trace 中填充指标的可选运行存储。
     pub run_store: Option<Arc<dyn crate::trace::RunStore>>,
 }
 
 impl EvalRunner {
-    /// Create a new runner.
+    /// 创建一个新的运行器。
     pub fn new(workspace_root: PathBuf) -> Self {
         std::fs::create_dir_all(&workspace_root).ok();
         Self {
@@ -119,20 +127,20 @@ impl EvalRunner {
         }
     }
 
-    /// Attach a run store for metrics population from trace.
+    /// 挂载一个运行存储，用于从 trace 中填充指标。
     pub fn with_run_store(mut self, store: Arc<dyn crate::trace::RunStore>) -> Self {
         self.run_store = Some(store);
         self
     }
 
-    /// Attach an LLM grader for assertion-based evaluation.
+    /// 挂载一个用于基于断言评估的 LLM 评审器。
     pub fn with_grader(mut self, grader: LlmGrader, agent: Arc<dyn crate::agent::Agent>) -> Self {
         self.grader = Some(Arc::new(grader));
         self.grading_agent = Some(agent);
         self
     }
 
-    /// Run a single eval case against the given agent.
+    /// 针对给定 agent 执行单个 eval 用例。
     pub async fn run(&self, case: &EvalCase, agent: &dyn Agent) -> EvalResult {
         let started = Instant::now();
         let generation = match EvalWorkspaceGeneration::create(&self.workspace_root) {
@@ -252,8 +260,11 @@ impl EvalRunner {
             }
         }
 
-        // Resolve the producer-owned trace through this invocation's correlation.
-        // EvalResult and all trace-based scoring then consume the same verified Run.
+        /*
+         * 通过本次调用的关联标识，解析出由生产者拥有的 trace。
+         * 之后 EvalResult 及所有基于 trace 的打分都会使用同一份
+         * 经过校验的 Run。
+         */
         let run = if turn_settled && let Some(ref store) = self.run_store {
             match Self::load_correlated_trace(store.as_ref(), &identity_value).await {
                 Ok(run) => {
@@ -289,7 +300,7 @@ impl EvalRunner {
             result.violations.extend(criteria_result.violations);
         }
 
-        // Populate metrics from trace (all branches — errors/timeouts also have diagnostic trace value)
+        // 从 trace 中填充指标（所有分支都需要——错误/超时同样具有诊断 trace 价值）
         if let Some(run) = run.as_ref() {
             let replay = TrajectoryReplay::new(run.clone());
             let violations = self.evaluate_run_constraints(&case.constraints, run);
@@ -333,6 +344,7 @@ impl EvalRunner {
         result
     }
 
+    /// 按关联标识从运行存储中加载唯一匹配的 trace。
     async fn load_correlated_trace(
         store: &dyn crate::trace::RunStore,
         correlation_id: &str,
@@ -372,8 +384,10 @@ impl EvalRunner {
         Ok(Some(run))
     }
 
-    /// Run all cases against agents created by the factory.
-    /// Each case gets a fresh agent.
+    /**
+     * 针对由工厂创建的 agent 运行所有用例。
+     * 每个用例都会得到一个全新的 agent。
+     */
     pub async fn run_all(
         &self,
         cases: &[EvalCase],
@@ -383,8 +397,10 @@ impl EvalRunner {
             .await
     }
 
-    /// Run every case with an Agent created lazily by an asynchronous factory.
-    /// This shares the per-case execution path with [`Self::run_all`].
+    /**
+     * 使用一个异步工厂惰性创建 Agent，运行每一个用例。
+     * 与 [`Self::run_all`] 共用同一套按用例执行的路径。
+     */
     pub async fn run_all_async<F, Fut>(
         &self,
         cases: &[EvalCase],
@@ -403,8 +419,9 @@ impl EvalRunner {
         EvalReport::new(results)
     }
 
-    // ── Private helpers ────────────────────────────────────────────
+    // ── 私有辅助方法 ────────────────────────────────────────────
 
+    /// 若用例指定了项目 fixture，则将其复制到目标工作区。
     fn setup_fixture(
         &self,
         case: &EvalCase,
@@ -422,6 +439,7 @@ impl EvalRunner {
         Ok(())
     }
 
+    /// 将工作区清理失败的情况记录到 eval 结果中。
     fn record_workspace_cleanup(result: &mut EvalResult, cleanup: std::io::Result<()>) {
         if let Err(error) = cleanup {
             result.success = false;
@@ -431,6 +449,7 @@ impl EvalRunner {
         }
     }
 
+    /// 将一次测试命令的运行结果追加为 trace 事件。
     async fn record_test_run(
         &self,
         result: &mut EvalResult,
@@ -441,8 +460,8 @@ impl EvalRunner {
         let (Some(store), Some(run)) = (self.run_store.as_ref(), run) else {
             return;
         };
-        // A command's exit status is authoritative for this test criterion,
-        // not for the number of failing assertions inside its test runner.
+        // 对于该测试判定标准而言，命令的退出状态才是权威依据，
+        // 而不是其测试运行器内部失败断言的数量。
         let mut event = RunEvent::TestRun {
             command: command.to_string(),
             passed,
@@ -457,6 +476,7 @@ impl EvalRunner {
         }
     }
 
+    /// 按判定标准的具体类型，对一次输出/trace 进行成功性判定。
     async fn check_criteria(
         &self,
         criteria: &SuccessCriteria,
@@ -605,7 +625,7 @@ impl EvalRunner {
                 test_patch,
                 test_command,
             } => {
-                // Validate repo_url: only allow https:// scheme
+                // 校验 repo_url：仅允许 https:// 协议
                 if !repo_url.starts_with("https://") {
                     return EvalResult::new("criteria", false).with_metric(
                         "swe_bench",
@@ -614,18 +634,20 @@ impl EvalRunner {
                     );
                 }
 
-                // Validate test_command: reject shell metacharacters that could
-                // lead to command injection when passed to `sh -c`
+                // 校验 test_command：拒绝可能在传给 `sh -c` 时
+                // 导致命令注入的 shell 元字符
                 if let Err(msg) = validate_shell_command(test_command) {
                     return EvalResult::new("criteria", false).with_metric("swe_bench", 0.0, &msg);
                 }
 
-                // SWE-bench eval workflow:
-                // 1. Clone repo (if not already cloned)
-                // 2. Checkout base commit
-                // 3. Agent runs (already done by the time we check criteria)
-                // 4. Apply test patch
-                // 5. Run test command
+                /*
+                 * SWE-bench eval 流程：
+                 * 1. 克隆仓库（若尚未克隆）
+                 * 2. 检出 base commit
+                 * 3. Agent 运行（在执行判定标准检查前已完成）
+                 * 4. 应用测试补丁
+                 * 5. 运行测试命令
+                 */
                 let repo_dir = cwd.join("repo");
                 if !repo_dir.exists() {
                     let clone_result = std::process::Command::new("git")
@@ -731,7 +753,7 @@ impl EvalRunner {
                 let mut checks_total = 0;
                 let mut checks_passed = 0;
 
-                // Check forbidden patterns — none should appear
+                // 检查禁止出现的模式 —— 不应出现任何一个
                 for pattern in forbidden_patterns {
                     checks_total += 1;
                     if output.contains(pattern.as_str()) {
@@ -744,7 +766,7 @@ impl EvalRunner {
                     }
                 }
 
-                // Check required patterns — all must appear
+                // 检查必须出现的模式 —— 必须全部出现
                 for pattern in required_patterns {
                     checks_total += 1;
                     if output.contains(pattern.as_str()) {
@@ -862,8 +884,8 @@ impl EvalRunner {
 
                 for (key, expected_val) in expected {
                     checks_total += 1;
-                    // Try to find the value in the output by looking for
-                    // patterns like "key: value" or "key = value" or just the number
+                    // 尝试在输出中查找该值，匹配类似
+                    // "key: value"、"key = value" 或者直接查找数字的模式
                     let found = extract_number_near_key(output, key);
                     match found {
                         Some(actual) => {
@@ -916,7 +938,7 @@ impl EvalRunner {
         }
     }
 
-    /// Evaluate constraints using a completed run trace.
+    /// 使用一份已完成的运行 trace 评估约束条件。
     pub fn evaluate_run_constraints(
         &self,
         constraints: &EvalConstraints,
@@ -925,7 +947,7 @@ impl EvalRunner {
         let replay = TrajectoryReplay::new(run.clone());
         let mut violations = replay.evaluate_constraints(constraints);
 
-        // Check forbidden paths against written files
+        // 检查被写入的文件中是否包含禁止修改的路径
         if !constraints.forbidden_paths.is_empty() {
             for file in replay.written_files() {
                 for forbidden in &constraints.forbidden_paths {
@@ -936,7 +958,7 @@ impl EvalRunner {
             }
         }
 
-        // Check max files changed
+        // 检查文件改动数量是否超过上限
         if let Some(max) = constraints.max_files_changed {
             let written = replay.written_files();
             if written.len() > max {
@@ -952,10 +974,12 @@ impl EvalRunner {
     }
 }
 
-/// Validate a shell command for dangerous metacharacters.
-///
-/// Rejects commands containing characters that could be used for command injection
-/// or unintended shell expansion when passed to `sh -c`.
+/**
+ * 校验一条 shell 命令中是否含有危险元字符。
+ *
+ * 拒绝那些在传给 `sh -c` 时可能被用于命令注入或
+ * 引发意外 shell 展开的字符。
+ */
 fn validate_shell_command(cmd: &str) -> std::result::Result<(), String> {
     let dangerous_chars = [';', '|', '&', '$', '`', '>', '<'];
     for c in &dangerous_chars {
@@ -969,7 +993,7 @@ fn validate_shell_command(cmd: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Run a test command and distinguish a completed failure from an unproven launch.
+/// 运行一条测试命令，并区分“已完成但失败”与“启动本身未被证实”这两种情况。
 async fn run_command(cmd: &str, cwd: &Path) -> std::io::Result<bool> {
     let output = tokio::process::Command::new("sh")
         .arg("-c")
@@ -979,9 +1003,11 @@ async fn run_command(cmd: &str, cwd: &Path) -> std::io::Result<bool> {
         .await?;
     match output.status.code() {
         Some(0) => Ok(true),
-        // sh reserves these statuses for command lookup/exec failures. A test
-        // process can also return them, so omit the fact rather than asserting
-        // that the configured test runner definitely executed.
+        /*
+         * sh 会为“命令查找/执行失败”保留这些状态码，而一个测试进程
+         * 本身也可能返回这些值，因此这里选择不主张配置的测试运行器
+         * 一定已经执行，而是省略这一事实判断。
+         */
         Some(126 | 127) => Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "test command execution could not be confirmed",
@@ -994,12 +1020,14 @@ async fn run_command(cmd: &str, cwd: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Try to extract a numeric value near a given key in the output text.
-///
-/// Searches for patterns like "key: 0.85", "key = 0.85", "key 0.85"
-/// or just the first number after the key within a small window.
+/**
+ * 尝试在输出文本中提取出现在给定 key 附近的数值。
+ *
+ * 会查找类似 "key: 0.85"、"key = 0.85"、"key 0.85" 这样的模式，
+ * 或者在一个较小的窗口内查找 key 之后出现的第一个数字。
+ */
 fn extract_number_near_key(text: &str, key: &str) -> Option<f64> {
-    // Build a pattern that matches "key" followed by separators and a number
+    // 构建一个匹配 "key" 后跟分隔符与数字的模式
     let escaped_key = regex::escape(key);
     let pattern = format!(r"(?i){escaped_key}\s*[:=：]\s*(-?\d+\.?\d*(?:\s*%|e[+-]?\d+)?)");
     if let Ok(re) = regex::Regex::new(&pattern)
@@ -1012,7 +1040,7 @@ fn extract_number_near_key(text: &str, key: &str) -> Option<f64> {
         return num_str.trim().parse::<f64>().ok();
     }
 
-    // Fallback: find the key and look for a number in the next 50 chars
+    // 兜底方案：找到 key 的位置，在其后 50 个字符内查找数字
     let lower_text = text.to_lowercase();
     let lower_key = key.to_lowercase();
     if let Some(pos) = lower_text.find(&lower_key) {
@@ -1031,7 +1059,7 @@ fn extract_number_near_key(text: &str, key: &str) -> Option<f64> {
     None
 }
 
-/// Simple recursive directory copy.
+/// 简单的递归目录复制。
 fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
     for entry in std::fs::read_dir(src)? {
@@ -1997,8 +2025,10 @@ mod tests {
             },
             constraints: Default::default(),
         };
-        // This test just validates the runner doesn't panic on missing agent
-        // Actual agent-based testing requires a MockAgent
+        /*
+         * 该测试仅验证运行器在缺少 agent 的情况下不会 panic，
+         * 真正基于 agent 的测试需要一个 MockAgent。
+         */
     }
 
     #[tokio::test]

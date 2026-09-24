@@ -43,32 +43,48 @@ use std::sync::Arc;
 // 结构化输出类型
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 结构化研究报告（当前示例未直接使用，保留作为结构化输出的示例类型）。
 #[allow(dead_code)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ResearchReport {
+    /// 研究主题。
     topic: String,
+    /// 研究内容摘要。
     summary: String,
+    /// 关键发现列表。
     key_findings: Vec<String>,
+    /// 引用的信息来源列表。
     sources: Vec<String>,
+    /// 结果的置信度。
     confidence: f64,
+    /// 给出的建议列表。
     recommendations: Vec<String>,
 }
 
+/// 多语言技术选型对比结果，由 Agent 通过 `extract` 生成。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TechComparison {
+    /// 参与对比的各语言信息。
     languages: Vec<LanguageInfo>,
+    /// 综合对比后推荐的语言。
     winner: String,
+    /// 推荐该语言的理由。
     reason: String,
 }
 
+/// 单个编程语言的优劣势与适用场景信息。
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LanguageInfo {
+    /// 语言名称。
     name: String,
+    /// 优势列表。
     pros: Vec<String>,
+    /// 劣势列表。
     cons: Vec<String>,
+    /// 适用场景列表。
     use_cases: Vec<String>,
 }
 
@@ -76,6 +92,8 @@ struct LanguageInfo {
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：依次演示研究历史存储、单 Agent 研究、Workflow 编排研究、
+/// 结构化输出提取与多 Agent 协作研究五个部分。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -122,6 +140,7 @@ async fn main() -> Result<()> {
 // Part 0: 研究历史存储（SQLite 长期记忆）
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 0 演示：将历史研究记录写入 SqliteStore，并验证全文检索与单条记录读取。
 async fn demo_research_memory(db_path: &Path) -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 0: 研究历史存储（SQLite 长期记忆）");
@@ -228,6 +247,7 @@ async fn demo_research_memory(db_path: &Path) -> Result<()> {
 // Part 1: 单 Agent 简单研究任务
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 1 演示：单个 Agent 使用 web_search 与 web_fetch 工具完成一次简单研究任务。
 async fn demo_simple_research() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 1: 单 Agent 简单研究任务");
@@ -311,6 +331,7 @@ async fn demo_simple_research() -> Result<()> {
 // Part 2: Workflow 编排研究流程
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 2 演示：使用 `GraphBuilder` 构建一个并行搜索后汇总分析的研究工作流并执行。
 async fn demo_workflow_research() -> Result<()> {
     println!("\n═══════════════════════════════════════════════════════");
     println!("Part 2: Workflow 编排研究流程");
@@ -381,6 +402,7 @@ async fn demo_workflow_research() -> Result<()> {
 // Part 3: 结构化输出提取
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 3 演示：让 Agent 使用 `extract` 从自由文本提问中提取结构化的 `TechComparison` 对比结果。
 async fn demo_structured_extraction() -> Result<()> {
     println!("\n═══════════════════════════════════════════════════════");
     println!("Part 3: 结构化输出提取");
@@ -425,6 +447,7 @@ async fn demo_structured_extraction() -> Result<()> {
 // Part 4: 多 Agent 协作研究
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 4 演示：主编排 Agent 调度网络搜索子 Agent 与文件处理子 Agent 协作完成一次复杂研究任务。
 async fn demo_multi_agent_research() -> Result<()> {
     println!("\n═══════════════════════════════════════════════════════");
     println!("Part 4: 多 Agent 协作研究");
@@ -501,6 +524,7 @@ async fn demo_multi_agent_research() -> Result<()> {
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Echo Agent 智能研究报告助手 - 综合示例          ║");
@@ -511,16 +535,19 @@ fn print_banner() {
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 }
 
+/// 根据给定类型 `T` 的 JSON Schema 构建一个命名的 `ResponseFormat`，用于结构化输出约束。
 fn typed_response_format<T: JsonSchema>(name: &str) -> Result<ResponseFormat> {
     let schema = schema_for!(T);
     let schema_value = serde_json::to_value(schema)?;
     Ok(ResponseFormat::json_schema(name, schema_value))
 }
 
+/// 生成本次演示使用的临时 SQLite 数据库文件路径（按进程 ID 区分）。
 fn research_db_path() -> PathBuf {
     std::env::temp_dir().join(format!("echo_agent_research_{}.db", std::process::id()))
 }
 
+/// 删除 SQLite 主数据库文件及其 WAL / SHM 辅助文件。
 fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));

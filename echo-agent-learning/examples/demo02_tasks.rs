@@ -1,21 +1,25 @@
 use echo_agent::prelude::*;
 use echo_agent::tool;
 
+/// 计算两数之和的工具。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 计算两数之差的工具。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 计算两数之积的工具。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 计算两数之商的工具；除数为零时返回错误结果。
 #[tool(name = "divide", description = "两数相除")]
 async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     if b == 0.0 {
@@ -24,6 +28,7 @@ async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} / {} = {}", a, b, a / b)))
 }
 
+/// 演示任务规划能力：构建具备任务图管理与并行工具调用能力的 agent，并执行一次多步计算任务。
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()

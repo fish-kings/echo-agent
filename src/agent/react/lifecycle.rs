@@ -4,10 +4,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
 
+/// Agent 关闭流程的内部状态。
 struct CloseState {
+    /// 是否仍接受新的 turn。
     accepting: bool,
+    /// 下一个待分配的 turn id。
     next_turn_id: u64,
+    /// 当前处于活跃状态的 turn 及其取消令牌。
     turns: HashMap<u64, CancellationToken>,
+    /// 未按规范完成终结（settlement）的 turn 数量。
     unsettled_turns: usize,
 }
 
@@ -22,13 +27,17 @@ impl Default for CloseState {
     }
 }
 
-/// Admission and cancellation owner for turns accepted by one ReactAgent.
-///
-/// Turn outcomes remain owned by the existing execution path. This authority
-/// only fences new work, requests cancellation, and lets `Agent::close` wait
-/// until every accepted turn releases its lease.
+/**
+单个 ReactAgent 所接受 turn 的准入与取消权威（authority）。
+
+turn 的执行结果仍由既有的执行路径持有。该权威只负责：
+限制新工作的接入、发起取消请求，并让 `Agent::close`
+等待到每个已接受的 turn 都释放其租约（lease）为止。
+*/
 pub(crate) struct ReactAgentCloseAuthority {
+    /// 关闭流程的内部可变状态。
     state: Mutex<CloseState>,
+    /// 用于在所有 turn 都空闲（idle）时通知等待者的信号。
     idle: Notify,
 }
 
@@ -42,12 +51,14 @@ impl Default for ReactAgentCloseAuthority {
 }
 
 impl ReactAgentCloseAuthority {
+    /// 获取内部状态的锁；即使锁被污染（poisoned）也能恢复取到内部数据。
     fn lock_state(&self) -> MutexGuard<'_, CloseState> {
         self.state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// 准入一个新的 turn，返回其租约与取消令牌；若 Agent 已关闭则报错。
     pub(crate) fn admit(
         self: &Arc<Self>,
         cancel: Option<CancellationToken>,
@@ -63,8 +74,8 @@ impl ReactAgentCloseAuthority {
         })?;
         let turn_id = state.next_turn_id;
         state.next_turn_id = next_turn_id;
-        // Never cancel the caller's scope when closing one Agent. A child
-        // still observes caller cancellation, while Agent close remains local.
+        // 关闭单个 Agent 时绝不能取消调用方的作用域。子令牌仍会
+        // 观察到调用方的取消，而 Agent 的关闭则保持在局部范围内。
         let cancel = cancel
             .map(|parent| parent.child_token())
             .unwrap_or_default();
@@ -80,6 +91,7 @@ impl ReactAgentCloseAuthority {
         ))
     }
 
+    /// 开始关闭流程：停止接受新 turn，并取消所有仍处于活跃状态的 turn。
     pub(crate) fn begin_close(&self) {
         let turns = {
             let mut state = self.lock_state();
@@ -91,6 +103,7 @@ impl ReactAgentCloseAuthority {
         }
     }
 
+    /// 等待所有 turn 都归于空闲；若存在未规范终结的 turn 则返回错误。
     pub(crate) async fn wait_until_idle(&self) -> Result<()> {
         loop {
             let notified = self.idle.notified();
@@ -111,25 +124,31 @@ impl ReactAgentCloseAuthority {
     }
 }
 
+/// 一个已被准入 turn 所持有的关闭租约（close lease）。
 #[must_use]
 pub(crate) struct ReactAgentTurnLease {
+    /// 所属的关闭权威。
     authority: Arc<ReactAgentCloseAuthority>,
+    /// 该租约对应的 turn id。
     turn_id: u64,
+    /// 该租约当前是否仍处于活跃状态。
     active: bool,
+    /// 该 turn 是否已经开始规范化执行（决定 drop 时是否记为欠账）。
     started: bool,
 }
 
 impl ReactAgentTurnLease {
-    /// Mark that the canonical turn authority now owes a terminal settlement.
+    /// 标记规范 turn 权威现在欠一次终态终结（terminal settlement）。
     pub(crate) fn mark_started(&mut self) {
         self.started = true;
     }
 
-    /// Release the close lease only after canonical terminal settlement.
+    /// 仅在完成规范的终态终结之后，才释放该关闭租约。
     pub(crate) fn settle(mut self) {
         self.release(false);
     }
 
+    /// 释放该租约；`record_debt` 为 true 时会记为一次未规范终结的欠账。
     fn release(&mut self, record_debt: bool) {
         if !self.active {
             return;

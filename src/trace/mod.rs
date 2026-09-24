@@ -1,18 +1,19 @@
-//! Execution trace infrastructure — observability, replay, resumption.
-//!
-//! Unlike [`AgentEvent`](crate::agent::AgentEvent) which is UI-focused and streamed in real time,
-//! [`Run`] is a complete record of a single agent execution suitable for storage, analytics,
-//! and replay. Use [`RunStore`] to persist and query runs.
-//!
-//! # Quick Start
-//!
-//! ```rust,no_run
-//! use echo_agent::trace::{InMemoryRunStore, RunStore};
-//! use std::sync::Arc;
-//!
-//! let store = Arc::new(InMemoryRunStore::new());
-//! // Attach via ReactAgentBuilder::with_run_store(store)
-//! ```
+/*! 执行追踪基础设施 —— 可观测性、回放、恢复。
+
+与面向 UI、实时流式传输的 [`AgentEvent`](crate::agent::AgentEvent) 不同，
+[`Run`] 是一次完整 Agent 执行的完整记录，适合存储、分析和回放。
+使用 [`RunStore`] 来持久化并查询这些执行记录。
+
+# 快速开始
+
+```rust,no_run
+use echo_agent::trace::{InMemoryRunStore, RunStore};
+use std::sync::Arc;
+
+let store = Arc::new(InMemoryRunStore::new());
+// 通过 ReactAgentBuilder::with_run_store(store) 接入
+```
+*/
 
 pub mod analyzer;
 
@@ -26,7 +27,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub use crate::error::Result;
 
-// Re-export analyzer types for convenience
+// 重新导出 analyzer 中的类型以方便使用
 pub use analyzer::{
     ErrorPattern, SessionSummary, TokenBreakdown, ToolFailureClass, ToolFailurePattern,
     ToolReliabilityReport, ToolUsageStats, TraceAnalyzer,
@@ -34,71 +35,71 @@ pub use analyzer::{
 
 // ── Run ──────────────────────────────────────────────────────────────
 
-/// A complete execution record for a single agent invocation.
+/// 单次 Agent 调用的完整执行记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Run {
-    /// Unique run identifier.
+    /// 唯一的执行记录标识符。
     pub run_id: String,
 
-    /// Parent run ID for subagent invocations.
+    /// 子 Agent 调用对应的父级 run ID。
     #[serde(default)]
     pub parent_run_id: Option<String>,
 
-    /// Agent invocation identity.
+    /// Agent 调用身份标识。
     #[serde(default)]
     pub agent_name: String,
 
-    /// Model used by this invocation.
+    /// 此次调用所使用的模型。
     #[serde(default)]
     pub model: String,
 
-    /// Provider used by this invocation, when known.
+    /// 此次调用所使用的提供方（若已知）。
     #[serde(default)]
     pub provider: Option<String>,
 
-    /// Product turn correlated with this trace invocation.
+    /// 与此追踪调用相关联的产品侧回合（turn）。
     #[serde(default)]
     pub turn_id: Option<String>,
 
-    /// Concrete subagent/tool execution correlated with this trace invocation.
+    /// 与此追踪调用相关联的具体子 Agent/工具执行。
     #[serde(default)]
     pub execution_id: Option<String>,
 
-    /// Session this run belongs to.
+    /// 此执行记录所属的会话。
     pub session_id: String,
 
-    /// Execution status.
+    /// 执行状态。
     pub status: RunStatus,
 
-    /// User input that triggered this run.
+    /// 触发此次执行的用户输入。
     pub input: String,
 
-    /// Chronological execution events.
+    /// 按时间顺序排列的执行事件。
     pub events: Vec<RunEvent>,
 
-    /// Final output text (set when status is Completed).
+    /// 最终输出文本（状态为 Completed 时设置）。
     pub final_output: Option<String>,
 
-    /// Error message (set when status is Failed).
+    /// 错误信息（状态为 Failed 时设置）。
     pub error: Option<String>,
 
-    /// Token usage breakdown.
+    /// Token 用量明细。
     pub token_usage: TokenUsage,
 
-    /// Timing breakdown.
+    /// 耗时明细。
     pub timings: RunTimings,
 
-    /// When the run started.
+    /// 执行开始时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub started_at: DateTime<Utc>,
 
-    /// When the run finished (set on completion, failure, or cancellation).
+    /// 执行结束时间（完成、失败或取消时设置）。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub finished_at: Option<DateTime<Utc>>,
 }
 
 impl Run {
-    /// Append an event and update the run-level aggregates derived from it.
+    /// 追加一个事件，并同步更新由此事件派生出的执行级聚合统计信息。
     pub fn push_event(&mut self, event: RunEvent) {
         if let RunEvent::LlmCall {
             prompt_tokens,
@@ -123,6 +124,7 @@ impl Run {
         self.events.push(event);
     }
 
+    /// 生成本次执行记录的精简摘要视图，供列表展示使用。
     fn summary(&self) -> RunSummary {
         RunSummary {
             run_id: self.run_id.clone(),
@@ -145,34 +147,41 @@ impl Run {
 
 // ── RunStatus ────────────────────────────────────────────────────────
 
-/// Execution status of a run.
+/// 一次执行记录的运行状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
-    /// Run created but not yet started.
+    /// 已创建但尚未开始执行。
     Pending,
-    /// Run is currently executing.
+    /// 正在执行中。
     Running,
-    /// Run completed successfully.
+    /// 已成功完成。
     Completed,
-    /// Run failed with an error.
+    /// 执行出错并失败。
     Failed,
-    /// Run was cancelled.
+    /// 已被取消。
     Cancelled,
 }
 
-/// Local estimated context distribution for one LLM request.
+/// 单次 LLM 请求本地估算得到的上下文构成分布。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LlmContextBreakdown {
+    /// System 消息估算 token 数。
     pub system_tokens: usize,
+    /// User 消息估算 token 数。
     pub user_tokens: usize,
+    /// Assistant 消息估算 token 数。
     pub assistant_tokens: usize,
+    /// Tool 消息估算 token 数。
     pub tool_tokens: usize,
+    /// 历史摘要部分估算 token 数。
     pub summary_tokens: usize,
+    /// 记忆（memory）上下文部分估算 token 数。
     pub memory_tokens: usize,
 }
 
 impl LlmContextBreakdown {
+    /// 根据消息列表与分词器，本地估算各角色/来源的上下文 token 构成。
     pub fn estimate(
         messages: &[echo_core::llm::types::Message],
         tokenizer: &dyn echo_core::tokenizer::Tokenizer,
@@ -212,6 +221,7 @@ impl LlmContextBreakdown {
         breakdown
     }
 
+    /// 各部分 token 数之和。
     pub fn total_tokens(&self) -> usize {
         self.system_tokens
             .saturating_add(self.user_tokens)
@@ -224,220 +234,228 @@ impl LlmContextBreakdown {
 
 // ── RunEvent ─────────────────────────────────────────────────────────
 
-/// A discrete event within a run's execution timeline.
+/// 执行时间线上的一个离散事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RunEvent {
-    /// A run budget changed the set of allowed next actions.
+    /// 运行预算变更了下一步允许执行的动作集合。
     BudgetDecision {
-        /// Decision name: `wind_down`, `final_only`, or `hard_stop`.
+        /// 决策名称：`wind_down`（收尾）、`final_only`（仅允许最终答复）或 `hard_stop`（强制停止）。
         decision: String,
-        /// Stable machine-readable reason.
+        /// 稳定的、可供机器解析的原因标识。
         reason: String,
-        /// Current one-based iteration.
+        /// 当前迭代轮次（从 1 开始计数）。
         iteration: usize,
-        /// Provider-reported input + output tokens accumulated so far.
+        /// 提供方上报的、目前为止累计的输入 + 输出 token 数。
         reported_model_tokens: usize,
-        /// False when any response omitted usage metadata.
+        /// 当任意一次响应缺失用量元数据时为 false。
         usage_complete: bool,
     },
-    /// An LLM call was made.
+    /// 发起了一次 LLM 调用。
     LlmCall {
-        /// Number of messages in the request.
+        /// 本次请求中的消息数量。
         messages: usize,
-        /// Prompt tokens consumed.
+        /// 消耗的提示词（prompt）token 数。
         prompt_tokens: u32,
-        /// Completion tokens received.
+        /// 收到的补全（completion）token 数。
         completion_tokens: u32,
-        /// Prompt tokens served from provider cache.
+        /// 由提供方缓存命中的提示词 token 数。
         #[serde(default)]
         cached_prompt_tokens: u32,
-        /// Prompt tokens written into provider cache.
+        /// 写入提供方缓存的提示词 token 数。
         #[serde(default)]
         cache_creation_prompt_tokens: u32,
-        /// Whether the provider returned usage metadata for this call.
+        /// 提供方本次调用是否返回了用量元数据。
         #[serde(default)]
         usage_reported: bool,
-        /// Local estimate of message-context tokens before the request.
+        /// 请求发出前，本地估算的消息上下文 token 数。
         #[serde(default)]
         estimated_context_tokens: usize,
-        /// Estimated tokens pinned against context compression.
+        /// 被固定保护、不参与上下文压缩的估算 token 数。
         #[serde(default)]
         protected_context_tokens: usize,
-        /// Messages pinned against context compression.
+        /// 被固定保护、不参与上下文压缩的消息数量。
         #[serde(default)]
         protected_message_count: usize,
-        /// Configured context/compression limit for this invocation.
+        /// 本次调用配置的上下文/压缩阈值。
         #[serde(default)]
         context_limit_tokens: usize,
-        /// Local estimate grouped by context role/source.
+        /// 按上下文角色/来源分组的本地估算值。
         #[serde(default)]
         context_breakdown: LlmContextBreakdown,
-        /// Canonical cache-relevant request fingerprints.
+        /// 与缓存相关的规范化请求指纹。
         #[serde(default)]
         cache_fingerprint: echo_core::llm::cache::PromptCacheFingerprint,
-        /// Elapsed milliseconds for this LLM call.
+        /// 本次 LLM 调用耗时（毫秒）。
         duration_ms: u64,
     },
-    /// Context compression completed at a meaningful run boundary.
+    /// 在一个有意义的执行边界上完成了上下文压缩。
     ContextCompression {
+        /// 触发压缩的来源标识（如 "manual"、"auto"）。
         source: String,
+        /// 压缩前的消息数量。
         before_messages: usize,
+        /// 压缩后的消息数量。
         after_messages: usize,
+        /// 压缩前的估算 token 数。
         before_tokens: usize,
+        /// 压缩后的估算 token 数。
         after_tokens: usize,
+        /// 被固定保护、不参与压缩的估算 token 数。
         #[serde(default)]
         protected_context_tokens: usize,
+        /// 被固定保护、不参与压缩的消息数量。
         #[serde(default)]
         protected_message_count: usize,
     },
-    /// A tool was called.
+    /// 发起了一次工具调用。
     ToolCall {
-        /// Unique call ID (matches ToolResult/ToolError).
+        /// 唯一调用 ID（与 ToolResult/ToolError 对应）。
         call_id: String,
-        /// Tool name.
+        /// 工具名称。
         name: String,
-        /// Tool arguments (may be redacted for secrets).
+        /// 工具参数（涉及敏感信息时可能已被脱敏）。
         #[serde(default)]
         args: Option<serde_json::Value>,
-        /// Risk category at call time.
+        /// 调用发起时的风险分类。
         #[serde(default)]
         risk: Option<String>,
-        /// Duration of the tool execution in milliseconds.
+        /// 工具执行耗时（毫秒）。
         duration_ms: u64,
     },
-    /// A requested tool invocation was settled without entering execution.
+    /// 一次已请求的工具调用在未进入执行前就被结算。
     ToolExecutionSkipped {
-        /// Call ID matching the requested ToolCall.
+        /// 与被请求的 ToolCall 对应的调用 ID。
         call_id: String,
-        /// Requested tool name.
+        /// 被请求的工具名称。
         name: String,
-        /// Runtime reason for closing the unstarted invocation.
+        /// 未启动调用被关闭时的运行时原因。
         reason: String,
     },
-    /// A tool returned a result.
+    /// 工具返回了一个结果。
     ToolResult {
-        /// Call ID matching the ToolCall.
+        /// 与 ToolCall 对应的调用 ID。
         call_id: String,
-        /// Tool name.
+        /// 工具名称。
         name: String,
-        /// Whether the tool succeeded.
+        /// 工具是否执行成功。
         success: bool,
-        /// First 200 chars of output (for preview; full output may be large).
+        /// 输出内容的前 200 个字符（用于预览；完整输出可能很大）。
         #[serde(default)]
         output_preview: Option<String>,
-        /// Whether the output was truncated.
+        /// 输出是否被截断。
         output_truncated: bool,
-        /// Duration of the tool execution in milliseconds.
+        /// 工具执行耗时（毫秒）。
         #[serde(default)]
         duration_ms: u64,
-        /// Original tool output size before spill/truncation.
+        /// 溢出/截断前的原始工具输出大小。
         #[serde(default)]
         original_bytes: u64,
-        /// Output size actually returned to the model.
+        /// 实际返回给模型的输出大小。
         #[serde(default)]
         returned_bytes: u64,
-        /// Estimated tokens in the original output.
+        /// 原始输出估算的 token 数。
         #[serde(default)]
         estimated_tokens: usize,
-        /// Stable handling label: inline, truncated, spilled, or fallback.
+        /// 稳定的处理方式标签：inline（内联）、truncated（截断）、spilled（溢出落盘）或 fallback（回退）。
         #[serde(default)]
         output_handling: Option<String>,
-        /// Complete tool-output artifact descriptor when handling is `spilled`.
+        /// 当处理方式为 `spilled` 时的完整工具输出产物（artifact）描述。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         artifact: Option<echo_core::tools::artifact::ToolOutputArtifactRef>,
     },
-    /// A tool returned an error.
+    /// 工具返回了一个错误。
     ToolError {
-        /// Call ID matching the ToolCall.
+        /// 与 ToolCall 对应的调用 ID。
         call_id: String,
-        /// Tool name.
+        /// 工具名称。
         name: String,
-        /// Error message.
+        /// 错误信息。
         message: String,
-        /// Structured failure facts. `None` is accepted for legacy trace fixtures.
+        /// 结构化的失败信息。旧版追踪测试数据允许为 `None`。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure: Option<crate::tools::ToolFailure>,
     },
-    /// An error occurred at the run level.
+    /// 在执行记录层面发生的错误。
     Error {
-        /// Error message.
+        /// 错误信息。
         message: String,
     },
-    /// A checkpoint was saved.
+    /// 保存了一个检查点。
     Checkpoint {
-        /// Checkpoint identifier.
+        /// 检查点标识符。
         id: String,
     },
-    /// A persisted runtime checkpoint was restored before execution continued.
+    /// 在执行继续前，从持久化存储中恢复了一个运行时检查点。
     CheckpointResumed {
-        /// Conversation owning the checkpoint.
+        /// 该检查点所属的会话。
         conversation_id: String,
-        /// Completed tool calls restored from paired message history.
+        /// 从配对的消息历史中恢复出的已完成工具调用。
         completed_tool_call_ids: Vec<String>,
-        /// Checkpoint capture time.
+        /// 检查点的捕获时间。
         checkpoint_timestamp: DateTime<Utc>,
     },
-    /// Observation of transcript projection settlement; runtime state remains authoritative.
+    /// 对文字记录（transcript）投影结算的观测；运行时状态仍是权威来源。
     TranscriptProjectionSettlement {
+        /// 结算详情。
         settlement: crate::memory::TranscriptProjectionSettlement,
     },
-    /// A tool permission decision was made.
+    /// 做出了一次工具权限决策。
     PermissionDecision {
-        /// Tool name.
+        /// 工具名称。
         tool: String,
-        /// Decision: "allow", "deny", "ask".
+        /// 决策结果："allow"、"deny" 或 "ask"。
         decision: String,
-        /// Reason for the decision.
+        /// 做出该决策的原因。
         reason: String,
     },
-    /// A file was successfully read by a tool that resolved the actual path.
+    /// 某个解析出实际路径的工具成功读取了一个文件。
     FileRead {
-        /// Tool that performed the read.
+        /// 执行读取的工具。
         tool: String,
-        /// Resolved path that was read.
+        /// 被读取的已解析路径。
         path: String,
     },
-    /// A file was edited by a write tool.
+    /// 某个写入类工具编辑了一个文件。
     FileEdit {
-        /// Tool that made the edit.
+        /// 执行编辑的工具。
         tool: String,
-        /// Path that was edited.
+        /// 被编辑的路径。
         path: String,
     },
-    /// A test command was run.
+    /// 运行了一次测试命令。
     TestRun {
-        /// The test command.
+        /// 测试命令本身。
         command: String,
-        /// Whether the explicitly requested test command completed successfully.
+        /// 显式请求的测试命令是否执行成功。
         passed: bool,
-        /// Exact number of failing tests, if supplied by a structured report.
+        /// 若结构化报告提供，则为失败测试的精确数量。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         failure_count: Option<usize>,
     },
-    /// Agent turn phase transition.
+    /// Agent 回合阶段迁移。
     PhaseTransition {
-        /// Phase name (e.g., "receive_input", "think", "act").
+        /// 阶段名称（例如 "receive_input"、"think"、"act"）。
         phase: String,
-        /// Iteration count at transition.
+        /// 迁移发生时的迭代计数。
         iteration: usize,
     },
-    /// A subagent was dispatched.
+    /// 分派了一个子 Agent。
     SubagentRun {
-        /// Tool call that admitted this dispatch, when invoked through a tool.
+        /// 若通过工具调用触发此次分派，则为对应的工具调用 ID。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         call_id: Option<String>,
-        /// Sub-agent name.
+        /// 子 Agent 名称。
         agent_name: String,
-        /// Task given to the subagent.
+        /// 交给子 Agent 的任务。
         task: String,
-        /// Outcome: "completed", "failed", "cancelled".
+        /// 结果："completed"、"failed" 或 "cancelled"。
         outcome: String,
     },
 }
 
 impl RunEvent {
-    /// Create a [`RunEvent::ToolCall`] with secret redaction applied to args.
+    /// 创建一个 [`RunEvent::ToolCall`]，并对 args 中的敏感信息应用脱敏处理。
     pub fn new_tool_call(
         call_id: String,
         name: String,
@@ -456,6 +474,7 @@ impl RunEvent {
         event
     }
 
+    /// 依据保留策略，对该事件中可能包含敏感信息的字段就地脱敏。
     pub fn apply_retention(&mut self, retention: &ContentRetentionPolicy) {
         match self {
             Self::BudgetDecision { reason, .. } => {
@@ -505,6 +524,7 @@ impl RunEvent {
     }
 }
 
+/// 收集事件列表中所有被跳过（未实际执行）的工具调用 ID。
 pub(crate) fn skipped_tool_call_ids(events: &[RunEvent]) -> std::collections::HashSet<&str> {
     events
         .iter()
@@ -515,6 +535,7 @@ pub(crate) fn skipped_tool_call_ids(events: &[RunEvent]) -> std::collections::Ha
         .collect()
 }
 
+/// 对整个执行记录（输入、输出、错误信息及所有事件）应用内容保留/脱敏策略。
 pub(crate) fn apply_run_retention(run: &mut Run, retention: &ContentRetentionPolicy) {
     run.input = retention.sanitize_text(&run.input);
     if let Some(output) = run.final_output.as_mut() {
@@ -530,31 +551,31 @@ pub(crate) fn apply_run_retention(run: &mut Run, retention: &ContentRetentionPol
 
 // ── TokenUsage ───────────────────────────────────────────────────────
 
-/// Token usage breakdown for a run.
+/// 一次执行记录的 token 用量明细。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct TokenUsage {
-    /// Total prompt tokens.
+    /// 累计提示词 token 数。
     pub prompt_tokens: u32,
-    /// Total completion tokens.
+    /// 累计补全 token 数。
     pub completion_tokens: u32,
-    /// Total tokens (prompt + completion).
+    /// 总 token 数（提示词 + 补全）。
     pub total_tokens: u32,
-    /// Prompt tokens served from provider cache.
+    /// 由提供方缓存命中的提示词 token 数。
     #[serde(default)]
     pub cached_prompt_tokens: u32,
-    /// Prompt tokens written into provider cache.
+    /// 写入提供方缓存的提示词 token 数。
     #[serde(default)]
     pub cache_creation_prompt_tokens: u32,
-    /// LLM calls whose provider returned usage metadata.
+    /// 提供方返回了用量元数据的 LLM 调用次数。
     #[serde(default)]
     pub usage_reported_calls: u32,
-    /// LLM calls whose provider omitted usage metadata.
+    /// 提供方未返回用量元数据的 LLM 调用次数。
     #[serde(default)]
     pub usage_missing_calls: u32,
 }
 
 impl TokenUsage {
-    /// Accumulate additional usage into this counter.
+    /// 将新增用量累加到该计数器上。
     pub fn add(&mut self, prompt: u32, completion: u32) {
         self.prompt_tokens = self.prompt_tokens.saturating_add(prompt);
         self.completion_tokens = self.completion_tokens.saturating_add(completion);
@@ -563,7 +584,7 @@ impl TokenUsage {
             .saturating_add(prompt.saturating_add(completion));
     }
 
-    /// Accumulate one provider usage report with cache diagnostics.
+    /// 累加一次带缓存诊断信息的提供方用量报告。
     pub fn add_llm_call(
         &mut self,
         prompt: u32,
@@ -584,7 +605,7 @@ impl TokenUsage {
         }
     }
 
-    /// Provider-reported prompt cache read rate.
+    /// 提供方上报的提示词缓存命中率。
     pub fn cache_hit_rate(&self) -> Option<f64> {
         if self.prompt_tokens == 0 || self.usage_reported_calls == 0 {
             None
@@ -596,68 +617,82 @@ impl TokenUsage {
 
 // ── RunTimings ───────────────────────────────────────────────────────
 
-/// Timing breakdown for a run.
+/// 一次执行记录的耗时明细。
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct RunTimings {
-    /// Total duration in milliseconds.
+    /// 总耗时（毫秒）。
     pub total_duration_ms: u64,
-    /// Cumulative LLM call duration in milliseconds.
+    /// LLM 调用累计耗时（毫秒）。
     pub llm_duration_ms: u64,
-    /// Cumulative tool execution duration in milliseconds.
+    /// 工具执行累计耗时（毫秒）。
     pub tool_duration_ms: u64,
 }
 
 // ── RunSummary ───────────────────────────────────────────────────────
 
-/// Lightweight summary used when listing runs.
+/// 用于列出执行记录时展示的轻量摘要。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunSummary {
+    /// 唯一的执行记录标识符。
     pub run_id: String,
+    /// 子 Agent 调用对应的父级 run ID。
     #[serde(default)]
     pub parent_run_id: Option<String>,
+    /// 所属会话。
     pub session_id: String,
+    /// Agent 调用身份标识。
     #[serde(default)]
     pub agent_name: String,
+    /// 此次调用所使用的模型。
     #[serde(default)]
     pub model: String,
+    /// 此次调用所使用的提供方（若已知）。
     #[serde(default)]
     pub provider: Option<String>,
+    /// 与此追踪调用相关联的产品侧回合（turn）。
     #[serde(default)]
     pub turn_id: Option<String>,
+    /// 与此追踪调用相关联的具体子 Agent/工具执行。
     #[serde(default)]
     pub execution_id: Option<String>,
+    /// 执行状态。
     pub status: RunStatus,
+    /// 用户输入的预览片段（前 80 个字符）。
     pub input_preview: String,
+    /// 执行开始时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub started_at: DateTime<Utc>,
+    /// 执行结束时间。
     #[serde(with = "crate::utils::time::option_local_rfc3339")]
     pub finished_at: Option<DateTime<Utc>>,
+    /// Token 用量明细。
     pub token_usage: TokenUsage,
+    /// 总耗时（毫秒）。
     pub total_duration_ms: u64,
 }
 
 // ── RunStore trait ───────────────────────────────────────────────────
 
-/// Persistence backend for execution traces.
-///
-/// Built-in implementations:
-/// - [`InMemoryRunStore`] — in-memory (testing, short-lived sessions)
-/// - [`JsonlRunStore`] — file-based JSONL persistence (production)
+/** 执行追踪记录的持久化后端。
+
+内置实现：
+- [`InMemoryRunStore`] —— 内存存储（用于测试、短生命周期会话）
+- [`JsonlRunStore`] —— 基于文件的 JSONL 持久化存储（用于生产环境） */
 #[async_trait::async_trait]
 pub trait RunStore: Send + Sync {
-    /// Persist a completed run.
+    /// 持久化一条完整的执行记录。
     async fn save(&self, run: Run) -> Result<()>;
 
-    /// Load a run by ID.
+    /// 根据 ID 加载一条执行记录。
     async fn load(&self, run_id: &str) -> Result<Option<Run>>;
 
-    /// List runs for a session, newest first.
+    /// 列出某个会话下的所有执行记录，按最新优先排序。
     async fn list_by_session(&self, session_id: &str) -> Result<Vec<RunSummary>>;
 
-    /// List all runs, newest first (limited to `limit` entries).
+    /// 列出所有执行记录，按最新优先排序（最多返回 `limit` 条）。
     async fn list_all(&self, limit: usize) -> Result<Vec<RunSummary>>;
 
-    /// List trace invocations correlated with one product/business run.
+    /// 列出与某个产品/业务侧 run 相关联的所有追踪调用。
     async fn list_by_parent_run(&self, parent_run_id: &str) -> Result<Vec<RunSummary>> {
         Ok(self
             .list_all(usize::MAX)
@@ -667,13 +702,12 @@ pub trait RunStore: Send + Sync {
             .collect())
     }
 
-    /// Append a single event to an existing run (without rewriting the entire run).
-    ///
-    /// The default implementation loads, modifies, and saves. Implementations
-    /// that support efficient append (e.g. JSONL) should override this. The
-    /// compatibility path applies the default content-retention policy before
-    /// calling a custom backend; backends with a stricter policy must still
-    /// sanitize their own `save` implementation.
+    /** 向已存在的执行记录追加单个事件（不需要重写整条记录）。
+
+    默认实现走的是加载—修改—保存的流程。支持高效追加的实现
+    （例如 JSONL）应当重写此方法。兼容性路径会在调用自定义后端之前
+    应用默认的内容保留策略；采用更严格策略的后端仍需在自己的
+    `save` 实现中做好脱敏处理。 */
     async fn append_event(&self, run_id: &str, event: RunEvent) -> Result<()> {
         let mut run = self
             .load(run_id)
@@ -685,12 +719,11 @@ pub trait RunStore: Send + Sync {
         self.save(run).await
     }
 
-    /// Atomically finalize one run relative to [`Self::append_event`].
-    ///
-    /// The compatibility default performs load/update/save. Backends that can
-    /// receive concurrent event appends must override this method under the
-    /// same mutation authority as `append_event`; both built-in stores do so.
-    /// Returns `false` when the run does not exist.
+    /** 相对于 [`Self::append_event`] 原子性地结算（finalize）一条执行记录。
+
+    兼容性默认实现执行加载/更新/保存流程。可能并发收到事件追加的后端
+    必须在与 `append_event` 相同的修改权限下重写此方法；两个内置存储
+    均已如此实现。若执行记录不存在则返回 `false`。 */
     async fn finalize_run(
         &self,
         run_id: &str,
@@ -716,17 +749,18 @@ pub trait RunStore: Send + Sync {
 
 // ── InMemoryRunStore ─────────────────────────────────────────────────
 
-/// In-memory [`RunStore`] implementation backed by a `HashMap`.
-///
-/// Suitable for testing and short-lived sessions. Runs are not persisted
-/// across restarts.
+/** 基于 `HashMap` 实现的内存版 [`RunStore`]。
+
+适用于测试和短生命周期会话。执行记录不会跨进程重启持久化。 */
 pub struct InMemoryRunStore {
+    /// 内存中保存的所有执行记录，按 run_id 索引。
     runs: RwLock<HashMap<String, Run>>,
+    /// 应用于所有记录的内容保留/脱敏策略。
     retention: echo_core::utils::retention::ContentRetentionPolicy,
 }
 
 impl InMemoryRunStore {
-    /// Create a new empty store.
+    /// 创建一个新的空存储。
     pub fn new() -> Self {
         Self {
             runs: RwLock::new(HashMap::new()),
@@ -734,6 +768,7 @@ impl InMemoryRunStore {
         }
     }
 
+    /// 指定该存储所使用的内容保留策略。
     pub fn with_retention_policy(
         mut self,
         retention: echo_core::utils::retention::ContentRetentionPolicy,
@@ -742,18 +777,19 @@ impl InMemoryRunStore {
         self
     }
 
-    /// Return the number of stored runs.
+    /// 返回已存储的执行记录数量。
     pub async fn len(&self) -> usize {
         self.runs.read().await.len()
     }
 
-    /// Check if the store is empty.
+    /// 判断存储是否为空。
     pub async fn is_empty(&self) -> bool {
         self.runs.read().await.is_empty()
     }
 }
 
 impl Default for InMemoryRunStore {
+    /// 等价于 [`InMemoryRunStore::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -761,6 +797,7 @@ impl Default for InMemoryRunStore {
 
 #[async_trait::async_trait]
 impl RunStore for InMemoryRunStore {
+    /// 将执行记录与已有记录合并后写入内存（并应用保留策略）。
     async fn save(&self, run: Run) -> Result<()> {
         let mut runs = self.runs.write().await;
         let mut merged = merge_run(runs.get(&run.run_id).cloned(), run);
@@ -769,6 +806,7 @@ impl RunStore for InMemoryRunStore {
         Ok(())
     }
 
+    /// 从内存中按 ID 加载一条执行记录（并应用保留策略）。
     async fn load(&self, run_id: &str) -> Result<Option<Run>> {
         Ok(self.runs.read().await.get(run_id).cloned().map(|mut run| {
             apply_run_retention(&mut run, &self.retention);
@@ -776,6 +814,7 @@ impl RunStore for InMemoryRunStore {
         }))
     }
 
+    /// 列出指定会话下的所有执行记录摘要，按最新优先排序。
     async fn list_by_session(&self, session_id: &str) -> Result<Vec<RunSummary>> {
         let runs = self.runs.read().await;
         let mut summaries: Vec<RunSummary> = runs
@@ -792,6 +831,7 @@ impl RunStore for InMemoryRunStore {
         Ok(summaries)
     }
 
+    /// 列出所有执行记录摘要，按最新优先排序，最多 `limit` 条。
     async fn list_all(&self, limit: usize) -> Result<Vec<RunSummary>> {
         let runs = self.runs.read().await;
         let mut summaries: Vec<RunSummary> = runs
@@ -808,6 +848,7 @@ impl RunStore for InMemoryRunStore {
         Ok(summaries)
     }
 
+    /// 直接对内存中已存在的执行记录追加一个事件（高效路径，无需整条重写）。
     async fn append_event(&self, run_id: &str, mut event: RunEvent) -> Result<()> {
         let mut runs = self.runs.write().await;
         let run = runs
@@ -818,6 +859,7 @@ impl RunStore for InMemoryRunStore {
         Ok(())
     }
 
+    /// 原地结算内存中已存在的执行记录（高效路径，无需整条重写）。
     async fn finalize_run(
         &self,
         run_id: &str,
@@ -837,36 +879,49 @@ impl RunStore for InMemoryRunStore {
 
 // ── JsonlRunStore ────────────────────────────────────────────────────
 
-/// File-based [`RunStore`] that persists each run as a JSONL file.
-///
-/// Each run is stored in `{dir}/{run_id}.jsonl`: the first line is a compacted
-/// [`Run`] snapshot and later lines are individual [`RunEvent`] values.
-/// [`RunStore::save`] atomically compacts the file; [`RunStore::append_event`]
-/// appends only one bounded event, avoiding quadratic write amplification.
-///
-/// Suitable for production use with persistent storage across restarts.
+/** 将每条执行记录持久化为一个 JSONL 文件的 [`RunStore`] 实现。
+
+每条记录存储在 `{dir}/{run_id}.jsonl` 中：第一行是压缩后的 [`Run`] 快照，
+后续每一行是单独的 [`RunEvent`] 值。[`RunStore::save`] 会原子性地压实
+该文件；[`RunStore::append_event`] 仅追加一个受限大小的事件，避免了
+平方级的写放大问题。
+
+适合在生产环境中使用，具备跨进程重启的持久化能力。 */
 #[derive(Clone)]
 pub struct JsonlRunStore {
+    /// 存储根目录。
     dir: PathBuf,
+    /// 在同一根目录下多个句柄之间共享的内存缓存与互斥状态。
     shared: Arc<JsonlRunStoreData>,
+    /// 应用于所有记录的内容保留/脱敏策略。
     retention: echo_core::utils::retention::ContentRetentionPolicy,
+    /// 保留的最大执行记录数量（文件与内存缓存均受此限制）。
     max_runs: usize,
+    /// 仅测试使用：用于在写入过程的关键时刻挂起/放行的钩子。
     #[cfg(test)]
     mutation_test_hook: Option<Arc<JsonlMutationTestHook>>,
 }
 
+/// `JsonlRunStore` 在同一根目录的多个句柄之间共享的内部状态。
 struct JsonlRunStoreData {
+    /// 已加载执行记录的内存缓存，按 run_id 索引。
     cache: RwLock<HashMap<String, Run>>,
+    /// 保护写入类操作（保存/追加/结算）互斥执行的锁。
     mutation_lock: Mutex<()>,
 }
 
+/// 仅测试使用的钩子：用于在物理提交完成与缓存发布之间制造可控的时序窗口。
 #[cfg(test)]
 #[derive(Default)]
 struct JsonlMutationTestHook {
+    /// 物理写入已完成时通知等待方。
     physically_committed: tokio::sync::Notify,
+    /// 放行缓存发布步骤的信号。
     release_publish: tokio::sync::Notify,
 }
 
+/** 进程级注册表：按规范化目录路径复用同一份共享状态，
+使同一目录下的多个 `JsonlRunStore` 句柄能看到彼此的写入。 */
 fn jsonl_store_registry() -> &'static StdMutex<HashMap<PathBuf, Weak<JsonlRunStoreData>>> {
     static REGISTRY: OnceLock<StdMutex<HashMap<PathBuf, Weak<JsonlRunStoreData>>>> =
         OnceLock::new();
@@ -874,10 +929,10 @@ fn jsonl_store_registry() -> &'static StdMutex<HashMap<PathBuf, Weak<JsonlRunSto
 }
 
 impl JsonlRunStore {
+    /// 默认保留的最大执行记录数量。
     const DEFAULT_MAX_RUNS: usize = 1_024;
-    /// Create a new store rooted at `dir`. The directory is created if it
-    /// does not exist. Existing `.jsonl` files are scanned to populate the
-    /// in-memory cache (only the last line of each file is loaded).
+    /** 创建一个根目录为 `dir` 的新存储。若目录不存在则会被创建。
+    会扫描已存在的 `.jsonl` 文件以填充内存缓存（每个文件只加载最后一行）。 */
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
@@ -897,7 +952,7 @@ impl JsonlRunStore {
         }
         let mut cache = HashMap::new();
 
-        // Populate only the newest bounded set and remove expired run logs.
+        // 只加载数量受限的最新一批记录，并删除超出保留数的过期日志文件。
         let mut paths = std::fs::read_dir(&dir)?
             .map(|entry| {
                 let entry = entry?;
@@ -966,6 +1021,7 @@ impl JsonlRunStore {
         })
     }
 
+    /// 指定该存储所使用的内容保留策略。
     pub fn with_retention_policy(
         mut self,
         retention: echo_core::utils::retention::ContentRetentionPolicy,
@@ -974,17 +1030,19 @@ impl JsonlRunStore {
         self
     }
 
-    /// Bound both durable run files and the in-memory cache.
+    /// 限制持久化记录文件与内存缓存的最大数量。
     pub fn with_max_runs(mut self, max_runs: usize) -> Self {
         self.max_runs = max_runs.max(1);
         self
     }
 
+    /// 仅测试使用：安装或清除写入过程的挂起测试钩子。
     #[cfg(test)]
     fn set_mutation_test_hook(&mut self, hook: Option<Arc<JsonlMutationTestHook>>) {
         self.mutation_test_hook = hook;
     }
 
+    /// 仅测试使用：若安装了钩子，在缓存发布前通知已完成物理写入并等待放行信号。
     #[cfg(test)]
     async fn wait_before_cache_publish(&self) {
         if let Some(hook) = &self.mutation_test_hook {
@@ -993,12 +1051,13 @@ impl JsonlRunStore {
         }
     }
 
-    /// Return the file path for a given run ID.
+    /// 返回给定 run ID 对应的文件路径。
     fn run_path(&self, run_id: &str) -> Result<PathBuf> {
         let name = format!("{run_id}.jsonl");
         Ok(echo_core::utils::fs::join_path_segment(&self.dir, &name)?)
     }
 
+    /// 解析一份 JSONL 格式的执行记录日志内容（首行快照 + 后续事件行）。
     fn parse_run_log(data: &str, _path: &Path) -> Result<Run> {
         let has_partial_tail = !data.ends_with('\n');
         let lines = data
@@ -1025,16 +1084,19 @@ impl JsonlRunStore {
         Ok(run)
     }
 
+    /// 同步地从磁盘加载并解析一份执行记录日志文件。
     fn load_run(path: &Path) -> Result<Run> {
         let data = std::fs::read_to_string(path)?;
         Self::parse_run_log(&data, path)
     }
 
+    /// 异步地从磁盘加载并解析一份执行记录日志文件。
     async fn load_run_async(path: &Path) -> Result<Run> {
         let data = tokio::fs::read_to_string(path).await?;
         Self::parse_run_log(&data, path)
     }
 
+    /// 在调用方已持有互斥锁的前提下，将执行记录压实并原子性地写入磁盘与缓存。
     async fn persist_unlocked(&self, mut run: Run) -> Result<()> {
         apply_run_retention(&mut run, &self.retention);
         let run_id = run.run_id.clone();
@@ -1056,6 +1118,7 @@ impl JsonlRunStore {
         Ok(())
     }
 
+    /// 在持有互斥锁的前提下，淘汰超出 `max_runs` 上限的最旧记录（缓存与磁盘文件）。
     async fn prune_unlocked(&self) -> Result<()> {
         let mut cache = self.shared.cache.write().await;
         while cache.len() > self.max_runs {
@@ -1078,6 +1141,7 @@ impl JsonlRunStore {
     }
 }
 
+/// 将 JSON 解析错误包装为带有行列信息的追踪记录解码错误。
 fn trace_decode_error(error: serde_json::Error) -> crate::error::ReactError {
     crate::error::ReactError::Other(format!(
         "invalid trace record: {:?} at line {} column {}",
@@ -1118,12 +1182,12 @@ impl RunStore for JsonlRunStore {
     }
 
     async fn load(&self, run_id: &str) -> Result<Option<Run>> {
-        // Check cache first
+        // 优先查缓存
         if let Some(mut run) = self.shared.cache.read().await.get(run_id).cloned() {
             apply_run_retention(&mut run, &self.retention);
             return Ok(Some(run));
         }
-        // Fall back to disk (async)
+        // 缓存未命中时回退到磁盘（异步）
         let path = self.run_path(run_id)?;
         if tokio::fs::try_exists(&path).await? {
             let mut run = Self::load_run_async(&path).await?;
@@ -1175,7 +1239,7 @@ impl RunStore for JsonlRunStore {
         Ok(summaries)
     }
 
-    /// Append one sanitized event line without rewriting the accumulated run.
+    /// 追加一条经过脱敏处理的事件记录，无需重写整条已累积的执行记录。
     async fn append_event(&self, run_id: &str, event: RunEvent) -> Result<()> {
         let store = self.clone();
         let run_id = run_id.to_string();
@@ -1345,8 +1409,8 @@ mod tests {
         }
     }
 
-    /// 保存首次成功（trace start），之后每次 save 都失败：直接复现
-    /// "load 成功、最终 trace save 失败" 的 Finalize 场景。
+    /** 保存首次成功（trace start），之后每次 save 都失败：直接复现
+    "load 成功、最终 trace save 失败" 的 Finalize 场景。 */
     struct FinalizeSaveFailingRunStore {
         remaining_successes: StdMutex<u32>,
         last_saved: StdMutex<Option<Run>>,
@@ -1669,8 +1733,8 @@ mod tests {
             .await
             .ok_or_else(|| ReactError::Other("trace start did not return an id".to_string()))?;
 
-        // Canonical finalizer: load succeeds, the final save fails, and the
-        // producer terminal stays untouched while a Finalize fact is emitted.
+        /* 规范结算器：load 成功，最终 save 失败，生产者终态保持不变，
+        同时会发出一条 Finalize 事实记录。 */
         let snapshot = crate::agent::AgentRunSnapshot::from_agent(&agent);
         assert_eq!(snapshot.trace_run_id.as_deref(), Some(run_id.as_str()));
         snapshot
@@ -2171,7 +2235,7 @@ mod tests {
         store.save(make_run("r1", "s1")).await.unwrap();
         drop(store);
 
-        // New instance should load from disk
+        // 新实例应当能从磁盘加载
         let store2 = JsonlRunStore::new(&dir).unwrap();
         let loaded = store2.load("r1").await.unwrap();
         assert!(loaded.is_some());

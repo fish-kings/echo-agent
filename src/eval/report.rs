@@ -1,11 +1,11 @@
-//! HTML eval report generator — produces interactive evaluation reports.
+//! HTML 评估报告生成器 —— 生成可交互的评估报告。
 //!
-//! Inspired by `skill-creator/eval-viewer/`. Generates a self-contained HTML
-//! file with pass/fail matrix, score distributions, and per-case details.
+//! 思路借鉴自 `skill-creator/eval-viewer/`。生成一个独立、自包含的
+//! HTML 文件，包含通过/失败矩阵、分数分布以及每个用例的详情。
 
 use crate::eval::EvalReport;
 
-/// Generate a self-contained HTML report from an EvalReport.
+/// 根据 EvalReport 生成一个独立、自包含的 HTML 报告。
 pub fn generate_html(report: &EvalReport, title: &str) -> String {
     let min_score = report
         .results

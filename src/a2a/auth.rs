@@ -1,27 +1,29 @@
-//! A2A JWT authentication middleware
-//!
-//! Provides JWT Bearer Token verification for A2A HTTP endpoints.
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use echo_agent::a2a::{A2AServer, AgentCard, serve_with_auth, JwtConfig};
-//! use echo_agent::prelude::*;
-//!
-//! # #[tokio::main]
-//! # async fn main() -> echo_agent::error::Result<()> {
-//! let card = AgentCard::builder("my-agent", "http://localhost:3000").build();
-//! let agent = ReactAgentBuilder::simple("qwen3-max", "test")?;
-//! let server = A2AServer::new(card, agent);
-//!
-//! let jwt_config = JwtConfig::hs256("my-secret-key")
-//!     .with_issuer("echo-agent")
-//!     .with_audience("a2a-clients");
-//!
-//! serve_with_auth(server, "0.0.0.0:3000", jwt_config).await?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+A2A JWT 鉴权中间件。
+
+为 A2A HTTP 端点提供 JWT Bearer Token 校验。
+
+# 用法
+
+```rust,no_run
+use echo_agent::a2a::{A2AServer, AgentCard, serve_with_auth, JwtConfig};
+use echo_agent::prelude::*;
+
+# #[tokio::main]
+# async fn main() -> echo_agent::error::Result<()> {
+let card = AgentCard::builder("my-agent", "http://localhost:3000").build();
+let agent = ReactAgentBuilder::simple("qwen3-max", "test")?;
+let server = A2AServer::new(card, agent);
+
+let jwt_config = JwtConfig::hs256("my-secret-key")
+    .with_issuer("echo-agent")
+    .with_audience("a2a-clients");
+
+serve_with_auth(server, "0.0.0.0:3000", jwt_config).await?;
+# Ok(())
+# }
+```
+*/
 
 use axum::{
     body::Body,
@@ -34,25 +36,30 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-// ── JWT config ────────────────────────────────────────────────────────────────
+// ── JWT 配置 ────────────────────────────────────────────────────────────────
 
-/// JWT authentication configuration
+/// JWT 鉴权配置。
 #[derive(Clone)]
 pub struct JwtConfig {
+    /// 校验方式（None 表示鉴权被禁用）。
     verification: Option<JwtVerification>,
-    /// Issuer validation (None means no validation)
+    /// 签发者（issuer）校验（None 表示不校验）。
     issuer: Option<String>,
-    /// Audience validation (None means no validation)
+    /// 受众（audience）校验（None 表示不校验）。
     audience: Option<String>,
 }
 
+/// JWT 签名校验方式。
 #[derive(Clone)]
 enum JwtVerification {
+    /// HS256 对称密钥校验。
     Hs256(DecodingKey),
+    /// RS256 非对称公钥校验。
     Rs256(DecodingKey),
 }
 
 impl JwtVerification {
+    /// 返回该校验方式对应的签名算法。
     fn algorithm(&self) -> Algorithm {
         match self {
             Self::Hs256(_) => Algorithm::HS256,
@@ -60,6 +67,7 @@ impl JwtVerification {
         }
     }
 
+    /// 返回该校验方式使用的解码密钥。
     fn decoding_key(&self) -> &DecodingKey {
         match self {
             Self::Hs256(key) | Self::Rs256(key) => key,
@@ -67,9 +75,10 @@ impl JwtVerification {
     }
 }
 
-/// Invalid JWT verification configuration.
+/// 无效的 JWT 校验配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JwtConfigError {
+    /// 错误描述信息。
     message: String,
 }
 
@@ -82,11 +91,13 @@ impl std::fmt::Display for JwtConfigError {
 impl std::error::Error for JwtConfigError {}
 
 impl JwtConfig {
-    /// Create configuration with HS256 symmetric key
-    ///
-    /// # Parameters
-    ///
-    /// * `secret` — Signing key (at least 32 characters, 64+ recommended)
+    /**
+    使用 HS256 对称密钥创建配置。
+
+    # 参数
+
+    * `secret` —— 签名密钥（至少 32 字符，推荐 64 字符及以上）
+    */
     pub fn hs256(secret: impl Into<String>) -> Self {
         let secret = secret.into();
         Self {
@@ -98,11 +109,13 @@ impl JwtConfig {
         }
     }
 
-    /// Create configuration with RS256 public key
-    ///
-    /// # Parameters
-    ///
-    /// * `public_key` - PEM-format RSA public key
+    /**
+    使用 RS256 公钥创建配置。
+
+    # 参数
+
+    * `public_key` —— PEM 格式的 RSA 公钥
+    */
     pub fn rs256(public_key: impl Into<String>) -> Result<Self, JwtConfigError> {
         let public_key = public_key.into();
         let decoding_key =
@@ -116,19 +129,19 @@ impl JwtConfig {
         })
     }
 
-    /// Set issuer validation
+    /// 设置签发者（issuer）校验。
     pub fn with_issuer(mut self, issuer: impl Into<String>) -> Self {
         self.issuer = Some(issuer.into());
         self
     }
 
-    /// Set audience validation
+    /// 设置受众（audience）校验。
     pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
         self.audience = Some(audience.into());
         self
     }
 
-    /// Disable authentication (allow all requests through)
+    /// 禁用鉴权（放行所有请求）。
     pub fn disabled() -> Self {
         Self {
             verification: None,
@@ -137,7 +150,7 @@ impl JwtConfig {
         }
     }
 
-    /// Whether authentication is enabled
+    /// 鉴权是否已启用。
     pub fn is_enabled(&self) -> bool {
         self.verification.is_some()
     }
@@ -158,67 +171,69 @@ impl std::fmt::Debug for JwtConfig {
     }
 }
 
-// ── JWT Claims ─────────────────────────────────────────────────────────────────
+// ── JWT 声明（Claims）─────────────────────────────────────────────────────────
 
-/// JWT Claims (standard fields + custom extensions)
+/// JWT 声明（标准字段 + 自定义扩展）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JwtClaims {
-    /// Issuer
+    /// 签发者（issuer）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
-    /// Subject (typically user/client ID)
+    /// 主体（sub，通常是用户/客户端 ID）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
-    /// Audience
+    /// 受众（audience）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
-    /// Expiration time (Unix timestamp)
+    /// 过期时间（Unix 时间戳）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exp: Option<usize>,
-    /// Not before time
+    /// 生效起始时间（not before）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nbf: Option<usize>,
-    /// Issued at time
+    /// 签发时间（issued at）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iat: Option<usize>,
-    /// Token unique ID
+    /// 令牌唯一 ID。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub jti: Option<String>,
-    /// Custom fields (all other claims)
+    /// 自定义字段（其余所有 claims）。
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl JwtClaims {
-    /// Get a reference to the subject (sub)
+    /// 获取主体（sub）的引用。
     pub fn subject(&self) -> Option<&str> {
         self.sub.as_deref()
     }
 }
 
-// ── Middleware ────────────────────────────────────────────────────────────────
+// ── 中间件 ────────────────────────────────────────────────────────────────
 
-/// JWT authentication middleware
-///
-/// Extracts and verifies JWT from the `Authorization: Bearer <token>` header.
-/// On successful verification, claims are injected into the request extensions,
-/// and downstream handlers can extract them via [`JwtClaims`].
-///
-/// # Error responses
-///
-/// - 401 `{"error": "missing Authorization header"}` — Missing Authorization header
-/// - 401 `{"error": "invalid token"}` — Token invalid or expired
+/**
+JWT 鉴权中间件。
+
+从 `Authorization: Bearer <token>` 请求头中提取并校验 JWT。校验成功后，
+声明（claims）会被注入到请求扩展（extensions）中，下游处理函数可以通过
+[`JwtClaims`] 提取它们。
+
+# 错误响应
+
+- 401 `{"error": "missing Authorization header"}` —— 缺少 Authorization 请求头
+- 401 `{"error": "invalid token"}` —— 令牌无效或已过期
+*/
 pub async fn jwt_middleware(
     State(config): State<Arc<JwtConfig>>,
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
-    // When auth is disabled, pass through directly
+    // 鉴权被禁用时，直接放行
     if !config.is_enabled() {
         return next.run(req).await;
     }
 
-    // Extract Bearer token
+    // 提取 Bearer token
     let token = match extract_bearer_token(req.headers()) {
         Some(t) => t,
         None => {
@@ -226,10 +241,10 @@ pub async fn jwt_middleware(
         }
     };
 
-    // Verify JWT
+    // 校验 JWT
     match validate_token(&config, token) {
         Ok(claims) => {
-            // Inject claims for use by downstream handlers
+            // 注入声明（claims），供下游处理函数使用
             req.extensions_mut().insert(claims);
             next.run(req).await
         }
@@ -240,13 +255,13 @@ pub async fn jwt_middleware(
     }
 }
 
-/// Extract Bearer token from request headers
+/// 从请求头中提取 Bearer token。
 fn extract_bearer_token(headers: &axum::http::HeaderMap) -> Option<&str> {
     let header_value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     header_value.strip_prefix("Bearer ")
 }
 
-/// Validate JWT and return Claims
+/// 校验 JWT 并返回其中的声明（Claims）。
 fn validate_token(config: &JwtConfig, token: &str) -> Result<JwtClaims, String> {
     let verification = config
         .verification
@@ -261,10 +276,10 @@ fn validate_token(config: &JwtConfig, token: &str) -> Result<JwtClaims, String> 
         validation.set_audience(&[audience.as_str()]);
     }
 
-    // Set reasonable validation options
+    // 设置合理的校验选项
     validation.validate_exp = true;
     validation.validate_nbf = true;
-    validation.leeway = 30; // 30 second clock skew tolerance
+    validation.leeway = 30; // 允许 30 秒的时钟偏差
 
     let token_data = decode::<JwtClaims>(token, verification.decoding_key(), &validation)
         .map_err(|e| format!("JWT validation error: {e}"))?;
@@ -272,7 +287,7 @@ fn validate_token(config: &JwtConfig, token: &str) -> Result<JwtClaims, String> 
     Ok(token_data.claims)
 }
 
-/// 401 Unauthorized response
+/// 401 未授权响应。
 fn unauthorized_response(message: &str) -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -282,17 +297,19 @@ fn unauthorized_response(message: &str) -> Response {
         .into_response()
 }
 
-// ── Helper functions ─────────────────────────────────────────────────────────
+// ── 辅助函数 ─────────────────────────────────────────────────────────
 
-/// Extract JWT Claims from request extensions (injected after successful validation)
-///
-/// # Usage example
-///
-/// ```rust,ignore
-/// async fn my_handler(Extension(claims): Extension<JwtClaims>) -> impl IntoResponse {
-///     format!("Hello, {}", claims.subject().unwrap_or("unknown"))
-/// }
-/// ```
+/**
+从请求扩展（extensions）中提取 JWT 声明（校验成功后被注入）。
+
+# 用法示例
+
+```rust,ignore
+async fn my_handler(Extension(claims): Extension<JwtClaims>) -> impl IntoResponse {
+    format!("Hello, {}", claims.subject().unwrap_or("unknown"))
+}
+```
+*/
 pub fn get_claims<B>(req: &Request<B>) -> Option<&JwtClaims>
 where
     B: std::fmt::Debug + Send + Sync + 'static,

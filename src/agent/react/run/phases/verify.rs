@@ -1,9 +1,11 @@
-//! Verifier logic and the text-only-answer branch.
-//!
-//! `verify_answer` consults the configured `Critic`; on rejection it injects
-//! feedback into the context. `verify_final_text` wraps the text-only branch
-//! of one iteration: verify, then on pass return `IterOutcome::FinalText` so
-//! the driver can call `phases::finalize::emit_final_text`.
+/*!
+验证器（Verifier）逻辑与纯文本回答分支。
+
+`verify_answer` 会调用配置好的 `Critic` 进行校验；若被拒绝，则将反馈信息
+注入上下文。`verify_final_text` 封装了单次迭代中纯文本分支的处理流程：
+先校验，通过后返回 `IterOutcome::FinalText`，供驱动器调用
+`phases::finalize::emit_final_text`。
+*/
 
 use super::{IterOutcome, LoopState, ThinkOutput, with_reasoning_content};
 use crate::agent::AgentEvent;
@@ -13,25 +15,26 @@ use crate::llm::types::Message;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
-/// Verify a final answer with the configured Critic.
-///
-/// Returns `true` if the answer passes verification (or verification is
-/// disabled). Returns `false` if the answer fails and feedback has been
-/// injected into the context for self-correction.
+/**
+使用配置好的 Critic 校验最终答案。
+
+如果答案通过校验（或校验被禁用），返回 `true`；
+如果答案未通过校验，反馈已被注入上下文以便自我修正，返回 `false`。
+*/
 pub(crate) async fn verify_answer(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
     answer: &str,
     retry_count: usize,
 ) -> bool {
-    // Skip if verifier is disabled or no critic is configured
+    // 如果校验器被禁用或未配置 critic，则跳过
     if !snap.config.verifier_enabled {
         return true;
     }
     let Some(ref critic) = snap.critic else {
         return true;
     };
-    // Don't retry beyond max (but always allow the first check)
+    // 不超过最大重试次数（但始终允许第一次检查）
     if retry_count > 0 && retry_count >= snap.config.verifier_max_retries {
         tracing::info!(
             retries = retry_count,
@@ -42,7 +45,7 @@ pub(crate) async fn verify_answer(
 
     let task_description = {
         let ctx = context.lock().await;
-        // Use the last user message as the task description
+        // 使用最后一条用户消息作为任务描述
         ctx.messages()
             .iter()
             .rev()
@@ -90,19 +93,19 @@ pub(crate) async fn verify_answer(
         }
         Err(e) => {
             tracing::warn!(error = %e, "Verifier critique failed, accepting answer");
-            true // Fail-open: accept answer if critique itself errors
+            true // 失败即放行：如果 critique 本身出错，则直接接受答案
         }
     }
 }
 
-/// Text-only branch of one iteration. Verifies the buffered LLM content; on
-/// failure pushes the assistant attempt into context, increments
-/// `state.verifier_retry_count`, and returns [`IterOutcome::Continue`] so
-/// the loop drives a self-correction iteration. On success returns
-/// [`IterOutcome::FinalText`] with the answer — the driver calls
-/// `emit_final_text` to handle audit, checkpoint, transcript projection,
-/// `finalize_run`, the `FinalAnswer` event, and the `Stop` hook
-/// continuation.
+/**
+单次迭代中纯文本分支的处理逻辑。校验缓冲的 LLM 内容；
+若校验失败，则将本次助手的回答推入上下文，`state.verifier_retry_count`
+自增，并返回 [`IterOutcome::Continue`]，使循环驱动一次自我修正迭代。
+若校验成功，则返回携带答案的 [`IterOutcome::FinalText`] —— 驱动器会
+调用 `emit_final_text` 来处理审计、checkpoint、transcript 投影、
+`finalize_run`、`FinalAnswer` 事件以及 `Stop` 钩子的后续流程。
+*/
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn verify_final_text(
     snap: &AgentRunSnapshot,
@@ -117,7 +120,7 @@ pub(crate) async fn verify_final_text(
     let reasoning_content = think.reasoning_buffer;
     let reasoning_blocks = think.reasoning_blocks;
     if !verify_answer(snap, context, &content_buffer, state.verifier_retry_count).await {
-        // Push the LLM's answer to context so it can see its own attempt
+        // 把 LLM 的回答推入上下文，以便它能看到自己之前的尝试
         context.lock().await.push(with_reasoning_content(
             Message::assistant(content_buffer),
             reasoning_content,
@@ -134,7 +137,7 @@ pub(crate) async fn verify_final_text(
     })
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -143,8 +146,8 @@ mod tests {
     use crate::agent::config::AgentConfig;
     use echo_core::agent::StaticCritic;
 
-    /// `verifier_enabled = false` (the default) accepts every answer without
-    /// touching the critic or the context.
+    /// `verifier_enabled = false`（默认值）会无条件接受任何答案，
+    /// 不会触碰 critic 或上下文。
     #[tokio::test]
     async fn verify_answer_disabled_returns_true() {
         let config = AgentConfig::new("test-model", "agent", "sys");
@@ -159,8 +162,7 @@ mod tests {
         );
     }
 
-    /// `verifier_enabled = true` but no critic configured accepts every
-    /// answer.
+    /// `verifier_enabled = true` 但未配置 critic 时，同样接受任何答案。
     #[tokio::test]
     async fn verify_answer_no_critic_returns_true() {
         let config = AgentConfig::new("test-model", "agent", "sys").verifier_enabled(true);
@@ -172,9 +174,10 @@ mod tests {
         assert!(accepted, "no critic should fail-open with true");
     }
 
-    /// On the first failed critique, feedback is injected into context and
-    /// the answer is rejected. The retry counter starts at 0 so the
-    /// "max retries reached" short-circuit must NOT fire.
+    /**
+    第一次校验失败时，反馈会被注入上下文，答案被拒绝。
+    重试计数从 0 开始，所以“已达最大重试次数”的短路逻辑不应触发。
+    */
     #[tokio::test]
     async fn verify_answer_low_score_pushes_feedback_and_rejects() {
         let config = AgentConfig::new("test-model", "agent", "sys")
@@ -206,8 +209,8 @@ mod tests {
         );
     }
 
-    /// Once `retry_count` reaches `verifier_max_retries`, even a failing
-    /// critic causes acceptance (avoids infinite self-correction loops).
+    /// 一旦 `retry_count` 达到 `verifier_max_retries`，即使 critic 持续判定失败，
+    /// 也会直接接受答案（避免无限的自我修正循环）。
     #[tokio::test]
     async fn verify_answer_max_retries_short_circuits_to_true() {
         let config = AgentConfig::new("test-model", "agent", "sys")
@@ -224,3 +227,4 @@ mod tests {
         );
     }
 }
+</content>

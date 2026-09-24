@@ -1,4 +1,4 @@
-//! Subagent event system — lifecycle notifications for subagent operations
+//! Subagent 事件系统 —— Subagent 操作的生命周期通知
 
 use echo_core::agent::{EventEnvelope, EventId, EventIdentity, StreamId, ToolInvocation};
 use echo_core::tools::{SubagentLineage, ToolResult};
@@ -10,264 +10,298 @@ use tracing::info;
 
 use super::types::{ExecutionMode, ObservedIsolation, SubagentOutcome, SubagentStatus};
 
+/// 事件总线默认的信道容量。
 const DEFAULT_CHANNEL_CAPACITY: usize = 128;
 
-/// Lifecycle events emitted by the subagent system.
+/// Subagent 系统发出的生命周期事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-// Boxing ToolResult would change the public event contract for every consumer.
+// 将 ToolResult 装箱会改变每个消费者所依赖的公共事件契约。
 #[allow(clippy::large_enum_variant)]
 pub enum SubagentEvent {
-    /// A subagent was registered.
+    /// 某个 Subagent 已注册。
     Registered {
-        /// Name of the subagent that was registered.
+        /// 已注册的 Subagent 名称。
         name: String,
     },
-    /// A subagent was unregistered.
+    /// 某个 Subagent 已注销。
     Unregistered {
-        /// Name of the subagent that was unregistered.
+        /// 已注销的 Subagent 名称。
         name: String,
     },
-    /// A running Subagent sent a parent/sibling message through the default
-    /// uplink sink. Emitted for observability; the delivery disposition is
-    /// carried in `status` (e.g. `parent_steered`, `event_emitted`,
-    /// `delivered_to_sibling`).
+    /**
+     * 一个正在运行的 Subagent 通过默认上行链路(uplink)接收器发送了一条
+     * 父级/兄弟消息。仅用于可观测性;实际的投递结果记录在 `status` 中
+     * (例如 `parent_steered`、`event_emitted`、`delivered_to_sibling`)。
+     */
     UplinkReceived {
-        /// Name of the dispatching parent agent.
+        /// 发起调度的父 Agent 名称。
         parent: String,
-        /// Name of the sending Subagent.
+        /// 发送消息的 Subagent 名称。
         agent: String,
-        /// `parent` or `sibling`.
+        /// `parent` 或 `sibling`。
         direction: String,
-        /// Delivery disposition reported to the sender.
+        /// 报告给发送方的投递结果。
         status: String,
-        /// Bounded message preview (first 200 chars).
+        /// 有长度上限的消息预览(前 200 个字符)。
         summary: String,
-        /// Sending attempt's execution id.
+        /// 发送方本次尝试的 execution id。
         execution_id: Option<String>,
-        /// Sending attempt's run id.
+        /// 发送方本次尝试的 run id。
         run_id: Option<String>,
     },
-    /// Dispatch started.
+    /// 调度已开始。
     DispatchStarted {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent being dispatched to.
+        /// 被调度的 Subagent 名称。
         agent: String,
-        /// Execution mode (e.g., `ExecutionMode::Parallel`).
+        /// 执行模式(例如 `ExecutionMode::Parallel`)。
         mode: ExecutionMode,
-        /// Task description being dispatched.
+        /// 本次调度所携带的任务描述。
         task: String,
-        /// Opaque stable execution id from the caller's `ExternalRunContext`.
-        /// Task-backed dispatch derives it from the exact claim lineage; callers
-        /// must not parse or reconstruct it. `None` means a legacy caller that
-        /// has not opted in; bridges fall back to temporary id allocation.
-        /// Frontends should use this as the canonical `subagent_run_id`.
+        /**
+         * 来自调用方 `ExternalRunContext` 的不透明稳定 execution id。
+         * 基于任务的调度会从精确的认领(claim)血统中派生该值;调用方
+         * 不得解析或重建该 id。`None` 表示尚未接入的旧版调用方;桥接层
+         * 会退回到临时 id 分配。前端应将其作为规范的 `subagent_run_id`
+         * 使用。
+         */
         execution_id: Option<String>,
-        /// Parent run id from the caller's `ExternalRunContext`. `None` =
-        /// legacy caller.
+        /**
+         * 来自调用方 `ExternalRunContext` 的父级 run id。`None` 表示旧版
+         * 调用方。
+         */
         run_id: Option<String>,
-        /// Conversation id from the caller's `ExternalRunContext`. This is
-        /// retained even for ad-hoc dispatches that have no formal run id.
+        /**
+         * 来自调用方 `ExternalRunContext` 的会话 id。即使是没有正式
+         * run id 的临时调度,该字段也会被保留。
+         */
         conversation_id: Option<String>,
-        /// Message id that triggered the run (chat `message_key`). Lets the
-        /// frontend pin the subagent stream to the right chat message block.
-        /// `None` = non-chat path (cron, etc).
+        /**
+         * 触发本次运行的消息 id(聊天场景下的 `message_key`)。用于让
+         * 前端把 Subagent 流固定到正确的聊天消息块上。`None` 表示非
+         * 聊天路径(例如定时任务等)。
+         */
         message_id: Option<String>,
-        /// True when this dispatch was started via `dispatch_background`
-        /// (non-blocking); UI shows a background card and injects a finished
-        /// note into the parent chat on completion.
+        /**
+         * 当本次调度通过 `dispatch_background`(非阻塞)方式启动时为
+         * true;UI 会据此展示后台卡片,并在完成时向父级聊天注入一条
+         * 完成提示。
+         */
         background: bool,
     },
-    /// Isolation boundary established after setup and before model execution.
+    /// 在设置完成、模型开始执行之前建立的隔离边界。
     DispatchIsolationObserved {
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
+        /// 被调度的 Subagent 名称。
         agent: String,
+        /// 本次调度观测到的隔离边界。
         isolation: ObservedIsolation,
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Dispatch completed successfully.
+    /// 调度成功完成。
     DispatchCompleted {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that completed the task.
+        /// 完成该任务的 Subagent 名称。
         agent: String,
-        /// Duration of the dispatch in milliseconds.
+        /// 本次调度耗时(毫秒)。
         duration_ms: u64,
-        /// Total tokens consumed (input + output), if available.
+        /// 消耗的总 token 数(输入 + 输出),如果可获得的话。
         tokens_used: Option<u64>,
-        /// Number of ReAct iterations executed.
+        /// 执行的 ReAct 迭代次数。
         iterations: Option<u64>,
-        /// Final output text produced by the subagent.
+        /// Subagent 产出的最终输出文本。
         output: String,
-        /// Structured terminal outcome consumed by the parent/application.
+        /// 提供给父级/应用消费的结构化终态结果。
         outcome: SubagentOutcome,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Dispatch failed.
+    /// 调度失败。
     DispatchFailed {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that failed.
+        /// 失败的 Subagent 名称。
         agent: String,
-        /// Error message describing the failure.
+        /// 描述失败原因的错误信息。
         error: String,
-        /// Failed or timed-out terminal status.
+        /// 失败或超时的终态状态。
         status: SubagentStatus,
-        /// Structured terminal outcome, including remaining work.
+        /// 结构化的终态结果,包含剩余未完成的工作。
         outcome: SubagentOutcome,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Dispatch was cancelled.
+    /// 调度已被取消。
     DispatchCancelled {
-        /// Name of the parent agent that cancelled the dispatch.
+        /// 取消本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent whose dispatch was cancelled.
+        /// 被取消调度的 Subagent 名称。
         agent: String,
-        /// Structured cancelled outcome.
+        /// 结构化的已取消终态结果。
         outcome: SubagentOutcome,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent reasoning started.
+    /// Subagent 开始推理。
     DispatchThinkingStarted {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that is reasoning.
+        /// 正在推理的 Subagent 名称。
         agent: String,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent reasoning emitted incremental content.
+    /// Subagent 推理过程中产生了增量内容。
     DispatchThinkingDelta {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that is reasoning.
+        /// 正在推理的 Subagent 名称。
         agent: String,
-        /// Incremental reasoning text.
+        /// 增量的推理文本。
         content: String,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent reasoning ended.
+    /// Subagent 推理结束。
     DispatchThinkingEnded {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that finished reasoning.
+        /// 完成推理的 Subagent 名称。
         agent: String,
-        /// Number of prompt tokens consumed.
+        /// 消耗的 prompt token 数量。
         prompt_tokens: usize,
-        /// Number of completion tokens consumed.
+        /// 消耗的 completion token 数量。
         completion_tokens: usize,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent emitted final-answer text.
+    /// Subagent 输出了最终答案文本。
     DispatchTokenDelta {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent producing output.
+        /// 正在产出结果的 Subagent 名称。
         agent: String,
-        /// Incremental final-answer text.
+        /// 增量的最终答案文本。
         content: String,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// LLM usage reported by the subagent's underlying model call (carries the
-    /// full cache-diagnostic breakdown). Emitted once per model call so the
-    /// frontend can render token / cache-hit metrics without peeking at the
-    /// legacy `subagent://trace` channel.
+    /**
+     * Subagent 底层模型调用报告的 LLM 用量(携带完整的缓存诊断细分数据)。
+     * 每次模型调用都会发出一次,便于前端在不窥探旧版 `subagent://trace`
+     * 通道的情况下渲染 token / 缓存命中等指标。
+     */
     DispatchLlmUsage {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that made the model call.
+        /// 发起本次模型调用的 Subagent 名称。
         agent: String,
-        /// Model name (provider-specific).
+        /// 模型名称(与具体供应商相关)。
         model: String,
-        /// Prompt (input) tokens for this call.
+        /// 本次调用的 prompt(输入)token 数。
         prompt_tokens: usize,
-        /// Completion (output) tokens for this call.
+        /// 本次调用的 completion(输出)token 数。
         completion_tokens: usize,
-        /// Total tokens (input + output), as reported by the provider.
+        /// 供应商上报的总 token 数(输入 + 输出)。
         total_tokens: usize,
-        /// Prompt tokens served from the prefix cache (cache hit).
+        /// 由前缀缓存命中(cache hit)提供服务的 prompt token 数。
         cached_prompt_tokens: usize,
-        /// Prompt tokens written into the cache (cache write).
+        /// 写入缓存(cache write)的 prompt token 数。
         cache_creation_prompt_tokens: usize,
-        /// Whether the provider actually returned a usage report for this call.
+        /// 供应商是否针对本次调用实际返回了用量报告。
         usage_reported: bool,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent started a tool call.
+    /// Subagent 发起了一次工具调用。
     DispatchToolStarted {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent invoking a tool.
+        /// 正在调用工具的 Subagent 名称。
         agent: String,
-        /// Stable tool-call identity emitted by the model.
+        /// 模型发出的稳定工具调用标识。
         call_id: String,
-        /// Canonical requested/effective invocation after all runtime rewrites.
+        /// 经过所有运行时改写后的规范请求/生效调用。
         invocation: ToolInvocation,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
-    /// Subagent completed a tool call.
+    /// Subagent 完成了一次工具调用。
     DispatchToolCompleted {
-        /// Name of the parent agent that initiated the dispatch.
+        /// 发起本次调度的父 Agent 名称。
         parent: String,
-        /// Name of the subagent that invoked a tool.
+        /// 调用工具的 Subagent 名称。
         agent: String,
-        /// Stable tool-call identity matching [`Self::DispatchToolStarted`].
+        /// 与 [`Self::DispatchToolStarted`] 对应的稳定工具调用标识。
         call_id: String,
-        /// Effective tool name matching the invocation event.
+        /// 与调用事件一致的生效工具名称。
         name: String,
-        /// Canonical rich terminal result emitted by the ReAct runner.
+        /// ReAct 运行器发出的规范化富终态结果。
         result: ToolResult,
-        /// Stable execution id (see [`Self::DispatchStarted::execution_id`]).
+        /// 稳定的 execution id(参见 [`Self::DispatchStarted::execution_id`])。
         execution_id: Option<String>,
-        /// Parent run id (see [`Self::DispatchStarted::run_id`]).
+        /// 父级 run id(参见 [`Self::DispatchStarted::run_id`])。
         run_id: Option<String>,
     },
 }
 
-/// Complete dispatch-attempt identity hashed into every execution envelope.
-///
-/// Transport addressing stays in [`EventEnvelope`]. These Subagent-specific
-/// fields preserve task and lineage facts without parsing an execution id or
-/// adding application-owned workspace metadata to the framework.
+/**
+ * 哈希进每个执行信封(execution envelope)中的完整调度尝试身份。
+ *
+ * 传输层寻址信息保留在 [`EventEnvelope`] 中。这些 Subagent 专属字段用于
+ * 保存任务与血统(lineage)事实,而无需解析 execution id,也不会给框架
+ * 引入应用层私有的工作区元数据。
+ */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentInvocationIdentity {
+    /// 发起调度的父 Agent 名称。
     pub parent_agent: String,
+    /// 被调度的 Subagent 名称。
     pub agent_name: String,
+    /// 父级调度尝试的 execution id(如果存在)。
     pub parent_execution_id: Option<String>,
+    /// 从根 Agent 到当前 Subagent 的调度路径。
     pub agent_path: Option<String>,
+    /// 关联的任务 id(如果由任务系统驱动)。
     pub task_id: Option<String>,
+    /// 当前尝试的序号,从 1 开始计数。
     pub attempt: Option<u32>,
+    /// 生成本次调度时所依据的计划版本号。
     pub plan_revision: Option<u64>,
 }
 
 impl SubagentInvocationIdentity {
+    /**
+     * 根据调用方提供的 lineage(血统)信息构建一个 Subagent 调用身份。
+     *
+     * 若同时提供了 `lineage`,会校验其携带的各字段与本次显式传入的
+     * `parent_agent`/`agent_name`,以及 `transport_identity` 中的
+     * `execution_id`/`run_id` 是否一致;一旦发生冲突则返回错误。
+     */
     pub fn from_lineage(
         parent_agent: impl Into<String>,
         agent_name: impl Into<String>,
@@ -329,64 +363,90 @@ impl SubagentInvocationIdentity {
     }
 }
 
-/// Hashed payload carried by the generic framework [`EventEnvelope`].
+/// 由通用框架 [`EventEnvelope`] 承载的、经过哈希处理的负载。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentEventPayload {
+    /// 本次事件所属调度尝试的调用身份。
     pub invocation: SubagentInvocationIdentity,
+    /// 实际的 Subagent 生命周期事件。
     pub event: SubagentEvent,
 }
 
-/// Authoritative, versioned event transport for one Subagent dispatch attempt.
+/// 一次 Subagent 调度尝试所使用的、权威且带版本号的事件传输类型。
 pub type SubagentEventEnvelope = EventEnvelope<SubagentEventPayload>;
 
-/// Explicit indication that an envelope replay cannot provide a contiguous
-/// suffix from the requested sequence because bounded retention has advanced.
+/**
+ * 明确指出一次信封重放无法从请求的序号开始提供连续后缀,因为有限保留
+ * 窗口已经向前推进。
+ */
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentEventGap {
+    /// 出现缺口的事件流标识。
     pub stream_id: StreamId,
+    /// 调用方请求的起始序号(即"在此序号之后")。
     pub requested_after: u64,
-    /// First retained sequence after the gap. `None` means the known stream
-    /// has advanced but its replayable suffix is no longer retained.
+    /**
+     * 缺口之后第一个仍被保留的序号。`None` 表示该已知事件流虽然已经
+     * 推进,但其可重放的后缀已不再被保留。
+     */
     pub available_from: Option<u64>,
+    /// 该事件流当前已知的最新序号。
     pub latest_sequence: u64,
 }
 
-/// Bounded replay result for one exact dispatch-attempt stream.
+/// 针对某一具体调度尝试事件流的有限重放结果。
 #[derive(Debug)]
 pub struct SubagentEventReplay {
+    /// 重放得到的事件序列。
     pub events: Vec<Arc<SubagentEventEnvelope>>,
+    /// 若重放存在不连续之处,则给出对应的缺口描述。
     pub gap: Option<SubagentEventGap>,
-    /// Latest retained terminal is returned independently so a consumer can
-    /// reconcile final output even when high-volume deltas fell out of history.
+    /**
+     * 最新保留的终态事件会被独立返回,这样即使高频率的增量事件已经从
+     * 历史记录中被淘汰,消费方依然可以据此核对最终输出。
+     */
     pub terminal: Option<Arc<SubagentEventEnvelope>>,
 }
 
+/// 单次发布者(publisher)所维护的内部可变状态。
 #[derive(Default)]
 struct SubagentPublisherState {
+    /// 当前已分配到的最新序号。
     sequence: u64,
+    /// 本次调度起始事件的 event id。
     dispatch_started: Option<EventId>,
-    /// Immutable routing anchor retained for the lifetime of an active
-    /// publisher even when the bounded replay window evicts this stream.
+    /**
+     * 在活跃发布者的整个生命周期内保留的不可变路由锚点,即便有限重放
+     * 窗口已经淘汰了该事件流。
+     */
     dispatch_anchor: Option<Arc<SubagentEventEnvelope>>,
+    /// 正在进行中的工具调用:call_id 到其起始事件 id 的映射。
     tool_started: HashMap<String, EventId>,
+    /// 是否已经发出过终态事件。
     terminal_emitted: bool,
 }
 
-/// Shared state behind one attempt-scoped publisher.
+/// 归属于单次调度尝试的发布者所共享的内部状态。
 struct SubagentEventPublisherInner {
+    /// 关联的事件总线。
     bus: SubagentEventBus,
+    /// 本次调度尝试的传输层身份。
     transport_identity: EventIdentity,
+    /// 本次调度尝试的调用身份,支持在委派时被重新定向(retarget)。
     invocation_identity: RwLock<SubagentInvocationIdentity>,
+    /// 本次发布者的可变状态。
     state: Mutex<SubagentPublisherState>,
 }
 
-/// Cloneable producer that owns ordering for exactly one dispatch attempt.
+/// 可克隆的生产者,独占地负责一次调度尝试的事件排序。
 #[derive(Clone)]
 pub struct SubagentEventPublisher {
+    /// 共享的内部状态。
     inner: Arc<SubagentEventPublisherInner>,
 }
 
 impl SubagentEventPublisher {
+    /// 创建一个新的发布者,并在构造前校验传输层身份的合法性。
     fn new(
         bus: SubagentEventBus,
         transport_identity: EventIdentity,
@@ -403,8 +463,10 @@ impl SubagentEventPublisher {
         })
     }
 
-    /// Update the actual execution segment after a framework hook delegates
-    /// the same logical attempt to another registered Subagent.
+    /**
+     * 当框架钩子将同一个逻辑调度尝试委派给另一个已注册的 Subagent 后,
+     * 更新实际的执行段(execution segment)。
+     */
     pub(super) fn retarget(
         &self,
         invocation_identity: SubagentInvocationIdentity,
@@ -428,6 +490,7 @@ impl SubagentEventPublisher {
         Ok(())
     }
 
+    /// 根据 lineage 信息构造调用身份并对当前发布者执行重新定向。
     pub(super) fn retarget_from_lineage(
         &self,
         parent_agent: impl Into<String>,
@@ -443,7 +506,7 @@ impl SubagentEventPublisher {
         self.retarget(identity)
     }
 
-    /// Emit one event in the attempt's monotonic sequence.
+    /// 在本次调度尝试的单调递增序列中发出一个事件。
     pub fn emit(&self, event: SubagentEvent) -> crate::error::Result<Arc<SubagentEventEnvelope>> {
         let invocation_identity = self
             .inner
@@ -578,10 +641,12 @@ impl SubagentEventPublisher {
         Ok(envelope)
     }
 
+    /// 返回本次调度尝试的事件流标识。
     pub fn stream_id(&self) -> &StreamId {
         &self.inner.transport_identity.stream_id
     }
 
+    /// 返回本次调度起始事件的 event id(如果已经发出过)。
     pub fn dispatch_started_event_id(&self) -> Option<EventId> {
         self.inner
             .state
@@ -592,18 +657,22 @@ impl SubagentEventPublisher {
     }
 }
 
-/// Sync event listener trait.
+/// 同步事件监听器 trait。
 pub trait SubagentEventListener: Send + Sync {
-    /// Handle a subagent lifecycle event.
-    ///
-    /// # Parameters
-    /// * `event` - The event to handle.
+    /**
+     * 处理一个 subagent 生命周期事件。
+     *
+     * # 参数
+     * * `event` - 待处理的事件。
+     */
     fn on_event(&self, event: &SubagentEvent);
 }
 
-/// Logging listener — emits tracing events.
-///
-/// Implements `SubagentEventListener` to log events via `tracing::info!`.
+/**
+ * 日志监听器 —— 发出 tracing 事件。
+ *
+ * 实现 `SubagentEventListener`,通过 `tracing::info!` 记录事件日志。
+ */
 pub struct LoggingSubagentListener;
 
 impl SubagentEventListener for LoggingSubagentListener {
@@ -669,28 +738,42 @@ impl SubagentEventListener for LoggingSubagentListener {
     }
 }
 
-/// Async event bus for subagent lifecycle events.
-///
-/// Raw subscriptions remain available for compatibility. Execution producers
-/// should create a [`SubagentEventPublisher`] and consumers that need identity,
-/// order, or recovery should subscribe to envelopes.
+/**
+ * Subagent 生命周期事件所使用的异步事件总线。
+ *
+ * 为了兼容旧代码,依旧保留原始(raw)订阅方式。执行侧的生产者应当创建
+ * 一个 [`SubagentEventPublisher`];需要身份信息、顺序保证或恢复能力的
+ * 消费者应当订阅信封(envelope)。
+ */
 pub struct SubagentEventBus {
+    /// 原始事件的广播发送端,用于兼容旧订阅方式。
     raw_tx: broadcast::Sender<Arc<SubagentEvent>>,
+    /// 信封事件的广播发送端。
     envelope_tx: broadcast::Sender<Arc<SubagentEventEnvelope>>,
+    /// 已注册的同步监听器列表。
     sync_listeners: Arc<RwLock<Vec<Arc<dyn SubagentEventListener>>>>,
+    /// 有限重放窗口所维护的状态。
     replay: Arc<Mutex<SubagentReplayState>>,
+    /// 按 execution id 索引的活跃发布者集合。
     active_publishers: Arc<Mutex<HashMap<String, Weak<SubagentEventPublisherInner>>>>,
+    /// 按事件流标识索引的活跃发布者集合。
     active_streams: Arc<Mutex<HashMap<StreamId, Weak<SubagentEventPublisherInner>>>>,
 }
 
+/// 有限重放窗口的内部状态:历史事件、重放边界与已保留的终态事件。
 struct SubagentReplayState {
+    /// 每个队列所允许保留的最大条目数。
     capacity: usize,
+    /// 按到达顺序保留的近期事件历史。
     history: VecDeque<Arc<SubagentEventEnvelope>>,
+    /// 可作为重放边界的事件(排除高频增量事件)。
     boundaries: VecDeque<Arc<SubagentEventEnvelope>>,
+    /// 每个事件流最新保留的终态事件。
     terminals: VecDeque<Arc<SubagentEventEnvelope>>,
 }
 
 impl SubagentReplayState {
+    /// 创建一个指定容量的重放状态。
     fn new(capacity: usize) -> Self {
         Self {
             capacity,
@@ -700,6 +783,7 @@ impl SubagentReplayState {
         }
     }
 
+    /// 将一个事件信封纳入有限重放窗口,并按容量淘汰最旧的条目。
     fn retain(&mut self, envelope: Arc<SubagentEventEnvelope>) {
         self.history.push_back(Arc::clone(&envelope));
         while self.history.len() > self.capacity {
@@ -723,15 +807,17 @@ impl SubagentReplayState {
 }
 
 impl SubagentEventBus {
-    /// Create a new event bus with default capacity.
+    /// 使用默认容量创建一个新的事件总线。
     pub fn new() -> Self {
         Self::with_capacity(DEFAULT_CHANNEL_CAPACITY)
     }
 
-    /// Create a new event bus with the specified channel capacity.
-    ///
-    /// # Parameters
-    /// * `capacity` - Maximum number of events to buffer before dropping old ones.
+    /**
+     * 使用指定的信道容量创建一个新的事件总线。
+     *
+     * # 参数
+     * * `capacity` - 在丢弃旧事件之前,允许缓冲的最大事件数。
+     */
     pub fn with_capacity(capacity: usize) -> Self {
         let capacity = capacity.max(1);
         let (raw_tx, _) = broadcast::channel(capacity);
@@ -746,7 +832,7 @@ impl SubagentEventBus {
         }
     }
 
-    /// Register a sync listener (called immediately on emit).
+    /// 注册一个同步监听器(在事件发出时立即被调用)。
     pub fn register(&mut self, listener: Box<dyn SubagentEventListener>) {
         self.sync_listeners
             .write()
@@ -754,17 +840,17 @@ impl SubagentEventBus {
             .push(Arc::from(listener));
     }
 
-    /// Subscribe to the async event stream.
+    /// 订阅异步事件流。
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<SubagentEvent>> {
         self.raw_tx.subscribe()
     }
 
-    /// Subscribe to authoritative execution envelopes.
+    /// 订阅权威的执行事件信封。
     pub fn subscribe_envelopes(&self) -> broadcast::Receiver<Arc<SubagentEventEnvelope>> {
         self.envelope_tx.subscribe()
     }
 
-    /// Create one ordering authority for an exact dispatch attempt.
+    /// 为某一具体调度尝试创建唯一的排序权威(发布者)。
     pub fn publisher(
         &self,
         transport_identity: EventIdentity,
@@ -834,18 +920,22 @@ impl SubagentEventBus {
         Ok(publisher)
     }
 
-    /// Emit a non-execution or compatibility-only raw event.
-    ///
-    /// Dispatch lifecycle producers must use [`Self::publisher`] so envelope
-    /// identity and sequencing cannot be bypassed accidentally.
+    /**
+     * 发出一个非执行类,或仅用于兼容目的的原始事件。
+     *
+     * 调度生命周期的生产者必须使用 [`Self::publisher`],这样信封身份与
+     * 排序才不会被意外绕过。
+     */
     pub fn emit(&self, event: SubagentEvent) {
         if let Err(error) = self.try_emit(event) {
             tracing::warn!(%error, "rejected raw Subagent execution event");
         }
     }
 
-    /// Emit a registry-only raw event, rejecting execution events that must go
-    /// through an attempt publisher.
+    /**
+     * 发出一个仅限于注册表(registry)场景的原始事件;若传入的是必须经过
+     * 尝试级发布者(attempt publisher)的执行事件,则会拒绝。
+     */
     pub fn try_emit(&self, event: SubagentEvent) -> crate::error::Result<()> {
         if is_execution_event(&event) {
             return Err(crate::error::ReactError::Other(
@@ -856,6 +946,7 @@ impl SubagentEventBus {
         Ok(())
     }
 
+    /// 将一个原始事件分发给同步监听器,并广播到原始事件信道。
     fn emit_raw(&self, event: Arc<SubagentEvent>) {
         let listeners = self
             .sync_listeners
@@ -868,6 +959,7 @@ impl SubagentEventBus {
         let _ = self.raw_tx.send(event);
     }
 
+    /// 将一个事件信封纳入重放窗口,并广播到原始事件与信封两个信道。
     fn emit_envelope(&self, envelope: Arc<SubagentEventEnvelope>) {
         self.replay
             .lock()
@@ -877,6 +969,7 @@ impl SubagentEventBus {
         let _ = self.envelope_tx.send(envelope);
     }
 
+    /// 根据 execution id 查找对应的活跃发布者(若其已被回收则一并清理索引)。
     pub(crate) fn publisher_for_execution(
         &self,
         execution_id: &str,
@@ -895,6 +988,7 @@ impl SubagentEventBus {
         publisher
     }
 
+    /// 在一次调度尝试终态结算后,将对应发布者从活跃索引中移除。
     fn retire_publisher(&self, publisher: &SubagentEventPublisher) {
         let stream_id = &publisher.inner.transport_identity.stream_id;
         let mut streams = self
@@ -924,6 +1018,7 @@ impl SubagentEventBus {
         }
     }
 
+    /// 查询指定 execution 下某个工具调用起始事件的 event id。
     pub(crate) fn parent_event_id_for_tool(
         &self,
         execution_id: &str,
@@ -942,7 +1037,7 @@ impl SubagentEventBus {
             })
     }
 
-    /// Replay the retained suffix for one exact stream.
+    /// 重放某个具体事件流中仍被保留的后缀部分。
     pub fn replay_after(&self, stream_id: &StreamId, after_sequence: u64) -> SubagentEventReplay {
         let (mut events, terminal) = {
             let replay = self
@@ -1010,8 +1105,10 @@ impl SubagentEventBus {
         }
     }
 
-    /// Resolve and replay one retained attempt without first knowing its
-    /// random transport stream id.
+    /**
+     * 在无需预先知道其随机生成的传输层事件流标识的情况下,解析并重放
+     * 一次被保留的调度尝试。
+     */
     pub fn replay_for_execution(
         &self,
         execution_id: &str,
@@ -1043,9 +1140,11 @@ impl SubagentEventBus {
         Some(self.replay_after(&stream_id, after_sequence))
     }
 
-    /// Enumerate every stream that still has a retained event, boundary, or
-    /// terminal. A process-level consumer uses this after broadcast lag to
-    /// recover short attempts it had not observed before the lag signal.
+    /**
+     * 枚举所有仍保留着事件、边界或终态记录的事件流。进程级消费者会在
+     * 广播出现滞后(lag)之后使用此方法,以恢复那些在收到滞后信号之前
+     * 未曾观测到的短生命周期调度尝试。
+     */
     pub fn retained_stream_ids(&self) -> Vec<StreamId> {
         let replay = self
             .replay
@@ -1063,8 +1162,10 @@ impl SubagentEventBus {
         stream_ids
     }
 
-    /// Enumerate active dispatch-attempt streams, including streams whose
-    /// complete replay suffix has already been evicted by other producers.
+    /**
+     * 枚举活跃的调度尝试事件流,包括那些其完整可重放后缀已经被其他
+     * 生产者淘汰出保留窗口的事件流。
+     */
     pub fn active_stream_ids(&self) -> Vec<StreamId> {
         let mut streams = self
             .active_streams
@@ -1076,9 +1177,11 @@ impl SubagentEventBus {
         stream_ids
     }
 
-    /// Return the immutable dispatch-start envelope for an active stream.
-    /// Consumers use this only as a routing identity when replay reports a
-    /// fully evicted gap; it must not be mistaken for a newly replayed event.
+    /**
+     * 返回某个活跃事件流不可变的调度起始信封。仅当重放报告一个完全被
+     * 淘汰的缺口时,消费者才应将其用作路由身份;不得将其误认为一条
+     * 新重放出来的事件。
+     */
     pub fn active_stream_anchor(&self, stream_id: &StreamId) -> Option<Arc<SubagentEventEnvelope>> {
         let mut streams = self
             .active_streams
@@ -1098,6 +1201,7 @@ impl SubagentEventBus {
         })
     }
 
+    /// 返回某个活跃事件流当前已分配到的最新序号(若该发布者仍存活)。
     fn active_latest_for_stream(&self, stream_id: &StreamId) -> Option<u64> {
         let mut streams = self
             .active_streams
@@ -1116,11 +1220,12 @@ impl SubagentEventBus {
         })
     }
 
-    /// Get the current number of active subscribers to the async event stream.
+    /// 获取当前订阅异步事件流的活跃订阅者数量。
     pub fn subscriber_count(&self) -> usize {
         self.raw_tx.receiver_count()
     }
 
+    /// 获取当前订阅事件信封流的活跃订阅者数量。
     pub fn envelope_subscriber_count(&self) -> usize {
         self.envelope_tx.receiver_count()
     }
@@ -1139,6 +1244,7 @@ impl Clone for SubagentEventBus {
     }
 }
 
+/// 判断一个事件是否属于调度尝试的终态事件(完成/失败/取消)。
 fn is_terminal_event(event: &SubagentEvent) -> bool {
     matches!(
         event,
@@ -1148,6 +1254,7 @@ fn is_terminal_event(event: &SubagentEvent) -> bool {
     )
 }
 
+/// 判断一个事件是否属于必须经由尝试级发布者发出的执行事件(而非注册表事件)。
 fn is_execution_event(event: &SubagentEvent) -> bool {
     !matches!(
         event,
@@ -1155,6 +1262,7 @@ fn is_execution_event(event: &SubagentEvent) -> bool {
     )
 }
 
+/// 判断一个事件是否可以作为重放边界保留(排除高频的增量事件)。
 fn is_replay_boundary(event: &SubagentEvent) -> bool {
     !matches!(
         event,
@@ -1168,13 +1276,19 @@ impl Default for SubagentEventBus {
     }
 }
 
+/// 从一个事件中提取出的路由标识信息。
 struct SubagentEventRoute<'a> {
+    /// 父 Agent 名称。
     parent: &'a str,
+    /// Subagent 名称。
     agent: &'a str,
+    /// execution id(如果存在)。
     execution_id: Option<&'a str>,
+    /// run id(如果存在)。
     run_id: Option<&'a str>,
 }
 
+/// 从一个 Subagent 事件中提取路由标识;注册表事件(无路由信息)返回 `None`。
 fn event_route(event: &SubagentEvent) -> Option<SubagentEventRoute<'_>> {
     let (parent, agent, execution_id, run_id) = match event {
         SubagentEvent::UplinkReceived {
@@ -1277,6 +1391,7 @@ fn event_route(event: &SubagentEvent) -> Option<SubagentEventRoute<'_>> {
     })
 }
 
+/// 校验事件携带的路由标识与传输层身份、调用身份是否一致。
 fn validate_event_route(
     route: SubagentEventRoute<'_>,
     transport: &EventIdentity,

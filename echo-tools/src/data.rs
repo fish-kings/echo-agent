@@ -1,12 +1,12 @@
-//! Data processing tools
+//! 数据处理工具
 //!
-//! Data processing capabilities based on Polars, supporting:
-//! - CSV/JSON/Parquet file reading
-//! - Data filtering, aggregation, sorting
-//! - Statistical computation
-//! - Data transformation
-//! - Data profiling (dimension/metric identification)
-//! - TopN / contribution analysis / numeric binning
+//! 基于 Polars 的数据处理能力，支持：
+//! - CSV/JSON/Parquet 文件读取
+//! - 数据过滤、聚合、排序
+//! - 统计计算
+//! - 数据转换
+//! - 数据画像（维度/指标识别）
+//! - TopN / 贡献度分析 / 数值分箱
 
 use std::path::Path;
 
@@ -21,9 +21,9 @@ use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
 const TOOL_NAME: &str = "data_tools";
 
-// ── Shared data loading helpers ──────────────────────────────────────
+// ── 共享的数据加载辅助函数 ──────────────────────────────────────
 
-/// Detect format based on file extension
+/// 根据文件扩展名检测数据格式（若提供了 hint 则优先使用 hint）
 pub fn detect_format<'a>(path: &'a Path, hint: Option<&'a str>) -> &'a str {
     hint.unwrap_or_else(|| match path.extension().and_then(|e| e.to_str()) {
         Some("csv") | Some("txt") | Some("tsv") => "csv",
@@ -33,7 +33,7 @@ pub fn detect_format<'a>(path: &'a Path, hint: Option<&'a str>) -> &'a str {
     })
 }
 
-/// Load DataFrame (eager), supports CSV/JSON/Parquet
+/// 加载 DataFrame（立即执行模式），支持 CSV/JSON/Parquet
 pub fn load_dataframe(path: &Path, format: Option<&str>) -> Result<DataFrame> {
     let fmt = detect_format(path, format);
 
@@ -81,7 +81,7 @@ pub fn load_dataframe(path: &Path, format: Option<&str>) -> Result<DataFrame> {
     }
 }
 
-/// Load LazyFrame, supports CSV/JSON/Parquet
+/// 加载 LazyFrame（惰性执行模式），支持 CSV/JSON/Parquet
 fn load_lazyframe(path: &Path, format: Option<&str>) -> Result<LazyFrame> {
     let fmt = detect_format(path, format);
     let path_str = path.to_string_lossy().to_string();
@@ -94,7 +94,7 @@ fn load_lazyframe(path: &Path, format: Option<&str>) -> Result<LazyFrame> {
                 message: format!("Failed to read CSV: {}", e),
             })?),
         "json" => {
-            // For JSON, we use the eager reader and convert to LazyFrame
+            // 对于 JSON，先用立即执行的读取器读取，再转换为 LazyFrame
             let df = load_dataframe(path, Some("json"))?;
             Ok(df.lazy())
         }
@@ -119,9 +119,9 @@ fn load_lazyframe(path: &Path, format: Option<&str>) -> Result<LazyFrame> {
     }
 }
 
-/// Build a standardized data tool response with consistent metadata.
+/// 构建带有统一元数据的标准化数据工具响应。
 ///
-/// Output envelope format:
+/// 输出信封格式：
 /// ```json
 /// {
 ///   "tool": "tool_name",
@@ -160,7 +160,7 @@ fn data_tool_response(tool_name: &str, df: &DataFrame, max_rows: usize) -> Value
     })
 }
 
-/// Build a standardized data tool response with additional metadata fields.
+/// 构建带有额外元数据字段的标准化数据工具响应。
 fn data_tool_response_with_meta(
     tool_name: &str,
     df: &DataFrame,
@@ -176,7 +176,7 @@ fn data_tool_response_with_meta(
     base
 }
 
-/// Check if a column type is numeric
+/// 判断列的数据类型是否为数值类型
 pub fn is_numeric(dtype: &DataType) -> bool {
     matches!(
         dtype,
@@ -193,7 +193,7 @@ pub fn is_numeric(dtype: &DataType) -> bool {
     )
 }
 
-/// Check if a column type is temporal
+/// 判断列的数据类型是否为时间/日期类型
 fn is_temporal(dtype: &DataType) -> bool {
     matches!(
         dtype,
@@ -201,15 +201,20 @@ fn is_temporal(dtype: &DataType) -> bool {
     )
 }
 
-/// Column category type
+/// 列的分类类型
 #[derive(Debug, PartialEq)]
 enum ColumnCategory {
+    /// 维度列：低基数、适合分组统计的类别型或低基数数值列
     Dimension,
+    /// 指标列：高基数数值列，适合做求和/均值等聚合计算
     Metric,
+    /// 时间/日期类型列
     Temporal,
+    /// 无法明确归类的列
     Unknown,
 }
 
+/// 根据数据类型、去重值数量与总行数，将列分类为维度/指标/时间/未知
 fn classify_column(dtype: &DataType, distinct_count: usize, row_count: usize) -> ColumnCategory {
     if is_temporal(dtype) {
         return ColumnCategory::Temporal;
@@ -221,8 +226,8 @@ fn classify_column(dtype: &DataType, distinct_count: usize, row_count: usize) ->
         0.0
     };
 
-    // Low cardinality (< 10% or < 50 distinct values) → dimension
-    // String type → dimension
+    // 低基数（去重比例 < 10% 或去重值数量 < 50）→ 维度
+    // 字符串类型 → 维度
     if is_numeric(dtype) {
         if distinct_ratio < 0.1 || distinct_count < 50 {
             ColumnCategory::Dimension
@@ -242,23 +247,28 @@ fn classify_column(dtype: &DataType, distinct_count: usize, row_count: usize) ->
     }
 }
 
-// ── Data reader tool ─────────────────────────────────────────────────
+// ── 数据读取工具 ─────────────────────────────────────────────────
 
+/// 读取数据文件（CSV/JSON/Parquet）的工具，返回基础信息及前几行预览
 pub struct DataReadTool;
 
 impl Tool for DataReadTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "read_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Read data files (CSV, JSON, Parquet), returning basic info and a preview of the first rows."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -280,6 +290,7 @@ impl Tool for DataReadTool {
         })
     }
 
+    /// 执行该工具逻辑：加载数据文件并返回基础信息与预览数据
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -302,7 +313,7 @@ impl Tool for DataReadTool {
 
             let effective_preview_rows = preview_rows.min(security.limits.max_preview_rows);
 
-            // Basic info
+            // 基础信息
             let shape = df.shape();
             let columns: Vec<String> = df
                 .get_column_names()
@@ -334,23 +345,28 @@ impl Tool for DataReadTool {
     }
 }
 
-// ── Data filter tool ─────────────────────────────────────────────────
+// ── 数据过滤工具 ─────────────────────────────────────────────────
 
+/// 按条件表达式过滤数据文件的工具
 pub struct DataFilterTool;
 
 impl Tool for DataFilterTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "filter_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Filter a data file, supporting conditional expressions (comparisons, AND/OR combinations, contains matching, etc.). Returns a preview of the filtered data."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -372,6 +388,7 @@ impl Tool for DataFilterTool {
         })
     }
 
+    /// 执行该工具逻辑：解析过滤表达式并对数据应用过滤
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -423,23 +440,28 @@ impl Tool for DataFilterTool {
     }
 }
 
-// ── Data aggregation tool ────────────────────────────────────────────
+// ── 数据聚合工具 ────────────────────────────────────────────
 
+/// 对数据执行分组聚合运算的工具
 pub struct DataAggregateTool;
 
 impl Tool for DataAggregateTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "aggregate_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Group aggregation operations on data: group stats, sum, mean, count, distinct count, variance, stddev, median, p25/p75/p90/p95/arbitrary percentile, etc. Supported operations: sum, mean/avg, min, max, count, count_distinct/n_unique, variance/var, stddev/std, median, p25/p75/p90/p95, percentile:N/pct:N, first, last. Example: aggregate_data(file_path='sales.csv', group_by='region', aggregations='sales:sum,profit:mean,users:count_distinct,revenue:p95')"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -461,6 +483,7 @@ impl Tool for DataAggregateTool {
         })
     }
 
+    /// 执行该工具逻辑：按指定分组列与聚合表达式计算聚合结果
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -509,23 +532,28 @@ impl Tool for DataAggregateTool {
     }
 }
 
-// ── Data stats tool ──────────────────────────────────────────────────
+// ── 数据统计工具 ──────────────────────────────────────────────────
 
+/// 计算各列详细统计信息（不分组）的工具
 pub struct DataStatsTool;
 
 impl Tool for DataStatsTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "data_stats"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Compute detailed per-column statistics (no grouping): count, nulls and null rate, distinct count and distinct rate, mean, stddev, variance, min, max, median, p25/p75/p90/p95 percentiles; for string columns also shows shortest/longest/average length and most frequent value. Difference from aggregate_data: data_stats is per-column overall stats (no grouping), aggregate_data is grouped aggregation. Example: data_stats(file_path='data.csv', columns='age,income,region')"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -543,6 +571,7 @@ impl Tool for DataStatsTool {
         })
     }
 
+    /// 执行该工具逻辑：逐列计算总数、空值率、去重率、数值统计或字符串统计等信息
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -569,7 +598,7 @@ impl Tool for DataStatsTool {
 
             let mut columns_json = Vec::new();
 
-            // Filter columns to compute stats for
+            // 筛选出需要计算统计信息的列
             let target_cols: Vec<String> = if let Some(ref filter) = column_filter {
                 filter.iter().map(|s| s.to_string()).collect()
             } else {
@@ -607,7 +636,7 @@ impl Tool for DataStatsTool {
                     "null_pct": (null_pct * 100.0).round() / 100.0,
                 });
 
-                // Distinct count
+                // 去重值数量
                 if let Ok(unique_count) = c.n_unique() {
                     let unique_pct = if total > 0 {
                         (unique_count as f64 / total as f64) * 100.0
@@ -619,7 +648,7 @@ impl Tool for DataStatsTool {
                         serde_json::json!((unique_pct * 100.0).round() / 100.0);
                 }
 
-                // Numeric statistics
+                // 数值型统计
                 if is_numeric(dtype) && non_null_count > 0 {
                     let series = c.as_materialized_series();
                     let chunked = match dtype {
@@ -704,7 +733,7 @@ impl Tool for DataStatsTool {
                     }
                 }
 
-                // String column statistics
+                // 字符串列统计
                 if matches!(dtype, DataType::String) && non_null_count > 0 {
                     let series = c.as_materialized_series();
                     let ca = series.str().map_err(|e| ToolError::ExecutionFailed {
@@ -723,7 +752,7 @@ impl Tool for DataStatsTool {
                         });
                     }
 
-                    // Top 3 frequent values
+                    // 出现频率最高的 3 个值
                     let freq: std::collections::HashMap<&str, usize> =
                         ca.iter()
                             .flatten()
@@ -758,19 +787,23 @@ impl Tool for DataStatsTool {
     }
 }
 
-// ── Data transform tool ──────────────────────────────────────────────
+// ── 数据转换工具 ──────────────────────────────────────────────
 
+/// 对数据执行排序、选列、删列、改列名等转换操作的工具
 pub struct DataTransformTool;
 
 impl Tool for DataTransformTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "transform_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read, ToolPermission::Write]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Transform data: sort, select columns, rename columns, drop columns, etc."
     }
@@ -800,6 +833,7 @@ impl Tool for DataTransformTool {
         })
     }
 
+    /// 执行该工具逻辑：根据 operation 类型对数据执行相应的转换
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -907,19 +941,23 @@ impl Tool for DataTransformTool {
     }
 }
 
-// ── Data export tool ─────────────────────────────────────────────────
+// ── 数据导出工具 ─────────────────────────────────────────────────
 
+/// 将处理后的数据导出为 CSV/JSON/Parquet 文件的工具
 pub struct DataExportTool;
 
 impl Tool for DataExportTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "export_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Export processed data to CSV, JSON, or Parquet file."
     }
@@ -953,6 +991,7 @@ impl Tool for DataExportTool {
         })
     }
 
+    /// 执行该工具逻辑：读取、过滤/选列后将数据写出为目标格式文件
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let input_file = parameters
@@ -1066,23 +1105,28 @@ impl Tool for DataExportTool {
     }
 }
 
-// ── Data profiling tool (dimension/metric identification) ────────────
+// ── 数据画像工具（维度/指标识别）────────────
 
+/// 自动识别数据各列的维度/指标类型，用于快速理解数据结构的工具
 pub struct DataProfileTool;
 
 impl Tool for DataProfileTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "profile_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "[Quick data understanding - preferred tool] Automatically identifies each column as dimension or metric: computes missing rate, distinct rate, [min,max,mean,sum] for numeric columns, length range for string columns, and top 5 sample values. Output also includes column classification summary (dimension/metric/time column counts) and suggests follow-up analysis tools (topn_data, contribution_data, bin_data, etc.). Does not return detailed data, only a profile scan. Example: profile_data(file_path='sales.csv')"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1096,6 +1140,7 @@ impl Tool for DataProfileTool {
         })
     }
 
+    /// 执行该工具逻辑：逐列计算画像信息（类型、缺失率、去重率、样本值等）并给出分析建议
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1170,7 +1215,7 @@ impl Tool for DataProfileTool {
                     "distinct_pct": distinct_pct,
                 });
 
-                // Numeric columns: range/stats
+                // 数值列：取值范围/统计信息
                 if is_numeric(dtype) && (row_count - null_count) > 0 {
                     let series = c.as_materialized_series();
                     if let Ok(f64_series) = series.cast(&DataType::Float64)
@@ -1192,7 +1237,7 @@ impl Tool for DataProfileTool {
                     }
                 }
 
-                // String columns: length info
+                // 字符串列：长度信息
                 if matches!(dtype, DataType::String) && (row_count - null_count) > 0 {
                     let series = c.as_materialized_series();
                     if let Ok(ca) = series.str() {
@@ -1211,7 +1256,7 @@ impl Tool for DataProfileTool {
                     }
                 }
 
-                // Sample values (top 5)
+                // 样本值（最多 5 个）
                 let sample_count = 5.min(row_count - null_count);
                 if sample_count > 0 {
                     let mut sample_values: Vec<String> = Vec::new();
@@ -1236,7 +1281,7 @@ impl Tool for DataProfileTool {
                 columns_json.push(col_json);
             }
 
-            // Suggestions
+            // 分析建议
             let mut suggestions: Vec<String> = Vec::new();
             if metric_count > 0 && dim_count > 0 {
                 suggestions.push(format!(
@@ -1276,19 +1321,23 @@ impl Tool for DataProfileTool {
     }
 }
 
-// ── TopN analysis tool ───────────────────────────────────────────────
+// ── TopN 分析工具 ───────────────────────────────────────────────
 
+/// 按指标列排序并取 TopN（可选按维度分组）的工具
 pub struct DataTopNTool;
 
 impl Tool for DataTopNTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "topn_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Sort by a metric column and take Top N. Without dimension columns, returns global top N; with dimension_columns specified, returns top N within each group. Suitable for questions like 'top 10 products by sales', 'top 3 categories by revenue in each region'. Example: topn_data(file_path='sales.csv', metric_column='revenue', dimension_columns='region', top_n=3)"
     }
@@ -1322,6 +1371,7 @@ impl Tool for DataTopNTool {
         })
     }
 
+    /// 执行该工具逻辑：全局或按维度分组排序取 TopN
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1354,19 +1404,19 @@ impl Tool for DataTopNTool {
             let df = load_dataframe(&path, format)?;
 
             let result_df = if let Some(dim_str) = dim_cols_str {
-                // Grouped TopN: take top_n records within each group
+                // 分组 TopN：在每个分组内取前 top_n 条记录
                 let dim_cols: Vec<&str> = dim_str.split(',').map(|s| s.trim()).collect();
                 let group_cols: Vec<Expr> = dim_cols.iter().map(|&d| col(d)).collect();
 
-                // Collect all column names (for head operation in agg phase)
+                // 收集所有列名（供聚合阶段的 head 操作使用）
                 let all_col_names: Vec<String> = df
                     .get_column_names()
                     .iter()
                     .map(|s| s.to_string())
                     .collect();
 
-                // After sorting by metric column, group_by + agg uses head(N) to get top N per group
-                // This is the correct way to implement within-group TopN with Polars
+                // 先按指标列排序，再用 group_by + agg 配合 head(N) 取每组的前 N 条
+                // 这是在 Polars 中实现组内 TopN 的正确方式
                 let sort_desc = !ascending;
                 let agg_exprs: Vec<Expr> = all_col_names
                     .iter()
@@ -1390,8 +1440,8 @@ impl Tool for DataTopNTool {
                     },
                 );
 
-                // For each group, take TopN rows in sorted order
-                // group_by + agg(all().sort_by(metric).head(n)) ensures top n within each group
+                // 对每个分组，按排序后的顺序取 TopN 行
+                // group_by + agg(all().sort_by(metric).head(n)) 确保每个分组内取到前 n 条
                 sorted
                     .group_by(group_cols)
                     .agg(agg_exprs)
@@ -1407,7 +1457,7 @@ impl Tool for DataTopNTool {
                         message: format!("Grouped TopN execution failed: {}", e),
                     })?
             } else {
-                // Global TopN
+                // 全局 TopN
                 df.lazy()
                     .sort(
                         [metric_col],

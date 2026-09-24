@@ -39,6 +39,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
+/// demo33 主入口：依次运行策略构建、退避计算、基础重试、条件重试、
+/// LLM 重试、最佳实践共 6 个演示小节。
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("═══ Unified Retry Policy Demo ═══\n");
@@ -67,6 +69,7 @@ async fn main() -> Result<()> {
 
 // ── Part 1: RetryPolicy 构建 ─────────────────────────────────────────────────────
 
+/// 演示 `RetryPolicy` 的几种构建方式：默认策略、自定义参数、以及预设策略。
 fn demo_policy_builder() {
     println!("─────────────────────────────────────────────");
     println!("Part 1: RetryPolicy 构建方式");
@@ -103,6 +106,7 @@ fn demo_policy_builder() {
 
 // ── Part 2: 指数退避延迟计算 ─────────────────────────────────────────────────
 
+/// 演示指数退避延迟的计算公式，逐次打印重试次数与对应的延迟时间。
 fn demo_backoff_calculation() {
     println!("─────────────────────────────────────────────");
     println!("Part 2: 指数退避延迟计算");
@@ -138,6 +142,7 @@ fn demo_backoff_calculation() {
 
 // ── Part 3: with_retry 基础场景 ─────────────────────────────────────────────────
 
+/// 演示 `with_retry` 的三种基础场景：首次即成功、失败若干次后恢复、以及重试耗尽仍失败。
 async fn demo_with_retry_basic() -> Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 3: with_retry 基础场景");
@@ -217,6 +222,7 @@ async fn demo_with_retry_basic() -> Result<()> {
 
 // ── Part 4: with_retry_if 选择性重试 ───────────────────────────────────────────
 
+/// 演示 `with_retry_if` 的选择性重试：仅对判定为可恢复的错误重试，遇到致命错误立即返回。
 async fn demo_with_retry_if() -> Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 4: with_retry_if 选择性重试");
@@ -225,13 +231,17 @@ async fn demo_with_retry_if() -> Result<()> {
     // 4.1 仅对可恢复错误重试
     println!("  [4.1] 区分可恢复和致命错误");
 
+    /// 示例错误类型，区分可重试的临时错误与不应重试的致命错误。
     #[derive(Debug)]
     enum ApiError {
+        /// 可恢复的临时错误（如网络超时），值为错误描述。
         Recoverable(String),
+        /// 致命错误（如认证失败），值为错误描述，不应重试。
         Fatal(String),
     }
 
     impl std::fmt::Display for ApiError {
+        /// 按错误种类格式化输出。
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
                 ApiError::Recoverable(s) => write!(f, "Recoverable: {}", s),
@@ -285,6 +295,7 @@ async fn demo_with_retry_if() -> Result<()> {
 
 // ── Part 5: 实际 LLM 调用重试演示 ─────────────────────────────────────────────
 
+/// 演示对真实 LLM 调用应用重试策略：前两次模拟失败，第三次真正调用模型并成功。
 async fn demo_llm_retry() -> Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 5: 实际 LLM 调用重试演示");
@@ -348,6 +359,7 @@ async fn demo_llm_retry() -> Result<()> {
 
 // ── Part 6: 推荐使用模式 ───────────────────────────────────────────────────────
 
+/// 打印针对 LLM 调用、MCP 调用、工具执行等场景的重试策略推荐用法（仅展示代码片段，不实际执行）。
 fn demo_best_practices() {
     println!("─────────────────────────────────────────────");
     println!("Part 6: 推荐使用模式");

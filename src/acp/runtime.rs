@@ -1,28 +1,26 @@
-//! Protocol-neutral per-connection runtime shared by the standard ACP
-//! profile and any negotiated extension profile (supreme plan 05, todo
-//! `extract-shared-acp-runtime`).
-//!
-//! Design invariants (see `docs/supreme/specs/2026-09-04-source-first-
-//! multilanguage-sdk-runtime/design.md` §10/§11):
-//!
-//! - There is exactly one Session map, one Run authority, one event ledger
-//!   and one cancellation authority per connection. `session/prompt` and
-//!   extension `run/start` both enter through
-//!   [`AcpConnectionServices::begin_run`], so a Session can never carry two
-//!   concurrent runs and both entry points observe the same run ids.
-//! - Every accepted [`EventEnvelope`] is committed to the run ledger first
-//!   (optionally through the durable journal hook) and only then rendered as
-//!   the standard `session/update` projection and forwarded to extension
-//!   observers. Both views are projections of one committed fact; neither
-//!   may invent a sequence or a terminal.
-//! - Status, terminal and receipt facts advance only from the framework
-//!   [`AgentTurnDriver`] and its [`TurnReceipt`] — this module stores them,
-//!   it never derives them.
-//!
-//! The root crate stays protocol-neutral: extension negotiation payloads are
-//! opaque `serde_json::Value`s and typed `_echo_agent/*` handlers are
-//! attached by the profile implementor through
-//! [`AcpConnectionProfile::attach`] using the official builder composition.
+/*!
+协议无关的单连接运行时，由标准 ACP profile 与任何协商产生的扩展 profile
+共享（supreme plan 05，todo `extract-shared-acp-runtime`）。
+
+设计不变量（参见 `docs/supreme/specs/2026-09-04-source-first-
+multilanguage-sdk-runtime/design.md` §10/§11）：
+
+- 每个连接只有一个 Session map、一个 Run 权威、一个事件账本（ledger）
+  和一个取消权威。`session/prompt` 与扩展的 `run/start` 都通过
+  [`AcpConnectionServices::begin_run`] 进入，因此同一个 Session 永远
+  不会同时携带两个并发的 run，且两个入口观察到的是同一批 run id。
+- 每个被接受的 [`EventEnvelope`] 都会先提交到 run 账本（若配置了
+  持久化日志钩子，也会先经过它），然后才会被渲染为标准的
+  `session/update` 投影并转发给扩展观察者。这两种视图都只是
+  同一个已提交事实的投影；两者都不能凭空产生序列号或终态。
+- 状态、终态与回执（receipt）事实只能由框架的
+  [`AgentTurnDriver`] 及其 [`TurnReceipt`] 推进——本模块只负责存储它们，
+  从不自行推导。
+
+根 crate 保持协议无关：扩展协商 payload 是不透明的
+`serde_json::Value`，带类型的 `_echo_agent/*` handler 由 profile
+实现者通过 [`AcpConnectionProfile::attach`] 使用官方的 builder 组合方式挂载。
+*/
 
 use crate::agent::EventEnvelope;
 use crate::error::{ReactError, Result};
@@ -42,26 +40,34 @@ use super::extension::ExtensionInvocationAuthority;
 use super::projection::AcpEventProjector;
 use super::session::{AcpSession, ActiveTurnLease, SessionRegistry};
 
-/// Default bound on envelope bytes retained per in-memory run ledger.
+/// 每个内存中 run 账本保留的信封（envelope）字节数的默认上限。
 const DEFAULT_MAX_LEDGER_BYTES: usize = 8 * 1024 * 1024;
-/// Default bound on envelopes retained per in-memory run ledger.
+/// 每个内存中 run 账本保留的信封数量的默认上限。
 const DEFAULT_MAX_LEDGER_EVENTS: usize = 10_000;
 
-/// Negotiated connection mode. `Standard` is unconditional; `Extended` is
-/// entered only when a profile's hello negotiation accepts the Client.
+/**
+协商后的连接模式。`Standard` 是无条件的默认模式；只有当某个 profile 的
+hello 协商接受了该 Client 时，才会进入 `Extended`。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectionMode {
+    /// 标准 ACP 模式（默认）。
     #[default]
     Standard,
+    /// 已通过某个 profile 的 hello 协商，进入扩展模式。
     Extended,
 }
 
-/// Bounds for the per-run in-memory event ledger. The ledger is the live
-/// replay authority for runs without a journal hook; slow consumers can
-/// never grow it beyond these bounds — they observe a typed gap instead.
+/**
+单个 run 的内存事件账本的边界。对于没有配置日志钩子的 run，该账本是其
+实时重放权威；处理较慢的消费者永远不会使账本超出这些边界——它们会观察到
+一个带类型的缺口（gap），而不是无限增长的内存。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AcpLedgerLimits {
+    /// 保留的最大事件数量。
     pub max_events: usize,
+    /// 保留的最大总字节数。
     pub max_bytes: usize,
 }
 
@@ -74,24 +80,33 @@ impl Default for AcpLedgerLimits {
     }
 }
 
-/// Per-run event ledger: the durable-first, bounded authority of committed
-/// envelopes for one run. The optional journal hook receives every envelope
-/// before the in-memory ring; a journal failure is reported as delivery
-/// failure by the driven receipt. It does not create a second execution
-/// terminal when the producer already emitted one.
+/**
+单个 run 的事件账本：以持久化优先、带边界的方式作为该 run 已提交信封的权威。
+可选的日志钩子会在进入内存环形缓冲区之前先接收每个信封；日志失败会通过
+驱动方的回执报告为投递失败。当生产者已经产生过一个执行终态时，本账本
+不会再制造第二个终态。
+*/
 pub struct EventLedger {
+    /// 账本的容量边界。
     limits: AcpLedgerLimits,
+    /// 可选的持久化日志钩子。
     journal: Option<Arc<dyn EventJournal<EventEnvelope>>>,
+    /// 内存态的账本内容，受互斥锁保护。
     inner: StdMutex<LedgerInner>,
 }
 
+/// 内存账本的可变内部状态。
 struct LedgerInner {
+    /// 已提交的信封，按顺序保存。
     events: VecDeque<EventEnvelope>,
+    /// 当前保留信封的总字节数。
     total_bytes: usize,
+    /// 已见过的最大序列号。
     last_sequence: u64,
 }
 
 impl EventLedger {
+    /// 使用给定的容量边界与可选日志钩子创建一个新的事件账本。
     pub fn new(
         limits: AcpLedgerLimits,
         journal: Option<Arc<dyn EventJournal<EventEnvelope>>>,
@@ -107,6 +122,10 @@ impl EventLedger {
         }
     }
 
+    /**
+    提交一个信封：先写入可选的日志钩子，再追加到内存账本，
+    并在超出容量边界时从队首淘汰最旧的信封。
+    */
     pub fn commit(&self, envelope: EventEnvelope) -> Result<()> {
         if let Some(journal) = &self.journal {
             journal.append(envelope.clone()).map_err(|error| {
@@ -141,7 +160,7 @@ impl EventLedger {
         Ok(())
     }
 
-    /// Committed envelopes strictly after `after_sequence`, in order.
+    /// 严格晚于 `after_sequence` 的已提交信封，按顺序返回。
     pub fn events_after(&self, after_sequence: u64) -> Vec<EventEnvelope> {
         let Ok(inner) = self.inner.lock() else {
             return Vec::new();
@@ -154,7 +173,7 @@ impl EventLedger {
             .collect()
     }
 
-    /// Oldest envelope sequence still retained in memory (0 when empty).
+    /// 内存中仍保留的最旧信封序列号（为空时返回 0）。
     pub fn retained_floor(&self) -> u64 {
         let Ok(inner) = self.inner.lock() else {
             return 0;
@@ -166,7 +185,7 @@ impl EventLedger {
             .unwrap_or(0)
     }
 
-    /// Highest committed sequence (0 when empty).
+    /// 已提交的最大序列号（为空时返回 0）。
     pub fn last_sequence(&self) -> u64 {
         let Ok(inner) = self.inner.lock() else {
             return 0;
@@ -174,75 +193,99 @@ impl EventLedger {
         inner.last_sequence
     }
 
-    /// Durable retention floor reported by the journal hook, when present.
-    /// Replays that would need sequences below this floor return a typed gap
-    /// instead of silently skipping facts.
+    /**
+    日志钩子（若存在）报告的持久化保留下限。
+    重放请求若需要低于该下限的序列号，会返回一个带类型的缺口（gap），
+    而不是悄悄跳过这些事实。
+    */
     pub fn journal_retained_floor(&self) -> Option<u64> {
         self.journal
             .as_ref()
             .map(|journal| journal.retained_floor())
     }
 
-    /// Highest durable sequence of the journal hook, when present.
+    /// 日志钩子（若存在）的最大持久化序列号。
     pub fn journal_last_sequence(&self) -> Option<u64> {
         self.journal.as_ref().map(|journal| journal.last_sequence())
     }
 
-    /// Flush the journal hook if it exposes a sync operation.
+    /// 若日志钩子暴露了同步操作，则刷新（flush）该日志钩子。
     pub fn flush(&self) -> Result<()> {
-        // `EventJournal` has no flush method; segmented implementations keep
-        // their own durability contract. Hooking is the journal's job — the
-        // ledger only guarantees it was consulted for every envelope.
+        /* `EventJournal` 本身没有 flush 方法；分段实现各自维护自己的
+        持久化契约。钩子的职责在于日志本身——账本只保证每个信封
+        都被传递给了它。 */
         Ok(())
     }
 }
 
-/// Extension-side consumer of committed run events. Observers run after the
-/// ledger commit, in envelope order; an error becomes delivery failure on the
-/// driver's receipt. Live-delivery bounds (ACK windows, gaps) are the observer
-/// implementation's contract, never the ledger's execution authority.
+/**
+提交事件的扩展侧消费者。观察者在账本提交之后、按信封顺序运行；
+出错会在驱动方的回执上变为投递失败。实时投递的边界（ACK 窗口、缺口）
+是观察者实现自身的契约，而不是账本的执行权威。
+*/
 #[async_trait]
 pub trait RunEventObserver: Send + Sync {
+    /// 处理一个刚刚提交到账本的信封。
     async fn on_committed_event(&self, envelope: &EventEnvelope) -> Result<()>;
 }
 
-/// Everything one run needs at start. Built by the entry point (standard
-/// Prompt handler or extension Run handler) after it took the Session's
-/// single run slot.
+/**
+一个 run 启动时所需的一切。由入口点（标准 Prompt handler 或扩展 Run
+handler）在取得该 Session 唯一的 run 名额之后构建。
+*/
 pub struct RunStartSpec {
+    /// 该 run 所属的 Session。
     pub session: Arc<AcpSession>,
+    /// 已占用的活跃 turn 名额租约。
     pub active: ActiveTurnLease,
+    /// 该 run 的 id。
     pub run_id: String,
+    /// 该 run 对应的流 id。
     pub stream_id: String,
+    /// 要驱动的 turn 请求。
     pub turn: TurnRequest,
-    /// Standard `session/update` projection for this run.
+    /// 该 run 的标准 `session/update` 投影。
     pub projector: Option<AcpEventProjector>,
-    /// Durable journal hook; `None` keeps the ledger memory-only.
+    /// 持久化日志钩子；为 `None` 时账本仅保存在内存中。
     pub journal: Option<Arc<dyn EventJournal<EventEnvelope>>>,
-    /// Extension observers invoked after the ledger commit.
+    /// 账本提交之后要调用的扩展观察者。
     pub observers: Vec<Arc<dyn RunEventObserver>>,
 }
 
-/// One registered execution. `run_id` equals the Session turn id for both
-/// standard and extension starts, so the two entry points share identity.
+/**
+一次已注册的执行。无论是标准入口还是扩展入口，`run_id` 都等于该
+Session 的 turn id，因此两个入口共享同一个身份标识。
+*/
 pub struct RunEntry {
+    /// 该 run 的 id。
     pub run_id: String,
+    /// 该 run 所属的 Session id。
     pub session_id: SessionId,
+    /// 该 run 对应的流 id。
     pub stream_id: String,
+    /// 该 run 的事件账本。
     pub ledger: Arc<EventLedger>,
+    /// 该 run 的取消令牌。
     cancel: crate::agent::CancellationToken,
+    /// 该 run 当前的生命周期状态。
     lifecycle: StdMutex<RunLifecycle>,
+    /// 用于通知等待者“已结算”的通知器。
     settled: Notify,
+    /// 该 run 是否已被撤销（未启动即失败）。
     revoked: AtomicBool,
 }
 
+/// 一次 run 的生命周期状态。
 #[derive(Clone)]
 enum RunLifecycle {
+    /// 仍在运行中。
     Running,
+    /// 已结算，携带框架产生的最终回执。
     Settled(Arc<TurnReceipt>),
 }
 
 impl RunEntry {
+    /// 用给定的标识信息与取消令牌构造一个新的运行中 RunEntry。
     pub(crate) fn new(
         run_id: String,
         session_id: SessionId,
@@ -262,13 +305,15 @@ impl RunEntry {
         }
     }
 
-    /// Framework cancellation token of this run.
+    /// 该 run 的框架取消令牌。
     pub fn cancellation(&self) -> crate::agent::CancellationToken {
         self.cancel.clone()
     }
 
-    /// Request cancellation. Racing with natural completion resolves through
-    /// the framework's own terminal semantics — this only signals the token.
+    /**
+    请求取消。与自然完成之间的竞态由框架自身的终态语义解决——
+    本方法只负责发出取消信号。
+    */
     pub fn cancel(&self) -> bool {
         if self.is_running() {
             self.cancel.cancel();
@@ -278,15 +323,18 @@ impl RunEntry {
         }
     }
 
+    /// 撤销该 run（用于尚未启动即失败的场景），并一并发出取消信号。
     pub(crate) fn revoke(&self) {
         self.revoked.store(true, Ordering::Release);
         self.cancel();
     }
 
+    /// 该 run 是否已被撤销。
     pub(crate) fn is_revoked(&self) -> bool {
         self.revoked.load(Ordering::Acquire)
     }
 
+    /// 该 run 当前是否仍在运行中。
     pub fn is_running(&self) -> bool {
         matches!(
             self.lifecycle
@@ -297,7 +345,7 @@ impl RunEntry {
         )
     }
 
-    /// The settled receipt, when the framework already produced one.
+    /// 若框架已产生回执，则返回该已结算回执。
     pub fn receipt(&self) -> Option<Arc<TurnReceipt>> {
         self.lifecycle
             .lock()
@@ -308,6 +356,7 @@ impl RunEntry {
             })
     }
 
+    /// 用框架产生的回执结算该 run（仅在仍处于 Running 状态时生效一次）。
     pub(crate) fn settle(&self, receipt: TurnReceipt) {
         if let Ok(mut lifecycle) = self.lifecycle.lock()
             && matches!(*lifecycle, RunLifecycle::Running)
@@ -317,9 +366,11 @@ impl RunEntry {
         }
     }
 
-    /// Resolve with the single framework receipt. Never fabricates a
-    /// terminal: if the driver task was aborted before settling, this waits
-    /// forever — close paths cancel runs and await settlement instead.
+    /**
+    等待并返回框架产生的唯一回执。绝不会凭空制造终态：
+    如果驱动任务在结算前被中止，本方法会永远等待下去——
+    关闭路径应改为取消 run 并等待其结算。
+    */
     pub async fn wait_receipt(&self) -> Arc<TurnReceipt> {
         loop {
             let notified = self.settled.notified();
@@ -333,13 +384,15 @@ impl RunEntry {
     }
 }
 
-/// Registry of runs for one connection: the single Run authority.
+/// 一个连接的 run 注册表：唯一的 Run 权威。
 #[derive(Default)]
 pub(crate) struct RunRegistry {
+    /// 按 run id 索引的已注册 run。
     runs: RwLock<HashMap<String, Arc<RunEntry>>>,
 }
 
 impl RunRegistry {
+    /// 注册一个新 run；若该 run id 已存在则报错。
     async fn register(&self, entry: Arc<RunEntry>) -> Result<()> {
         let mut runs = self.runs.write().await;
         if runs.contains_key(&entry.run_id) {
@@ -352,18 +405,21 @@ impl RunRegistry {
         Ok(())
     }
 
+    /// 按 run id 查询已注册的 run。
     pub async fn get(&self, run_id: &str) -> Option<Arc<RunEntry>> {
         self.runs.read().await.get(run_id).cloned()
     }
 
+    /// 从注册表中移除并返回该 run。
     pub async fn remove(&self, run_id: &str) -> Option<Arc<RunEntry>> {
         self.runs.write().await.remove(run_id)
     }
 
-    /// Cancel every live run and wait (bounded) for their settlements.
-    /// Entries whose driver task was aborted settle through the abort path;
-    /// waiting runs resolve as soon as their receipt exists or the entry is
-    /// dropped with the connection.
+    /**
+    取消所有存活的 run，并（有限时地）等待它们结算。
+    驱动任务被中止的条目会通过中止路径结算；等待中的 run 会在
+    其回执出现、或该条目随连接一起被丢弃时立即解除等待。
+    */
     async fn cancel_and_wait(&self, wait: Duration) -> usize {
         let entries: Vec<Arc<RunEntry>> = self.runs.read().await.values().cloned().collect();
         for entry in &entries {
@@ -375,8 +431,8 @@ impl RunRegistry {
                 let entry = entry.clone();
                 async move {
                     if entry.is_running() {
-                        // Races with the driver task: either the receipt lands
-                        // here or the connection teardown aborts the task.
+                        /* 与驱动任务存在竞态：要么回执在这里到达，
+                        要么连接的拆除逻辑中止该任务。 */
                         let _ = entry.wait_receipt().await;
                     }
                 }
@@ -388,18 +444,23 @@ impl RunRegistry {
         runs.len()
     }
 
+    /// 当前已注册的 run 数量。
     async fn run_count(&self) -> usize {
         self.runs.read().await.len()
     }
 }
 
-/// Ledger-first composite sink: commit to the ledger (journal included),
-/// then render the standard projection, then forward to extension
-/// observers. Any error is surfaced as delivery failure; the driver retains a
-/// producer terminal that was already observed before this sink call.
+/**
+以账本为先的组合 sink：先提交到账本（含日志），再渲染标准投影，
+最后转发给扩展观察者。任何错误都会作为投递失败上报；驱动方在调用本
+sink 之前已经观察到的生产者终态会被保留。
+*/
 struct SharedRunSink {
+    /// 事件账本。
     ledger: Arc<EventLedger>,
+    /// 标准 `session/update` 投影器。
     projector: Option<AcpEventProjector>,
+    /// 需要转发的扩展观察者。
     observers: Vec<Arc<dyn RunEventObserver>>,
 }
 
@@ -417,26 +478,32 @@ impl EventSink for SharedRunSink {
     }
 }
 
-/// Per-connection shared runtime: the single Session/Run/event authority
-/// used by both ACP profiles.
+/// 每个连接的共享运行时：两种 ACP profile 共用的唯一 Session/Run/事件权威。
 pub struct AcpConnectionServices {
+    /// 当前连接模式。
     mode: RwLock<ConnectionMode>,
+    /// 唯一的 Session 权威。
     sessions: Arc<SessionRegistry>,
+    /// 唯一的 Run 权威。
     runs: RunRegistry,
+    /// 新建账本时使用的容量边界。
     ledger_limits: AcpLedgerLimits,
+    /// 适配器配置（更新窗口边界等）。
     config: Arc<super::adapter::AcpAdapterConfig>,
+    /// 是否仍接受新的 Session/Run 准入。
     admission_open: AtomicBool,
+    /// 连接范围内的扩展调用权威。
     extensions: Arc<ExtensionInvocationAuthority>,
 }
 
 impl AcpConnectionServices {
+    /// 基于给定的 Session 注册表与适配器配置创建一个新的连接服务实例。
     pub fn new(
         sessions: Arc<SessionRegistry>,
         config: Arc<super::adapter::AcpAdapterConfig>,
     ) -> Self {
-        // The adapter config is validated before the connection spawns, so a
-        // non-positive concurrency cannot reach here; degrade to a single
-        // permit instead of panicking if it ever does.
+        /* 适配器配置在连接被创建之前就已完成校验，所以非正的并发数
+        理论上不会到达这里；万一发生，则降级为单个许可而不是 panic。 */
         let extensions = ExtensionInvocationAuthority::new(config.max_extension_concurrency)
             .unwrap_or_else(|error| {
                 tracing::warn!(
@@ -457,52 +524,60 @@ impl AcpConnectionServices {
         }
     }
 
-    /// The connection-scoped extension invocation authority (design §12.3).
-    /// Shared by every extension proxy on this connection; never carries a
-    /// second run/session/terminal authority.
+    /**
+    连接范围内的扩展调用权威（设计文档 §12.3）。
+    由该连接上的每一个扩展代理共享；绝不会携带第二个
+    run/session/终态权威。
+    */
     pub fn extensions(&self) -> &Arc<ExtensionInvocationAuthority> {
         &self.extensions
     }
 
-    /// Override the in-memory ledger bounds (extension profiles derive them
-    /// from their negotiated limits).
+    /// 覆盖内存账本的容量边界（扩展 profile 会根据其协商出的限制推导该值）。
     pub fn with_ledger_limits(mut self, limits: AcpLedgerLimits) -> Self {
         self.ledger_limits = limits;
         self
     }
 
+    /// 以可变引用形式覆盖内存账本的容量边界。
     pub fn with_ledger_limits_mut(&mut self, limits: AcpLedgerLimits) -> &mut Self {
         self.ledger_limits = limits;
         self
     }
 
+    /// 当前的账本容量边界。
     pub fn ledger_limits(&self) -> AcpLedgerLimits {
         self.ledger_limits
     }
 
-    /// The one Session authority of this connection.
+    /// 该连接唯一的 Session 权威。
     pub fn sessions(&self) -> &Arc<SessionRegistry> {
         &self.sessions
     }
 
+    /// 当前的连接模式。
     pub async fn mode(&self) -> ConnectionMode {
         *self.mode.read().await
     }
 
+    /// 该连接是否已进入扩展模式。
     pub async fn is_extended(&self) -> bool {
         self.mode().await == ConnectionMode::Extended
     }
 
+    /// 该连接当前是否仍接受新的准入（Session/Run）。
     pub fn admission_open(&self) -> bool {
         self.admission_open.load(Ordering::Acquire)
     }
 
+    /// 关闭该连接的准入：不再接受新的 Session、Run 或扩展调用。
     pub fn close_admission(&self) {
         self.admission_open.store(false, Ordering::Release);
         self.sessions.close_admission();
         self.extensions.close_admission();
     }
 
+    /// 若准入已关闭则返回错误，否则放行。
     pub fn ensure_admission(&self) -> Result<()> {
         if self.admission_open() {
             Ok(())
@@ -511,6 +586,7 @@ impl AcpConnectionServices {
         }
     }
 
+    /// 创建一个新 Session；若在创建期间准入被关闭，则回滚该 Session。
     pub async fn create_session(
         &self,
         request: agent_client_protocol::schema::v1::NewSessionRequest,
@@ -524,6 +600,7 @@ impl AcpConnectionServices {
         Ok(session_id)
     }
 
+    /// 插入一个已构造好的 Session 上下文；若在插入期间准入被关闭，则回滚该 Session。
     pub async fn insert_session(
         &self,
         context: super::session::AcpSessionContext,
@@ -537,18 +614,21 @@ impl AcpConnectionServices {
         Ok(session_id)
     }
 
+    /// 设置该连接的连接模式。
     pub(crate) async fn set_mode(&self, mode: ConnectionMode) {
         *self.mode.write().await = mode;
     }
 
-    /// Resolve one run by id.
+    /// 按 id 解析一个 run。
     pub async fn run(&self, run_id: &str) -> Option<Arc<RunEntry>> {
         self.runs.get(run_id).await
     }
 
-    /// Return the cancellation token of the active run owned by one Session.
-    /// A Session permits at most one active run, so this is an unambiguous
-    /// bridge for trait callbacks whose public method does not carry a token.
+    /**
+    返回某个 Session 所拥有的活跃 run 的取消令牌。
+    一个 Session 至多允许一个活跃 run，因此对于那些公开方法不携带
+    令牌的 trait 回调而言，这是一个无歧义的桥接方式。
+    */
     pub async fn active_run_cancellation(
         &self,
         session_id: &str,
@@ -562,9 +642,11 @@ impl AcpConnectionServices {
             .map(|entry| entry.cancellation())
     }
 
-    /// Remove a prepared run when a later setup or connection spawn fails.
-    /// Dropping the returned task future releases the Session lease; this
-    /// method removes only the shared Run registration.
+    /**
+    在后续的准备工作或连接创建失败时，移除一个已准备好的 run。
+    丢弃返回的任务 future 会释放该 Session 的租约；本方法只负责
+    移除共享的 Run 注册记录。
+    */
     pub async fn remove_run(&self, run_id: &str) -> Option<Arc<RunEntry>> {
         let entry = self.runs.remove(run_id).await;
         if let Some(entry) = &entry {
@@ -573,7 +655,7 @@ impl AcpConnectionServices {
         entry
     }
 
-    /// Build the standard projection for one run with the adapter's bounds.
+    /// 使用适配器的边界配置，为一个 run 构建标准投影器。
     pub fn projector(
         &self,
         session_id: SessionId,
@@ -588,10 +670,12 @@ impl AcpConnectionServices {
         )
     }
 
-    /// Register one run and return the driver task for the caller to spawn
-    /// on the connection. Registration reserves the run id; the driver only
-    /// starts once the spawned task runs. A duplicate run id is a caller
-    /// bug and fails without touching the Session's run slot.
+    /**
+    注册一个 run，并返回供调用方在该连接上 spawn 的驱动任务。
+    注册操作会预留该 run id；驱动只有在被 spawn 的任务真正运行后才会开始。
+    重复的 run id 属于调用方的 bug，会直接失败且不会触碰该 Session 的
+    run 名额。
+    */
     pub async fn prepare_run(
         self: &Arc<Self>,
         spec: RunStartSpec,
@@ -646,8 +730,10 @@ impl AcpConnectionServices {
         Ok((entry, task))
     }
 
-    /// Cancel one run by id. Returns false for unknown or already settled
-    /// runs; the unique terminal still comes from the framework.
+    /**
+    按 id 取消一个 run。对未知或已结算的 run 返回 false；
+    唯一的终态仍然来自框架本身。
+    */
     pub async fn cancel_run(&self, run_id: &str) -> bool {
         let Some(entry) = self.runs.get(run_id).await else {
             return false;
@@ -655,13 +741,15 @@ impl AcpConnectionServices {
         entry.cancel()
     }
 
-    /// Number of registered runs (live and settled) on this connection.
+    /// 该连接上已注册的 run 数量（包含存活与已结算的）。
     pub async fn run_count(&self) -> usize {
         self.runs.run_count().await
     }
 
-    /// Close extension and Run admission, cancel both invocation classes,
-    /// wait for their owners, then close Session Agents.
+    /**
+    关闭扩展与 Run 的准入，取消这两类调用，等待它们的持有者，
+    然后关闭 Session Agent。
+    */
     pub async fn close(&self, timeout: Duration) -> Result<()> {
         self.close_admission();
         self.extensions.cancel_all();
@@ -684,67 +772,85 @@ impl AcpConnectionServices {
         .map_err(|_| ReactError::Other("ACP connection close timed out".to_string()))?
     }
 
+    /// 取消所有存活的 run 并等待其结算（结果被丢弃）。
     pub async fn cancel_and_wait_runs(&self, timeout: Duration) {
         let _ = self.runs.cancel_and_wait(timeout).await;
     }
 
+    /// 取消所有存活的 run 并等待其结算，返回超时后仍未结算的 run 数量。
     pub(crate) async fn cancel_and_wait_runs_report(&self, timeout: Duration) -> usize {
         self.runs.cancel_and_wait(timeout).await
     }
 
+    /// 关闭该连接上的全部 Session。
     pub async fn close_sessions(&self) -> Result<()> {
         self.sessions.close_all().await
     }
 }
 
-/// Standard responses a profile may annotate with extension handles
-/// (`_meta` bridging, design §10.4).
+/**
+profile 可能为标准响应附加扩展句柄信息的场景
+（`_meta` 桥接，设计文档 §10.4）。
+*/
 #[derive(Debug, Clone, Copy)]
 pub enum StandardBridgeOutcome<'a> {
-    /// `session/new` succeeded for this ACP Session id.
+    /// 该 ACP Session id 上的 `session/new` 已成功。
     SessionCreated { session_id: &'a str },
-    /// A Prompt run started on this Session with these run/stream ids.
+    /// 在该 Session 上以给定的 run/stream id 启动了一个 Prompt run。
     PromptStarted {
+        /// 所属的 Session id。
         session_id: &'a str,
+        /// 该 run 的 id。
         run_id: &'a str,
+        /// 该 run 对应的流 id。
         stream_id: &'a str,
     },
 }
 
-/// Context handed to a profile when it builds the per-run extension
-/// observers for one run.
+/// profile 在为一个 run 构建其扩展观察者时所获得的上下文。
 pub struct RunObserverContext<'a> {
+    /// 所属的 Session id。
     pub session_id: &'a str,
+    /// 该 run 的 id。
     pub run_id: &'a str,
+    /// 该 run 对应的流 id。
     pub stream_id: &'a str,
+    /// 该连接的 Client 连接句柄。
     pub connection: ConnectionTo<Client>,
 }
 
-/// A composable extension profile over the shared connection runtime.
-///
-/// The adapter keeps the single official connection: `initialize`, stdio,
-/// the reader/writer loop, standard handlers and the close chain are built
-/// exactly once. A profile contributes (a) the capability advertisement
-/// under `agentCapabilities._meta.<key>`, (b) the hello decision that
-/// promotes the connection to [`ConnectionMode::Extended`], (c) per-run
-/// event observers, (d) `_meta` bridging on standard responses, and (e) its
-/// typed handlers through [`AcpConnectionProfile::attach`], which the
-/// adapter merges with the official `Builder::with_connection_builder`.
+/**
+构建在共享连接运行时之上、可组合的扩展 profile。
+
+适配器只维护一个官方连接：`initialize`、stdio、读写循环、
+标准 handler 以及关闭链都只会被构建一次。一个 profile 贡献：
+(a) 在 `agentCapabilities._meta.<key>` 下的能力广播；
+(b) 决定是否将连接提升为 [`ConnectionMode::Extended`] 的 hello 判定；
+(c) 每个 run 的事件观察者；
+(d) 标准响应上的 `_meta` 桥接；
+(e) 通过 [`AcpConnectionProfile::attach`] 提供的带类型 handler ——
+适配器会把它与官方的 `Builder::with_connection_builder` 合并。
+*/
 pub trait AcpConnectionProfile: Send + Sync + 'static {
-    /// `(_meta key, value)` published in every `initialize` response. Return
-    /// `None` to never advertise (the profile then behaves as standard-only).
+    /**
+    在每个 `initialize` 响应中发布的 `(_meta key, value)`。
+    返回 `None` 表示永不广播（此时该 profile 表现为纯标准模式）。
+    */
     fn advertisement_meta(&self) -> Option<(String, serde_json::Value)> {
         None
     }
 
-    /// Decide the connection mode from the raw Client hello. `Ok(())` enters
-    /// Extended mode; `Err(reason)` keeps Standard mode without failing the
-    /// standard `initialize`. A plain Client (no `_meta` entry at all) never
-    /// reaches this method.
+    /**
+    根据原始 Client hello 决定连接模式。`Ok(())` 进入扩展模式；
+    `Err(reason)` 保持标准模式且不会使标准 `initialize` 失败。
+    一个完全没有 `_meta` 条目的普通 Client 永远不会到达本方法。
+    */
     fn negotiate_hello(&self, hello: &serde_json::Value) -> std::result::Result<(), String>;
 
-    /// Annotate a successful standard response for handle bridging in
-    /// Extended mode. Returning `Some(meta)` sets the response's `_meta`.
+    /**
+    为扩展模式下的句柄桥接，给一次成功的标准响应附加元信息。
+    返回 `Some(meta)` 会设置该响应的 `_meta`。
+    */
     fn annotate_standard(
         &self,
         outcome: StandardBridgeOutcome<'_>,
@@ -753,9 +859,10 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         None
     }
 
-    /// Register a Session created through the standard ACP `session/new`
-    /// path. Extension profiles use this to make the response's bridge handle
-    /// address the same Session registry entry.
+    /**
+    注册一个通过标准 ACP `session/new` 路径创建的 Session。
+    扩展 profile 借此让响应中的桥接句柄指向同一个 Session 注册表条目。
+    */
     fn register_standard_session(
         &self,
         _session_id: &str,
@@ -764,9 +871,11 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Register a Run created through standard ACP `session/prompt` before
-    /// its driver task is spawned. The profile may persist its start record
-    /// and issue the same Run/Stream handles used by extension requests.
+    /**
+    在驱动任务被 spawn 之前，注册一个通过标准 ACP `session/prompt`
+    创建的 Run。profile 可以借此持久化其启动记录，并签发与扩展
+    请求相同的 Run/Stream 句柄。
+    */
     fn register_standard_run(
         &self,
         _session_id: &str,
@@ -775,8 +884,10 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Return the durable journal hook for a Run. Standard-only profiles
-    /// return `None`; the core profile uses this for both prompt entry paths.
+    /**
+    返回某个 Run 的持久化日志钩子。仅标准模式的 profile 返回
+    `None`；核心 profile 会为两种 prompt 入口路径都使用它。
+    */
     fn run_journal(
         &self,
         _run_id: &str,
@@ -784,9 +895,11 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// Persist the exact framework receipt after a Run settles. The default
-    /// profile does nothing; persistence-aware profiles store the receipt
-    /// without deriving a second terminal.
+    /**
+    在一个 Run 结算之后，持久化框架产生的确切回执。默认 profile
+    什么也不做；具备持久化能力的 profile 应存储该回执，且不产生
+    第二个终态。
+    */
     fn persist_run_settled(
         &self,
         _entry: &RunEntry,
@@ -795,27 +908,34 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Undo profile-side registrations made before the shared runtime could
-    /// spawn a driver, keeping a failed standard Prompt transactional.
+    /**
+    撤销共享运行时能够 spawn 驱动之前、profile 侧已经完成的注册，
+    使失败的标准 Prompt 请求保持事务性。
+    */
     fn rollback_run(&self, _run_id: &str, _stream_id: &str) {}
 
-    /// Notify the profile that the driver task was accepted by the official
-    /// connection. This hook must not persist the terminal receipt;
-    /// [`Self::persist_run_settled`] is the standard Prompt's sole durable
-    /// settlement authority.
+    /**
+    通知 profile：驱动任务已被官方连接接受。该钩子不得持久化终态
+    回执；[`Self::persist_run_settled`] 才是标准 Prompt 唯一的
+    持久化结算权威。
+    */
     fn run_spawned(&self, _entry: Arc<RunEntry>) {}
 
-    /// Flush profile-owned durable state after Run cancellation/wait and
-    /// before Session Agents/MCP are closed.
+    /**
+    在 Run 取消/等待完成之后、Session Agent/MCP 关闭之前，
+    刷新 profile 自身持有的持久化状态。
+    */
     fn flush_before_agents(&self) -> std::result::Result<(), String> {
         Ok(())
     }
 
-    /// Release connection-owned profile resources (e.g. extension
-    /// registrations) after Session Agents/MCP closed. Last step of the
-    /// teardown order in design §12.3/§16.
+    /**
+    在 Session Agent/MCP 关闭之后，释放连接持有的 profile 资源
+    （例如扩展注册）。这是设计文档 §12.3/§16 拆卸顺序中的最后一步。
+    */
     fn release_after_agents(&self) {}
 
+    /// 等待该 profile 自身的结算工作完成。
     fn wait_for_settlements(
         &self,
         _timeout: Duration,
@@ -823,18 +943,21 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
         Box::pin(async { Ok(()) })
     }
 
-    /// Extension observers for one run in Extended mode. Called once per
-    /// run start, before the driver spawns.
+    /**
+    扩展模式下、某个 run 的扩展观察者集合。在驱动 spawn 之前，
+    每次 run 启动只调用一次。
+    */
     fn run_observers(&self, context: RunObserverContext<'_>) -> Vec<Arc<dyn RunEventObserver>> {
         let _ = context;
         Vec::new()
     }
 
-    /// Build this profile's typed handler builder. The adapter merges it
-    /// after the standard handlers, so exactly one official dispatch chain
-    /// exists. Extension handlers must check
-    /// [`AcpConnectionServices::is_extended`] themselves and answer
-    /// method-not-found when the connection stayed Standard.
+    /**
+    构建该 profile 带类型的 handler builder。适配器会把它合并到标准
+    handler 之后，因此始终只存在一条官方的分发链。扩展 handler 必须
+    自行检查 [`AcpConnectionServices::is_extended`]，并在连接仍为
+    标准模式时回答“方法未找到”。
+    */
     fn attach(
         &self,
         services: Arc<AcpConnectionServices>,

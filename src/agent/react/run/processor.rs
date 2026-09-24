@@ -1,17 +1,21 @@
-//! SSE chunk processing — convert raw LLM streaming chunks into AgentEvent sequences.
-//!
-//! These are static methods (no `&self`) — pure functions that transform chunk data.
+/*!
+SSE 数据块处理 —— 将原始 LLM 流式数据块转换为 AgentEvent 事件序列。
+
+这些都是静态方法（没有 `&self`）—— 是转换数据块的纯函数。
+*/
 
 use crate::agent::AgentEvent;
 use crate::llm::types::{ChatCompletionChunk, FunctionCall, ToolCall as LlmToolCall};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
-/// Process streaming response chunk, collect content and return events.
-///
-/// `in_reasoning` tracks whether reasoning_content is being output (Qwen3/DeepSeek thinking process).
-/// ThinkStart is emitted when reasoning_content is first encountered,
-/// ThinkEnd is emitted when content or tool_calls is first encountered after reasoning ends.
+/**
+处理流式响应数据块，收集内容并返回事件列表。
+
+`in_reasoning` 用于跟踪当前是否正在输出 reasoning_content（Qwen3/DeepSeek 的思考过程）。
+第一次遇到 reasoning_content 时会发出 ThinkStart 事件；
+reasoning 结束后第一次遇到 content 或 tool_calls 时会发出 ThinkEnd 事件。
+*/
 #[allow(clippy::type_complexity)]
 pub(crate) fn process_stream_chunk(
     chunk: &ChatCompletionChunk,
@@ -24,7 +28,7 @@ pub(crate) fn process_stream_chunk(
     let mut events = Vec::new();
 
     if let Some(choice) = chunk.choices.first() {
-        // Handle reasoning_content (Qwen3/DeepSeek thinking process)
+        // 处理 reasoning_content（Qwen3/DeepSeek 的思考过程）
         if let Some(reasoning) = &choice.delta.reasoning_content
             && !reasoning.is_empty()
         {
@@ -36,7 +40,7 @@ pub(crate) fn process_stream_chunk(
             events.push(AgentEvent::Token(reasoning.clone()));
         }
 
-        // When content is first encountered after reasoning ends, close the thinking block
+        // reasoning 结束后第一次遇到 content 时，结束思考块
         if let Some(content) = &choice.delta.content
             && !content.is_empty()
         {
@@ -87,26 +91,27 @@ pub(crate) fn process_stream_chunk(
     events
 }
 
-/// Parse streaming tool-call arguments, tolerating the trailing-character
-/// corruption that some providers (notably DeepSeek "fake-stream") inject when
-/// reassembling argument fragments. See vLLM issue #42878: streamed fragments
-/// do not always concatenate back to the same JSON the non-streaming path
-/// would produce — common symptoms are extra trailing `}` / `]` or whitespace.
-///
-/// Strategy:
-///   1. Parse as-is.
-///   2. On failure, trim trailing `}`, `]`, `,` and whitespace and retry.
-///   3. Give up (return `Err`) only if repair also fails.
-///
-/// On success returns `(parsed_value, args_to_echo)`: `args_to_echo` is the
-/// canonical string we send back to the provider in the assistant message —
-/// it is the repaired/re-serialized form so the next turn sees valid JSON.
+/**
+解析流式工具调用参数，能容忍部分供应商（尤其是 DeepSeek 的 "fake-stream"）
+在重新拼接参数片段时引入的尾部字符损坏问题。参见 vLLM issue #42878：
+流式片段拼接后不一定能还原成非流式路径会产生的那份 JSON —— 常见症状是
+多出尾部的 `}` / `]` 或空白字符。
+
+策略：
+  1. 先按原样解析。
+  2. 解析失败时，裁掉尾部的 `}`、`]`、`,` 和空白字符后重试。
+  3. 只有修复后仍然失败时才放弃（返回 `Err`）。
+
+解析成功时返回 `(parsed_value, args_to_echo)`：`args_to_echo` 是我们
+回传给供应商、写入 assistant 消息中的规范化字符串 —— 它是修复/重新
+序列化后的结果，保证下一轮看到的是合法 JSON。
+*/
 fn parse_tool_args(args_str: &str) -> Result<(Value, String), serde_json::Error> {
     match serde_json::from_str::<Value>(args_str) {
         Ok(v) => Ok((v.clone(), v.to_string())),
         Err(original_err) => {
-            // Repair attempt: strip trailing junk one char at a time (up to a
-            // small bound) and retry. This catches the DeepSeek extra-`}` case.
+            /* 修复尝试：每次去掉一个尾部的多余字符（有次数上限）后重试。
+            这能覆盖 DeepSeek 多出一个 `}` 的情况。 */
             let trimmed = args_str.trim();
             let mut attempt = trimmed.to_string();
             for _ in 0..8 {
@@ -134,9 +139,11 @@ fn parse_tool_args(args_str: &str) -> Result<(Value, String), serde_json::Error>
     }
 }
 
-/// Convert the collected tool_call_map into structured tool call lists.
+/// 将收集到的 tool_call_map 转换成结构化的工具调用列表
 pub(crate) type ParsedToolStep = (String, String, Value);
 
+/// 将 `tool_call_map` 转换为发送给模型的 `LlmToolCall` 列表，以及内部使用的
+/// `ParsedToolStep` 列表；若发现同一批次中存在重复的 tool_call id，则返回错误。
 pub(crate) fn build_tool_calls_from_map(
     tool_call_map: &HashMap<u32, (String, String, String)>,
 ) -> Result<(Vec<LlmToolCall>, Vec<ParsedToolStep>), String> {
@@ -164,8 +171,8 @@ pub(crate) fn build_tool_calls_from_map(
         }
         match parse_tool_args(args_str) {
             Ok((args, canonical_args)) => {
-                // Send the CANONICAL (repaired) args back to the provider so
-                // the assistant message always carries valid JSON.
+                /* 把规范化（修复后）的参数回传给供应商，
+                确保 assistant 消息中始终携带合法 JSON。 */
                 msg_tool_calls.push(LlmToolCall {
                     id: canonical_id.clone(),
                     call_type: "function".to_string(),
@@ -184,11 +191,11 @@ pub(crate) fn build_tool_calls_from_map(
                     error = %e,
                     "Failed to parse streaming tool-call arguments even after repair; dropping this tool call"
                 );
-                // CRITICAL: drop the tool call entirely — do NOT echo it back
-                // to the provider (corrupt args cause HTTP 400 "Invalid
-                // assistant message"), and do NOT emit a half tool_call with no
-                // matching tool_result (that also breaks the next turn).
-                // Dropping it lets the model retry the call cleanly next turn.
+                /* 重要：直接丢弃这个工具调用 —— 不要把它回传给供应商
+                （损坏的参数会导致 HTTP 400 "Invalid assistant message"），
+                也不要发出一个没有匹配 tool_result 的半截 tool_call
+                （那同样会破坏下一轮对话）。丢弃它可以让模型在下一轮
+                干净地重新发起调用。 */
             }
         }
     }
@@ -207,15 +214,15 @@ mod tests {
         let raw = r#"{"task": {"agent_role": "explorer"}}"#;
         let (val, echo) = parse_tool_args(raw)?;
         assert_eq!(val["task"]["agent_role"], "explorer");
-        // Echoed args are the canonical re-serialized form.
+        // 回显的参数是规范化重新序列化后的形式。
         assert_eq!(echo, val.to_string());
         Ok(())
     }
 
     #[test]
     fn parse_tool_args_repairs_deepseek_extra_trailing_brace() -> Result<(), serde_json::Error> {
-        // DeepSeek "fake-stream" artifact: one extra `}` at the tail.
-        // See vLLM issue #42878.
+        /* DeepSeek "fake-stream" 产生的问题：尾部多出一个 `}`。
+        参见 vLLM issue #42878。 */
         let raw = r#"{"task": {"agent_role": "explorer"}}}"#;
         let (val, _echo) = parse_tool_args(raw)?;
         assert_eq!(val["task"]["agent_role"], "explorer");
@@ -224,7 +231,7 @@ mod tests {
 
     #[test]
     fn parse_tool_args_repairs_trailing_whitespace_after_brace() -> Result<(), serde_json::Error> {
-        // DeepSeek variant: valid JSON followed by trailing whitespace.
+        // DeepSeek 的另一种情况：合法 JSON 后面跟着尾部空白字符。
         let raw = "{\"task\": {\"agent_role\": \"explorer\"}}   \n";
         let (val, _echo) = parse_tool_args(raw)?;
         assert_eq!(val["task"]["agent_role"], "explorer");
@@ -233,7 +240,7 @@ mod tests {
 
     #[test]
     fn parse_tool_args_repairs_multiple_extra_braces() -> Result<(), serde_json::Error> {
-        // Worst case: several extra trailing `}`.
+        // 最坏情况：尾部有多个多余的 `}`。
         let raw = r#"{"task": {"agent_role": "explorer"}}}}}"#;
         let (val, _echo) = parse_tool_args(raw)?;
         assert_eq!(val["task"]["agent_role"], "explorer");
@@ -242,7 +249,7 @@ mod tests {
 
     #[test]
     fn parse_tool_args_genuinely_broken_returns_err() {
-        // Not a JSON object at all — repair cannot help.
+        // 根本不是一个 JSON 对象 —— 修复逻辑也无能为力。
         let raw = "not json at all";
         assert!(parse_tool_args(raw).is_err());
     }
@@ -317,3 +324,4 @@ mod tests {
         Ok(())
     }
 }
+</content>

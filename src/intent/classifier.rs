@@ -1,13 +1,14 @@
-//! Built-in intent classifier implementations.
-//!
-//! Two classification strategies are provided:
-//!
-//! | Strategy | When to use | Cost |
-//! |----------|-------------|------|
-//! | [`KeywordClassifier`] | Fast zero-cost first pass; product layer supplies all triggers | 0 tokens |
-//! | [`LlmIntentClassifier`] | Semantic understanding; works with any skill set | ~500 tokens |
-//!
-//! Use [`ChainedClassifier`] to combine them: try keywords first, fall back to LLM.
+/*! 内置的意图分类器实现。
+ *
+ * 提供两种分类策略：
+ *
+ * | 策略 | 适用场景 | 成本 |
+ * |----------|-------------|------|
+ * | [`KeywordClassifier`] | 快速、零成本的第一遍过滤；触发词全部由产品层提供 | 0 token |
+ * | [`LlmIntentClassifier`] | 语义理解；适配任意技能集合 | 约 500 token |
+ *
+ * 使用 [`ChainedClassifier`] 将两者组合：先尝试关键词匹配，失败后回退到 LLM。
+ */
 
 use super::{Intent, IntentClassifier};
 use crate::llm::LlmClient;
@@ -18,37 +19,36 @@ use std::sync::Arc;
 
 // ── KeywordClassifier ────────────────────────────────────────────────
 
-/// Zero-cost keyword-based intent classifier.
-///
-/// Maps trigger words/phrases to [`Intent::SkillRequired`] or
-/// [`Intent::DirectAnswer`].  If no keyword matches, returns
-/// [`Intent::Fallback`].
-///
-/// **The classifier contains zero hardcoded keywords.**  All triggers
-/// are supplied by the product layer — e.g. derived from skill
-/// `description` text, since the standard `SKILL.md` format has no
-/// trigger field.
-///
-/// # Example
-///
-/// ```
-/// use echo_agent::intent::{KeywordClassifier, Intent};
-///
-/// let mut classifier = KeywordClassifier::default();
-/// // Product layer registers explicit triggers for programmatic descriptors.
-/// // Standard SKILL.md files have no trigger frontmatter field.
-/// classifier.add_skill_keywords("coding", &["写代码", "编程", "debug", "refactor"]);
-/// classifier.add_skill_keywords("paper-search", &["论文", "文献", "arxiv"]);
-/// // Product layer registers direct-answer keywords
-/// classifier.add_direct_keywords(&["你好", "hello", "thanks"]);
-/// ```
+/** 零成本的、基于关键词的意图分类器。
+ *
+ * 将触发词/短语映射为 [`Intent::SkillRequired`] 或 [`Intent::DirectAnswer`]。
+ * 如果没有关键词匹配，则返回 [`Intent::Fallback`]。
+ *
+ * **该分类器不包含任何硬编码关键词。**所有触发词均由产品层提供——
+ * 例如从技能的 `description` 文本中派生，因为标准的 `SKILL.md` 格式
+ * 本身没有 trigger 字段。
+ *
+ * # 示例
+ *
+ * ```
+ * use echo_agent::intent::{KeywordClassifier, Intent};
+ *
+ * let mut classifier = KeywordClassifier::default();
+ * // 产品层为程序化的描述符注册显式触发词。
+ * // 标准 SKILL.md 文件没有 trigger frontmatter 字段。
+ * classifier.add_skill_keywords("coding", &["写代码", "编程", "debug", "refactor"]);
+ * classifier.add_skill_keywords("paper-search", &["论文", "文献", "arxiv"]);
+ * // 产品层注册直接回答（DirectAnswer）关键词
+ * classifier.add_direct_keywords(&["你好", "hello", "thanks"]);
+ * ```
+ */
 #[derive(Clone)]
 pub struct KeywordClassifier {
-    /// trigger_word -> all owning skill names (case-insensitive)
+    /// 触发词 -> 所有拥有该触发词的技能名称（大小写不敏感）
     skill_keywords: HashMap<String, Vec<String>>,
-    /// trigger phrases for DirectAnswer (case-insensitive)
+    /// DirectAnswer 的触发短语（大小写不敏感）
     direct_keywords: Vec<String>,
-    /// Whether DirectAnswer routing is enabled
+    /// 是否启用 DirectAnswer 路由
     enable_direct_answer: bool,
 }
 
@@ -63,16 +63,17 @@ impl Default for KeywordClassifier {
 }
 
 impl KeywordClassifier {
-    /// Create an empty classifier.
+    /// 创建一个空的分类器。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register keywords that trigger a skill activation.
-    ///
-    /// Typically called by the product layer for programmatic descriptors.
-    /// Standard `SKILL.md` files have no trigger frontmatter field; callers
-    /// may derive terms from descriptions when a keyword fast path is desired.
+    /** 注册用于触发某个技能激活的关键词。
+     *
+     * 通常由产品层为程序化描述符调用。标准的 `SKILL.md` 文件没有
+     * trigger frontmatter 字段；当需要关键词快速路径时，调用方可以
+     * 从描述文本中派生出这些词条。
+     */
     pub fn add_skill_keywords(&mut self, skill_name: &str, trigger_words: &[&str]) {
         for word in trigger_words {
             let owners = self.skill_keywords.entry(word.to_lowercase()).or_default();
@@ -83,9 +84,10 @@ impl KeywordClassifier {
         }
     }
 
-    /// Batch-register skill keywords from a map of skill_name → triggers.
-    ///
-    /// Convenience method for loading all skills at once.
+    /** 从 skill_name → triggers 的映射批量注册技能关键词。
+     *
+     * 便于一次性加载所有技能的便捷方法。
+     */
     pub fn add_skill_keyword_map(&mut self, map: &HashMap<String, Vec<String>>) {
         for (skill_name, triggers) in map {
             let refs: Vec<&str> = triggers.iter().map(|s| s.as_str()).collect();
@@ -93,25 +95,26 @@ impl KeywordClassifier {
         }
     }
 
-    /// Register keywords that trigger a direct answer (no skill, no ReAct).
+    /// 注册触发直接回答（不使用技能、不进入 ReAct）的关键词。
     pub fn add_direct_keywords(&mut self, trigger_words: &[&str]) {
         for word in trigger_words {
             self.direct_keywords.push(word.to_lowercase());
         }
     }
 
-    /// Enable or disable the DirectAnswer shortcut.
+    /// 启用或禁用 DirectAnswer 快捷路径。
     pub fn set_enable_direct_answer(&mut self, enable: bool) {
         self.enable_direct_answer = enable;
     }
 
+    /// 对输入文本做关键词匹配，返回分类得到的意图。
     fn classify_inner(&self, input: &str) -> Intent {
         let lower = input.trim().to_lowercase();
 
-        // 1. SkillRequired: weighted score-based keyword matching.
-        //    Longer triggers get higher weight (more specific = more reliable).
-        //    Multiple triggers matching the same skill boosts confidence.
-        //    If two skills score similarly, confidence drops (ambiguous input).
+        /* 1. SkillRequired：基于加权得分的关键词匹配。
+         *    触发词越长，权重越高（越具体 = 越可靠）。
+         *    同一技能匹配到多个触发词会提升置信度。
+         *    若两个技能得分接近，说明输入存在歧义，置信度会随之下降。 */
         let mut skill_scores: HashMap<&str, f32> = HashMap::new();
         for (trigger, skills) in &self.skill_keywords {
             if let Some(weight) = Self::match_weight(&lower, trigger) {
@@ -122,7 +125,7 @@ impl KeywordClassifier {
         }
 
         if !skill_scores.is_empty() {
-            // Sort by score descending
+            // 按得分降序排序
             let mut scored: Vec<(&str, f32)> = skill_scores.into_iter().collect();
             scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
@@ -137,23 +140,23 @@ impl KeywordClassifier {
                 return Intent::Fallback;
             }
 
-            // Confidence based on:
-            // - Absolute score (higher = more triggers matched)
-            // - Gap to runner-up (bigger gap = less ambiguous)
+            /* 置信度取决于：
+             * - 绝对得分（越高表示匹配到的触发词越多）
+             * - 与次高分的差距（差距越大，歧义越小） */
             let gap_ratio = if best_score > 0.0 {
                 (best_score - runner_up_score) / best_score
             } else {
                 0.0
             };
 
-            // Base confidence from score (0.5 at score=1, scaling up)
+            // 基于得分的基础置信度（得分为 1 时是 0.5，随后递增）
             let score_confidence = (0.5 + best_score * 0.1).min(0.95);
-            // Penalty for ambiguity (small gap = ambiguous)
+            // 歧义惩罚（差距小则存在歧义）
             let ambiguity_penalty = if gap_ratio < 0.3 { 0.15 } else { 0.0 };
             let confidence = (score_confidence - ambiguity_penalty).max(0.3);
 
-            // Only accept keyword match if confidence >= 0.7
-            // Lower confidence → Fallback → let LLM classifier or ReAct handle it
+            /* 仅当置信度 >= 0.7 时才接受关键词匹配结果。
+             * 置信度较低时归入 Fallback —— 交给 LLM 分类器或完整 ReAct 流程处理。 */
             if confidence >= 0.7 {
                 return Intent::SkillRequired {
                     skill_name: best_skill.to_string(),
@@ -162,7 +165,7 @@ impl KeywordClassifier {
             }
         }
 
-        // 2. DirectAnswer: explicit keywords registered by product layer
+        // 2. DirectAnswer：由产品层显式注册的关键词
         if self.enable_direct_answer {
             for word in &self.direct_keywords {
                 if Self::match_weight(&lower, word).is_some() {
@@ -171,41 +174,41 @@ impl KeywordClassifier {
             }
         }
 
-        // 3. No match — let downstream decide (LLM fallback or full ReAct)
+        // 3. 未匹配 —— 交由下游决定（LLM 回退或完整 ReAct）
         Intent::Fallback
     }
 
-    /// Match a trigger against input and return a weight score.
-    ///
-    /// Returns `None` if no match, `Some(weight)` where weight reflects
-    /// match quality:
-    /// - Longer triggers → higher weight (more specific)
-    /// - CJK triggers ≥2 chars → weight = char count
-    /// - ASCII triggers with word boundary → weight = word count
-    /// - Short triggers (1 char CJK, <3 char ASCII) → lower weight
+    /** 将某个触发词与输入做匹配，返回一个权重分数。
+     *
+     * 未匹配时返回 `None`；匹配时返回 `Some(weight)`，权重反映匹配质量：
+     * - 触发词越长 → 权重越高（越具体）
+     * - CJK 触发词 ≥2 字符 → 权重 = 字符数
+     * - 带词边界的 ASCII 触发词 → 权重 = 单词数
+     * - 较短的触发词（1 字符 CJK，<3 字符 ASCII）→ 权重较低
+     */
     fn match_weight(input: &str, trigger: &str) -> Option<f32> {
         let has_cjk = trigger.chars().any(|c| c > '\u{2E80}');
 
         if has_cjk {
-            // CJK triggers: require at least 2 characters (filter single-char noise)
+            // CJK 触发词：要求至少 2 个字符（过滤单字符噪声）
             let char_count = trigger.chars().count();
             if char_count < 2 {
                 return None;
             }
             if input.contains(trigger) {
-                // Weight by character count: longer = more specific
+                // 按字符数加权：越长越具体
                 Some(char_count as f32)
             } else {
                 None
             }
         } else {
-            // ASCII/Latin triggers: require word-boundary match
+            // ASCII/拉丁字母触发词：要求词边界匹配
             if let Some(pos) = input.find(trigger) {
                 let before_ok = pos == 0 || !input.as_bytes()[pos - 1].is_ascii_alphanumeric();
                 let end = pos + trigger.len();
                 let after_ok = end >= input.len() || !input.as_bytes()[end].is_ascii_alphanumeric();
                 if before_ok && after_ok {
-                    // Weight by word count in trigger (multi-word = more specific)
+                    // 按触发词中的单词数加权（多词更具体）
                     let word_count = trigger.split_whitespace().count().max(1);
                     Some(word_count as f32 * 2.0)
                 } else {
@@ -231,15 +234,19 @@ impl IntentClassifier for KeywordClassifier {
 
 // ── KeywordClassifierConfig ────────────────────────────────────────────
 
-/// Configuration for building a [`KeywordClassifier`] from static data.
+/// 用于从静态数据构建 [`KeywordClassifier`] 的配置。
 #[derive(Debug, Clone, Default)]
 pub struct KeywordClassifierConfig {
+    /// 技能名称 -> 触发词列表的映射。
     pub skill_keyword_map: Vec<(String, Vec<String>)>,
+    /// DirectAnswer 的触发关键词列表。
     pub direct_keywords: Vec<String>,
+    /// 是否启用 DirectAnswer 快捷路径。
     pub enable_direct_answer: bool,
 }
 
 impl KeywordClassifierConfig {
+    /// 根据本配置构建一个 [`KeywordClassifier`]。
     pub fn build(self) -> KeywordClassifier {
         let mut classifier = KeywordClassifier::new();
         classifier.set_enable_direct_answer(self.enable_direct_answer);
@@ -260,67 +267,70 @@ impl KeywordClassifierConfig {
 
 // ── LlmIntentClassifier ──────────────────────────────────────────────
 
-/// A skill description used by the LLM classifier to understand available skills.
+/// 供 LLM 分类器理解可用技能所使用的技能描述。
 #[derive(Debug, Clone)]
 pub struct SkillDescription {
-    /// Skill identifier (e.g. "coding", "paper-search")
+    /// 技能标识符（例如 "coding"、"paper-search"）
     pub name: String,
-    /// One-line description of what this skill does
+    /// 该技能作用的一句话描述
     pub description: String,
-    /// Example trigger phrases (for the LLM to understand intent patterns)
+    /// 示例触发短语（帮助 LLM 理解意图模式）
     pub example_triggers: Vec<String>,
 }
 
-/// LLM-based intent classifier using a lightweight classification prompt.
-///
-/// Instead of relying on exhaustive keyword lists, sends the user input
-/// along with available skill descriptions to an LLM, which returns a
-/// structured classification result.
-///
-/// # Classification Prompt
-///
-/// The classifier constructs a prompt like:
-///
-/// ```text
-/// You are an intent classifier. Given the user input, decide:
-/// - DIRECT: simple greeting/question, answer directly
-/// - SKILL: needs a specific skill
-/// - FALLBACK: complex task, needs full agent loop
-///
-/// Available skills:
-/// 1. coding — Code generation, debugging, refactoring
-/// 2. paper-search — Academic literature search
-/// ...
-///
-/// User input: {input}
-/// Respond in JSON: {"intent": "DIRECT|SKILL|FALLBACK", "skill": "name", "confidence": 0.0-1.0}
-/// ```
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use echo_agent::intent::classifier::{LlmIntentClassifier, SkillDescription};
-///
-/// let skills = vec![
-///     SkillDescription {
-///         name: "coding".into(),
-///         description: "Code generation, debugging, refactoring".into(),
-///         example_triggers: vec!["帮我写个排序算法".into()],
-///     },
-/// ];
-/// let classifier = LlmIntentClassifier::new(llm_client, skills);
-/// ```
+/** 基于轻量分类提示词的、LLM 驱动的意图分类器。
+ *
+ * 不再依赖详尽的关键词列表，而是将用户输入与可用技能描述一起发送给
+ * LLM，由 LLM 返回结构化的分类结果。
+ *
+ * # 分类提示词
+ *
+ * 该分类器会构造类似如下的提示词：
+ *
+ * ```text
+ * You are an intent classifier. Given the user input, decide:
+ * - DIRECT: simple greeting/question, answer directly
+ * - SKILL: needs a specific skill
+ * - FALLBACK: complex task, needs full agent loop
+ *
+ * Available skills:
+ * 1. coding — Code generation, debugging, refactoring
+ * 2. paper-search — Academic literature search
+ * ...
+ *
+ * User input: {input}
+ * Respond in JSON: {"intent": "DIRECT|SKILL|FALLBACK", "skill": "name", "confidence": 0.0-1.0}
+ * ```
+ *
+ * # 示例
+ *
+ * ```rust,ignore
+ * use echo_agent::intent::classifier::{LlmIntentClassifier, SkillDescription};
+ *
+ * let skills = vec![
+ *     SkillDescription {
+ *         name: "coding".into(),
+ *         description: "Code generation, debugging, refactoring".into(),
+ *         example_triggers: vec!["帮我写个排序算法".into()],
+ *     },
+ * ];
+ * let classifier = LlmIntentClassifier::new(llm_client, skills);
+ * ```
+ */
 pub struct LlmIntentClassifier {
+    /// 用于执行分类请求的 LLM 客户端。
     llm: Arc<dyn LlmClient>,
+    /// 供分类器参考的可用技能描述列表。
     skills: Vec<SkillDescription>,
 }
 
 impl LlmIntentClassifier {
+    /// 创建一个新的 LLM 意图分类器。
     pub fn new(llm: Arc<dyn LlmClient>, skills: Vec<SkillDescription>) -> Self {
         Self { llm, skills }
     }
 
-    /// Build the classification prompt for a given user input.
+    /// 为给定的用户输入构建分类提示词。
     fn build_prompt(&self, user_input: &str) -> String {
         let skill_list = if self.skills.is_empty() {
             "(no skills available)".to_string()
@@ -372,9 +382,9 @@ Respond ONLY with valid JSON (no markdown):
         )
     }
 
-    /// Parse the LLM's JSON response into an Intent.
+    /// 将 LLM 的 JSON 响应解析为 Intent。
     fn parse_response(response: &str) -> Intent {
-        // Extract JSON from response (handle potential markdown wrapping)
+        // 从响应中提取 JSON（处理可能存在的 markdown 包裹）
         let json_str = response
             .trim()
             .trim_start_matches("```json")
@@ -382,7 +392,7 @@ Respond ONLY with valid JSON (no markdown):
             .trim_end_matches("```")
             .trim();
 
-        // Try to parse as JSON
+        // 尝试解析为 JSON
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
             let confidence = parsed
                 .get("confidence")
@@ -413,7 +423,7 @@ Respond ONLY with valid JSON (no markdown):
                 _ => Intent::Fallback,
             }
         } else {
-            // Failed to parse JSON — fallback
+            // JSON 解析失败 —— 回退
             Intent::Fallback
         }
     }
@@ -443,24 +453,26 @@ impl IntentClassifier for LlmIntentClassifier {
 
 // ── ChainedClassifier ────────────────────────────────────────────────
 
-/// Chains multiple classifiers: tries each in order, returns the first
-/// non-`Fallback` result.
-///
-/// # Typical Usage
-///
-/// ```rust,ignore
-/// use echo_agent::intent::classifier::{ChainedClassifier, KeywordClassifier, LlmIntentClassifier};
-///
-/// let chain = ChainedClassifier::new(vec![
-///     Box::new(keyword_classifier),  // fast, zero-cost
-///     Box::new(llm_classifier),      // semantic fallback
-/// ]);
-/// ```
+/** 串联多个分类器：依次尝试，返回第一个非 `Fallback` 的结果。
+ *
+ * # 典型用法
+ *
+ * ```rust,ignore
+ * use echo_agent::intent::classifier::{ChainedClassifier, KeywordClassifier, LlmIntentClassifier};
+ *
+ * let chain = ChainedClassifier::new(vec![
+ *     Box::new(keyword_classifier),  // fast, zero-cost
+ *     Box::new(llm_classifier),      // semantic fallback
+ * ]);
+ * ```
+ */
 pub struct ChainedClassifier {
+    /// 按顺序尝试的分类器列表。
     classifiers: Vec<Box<dyn IntentClassifier>>,
 }
 
 impl ChainedClassifier {
+    /// 创建一个新的串联分类器。
     pub fn new(classifiers: Vec<Box<dyn IntentClassifier>>) -> Self {
         Self { classifiers }
     }
@@ -472,7 +484,7 @@ impl IntentClassifier for ChainedClassifier {
         user_input: &'a str,
         context: &'a [Message],
     ) -> BoxFuture<'a, Intent> {
-        // Collect owned futures so we can iterate through classifiers
+        // 收集具有所有权的 future，以便遍历各个分类器
         Box::pin(async move {
             for classifier in &self.classifiers {
                 let intent = classifier.classify(user_input, context).await;
@@ -485,7 +497,7 @@ impl IntentClassifier for ChainedClassifier {
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -494,7 +506,7 @@ mod tests {
     #[test]
     fn test_keyword_classifier_empty_returns_fallback() {
         let classifier = KeywordClassifier::default();
-        // No keywords registered → everything is Fallback
+        // 未注册任何关键词 → 全部归为 Fallback
         assert!(matches!(
             classifier.classify_inner("Hello"),
             Intent::Fallback
@@ -527,7 +539,7 @@ mod tests {
         let mut classifier = KeywordClassifier::default();
         classifier.add_direct_keywords(&["hello"]);
         classifier.set_enable_direct_answer(false);
-        // DirectAnswer disabled → falls through to Fallback
+        // DirectAnswer 已禁用 → 落回 Fallback
         assert!(matches!(
             classifier.classify_inner("hello"),
             Intent::Fallback
@@ -538,7 +550,7 @@ mod tests {
     fn test_keyword_classifier_case_insensitive() {
         let mut classifier = KeywordClassifier::default();
         classifier.add_skill_keywords("coding", &["Debug"]);
-        // Input is lowercase, trigger was registered as "Debug" → normalized to "debug"
+        // 输入是小写，而触发词注册时是 "Debug" → 会被归一化为 "debug"
         let intent = classifier.classify_inner("please DEBUG this");
         assert!(matches!(intent, Intent::SkillRequired { .. }));
     }
@@ -588,7 +600,7 @@ mod tests {
     #[test]
     fn test_llm_classifier_build_prompt_contains_skills() {
         let classifier = LlmIntentClassifier::new(
-            // Use a dummy — we only test prompt building, not actual LLM calls
+            // 使用一个占位实现——这里只测试提示词构建，不涉及真实的 LLM 调用
             Arc::new(crate::testing::MockLlmClient::new()),
             vec![
                 SkillDescription {
@@ -625,17 +637,17 @@ mod tests {
         assert!(matches!(intent, Intent::DirectAnswer { .. }));
     }
 
-    /// RFC 3.1.4: Integration test for programmatic skill trigger words
-    /// through the KeywordClassifier.
-    ///
-    /// For each skill, at least 2 representative trigger queries are tested.
-    /// Negative cases (DirectAnswer, Fallback) are also verified.
+    /** RFC 3.1.4：针对 KeywordClassifier 的程序化技能触发词集成测试。
+     *
+     * 为每个技能至少测试 2 条具有代表性的触发查询。
+     * 同时验证负例场景（DirectAnswer、Fallback）。
+     */
     #[test]
     fn test_11_skill_trigger_routing() {
         let mut classifier = KeywordClassifier::default();
 
-        // Programmatic descriptors may still register explicit trigger words;
-        // standard SKILL.md files are routed by their descriptions instead.
+        /* 程序化描述符仍可以显式注册触发词；
+         * 而标准 SKILL.md 文件则是依据其描述文本进行路由的。 */
         classifier.add_skill_keywords(
             "coding",
             &[
@@ -822,10 +834,10 @@ mod tests {
             ],
         );
 
-        // DirectAnswer keywords
+        // DirectAnswer 关键词
         classifier.add_direct_keywords(&["你好", "hello", "hi", "thanks", "谢谢"]);
 
-        // ── Positive cases: each skill gets at least 2 test queries ──
+        // ── 正例：每个技能至少 2 条测试查询 ──
         let test_cases: Vec<(&str, &str)> = vec![
             // coding
             ("帮我写代码实现排序", "coding"),
@@ -896,9 +908,9 @@ mod tests {
             test_cases.len()
         );
 
-        // ── Negative cases ──
+        // ── 负例 ──
 
-        // DirectAnswer: greetings
+        // DirectAnswer：问候语
         let intent = classifier.classify_inner("你好");
         assert!(
             matches!(intent, Intent::DirectAnswer { .. }),
@@ -906,7 +918,7 @@ mod tests {
             intent
         );
 
-        // Fallback: generic question with no trigger match
+        // Fallback：没有匹配到触发词的普通问题
         let intent = classifier.classify_inner("今天天气怎么样");
         assert!(
             matches!(intent, Intent::Fallback),
@@ -914,7 +926,7 @@ mod tests {
             intent
         );
 
-        // Fallback: unrelated question
+        // Fallback：无关问题
         let intent = classifier.classify_inner("推荐一本好看的小说");
         assert!(
             matches!(intent, Intent::Fallback),

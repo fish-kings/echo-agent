@@ -1,10 +1,9 @@
-//! ReadSkillResourceTool -- on-demand resource loading (Tier 3).
+//! ReadSkillResourceTool —— 按需加载资源文件（第三层）。
 //!
-//! When a skill's instructions reference a bundled file (script, reference doc,
-//! asset), the LLM calls this tool to load its content into context.
+//! 当技能的指令内容引用了随附文件（脚本、参考文档、素材）时，
+//! LLM 会调用此工具将其内容加载到上下文中。
 //!
-//! Security: rejects path traversal (`..`) and only allows reading from
-//! activated skills' directories.
+//! 安全性：拒绝路径穿越（`..`），且只允许从已激活技能的目录中读取文件。
 
 use std::sync::Arc;
 
@@ -16,19 +15,22 @@ use crate::skills::registry::SkillRegistry;
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
-/// Default maximum resource file size (1 MB).
+/// 资源文件的默认最大大小限制（1 MB）。
 const DEFAULT_MAX_RESOURCE_BYTES: usize = 1024 * 1024;
 
-/// Tool for reading resource files from activated skill directories.
+/// 用于从已激活技能目录中读取资源文件的工具。
 ///
-/// Only allows reading from skills that have been activated via `activate_skill`.
-/// Rejects path traversal attempts for security.
+/// 仅允许读取已通过 `activate_skill` 激活的技能的资源。
+/// 出于安全考虑会拒绝路径穿越尝试。
 pub struct ReadSkillResourceTool {
+    /// 技能注册表，用于查询技能是否已激活及其描述符信息。
     registry: Arc<RwLock<SkillRegistry>>,
+    /// 允许读取的资源文件最大字节数。
     max_resource_bytes: usize,
 }
 
 impl ReadSkillResourceTool {
+    /// 使用默认的最大资源文件大小构造一个新的 `ReadSkillResourceTool`。
     pub fn new(registry: Arc<RwLock<SkillRegistry>>) -> Self {
         Self {
             registry,
@@ -36,7 +38,7 @@ impl ReadSkillResourceTool {
         }
     }
 
-    /// Set the maximum allowed resource file size in bytes.
+    /// 设置允许的资源文件最大字节数。
     pub fn with_max_bytes(mut self, bytes: usize) -> Self {
         self.max_resource_bytes = bytes;
         self
@@ -44,10 +46,12 @@ impl ReadSkillResourceTool {
 }
 
 impl Tool for ReadSkillResourceTool {
+    /// 返回该工具在工具调用协议中使用的名称：`"read_skill_resource"`。
     fn name(&self) -> &str {
         "read_skill_resource"
     }
 
+    /// 返回该工具的自然语言描述，用于告知模型何时调用它。
     fn description(&self) -> &str {
         "Read a resource file from an activated skill's directory. \
          Use this when a skill's instructions reference a file \
@@ -55,6 +59,7 @@ impl Tool for ReadSkillResourceTool {
          The skill must be activated first via activate_skill."
     }
 
+    /// 返回该工具调用参数的 JSON Schema，包含技能名称和资源文件相对路径。
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -73,6 +78,8 @@ impl Tool for ReadSkillResourceTool {
         })
     }
 
+    /// 执行资源读取：校验技能已激活、路径安全且未逃逸技能目录、文件大小未超限，
+    /// 随后读取文件内容并包装为 `<skill_resource>` 标签文本返回。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let skill_name = parameters
@@ -87,7 +94,7 @@ impl Tool for ReadSkillResourceTool {
                 .ok_or_else(|| ToolError::MissingParameter("path".to_string()))?
                 .to_string();
 
-            // Path safety check using Path::components (robust against encoded traversal)
+            // 使用 Path::components 进行路径安全检查（能有效应对编码后的路径穿越攻击）
             let rel_path_obj = std::path::Path::new(&rel_path);
             if !is_path_traversal_safe(rel_path_obj) {
                 return Ok(ToolResult::error(
@@ -133,7 +140,7 @@ impl Tool for ReadSkillResourceTool {
                 }
             };
 
-            // Canonicalize skill dir first (must exist)
+            // 先规范化技能目录路径（该目录必须存在）
             let canonical_skill =
                 skill_dir
                     .canonicalize()
@@ -142,7 +149,7 @@ impl Tool for ReadSkillResourceTool {
                         message: format!("Cannot resolve skill directory for '{}'", skill_name),
                     })?;
 
-            // Check existence before canonicalizing the resource path
+            // 在规范化资源路径之前先检查文件是否存在
             let resource_path = skill_dir.join(&rel_path);
             if !resource_path.exists() {
                 return Ok(ToolResult::error(format!(
@@ -151,7 +158,7 @@ impl Tool for ReadSkillResourceTool {
                 )));
             }
 
-            // Verify the resolved path is still under the skill directory
+            // 验证解析后的路径仍然位于技能目录之下
             let canonical_resource =
                 resource_path
                     .canonicalize()
@@ -205,10 +212,9 @@ impl Tool for ReadSkillResourceTool {
     }
 }
 
-/// Check whether a path contains parent-dir traversal components.
+/// 检查路径中是否包含上级目录穿越（`..`）组件。
 ///
-/// Uses `Path::components` instead of string matching to handle
-/// encoded or unusual traversal attempts.
+/// 使用 `Path::components` 而非字符串匹配，以应对编码后或非常规形式的路径穿越尝试。
 fn is_path_traversal_safe(path: &std::path::Path) -> bool {
     use std::path::Component;
     path.components()
@@ -223,6 +229,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
+    /// 验证即使技能通过 `allowed_tools` 限制了可用工具集，
+    /// `read_skill_resource` 工具依然可用并能正确读取该技能目录下的资源内容。
     #[tokio::test]
     async fn read_skill_resource_remains_available_to_restricted_skill() {
         let root =

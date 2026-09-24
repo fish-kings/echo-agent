@@ -1,53 +1,53 @@
-//! OpenAI Chat Completions API type definitions
+//! OpenAI Chat Completions API 类型定义
 
 use crate::tools::Tool;
 use serde::{Deserialize, Serialize};
 
-// ── Multimodal Content ────────────────────────────────────────────────────────
+// ── 多模态内容 ────────────────────────────────────────────────────────
 
-/// A provider-neutral component of structured message content.
+/// 结构化消息内容中与提供方无关的一个组成部分。
 ///
-/// Provider adapters translate variants that their wire API does not support
-/// natively while the framework keeps the typed value in conversation state.
+/// 当供应商适配层的线上 API 原生不支持某个变体时，由适配层负责转换；
+/// 框架自身在会话状态中始终保留其类型化的值。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
-    /// Plain text
+    /// 纯文本
     Text {
-        /// Text content
+        /// 文本内容
         text: String,
     },
-    /// Image (Base64 encoded or URL)
+    /// 图片（Base64 编码或 URL）
     ImageUrl {
-        /// Image URL or Base64 data
+        /// 图片 URL 或 Base64 数据
         image_url: ImageUrl,
     },
-    /// File attachment (inline Base64)
+    /// 文件附件（内联 Base64）
     File {
-        /// File name
+        /// 文件名
         name: String,
-        /// File content (Base64 encoded)
+        /// 文件内容（Base64 编码）
         content: String,
     },
-    /// A typed link to a resource that the Agent may inspect.
+    /// 指向 Agent 可检查资源的类型化链接。
     ResourceLink {
-        /// Lossless provider-neutral resource metadata.
+        /// 无损、与提供方无关的资源元数据。
         resource: Box<LinkedResource>,
     },
 }
 
-/// Provider-neutral reasoning block required for multi-turn replay.
+/// 与提供方无关的推理块，多轮回放时需要。
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReasoningBlock {
-    /// Reasoning text accompanied by a provider signature.
+    /// 附带提供方签名的推理文本。
     Signed { thinking: String, signature: String },
-    /// Opaque encrypted reasoning that must be replayed unchanged.
+    /// 必须原样回放的不透明加密推理内容。
     Redacted { data: String },
-    /// Provider-owned opaque reasoning state that must be replayed unchanged.
+    /// 提供方持有的不透明推理状态，必须原样回放。
     ///
-    /// Responses requires both the item id and encrypted payload when the
-    /// application manages conversation history locally with `store: false`.
+    /// 当应用在本地管理会话历史且使用 `store: false` 时，
+    /// Responses 接口要求同时提供 item id 和加密后的 payload。
     Opaque {
         provider: String,
         id: String,
@@ -57,45 +57,44 @@ pub enum ReasoningBlock {
     },
 }
 
-/// Image URL or Base64 data
+/// 图片 URL 或 Base64 数据
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ImageUrl {
-    /// `data:image/png;base64,...` or `https://...`
+    /// `data:image/png;base64,...` 或 `https://...`
     pub url: String,
-    /// Optional detail level: `"auto"` | `"low"` | `"high"`
+    /// 可选的细节等级：`"auto"` | `"low"` | `"high"`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
-/// Provider-neutral linked resource carried in a structured user message.
+/// 结构化用户消息中携带的、与提供方无关的链接资源。
 ///
-/// Protocol adapters keep this typed until the provider boundary. Providers
-/// that do not have a native resource-link block render it as deterministic
-/// text while framework Agents can inspect every field without parsing a
-/// private marker embedded in user text.
+/// 协议适配层在到达供应商边界之前会一直保留其类型化的形态。对于没有原生
+/// resource-link 块的供应商，会渲染成确定性文本；而框架内的 Agent 可以在
+/// 不解析嵌入用户文本中的私有标记的情况下检查每一个字段。
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkedResource {
-    /// Optional display and audience annotations supplied by the protocol.
+    /// 协议提供的可选展示与受众标注信息。
     pub annotations: Option<serde_json::Value>,
-    /// Optional human-readable details.
+    /// 可选的人类可读详情。
     pub description: Option<String>,
-    /// Optional MIME type for the linked content.
+    /// 链接内容的可选 MIME 类型。
     pub mime_type: Option<String>,
-    /// Human-readable resource name.
+    /// 资源的人类可读名称。
     pub name: String,
-    /// Optional resource size in bytes.
+    /// 资源的可选大小（字节）。
     pub size: Option<i64>,
-    /// Optional display title.
+    /// 可选的展示标题。
     pub title: Option<String>,
-    /// Resource URI preserved exactly from the adapter input.
+    /// 与适配层输入完全一致保留的资源 URI。
     pub uri: String,
-    /// Optional protocol extension metadata.
+    /// 可选的协议扩展元数据。
     pub meta: Option<serde_json::Value>,
 }
 
 impl LinkedResource {
-    /// Render a deterministic provider fallback without changing the typed
-    /// framework message stored in Session history.
+    /// 渲染一段确定性的供应商兜底文本，不改变 Session 历史中存储的
+    /// 类型化框架消息。
     #[doc(hidden)]
     pub fn model_text(&self) -> String {
         let encoded = serde_json::to_string(self)
@@ -104,18 +103,18 @@ impl LinkedResource {
     }
 }
 
-/// Message content: compatible with both plain text and multimodal parts forms.
+/// 消息内容：同时兼容纯文本和多模态 parts 两种形式。
 ///
-/// Serialization behavior:
-/// - `Text("hello")` → `"hello"` (fully backward-compatible with legacy API)
+/// 序列化行为：
+/// - `Text("hello")` → `"hello"`（与旧版 API 完全向后兼容）
 /// - `Parts([...])` → `[{"type":"text","text":"..."},...]`
 #[derive(Debug, Clone, Default)]
 pub enum MessageContent {
-    /// Plain text content.
+    /// 纯文本内容。
     Text(String),
-    /// Multimodal content parts.
+    /// 多模态内容 parts。
     Parts(Vec<ContentPart>),
-    /// Explicitly empty content payload.
+    /// 显式的空内容负载。
     #[default]
     Empty,
 }
@@ -152,7 +151,7 @@ impl<'de> Deserialize<'de> for MessageContent {
 }
 
 impl MessageContent {
-    /// Extract plain text content (joins all Text parts when multimodal)
+    /// 提取纯文本内容（多模态时拼接所有 Text part）
     pub fn as_text(&self) -> Option<String> {
         match self {
             MessageContent::Text(s) => {
@@ -181,7 +180,7 @@ impl MessageContent {
         }
     }
 
-    /// Borrow the text content as a reference (only works for Text variant).
+    /// 以引用形式借出文本内容（仅对 Text 变体有效）。
     pub fn as_text_ref(&self) -> Option<&str> {
         match self {
             MessageContent::Text(s) if !s.is_empty() => Some(s),
@@ -189,12 +188,12 @@ impl MessageContent {
         }
     }
 
-    /// Backward-compatible with legacy `Option<String>::as_deref()` call sites.
+    /// 与旧版 `Option<String>::as_deref()` 调用点保持向后兼容。
     pub fn as_deref(&self) -> Option<&str> {
         self.as_text_ref()
     }
 
-    /// Borrow multimodal parts when the content is stored in `Parts`.
+    /// 当内容以 `Parts` 存储时，借出多模态 parts。
     pub fn parts(&self) -> Option<&[ContentPart]> {
         match self {
             MessageContent::Parts(parts) => Some(parts.as_slice()),
@@ -202,7 +201,7 @@ impl MessageContent {
         }
     }
 
-    /// Consume the content and return multimodal parts if present.
+    /// 消费该内容，若存在则返回多模态 parts。
     pub fn into_parts(self) -> Option<Vec<ContentPart>> {
         match self {
             MessageContent::Parts(parts) => Some(parts),
@@ -210,8 +209,8 @@ impl MessageContent {
         }
     }
 
-    /// Conservatively estimate provider-visible input tokens, including
-    /// multimodal payloads that are intentionally omitted by [`Self::as_text`].
+    /// 保守估算提供方可见的输入 token 数，包括被 [`Self::as_text`]
+    /// 刻意忽略的多模态负载。
     pub fn estimated_tokens(&self, tokenizer: &dyn crate::tokenizer::Tokenizer) -> usize {
         match self {
             MessageContent::Text(text) => tokenizer.count_tokens(text),
@@ -221,9 +220,9 @@ impl MessageContent {
                     ContentPart::Text { text } => tokenizer.count_tokens(text),
                     ContentPart::ImageUrl { image_url } => {
                         if image_url.url.starts_with("data:") {
-                            // Base64 carries roughly three bytes per four characters;
-                            // charging one token per four characters is conservative
-                            // across supported vision providers.
+                            // Base64 大约每 4 个字符对应 3 字节；按每 4 个字符
+                            // 计 1 个 token 是一个保守估计，在受支持的视觉
+                            // 供应商上都适用。
                             image_url.url.chars().count().div_ceil(4)
                         } else if image_url.detail.as_deref() == Some("low") {
                             100
@@ -244,29 +243,29 @@ impl MessageContent {
     }
 }
 
-// ── Message Role ────────────────────────────────────────────────────────────
+// ── 消息角色 ────────────────────────────────────────────────────────────
 
-/// Typed message role with backward-compatible serialization.
+/// 带类型的消息角色，兼容旧版序列化格式。
 ///
-/// Standard roles (`system`, `user`, `assistant`, `tool`) are type-safe variants.
-/// Provider-specific or unknown roles fall into `Custom(String)`.
+/// 标准角色（`system`、`user`、`assistant`、`tool`）是类型安全的变体。
+/// 供应商特有或未知的角色落入 `Custom(String)`。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Role {
-    /// System instruction message
+    /// 系统指令消息
     System,
-    /// User input message
+    /// 用户输入消息
     #[default]
     User,
-    /// Assistant response message
+    /// 助手响应消息
     Assistant,
-    /// Tool result message
+    /// 工具结果消息
     Tool,
-    /// Provider-specific or unknown role
+    /// 供应商特有或未知的角色
     Custom(String),
 }
 
 impl Role {
-    /// Returns the role string for API serialization.
+    /// 返回用于 API 序列化的角色字符串。
     pub fn as_str(&self) -> &str {
         match self {
             Role::System => "system",
@@ -327,27 +326,26 @@ impl From<&str> for Role {
     }
 }
 
-// ── Conversation Messages ─────────────────────────────────────────────────────
+// ── 会话消息 ─────────────────────────────────────────────────────────
 
-/// Conversation message
+/// 会话消息
 ///
-/// The `content` field uniformly uses the [`MessageContent`] enum, supporting
-/// plain text and multimodal content.
+/// `content` 字段统一使用 [`MessageContent`] 枚举，支持纯文本与多模态内容。
 #[derive(Debug, Clone, Default)]
 pub struct Message {
-    /// Message role: `system`, `user`, `assistant`, `tool`, or `Custom`.
+    /// 消息角色：`system`、`user`、`assistant`、`tool`，或 `Custom`。
     pub role: Role,
-    /// Text or multimodal payload.
+    /// 文本或多模态负载。
     pub content: MessageContent,
-    /// Optional tool calls emitted by the assistant.
+    /// 助手发出的可选工具调用。
     pub tool_calls: Option<Vec<ToolCall>>,
-    /// Optional participant name.
+    /// 可选的参与者名称。
     pub name: Option<String>,
-    /// Optional tool call identifier for tool messages.
+    /// tool 消息的可选工具调用标识符。
     pub tool_call_id: Option<String>,
-    /// Reasoning content from models like Qwen3/DeepSeek (thinking process).
+    /// 来自 Qwen3/DeepSeek 等模型的推理内容（思考过程）。
     pub reasoning_content: Option<String>,
-    /// Signed or redacted reasoning blocks needed for provider-valid replay.
+    /// 保证供应商侧回放有效所需的签名或已脱敏推理块。
     pub reasoning_blocks: Option<Vec<ReasoningBlock>>,
 }
 
@@ -356,11 +354,11 @@ impl Serialize for Message {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("role", &self.role)?;
-        // Serialize content using MessageContent's own serialization
+        // 使用 MessageContent 自身的序列化逻辑来序列化 content
         if !matches!(&self.content, MessageContent::Empty) {
             map.serialize_entry("content", &self.content)?;
         } else if self.tool_calls.is_some() {
-            // assistant with tool_calls but no text content still needs content field
+            // assistant 消息带 tool_calls 但没有文本内容时，仍需要 content 字段
             map.serialize_entry("content", &serde_json::Value::Null)?;
         }
         if let Some(ref tc) = self.tool_calls {
@@ -421,7 +419,7 @@ impl<'de> Deserialize<'de> for Message {
 }
 
 impl Message {
-    /// Create a system message
+    /// 创建一条系统消息
     pub fn system(content: String) -> Self {
         Self {
             role: Role::System,
@@ -434,7 +432,7 @@ impl Message {
         }
     }
 
-    /// Create a user message
+    /// 创建一条用户消息
     pub fn user(content: String) -> Self {
         Self {
             role: Role::User,
@@ -447,7 +445,7 @@ impl Message {
         }
     }
 
-    /// Create a multimodal user message
+    /// 创建一条多模态用户消息
     pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
         Self {
             role: Role::User,
@@ -460,9 +458,9 @@ impl Message {
         }
     }
 
-    /// Create a user message that includes an image
+    /// 创建一条包含图片的用户消息
     ///
-    /// # Example
+    /// # 示例
     ///
     /// ```rust
     /// use echo_core::llm::types::Message;
@@ -470,7 +468,7 @@ impl Message {
     /// let msg = Message::user_with_image(
     ///     "Please describe this image",
     ///     "image/png",
-    ///     "iVBORw0KGgo...", // base64 data
+    ///     "iVBORw0KGgo...", // base64 数据
     /// );
     /// ```
     pub fn user_with_image(text: &str, media_type: &str, base64_data: &str) -> Self {
@@ -487,7 +485,7 @@ impl Message {
         ])
     }
 
-    /// Create a user message with an image URL
+    /// 创建一条带图片 URL 的用户消息
     pub fn user_with_image_url(text: &str, image_url: &str) -> Self {
         Self::user_multimodal(vec![
             ContentPart::Text {
@@ -502,7 +500,7 @@ impl Message {
         ])
     }
 
-    /// Create an assistant message
+    /// 创建一条助手消息
     pub fn assistant(content: String) -> Self {
         Self {
             role: Role::Assistant,
@@ -515,7 +513,7 @@ impl Message {
         }
     }
 
-    /// Create an assistant message with tool calls
+    /// 创建一条带工具调用的助手消息
     pub fn assistant_with_tools(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: Role::Assistant,
@@ -528,7 +526,7 @@ impl Message {
         }
     }
 
-    /// Create a tool result message
+    /// 创建一条工具结果消息
     pub fn tool_result(tool_call_id: String, name: String, content: String) -> Self {
         Self {
             role: Role::Tool,
@@ -541,14 +539,14 @@ impl Message {
         }
     }
 
-    /// Get plain text content.
+    /// 获取纯文本内容。
     ///
-    /// If the message contains multimodal content, all Text parts are extracted and joined.
+    /// 若消息包含多模态内容，则提取并拼接所有 Text part。
     pub fn text_content(&self) -> Option<String> {
         self.content.as_text()
     }
 
-    /// Backward-compatible with legacy call sites that read `content_parts` directly.
+    /// 与直接读取 `content_parts` 的旧版调用点保持向后兼容。
     pub fn content_parts(&self) -> Option<&[ContentPart]> {
         self.content.parts()
     }
@@ -559,60 +557,61 @@ impl Message {
     }
 }
 
-/// A single tool call initiated by the LLM
+/// LLM 发起的一次工具调用
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolCall {
-    /// Unique identifier for the tool call
+    /// 该工具调用的唯一标识符
     pub id: String,
-    /// Tool call type, typically "function"
+    /// 工具调用类型，通常为 "function"
     #[serde(rename = "type")]
     pub call_type: String,
-    /// Function call details
+    /// 函数调用详情
     pub function: FunctionCall,
 }
 
-/// Function information for a tool call
+/// 一次工具调用中的函数信息
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionCall {
-    /// Function name
+    /// 函数名
     pub name: String,
-    /// Function arguments (JSON string)
+    /// 函数参数（JSON 字符串）
     pub arguments: String,
 }
 
-/// JSON Schema spec for structured output
+/// 用于结构化输出的 JSON Schema 规格
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonSchemaSpec {
-    /// JSON Schema name
+    /// JSON Schema 名称
     pub name: String,
-    /// JSON Schema definition
+    /// JSON Schema 定义
     pub schema: serde_json::Value,
-    /// Whether to enforce strict validation (default true)
+    /// 是否启用严格校验（默认 true）
     #[serde(default = "default_true")]
     pub strict: bool,
 }
 
+/// 返回 `true`，供 `#[serde(default = "default_true")]` 使用。
 fn default_true() -> bool {
     true
 }
 
-/// Response format control
+/// 响应格式控制
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseFormat {
-    /// Plain text response
+    /// 纯文本响应
     Text,
-    /// JSON object response
+    /// JSON 对象响应
     JsonObject,
-    /// JSON Schema constrained response
+    /// 受 JSON Schema 约束的响应
     JsonSchema {
-        /// JSON Schema spec
+        /// JSON Schema 规格
         json_schema: JsonSchemaSpec,
     },
 }
 
 impl ResponseFormat {
-    /// Create a JSON Schema response format
+    /// 创建一个 JSON Schema 响应格式
     pub fn json_schema(name: impl Into<String>, schema: serde_json::Value) -> Self {
         Self::JsonSchema {
             json_schema: JsonSchemaSpec {
@@ -623,102 +622,102 @@ impl ResponseFormat {
         }
     }
 
-    /// Check whether this is a JSON response format
+    /// 检查是否为 JSON 响应格式
     pub fn is_json(&self) -> bool {
         matches!(self, Self::JsonObject | Self::JsonSchema { .. })
     }
 }
 
-/// OpenAI `/chat/completions` request body
+/// OpenAI `/chat/completions` 请求体
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ChatCompletionRequest {
-    /// Model name
+    /// 模型名称
     pub model: String,
-    /// List of conversation messages
+    /// 会话消息列表
     pub messages: Vec<Message>,
-    /// Optional tool definition list
+    /// 可选的工具定义列表
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
-    /// Tool call strategy (e.g. "auto", "none", or a specific tool name)
+    /// 工具调用策略（如 "auto"、"none"，或指定工具名）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<String>,
-    /// Sampling temperature (0.0-2.0)
+    /// 采样温度（0.0-2.0）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
-    /// Maximum number of tokens to generate
+    /// 生成的最大 token 数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    /// Reasoning-model output limit. Mutually exclusive with `max_tokens`.
+    /// 推理模型的输出上限。与 `max_tokens` 互斥。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_completion_tokens: Option<u32>,
-    /// Whether to enable streaming response
+    /// 是否启用流式响应
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-    /// Streaming response options (e.g. include_usage)
+    /// 流式响应选项（如 include_usage）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<serde_json::Value>,
-    /// Response format control
+    /// 响应格式控制
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
-    /// OpenAI reasoning-effort for reasoning models (GPT-5 family, o-series).
+    /// OpenAI 推理模型（GPT-5 系列、o 系列）的 reasoning-effort。
     ///
-    /// One of `"minimal"`, `"low"`, `"medium"`, `"high"`. Only emitted when the
-    /// resolved model speaks `ThinkingProtocol::OpenaiReasoningEffort`;
-    /// sending it to a non-reasoning model returns a 400.
+    /// 取值为 `"minimal"`、`"low"`、`"medium"`、`"high"` 之一。仅在解析出的
+    /// 模型支持 `ThinkingProtocol::OpenaiReasoningEffort` 时才会发送；
+    /// 发送给非推理模型会返回 400。
     #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_effort")]
     pub reasoning_effort: Option<String>,
-    /// Qwen3/GLM `enable_thinking` toggle. Only emitted for models that speak
-    /// `ThinkingProtocol::EnableThinkingFlag`.
+    /// Qwen3/GLM 的 `enable_thinking` 开关。仅对支持
+    /// `ThinkingProtocol::EnableThinkingFlag` 的模型发送。
     #[serde(skip_serializing_if = "Option::is_none", rename = "enable_thinking")]
     pub enable_thinking: Option<bool>,
-    /// Qwen3 `thinking_budget` (integer token budget). Optional companion to
-    /// `enable_thinking` for Qwen3 models that accept an explicit budget.
+    /// Qwen3 的 `thinking_budget`（整数 token 预算）。作为
+    /// `enable_thinking` 的可选配套项，供部分 Qwen3 模型接受显式预算。
     #[serde(skip_serializing_if = "Option::is_none", rename = "thinking_budget")]
     pub thinking_budget: Option<u32>,
-    /// Generic `thinking:{type:"enabled"|"disabled"}` block.
+    /// 通用的 `thinking:{type:"enabled"|"disabled"}` 块。
     #[serde(skip_serializing_if = "Option::is_none", rename = "thinking")]
     pub thinking_type: Option<ThinkingTypeBlock>,
-    /// Ollama's native `think` extension: a boolean or an effort-level string.
+    /// Ollama 原生的 `think` 扩展：布尔值或表示努力程度的字符串。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub think: Option<serde_json::Value>,
-    /// User identifier for KVCache isolation (DeepSeek, etc.).
-    /// When set, the provider uses this to partition prompt cache entries.
-    /// Without it, every request may be treated as from a different user,
-    /// preventing cache reuse across requests in the same session.
+    /// 用于 KVCache 隔离的用户标识（DeepSeek 等）。
+    /// 设置后，供应商用它来划分 prompt cache 条目。
+    /// 若不设置，每个请求都可能被视为来自不同用户，
+    /// 从而阻止同一会话内多次请求复用缓存。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
 }
 
-/// `thinking:{type:"enabled"|"disabled"}` wire block.
+/// `thinking:{type:"enabled"|"disabled"}` 线上协议块。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingTypeBlock {
     #[serde(rename = "type")]
     pub block_type: String,
 }
 
-/// Tool definition sent to the LLM
+/// 发送给 LLM 的工具定义
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ToolDefinition {
-    /// Tool type, typically "function"
+    /// 工具类型，通常为 "function"
     #[serde(rename = "type")]
     pub tool_type: String,
-    /// Function spec
+    /// 函数规格
     pub function: FunctionSpec,
 }
 
-/// Function declaration for a tool
+/// 一个工具的函数声明
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FunctionSpec {
-    /// Function name
+    /// 函数名
     pub name: String,
-    /// Function description
+    /// 函数描述
     pub description: String,
-    /// Function parameter JSON Schema
+    /// 函数参数的 JSON Schema
     pub parameters: serde_json::Value,
 }
 
 impl ToolDefinition {
-    /// Create a tool definition from a Tool trait object
+    /// 从一个 Tool trait 对象创建工具定义
     pub fn from_tool(tool: &dyn Tool) -> Self {
         Self {
             tool_type: "function".to_string(),
@@ -731,85 +730,85 @@ impl ToolDefinition {
     }
 }
 
-/// OpenAI chat completion response
+/// OpenAI chat completion 响应
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ChatCompletionResponse {
-    /// Response ID
+    /// 响应 ID
     #[serde(default)]
     pub id: String,
-    /// List of candidate responses
+    /// 候选响应列表
     #[serde(default)]
     pub choices: Vec<Choice>,
-    /// Creation timestamp (seconds)
+    /// 创建时间戳（秒）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<u64>,
-    /// Model name
+    /// 模型名称
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Token usage statistics
+    /// Token 使用统计
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
-    /// Extra fields in the response (not explicitly modeled)
+    /// 响应中未被显式建模的额外字段
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra: Option<serde_json::Value>,
 }
 
-/// Candidate response
+/// 候选响应
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Choice {
-    /// Message content
+    /// 消息内容
     pub message: Message,
-    /// Finish reason (e.g. "stop", "length", "tool_calls", etc.)
+    /// 结束原因（如 "stop"、"length"、"tool_calls" 等）
     #[serde(default)]
     pub finish_reason: Option<String>,
-    /// Candidate index
+    /// 候选序号
     #[serde(default)]
     pub index: Option<u32>,
 }
 
-/// Token usage statistics
+/// Token 使用统计
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Usage {
-    /// Prompt token count
+    /// Prompt token 数
     #[serde(default)]
     pub prompt_tokens: Option<u32>,
-    /// Completion token count
+    /// Completion token 数
     #[serde(default)]
     pub completion_tokens: Option<u32>,
-    /// Total token count
+    /// 总 token 数
     #[serde(default)]
     pub total_tokens: Option<u32>,
-    /// OpenAI-compatible prompt token details.
+    /// 兼容 OpenAI 格式的 prompt token 细分。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_tokens_details: Option<TokenUsageDetails>,
-    /// Some compatible providers report input-token details instead.
+    /// 部分兼容供应商改为报告 input-token 细分。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_tokens_details: Option<TokenUsageDetails>,
-    /// Provider-specific output-token details, including reasoning tokens.
+    /// 供应商特有的 output-token 细分，包含推理 token。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_tokens_details: Option<TokenUsageDetails>,
-    /// Anthropic cache writes for this request.
+    /// Anthropic 本次请求的缓存写入量。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u32>,
-    /// Anthropic cache reads for this request.
+    /// Anthropic 本次请求的缓存读取量。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
-    /// DeepSeek: prompt tokens served from context cache (KV cache hit).
-    /// `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`.
+    /// DeepSeek：从上下文缓存（KV cache 命中）提供的 prompt token 数。
+    /// `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_hit_tokens: Option<u32>,
-    /// DeepSeek: prompt tokens NOT served from cache (cache miss).
+    /// DeepSeek：未从缓存提供的 prompt token 数（缓存未命中）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_miss_tokens: Option<u32>,
 }
 
 impl Usage {
-    /// Provider-normalized prompt tokens processed by the model, including
-    /// tokens served from prompt cache.
+    /// 经供应商归一化后、模型实际处理的 prompt token 数，
+    /// 包括从 prompt cache 提供的 token。
     ///
-    /// OpenAI-compatible and DeepSeek responses already include cached tokens
-    /// in `prompt_tokens`. Anthropic reports cache reads and cache writes
-    /// separately, so both are added back for context-window and cache metrics.
+    /// 兼容 OpenAI 格式的响应以及 DeepSeek 的响应中，`prompt_tokens`
+    /// 已经包含了缓存 token。Anthropic 则将缓存读取与缓存写入分开报告，
+    /// 因此二者都要加回来，以便计算上下文窗口和缓存相关指标。
     pub fn effective_prompt_tokens(&self) -> u32 {
         let prompt = self.prompt_tokens.unwrap_or(0);
         if self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some() {
@@ -821,7 +820,7 @@ impl Usage {
         }
     }
 
-    /// Provider-normalized total tokens processed for this response.
+    /// 经供应商归一化后、本次响应处理的总 token 数。
     pub fn effective_total_tokens(&self) -> u32 {
         if self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some() {
             self.effective_prompt_tokens()
@@ -834,13 +833,13 @@ impl Usage {
         }
     }
 
-    /// Provider-normalized prompt tokens read from cache.
+    /// 经供应商归一化后、从缓存读取的 prompt token 数。
     ///
-    /// Checks in priority order:
+    /// 按优先级依次检查：
     /// 1. OpenAI `prompt_tokens_details.cached_tokens`
-    /// 2. Compatible providers `input_tokens_details.cached_tokens`
-    /// 3. Anthropic `cache_read_input_tokens`
-    /// 4. DeepSeek `prompt_cache_hit_tokens`
+    /// 2. 兼容供应商的 `input_tokens_details.cached_tokens`
+    /// 3. Anthropic 的 `cache_read_input_tokens`
+    /// 4. DeepSeek 的 `prompt_cache_hit_tokens`
     pub fn cached_prompt_tokens(&self) -> u32 {
         self.prompt_tokens_details
             .as_ref()
@@ -855,7 +854,7 @@ impl Usage {
             .unwrap_or(0)
     }
 
-    /// Provider-normalized prompt tokens written into cache.
+    /// 经供应商归一化后、写入缓存的 prompt token 数。
     pub fn cache_creation_prompt_tokens(&self) -> u32 {
         self.prompt_tokens_details
             .as_ref()
@@ -869,18 +868,18 @@ impl Usage {
             .unwrap_or(0)
     }
 
-    /// Prompt cache hit rate in [0.0, 1.0].
+    /// Prompt 缓存命中率，取值范围 [0.0, 1.0]。
     ///
-    /// Provider semantics differ on whether `prompt_tokens` includes cached tokens:
-    /// - OpenAI / DeepSeek / compatible: `prompt_tokens` is the **total** (includes cached).
-    ///   Per DeepSeek docs: `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`.
-    ///   → rate = cached / prompt_tokens
-    /// - Anthropic: `input_tokens` (mapped to `prompt_tokens`) excludes both
-    ///   cache reads and cache writes.
-    ///   → rate = cached / (prompt_tokens + cache_read + cache_creation)
+    /// 不同供应商对 `prompt_tokens` 是否包含缓存 token 的语义不同：
+    /// - OpenAI / DeepSeek / 兼容供应商：`prompt_tokens` 是**总量**（含缓存部分）。
+    ///   按 DeepSeek 文档：`prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
+    ///   → 命中率 = cached / prompt_tokens
+    /// - Anthropic：`input_tokens`（映射为 `prompt_tokens`）既不包含缓存读取，
+    ///   也不包含缓存写入。
+    ///   → 命中率 = cached / (prompt_tokens + cache_read + cache_creation)
     ///
-    /// We detect the Anthropic path by presence of either Anthropic cache field;
-    /// all other providers use the inclusive-total formula.
+    /// 我们通过是否存在任一 Anthropic 缓存字段来判断走哪条路径；
+    /// 其余所有供应商都使用「总量已含缓存」的公式。
     pub fn cache_hit_rate(&self) -> Option<f64> {
         let cached = self.cached_prompt_tokens();
         let total = self.effective_prompt_tokens();
@@ -891,37 +890,37 @@ impl Usage {
     }
 }
 
-/// Provider-specific token details nested under usage.
+/// 嵌套在 usage 下的供应商特有 token 细分信息。
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct TokenUsageDetails {
-    /// Tokens served from provider-side prompt cache.
+    /// 从供应商侧 prompt 缓存提供的 token 数。
     #[serde(default)]
     pub cached_tokens: Option<u32>,
-    /// Tokens written into provider-side prompt cache.
+    /// 写入供应商侧 prompt 缓存的 token 数。
     #[serde(default)]
     pub cache_write_tokens: Option<u32>,
-    /// Tokens used for internal model reasoning.
+    /// 用于模型内部推理的 token 数。
     #[serde(default)]
     pub reasoning_tokens: Option<u32>,
 }
 
-// ── Streaming Response Types ───────────────────────────────────────────────────
+// ── 流式响应类型 ───────────────────────────────────────────────────────────
 
-/// A single chunk from an SSE streaming response
+/// SSE 流式响应中的单个数据块
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChatCompletionChunk {
-    /// Response ID
+    /// 响应 ID
     #[serde(default)]
     pub id: String,
-    /// List of candidate responses
+    /// 候选响应列表
     #[serde(default)]
     pub choices: Vec<ChunkChoice>,
-    /// Token usage stats (only present in final chunk when stream_options.include_usage is set)
+    /// Token 使用统计（仅在设置了 stream_options.include_usage 时，出现在最后一个 chunk）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
 }
 
-/// Deserialize `null` as `T::default()` for use with `#[serde(deserialize_with)]`.
+/// 将 `null` 反序列化为 `T::default()`，供 `#[serde(deserialize_with)]` 使用。
 fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -930,76 +929,75 @@ where
     Option::<T>::deserialize(deserializer).map(|opt| opt.unwrap_or_default())
 }
 
-/// Streaming candidate response
+/// 流式候选响应
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChunkChoice {
-    /// Incremental message content.
+    /// 增量消息内容。
     ///
-    /// `deserialize_with = "deserialize_null_as_default"` is critical: when
-    /// `stream_options.include_usage` is set and the provider returns the
-    /// final chunk with usage, the `choices` array may contain an item where
-    /// `delta` is `null` (e.g. `{"delta":null,"finish_reason":"stop"}`).
-    /// Without this deserializer, null delta fails to parse, the entire chunk
-    /// is dropped, and the `usage` field is silently lost — making every LLM
-    /// call show `usage_reported: false` in observability.
+    /// `deserialize_with = "deserialize_null_as_default"` 至关重要：当设置了
+    /// `stream_options.include_usage` 时，供应商返回携带 usage 的最后一个
+    /// chunk，其 `choices` 数组中的元素可能出现 `delta` 为 `null` 的情况
+    /// （如 `{"delta":null,"finish_reason":"stop"}`）。若没有这个反序列化器，
+    /// null delta 会解析失败，整个 chunk 被丢弃，`usage` 字段也随之悄悄丢失
+    /// —— 导致每次 LLM 调用在可观测性中都显示 `usage_reported: false`。
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub delta: DeltaMessage,
-    /// Finish reason
+    /// 结束原因
     #[serde(default)]
     pub finish_reason: Option<String>,
-    /// Candidate index
+    /// 候选序号
     #[serde(default)]
     pub index: u32,
 }
 
-/// Incremental message body in a streaming response
+/// 流式响应中的增量消息体
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct DeltaMessage {
-    /// Role (present on first occurrence)
+    /// 角色（首次出现时携带）
     #[serde(default)]
     pub role: Option<String>,
-    /// Content delta
+    /// 内容增量
     #[serde(default)]
     pub content: Option<String>,
-    /// Reasoning content delta (thinking process from models like Qwen3/DeepSeek)
+    /// 推理内容增量（来自 Qwen3/DeepSeek 等模型的思考过程）
     #[serde(default)]
     pub reasoning_content: Option<String>,
-    /// Completed signed/redacted reasoning blocks for replay.
+    /// 用于回放的、已完成的签名/已脱敏推理块
     #[serde(default)]
     pub reasoning_blocks: Option<Vec<ReasoningBlock>>,
-    /// Tool call delta
+    /// 工具调用增量
     #[serde(default)]
     pub tool_calls: Option<Vec<DeltaToolCall>>,
 }
 
-/// Incremental fragment of a streaming tool call
+/// 流式工具调用的增量片段
 #[derive(Debug, Deserialize, Clone)]
 pub struct DeltaToolCall {
-    /// Tool call index
+    /// 工具调用序号
     pub index: u32,
-    /// Tool call ID (appears incrementally)
+    /// 工具调用 ID（增量出现）
     #[serde(default)]
     pub id: Option<String>,
-    /// Tool call type (appears incrementally)
+    /// 工具调用类型（增量出现）
     #[serde(rename = "type", default)]
     pub call_type: Option<String>,
-    /// Function call delta
+    /// 函数调用增量
     #[serde(default)]
     pub function: Option<DeltaFunctionCall>,
 }
 
-/// Incremental fragment of a streaming function call
+/// 流式函数调用的增量片段
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct DeltaFunctionCall {
-    /// Function name (appears incrementally)
+    /// 函数名（增量出现）
     #[serde(default)]
     pub name: Option<String>,
-    /// Function arguments (appear incrementally)
+    /// 函数参数（增量出现）
     #[serde(default)]
     pub arguments: Option<String>,
 }
 
-// ── Feature 6: Multimodal Support Tests ────────────────────────────────────────
+// ── Feature 6：多模态支持测试 ────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1259,8 +1257,8 @@ mod tests {
 
     #[test]
     fn usage_reads_deepseek_cache_hit_tokens() {
-        // DeepSeek uses top-level `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
-        // instead of the OpenAI `prompt_tokens_details.cached_tokens` pattern.
+        // DeepSeek 使用顶层的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，
+        // 而不是 OpenAI 那种 `prompt_tokens_details.cached_tokens` 的模式。
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "completion_tokens": 20,
@@ -1288,8 +1286,8 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_deepseek_prompt_tokens_includes_cached() {
-        // DeepSeek: prompt_tokens = cache_hit + cache_miss (inclusive total).
-        // hit_rate = 800 / 1000 = 0.8 (NOT 800/1800).
+        // DeepSeek：prompt_tokens = cache_hit + cache_miss（总量已含）。
+        // 命中率 = 800 / 1000 = 0.8（而不是 800/1800）。
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "prompt_cache_hit_tokens": 800,
@@ -1301,8 +1299,8 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_openai_prompt_tokens_includes_cached() {
-        // OpenAI: prompt_tokens is the total (includes cached_tokens).
-        // hit_rate = 900 / 1000 = 0.9 (NOT 900/1900).
+        // OpenAI：prompt_tokens 是总量（已含 cached_tokens）。
+        // 命中率 = 900 / 1000 = 0.9（而不是 900/1900）。
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "prompt_tokens_details": { "cached_tokens": 900 }
@@ -1313,8 +1311,8 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_anthropic_input_tokens_excludes_cached() {
-        // Anthropic: input_tokens (mapped to prompt_tokens) EXCLUDES cache_read.
-        // hit_rate = 900 / (100 + 900) = 0.9.
+        // Anthropic：input_tokens（映射为 prompt_tokens）不包含 cache_read。
+        // 命中率 = 900 / (100 + 900) = 0.9。
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 100,
             "cache_read_input_tokens": 900,
@@ -1357,9 +1355,9 @@ mod tests {
 
     #[test]
     fn chunk_choice_handles_null_delta_in_usage_chunk() {
-        // When stream_options.include_usage is set, some providers (DeepSeek,
-        // OpenAI, etc.) send a final chunk where `delta` is null because the
-        // model has stopped producing content. The chunk still carries `usage`.
+        // 当设置了 stream_options.include_usage 时，部分供应商（DeepSeek、
+        // OpenAI 等）会在最后一个 chunk 中因模型已停止生成内容而让
+        // `delta` 为 null。该 chunk 仍携带 `usage`。
         let json = serde_json::json!({
             "id": "chatcmpl-xxx",
             "choices": [{
@@ -1386,7 +1384,7 @@ mod tests {
 
     #[test]
     fn chunk_choice_handles_missing_delta_in_usage_chunk() {
-        // Some providers send a usage-only chunk with choices omitted or empty.
+        // 部分供应商会发送一个省略或清空 choices 的、仅含 usage 的 chunk。
         let json = serde_json::json!({
             "usage": {
                 "prompt_tokens": 500,

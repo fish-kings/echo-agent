@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// 返回内置示例外部技能所在的目录路径（`examples/demo_skills`）。
 fn demo_skills_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo_skills")
 }
@@ -43,30 +44,36 @@ use futures::future::BoxFuture;
 
 /// 分析代码质量工具
 struct CodeQualityTool {
+    /// 该工具被调用的累计次数。
     call_count: Arc<AtomicUsize>,
 }
 
 impl CodeQualityTool {
+    /// 创建一个调用计数归零的 `CodeQualityTool`。
     fn new() -> Self {
         Self {
             call_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
+    /// 获取调用计数器的共享句柄，便于外部观测调用次数。
     fn counter(&self) -> Arc<AtomicUsize> {
         self.call_count.clone()
     }
 }
 
 impl Tool for CodeQualityTool {
+    /// 返回工具名称 `code_quality`。
     fn name(&self) -> &str {
         "code_quality"
     }
 
+    /// 返回工具的功能描述。
     fn description(&self) -> &str {
         "分析代码质量，给出评分和改进建议"
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -84,6 +91,7 @@ impl Tool for CodeQualityTool {
         })
     }
 
+    /// 执行代码质量分析（当前为简单的模拟实现，根据代码长度与是否含 TODO/FIXME 打分）。
     fn execute(
         &self,
         params: ToolParameters,
@@ -126,30 +134,36 @@ impl Tool for CodeQualityTool {
 
 /// CI/CD 状态检查工具
 struct CiCheckTool {
+    /// 该工具被调用的累计次数。
     call_count: Arc<AtomicUsize>,
 }
 
 impl CiCheckTool {
+    /// 创建一个调用计数归零的 `CiCheckTool`。
     fn new() -> Self {
         Self {
             call_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
+    /// 获取调用计数器的共享句柄，便于外部观测调用次数。
     fn counter(&self) -> Arc<AtomicUsize> {
         self.call_count.clone()
     }
 }
 
 impl Tool for CiCheckTool {
+    /// 返回工具名称 `ci_check`。
     fn name(&self) -> &str {
         "ci_check"
     }
 
+    /// 返回工具的功能描述。
     fn description(&self) -> &str {
         "检查 CI/CD 管道状态"
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -163,6 +177,7 @@ impl Tool for CiCheckTool {
         })
     }
 
+    /// 执行 CI/CD 管道状态检查（当前为返回固定示例结果的模拟实现）。
     fn execute(
         &self,
         params: ToolParameters,
@@ -196,6 +211,7 @@ impl Tool for CiCheckTool {
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：依次演示外部技能系统、动态工具切换、Workflow 流式执行与拓扑追踪四个部分。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -233,6 +249,7 @@ async fn main() -> Result<()> {
 // Part 1: 外部技能系统
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 1 演示：从磁盘目录发现并加载外部技能，验证技能对应的工具被自动注册。
 async fn demo_external_skills() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 1: 外部技能系统 (File-based Skills)");
@@ -296,6 +313,7 @@ async fn demo_external_skills() -> Result<()> {
 // Part 2: 动态工具切换
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 3 演示：在运行时动态添加/移除工具，模拟 Agent 在不同任务阶段切换能力集。
 async fn demo_dynamic_tools() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 3: 动态工具切换");
@@ -379,6 +397,7 @@ async fn demo_dynamic_tools() -> Result<()> {
 // Part 4: Workflow 流式执行
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 4 演示：构建一个 check → test → build → deploy 的 CI/CD 流水线，并以流式方式观察其执行进度。
 async fn demo_workflow_stream() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 4: Workflow 流式执行");
@@ -474,6 +493,7 @@ async fn demo_workflow_stream() -> Result<()> {
 // Part 5: 拓扑追踪
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// Part 5 演示：使用 `TopologyCallback` 自动追踪 Agent 的工具调用关系，并生成 Mermaid 拓扑图与统计信息。
 async fn demo_topology_tracking() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
     println!("Part 5: 拓扑追踪");
@@ -540,6 +560,7 @@ async fn demo_topology_tracking() -> Result<()> {
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║        Echo Agent 企业级工作流自动化 - 综合示例          ║");

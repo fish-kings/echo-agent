@@ -1,81 +1,86 @@
-//! Subagent execution hooks — lifecycle callbacks for subagent dispatch
-//!
-//! Mirrors the pattern from `crate::tasks::hooks` but tailored for
-//! subagent-specific lifecycle points.
+/*!
+Subagent 执行钩子 —— subagent 调度的生命周期回调
+
+沿用了 `crate::tasks::hooks` 的模式，但针对 subagent 特有的生命周期节点做了调整。
+*/
 
 use std::sync::Arc;
 
 use super::types::{ExecutionMode, SubagentResult};
 
-// ── Hook Context ──────────────────────────────────────────────────────────────
+// ── 钩子上下文 ──────────────────────────────────────────────────────────────
 
-/// Context passed to subagent hook callbacks.
+/// 传递给 subagent 钩子回调的上下文。
 #[derive(Debug, Clone)]
 pub struct SubagentHookContext {
-    /// Parent agent name.
+    /// 父 agent 名称。
     pub parent_agent: String,
-    /// Subagent name being dispatched.
+    /// 正在被调度的 subagent 名称。
     pub subagent_name: String,
-    /// Execution mode for this dispatch.
+    /// 本次调度使用的执行模式。
     pub execution_mode: ExecutionMode,
-    /// The task being dispatched.
+    /// 被调度执行的任务。
     pub task: String,
-    /// Current attempt number (1-based, for retries).
+    /// 当前尝试次数（从 1 开始计数，用于重试）。
     pub attempt: u32,
 }
 
-// ── Retry Decision ────────────────────────────────────────────────────────────
+// ── 重试决策 ────────────────────────────────────────────────────────────
 
-/// Decision returned by `on_failure` hook.
+/// `on_failure` 钩子返回的决策。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubagentRetryDecision {
-    /// Retry the dispatch after a delay.
+    /// 延迟一段时间后重试调度。
     Retry {
-        /// Delay in seconds before retrying.
+        /// 重试前的延迟时间（秒）。
         delay_secs: u64,
     },
-    /// Fail and propagate the error.
+    /// 直接失败并将错误向上传播。
     Fail,
-    /// Delegate to an alternative subagent.
+    /// 委派给另一个替代的 subagent。
     Delegate {
-        /// Name of the alternative subagent to delegate to.
+        /// 要委派到的替代 subagent 名称。
         alternative_agent: String,
     },
 }
 
-// ── Subagent Hooks Trait ──────────────────────────────────────────────────────
+// ── Subagent 钩子 Trait ──────────────────────────────────────────────────────
 
-/// Hook trait for subagent lifecycle events.
-///
-/// All methods have default no-op implementations.
+/**
+针对 subagent 生命周期事件的钩子 trait。
+
+所有方法都有默认的空实现（no-op）。
+*/
 #[async_trait::async_trait]
 pub trait SubagentHooks: Send + Sync {
-    /// Called before a subagent is dispatched.
+    /// 在 subagent 被调度之前调用。
     async fn before_dispatch(&self, _ctx: &SubagentHookContext) {}
 
-    /// Called after a subagent completes successfully.
+    /// 在 subagent 成功完成之后调用。
     async fn after_dispatch(&self, _ctx: &SubagentHookContext, _result: &SubagentResult) {}
 
-    /// Called when a subagent fails.
-    ///
-    /// Return a decision to control retry/delegation behavior.
+    /**
+    在 subagent 失败时调用。
+
+    返回一个决策来控制重试/委派行为。
+    */
     async fn on_failure(&self, _ctx: &SubagentHookContext, _error: &str) -> SubagentRetryDecision {
         SubagentRetryDecision::Fail
     }
 
-    /// Called when a subagent is cancelled.
+    /// 在 subagent 被取消时调用。
     async fn on_cancelled(&self, _ctx: &SubagentHookContext) {}
 }
 
-// ── Built-in Implementations ──────────────────────────────────────────────────
+// ── 内置实现 ──────────────────────────────────────────────────────
 
-/// No-op hooks (default).
+/// 空实现钩子（默认）。
 pub struct NoopSubagentHooks;
 
 #[async_trait::async_trait]
 impl SubagentHooks for NoopSubagentHooks {}
 
-/// Logging hooks that emit tracing events.
+/// 会发出 tracing 事件的日志钩子。
 pub struct LoggingSubagentHooks;
 
 #[async_trait::async_trait]
@@ -126,57 +131,63 @@ impl SubagentHooks for LoggingSubagentHooks {
     }
 }
 
-// ── Hook Registry ─────────────────────────────────────────────────────────────
+// ── 钩子注册表 ─────────────────────────────────────────────────────────────
 
-/// Registry for subagent hooks — allows multiple hooks to be registered
-/// and called in sequence.
+/// subagent 钩子的注册表 —— 允许注册多个钩子并按顺序依次调用。
 pub struct SubagentHookRegistry {
+    /// 已注册的钩子列表
     hooks: Vec<Arc<dyn SubagentHooks>>,
 }
 
 impl SubagentHookRegistry {
-    /// Create an empty hook registry.
+    /// 创建一个空的钩子注册表。
     pub fn new() -> Self {
         Self { hooks: Vec::new() }
     }
 
-    /// Create a hook registry pre-configured with logging hooks.
+    /// 创建一个预先配置了日志钩子的注册表。
     pub fn with_logging() -> Self {
         let mut registry = Self::new();
         registry.register(Arc::new(LoggingSubagentHooks));
         registry
     }
 
-    /// Register a hook implementation.
-    ///
-    /// # Parameters
-    /// * `hook` - Hook implementation to add.
+    /**
+    注册一个钩子实现。
+
+    # 参数
+    * `hook` - 要添加的钩子实现。
+    */
     pub fn register(&mut self, hook: Arc<dyn SubagentHooks>) {
         self.hooks.push(hook);
     }
 
-    /// Call `before_dispatch` on all registered hooks.
-    ///
-    /// # Parameters
-    /// * `ctx` - Hook context.
+    /**
+    对所有已注册的钩子调用 `before_dispatch`。
+
+    # 参数
+    * `ctx` - 钩子上下文。
+    */
     pub async fn before_dispatch(&self, ctx: &SubagentHookContext) {
         for hook in &self.hooks {
             hook.before_dispatch(ctx).await;
         }
     }
 
-    /// Call `after_dispatch` on all registered hooks.
-    ///
-    /// # Parameters
-    /// * `ctx` - Hook context.
-    /// * `result` - Subagent execution result.
+    /**
+    对所有已注册的钩子调用 `after_dispatch`。
+
+    # 参数
+    * `ctx` - 钩子上下文。
+    * `result` - subagent 的执行结果。
+    */
     pub async fn after_dispatch(&self, ctx: &SubagentHookContext, result: &SubagentResult) {
         for hook in &self.hooks {
             hook.after_dispatch(ctx, result).await;
         }
     }
 
-    /// Call `on_failure` on all hooks, returning the first non-Fail decision.
+    /// 对所有钩子调用 `on_failure`，返回第一个非 `Fail` 的决策。
     pub async fn on_failure(
         &self,
         ctx: &SubagentHookContext,
@@ -191,22 +202,24 @@ impl SubagentHookRegistry {
         SubagentRetryDecision::Fail
     }
 
-    /// Call `on_cancelled` on all registered hooks.
-    ///
-    /// # Parameters
-    /// * `ctx` - Hook context.
+    /**
+    对所有已注册的钩子调用 `on_cancelled`。
+
+    # 参数
+    * `ctx` - 钩子上下文。
+    */
     pub async fn on_cancelled(&self, ctx: &SubagentHookContext) {
         for hook in &self.hooks {
             hook.on_cancelled(ctx).await;
         }
     }
 
-    /// Check if the registry contains any hooks.
+    /// 检查该注册表中是否包含任何钩子。
     pub fn is_empty(&self) -> bool {
         self.hooks.is_empty()
     }
 
-    /// Get the number of registered hooks.
+    /// 获取已注册钩子的数量。
     pub fn len(&self) -> usize {
         self.hooks.len()
     }
@@ -308,3 +321,4 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 }
+</content>

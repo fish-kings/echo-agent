@@ -1,25 +1,25 @@
-//! Graph workflow engine + general Workflow / Pipeline
+//! 图工作流引擎 + 通用 Workflow / Pipeline
 //!
-//! Provides two orchestration capabilities:
+//! 提供两种编排能力：
 //!
-//! ## 1. Graph Workflow (analogous to LangGraph)
+//! ## 1. 图工作流（类似于 LangGraph）
 //!
-//! Models agent execution as a **directed graph + shared state**, supporting:
-//! - Linear pipelines, conditional branching, cycles, parallel fan-out/fan-in
+//! 将 agent 执行建模为**有向图 + 共享状态**，支持：
+//! - 线性流水线、条件分支、循环、并行扇出/扇入
 //!
-//! | Concept | Type | Description |
+//! | 概念 | 类型 | 说明 |
 //! |------|------|------|
-//! | State | [`SharedState`] | KV store shared between nodes + structured message history |
-//! | Graph | [`Graph`] | Compiled immutable workflow |
-//! | Builder | [`GraphBuilder`] | Chain API for building graphs |
+//! | 状态 | [`SharedState`] | 节点间共享的 KV 存储 + 结构化消息历史 |
+//! | 图 | [`Graph`] | 编译后的不可变工作流 |
+//! | 构建器 | [`GraphBuilder`] | 用于构建图的链式 API |
 //!
-//! ## 2. Pipeline Workflow (Sequential / Concurrent / DAG)
+//! ## 2. 流水线工作流（Sequential / Concurrent / DAG）
 //!
-//! | Type | Description |
+//! | 类型 | 说明 |
 //! |------|------|
-//! | [`SequentialWorkflow`] | Sequential pipeline: previous step output becomes next step input |
-//! | [`ConcurrentWorkflow`] | Concurrent pipeline: all agents execute in parallel, then merge results |
-//! | [`DagWorkflow`] | DAG pipeline: topological execution, independent nodes run concurrently |
+//! | [`SequentialWorkflow`] | 顺序流水线：上一步的输出作为下一步的输入 |
+//! | [`ConcurrentWorkflow`] | 并发流水线：所有 agent 并行执行后合并结果 |
+//! | [`DagWorkflow`] | DAG 流水线：拓扑执行，独立节点并发运行 |
 
 // ── Graph Workflow ────────────────────────────────────────────────────────────
 
@@ -63,67 +63,84 @@ use futures::stream::BoxStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Maximum time spent draining cancelled workflow siblings before returning a
-/// terminal error. A bounded drain prevents detached node futures while still
-/// allowing cooperative cancellation to settle.
+/// 在返回终止错误之前，等待被取消的工作流兄弟节点收尾所花费的最长时间。
+/// 有界的收尾等待既能防止节点 future 被遗弃悬空，又能让协作式取消
+/// 有机会平稳收尾。
 pub(crate) const WORKFLOW_TASK_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Shareable agent handle for safe access across async tasks.
+/// 可在异步任务间安全共享访问的 agent 句柄。
 ///
-/// Because the [`Agent`] trait takes `&self` for all methods and concrete
-/// implementations (e.g. `ReactAgent`) use interior mutability for shared
-/// state, the outer lock is unnecessary — `Arc<dyn Agent>` is sufficient.
+/// 由于 [`Agent`] trait 的所有方法都只接收 `&self`，且具体实现
+/// （例如 `ReactAgent`）通过内部可变性来管理共享状态，因此外层的锁
+/// 是不必要的 —— `Arc<dyn Agent>` 已经足够。
 pub type SharedAgent = Arc<dyn Agent>;
 
-/// Wrap arbitrary `impl Agent` as a [`SharedAgent`]
+/// 将任意 `impl Agent` 包装为 [`SharedAgent`]
 pub fn shared_agent(agent: impl Agent + 'static) -> SharedAgent {
     Arc::new(agent)
 }
 
-/// Backward-compatible type alias for call sites that still reference the
-/// old `AsyncMutex` pattern. Marked deprecated to encourage migration.
+/// 为仍然引用旧 `AsyncMutex` 模式的调用点保留的向后兼容类型别名。
+/// 已标记为弃用，以推动迁移到新类型。
 #[deprecated(note = "Use `SharedAgent` (now `Arc<dyn Agent>`) directly")]
 pub type SharedAgentMutex = Arc<tokio::sync::Mutex<Box<dyn Agent>>>;
 
-/// Step-by-step events emitted during workflow execution.
+/// 工作流执行过程中逐步发出的事件。
 ///
-/// Obtain a `BoxStream<WorkflowEvent>` via [`Workflow::run_stream`]
-/// for realtime UI updates, progress bars, logging, etc.
+/// 可通过 [`Workflow::run_stream`] 获取 `BoxStream<WorkflowEvent>`，
+/// 用于实时 UI 更新、进度条、日志记录等场景。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum WorkflowEvent {
-    /// Node started execution
+    /// 节点开始执行
     NodeStart {
+        /// 节点名称
         node_name: String,
+        /// 该节点在工作流中的步骤序号
         step_index: usize,
     },
-    /// Node finished execution
+    /// 节点执行完成
     NodeEnd {
+        /// 节点名称
         node_name: String,
+        /// 该节点在工作流中的步骤序号
         step_index: usize,
+        /// 该节点执行耗时
         elapsed: Duration,
     },
-    /// Token produced by node (forwarded during streaming agent output)
-    Token { node_name: String, token: String },
-    /// Node execution error. The stream emits this terminal diagnostic before
-    /// yielding the same error through its `Result` item; no Completed event
-    /// follows a failed node.
-    NodeError { node_name: String, error: String },
-    /// Workflow execution completed
+    /// 节点产生的 token（在流式转发 agent 输出时使用）
+    Token {
+        /// 产生该 token 的节点名称
+        node_name: String,
+        /// token 内容
+        token: String,
+    },
+    /// 节点执行出错。流会在通过 `Result` 项抛出同一个错误之前，先发出这条
+    /// 终止性诊断事件；失败的节点之后不会再跟随 Completed 事件。
+    NodeError {
+        /// 出错的节点名称
+        node_name: String,
+        /// 错误描述
+        error: String,
+    },
+    /// 工作流执行完成
     Completed {
+        /// 最终结果文本
         result: String,
+        /// 总步骤数
         total_steps: usize,
+        /// 总耗时
         elapsed: Duration,
     },
 }
 
-/// Unified workflow execution interface
+/// 统一的工作流执行接口
 pub trait Workflow: Send + Sync {
-    /// Run the entire workflow with `input` as the initial input
+    /// 以 `input` 作为初始输入，运行整个工作流
     fn run<'a>(&'a mut self, input: &'a str) -> BoxFuture<'a, Result<WorkflowOutput>>;
 
-    /// Run the entire workflow with `input` as initial input (streaming per-node events).
+    /// 以 `input` 作为初始输入运行整个工作流（按节点流式返回事件）。
     ///
-    /// Default implementation falls back to `run()` and only emits the `Completed` event.
+    /// 默认实现会回退到调用 `run()`，只发出一个 `Completed` 事件。
     fn run_stream<'a>(
         &'a mut self,
         input: &'a str,
@@ -142,26 +159,26 @@ pub trait Workflow: Send + Sync {
     }
 }
 
-/// Complete output of a workflow execution
+/// 工作流执行的完整输出
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WorkflowOutput {
-    /// Final result text
+    /// 最终结果文本
     pub result: String,
-    /// Detailed output for each step
+    /// 每一步的详细输出
     pub steps: Vec<StepOutput>,
-    /// Total elapsed time
+    /// 总耗时
     pub elapsed: Duration,
 }
 
-/// Detailed output of a single step execution
+/// 单个步骤执行的详细输出
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepOutput {
-    /// Name of the agent that executed this step
+    /// 执行该步骤的 agent 名称
     pub agent_name: String,
-    /// Input received by this step
+    /// 该步骤接收到的输入
     pub input: String,
-    /// Output produced by this step
+    /// 该步骤产生的输出
     pub output: String,
-    /// Step elapsed time
+    /// 该步骤耗时
     pub elapsed: Duration,
 }

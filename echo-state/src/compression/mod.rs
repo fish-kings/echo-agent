@@ -1,10 +1,10 @@
-//! Context compression
+//! 上下文压缩
 //!
-//! Maintains conversation history and automatically compresses when tokens exceed the limit, managed by [`ContextManager`].
+//! 维护对话历史，并在 token 超出限制时自动压缩，由 [`ContextManager`] 统一管理。
 //!
-//! Built-in compression strategies (all implement the [`ContextCompressor`] trait):
-//! - [`compressor::SlidingWindowCompressor`]: Sliding window, discards the oldest N messages
-//! - [`compressor::SummaryCompressor`]: LLM summarization, compresses old messages into a system summary message (stage4 P4.3 default)
+//! 内置压缩策略（均实现 [`ContextCompressor`] trait）：
+//! - [`compressor::SlidingWindowCompressor`]：滑动窗口，丢弃最早的 N 条消息
+//! - [`compressor::SummaryCompressor`]：LLM 摘要，将旧消息压缩为一条系统摘要消息（stage4 P4.3 默认策略）
 
 pub mod compressor;
 pub mod horizon;
@@ -12,7 +12,7 @@ pub mod invariants;
 pub mod levels;
 pub mod verifier;
 
-// Re-export from echo_core for backward compatibility
+// 从 echo_core 重新导出，以保持向后兼容
 pub use echo_core::compression::{
     CanonicalContext, CompressionCheckpoint, CompressionInput, CompressionOutput,
     ContextCompressor, ContextProjection, PreModelContextProjector, ProjectionContext,
@@ -29,14 +29,14 @@ use std::sync::Arc;
 
 const PROJECTION_ENVELOPE_PREFIX: &str = "<echo-agent-context-projection-v1>";
 
-/// Return whether a message carries the framework-owned context projection envelope.
+/// 判断一条消息是否携带了由框架管理的上下文投影信封（envelope）。
 ///
-/// Consumers should use this predicate instead of matching the private envelope
-/// representation directly.
+/// 调用方应使用该判断函数，而不是直接匹配内部的信封表示形式。
 pub fn is_context_projection_message(message: &Message) -> bool {
     projection_envelope_text(message).is_some()
 }
 
+/// 若消息携带投影信封，返回其原始文本；否则返回 `None`。
 fn projection_envelope_text(message: &Message) -> Option<&str> {
     match &message.content {
         MessageContent::Text(content) => content
@@ -52,6 +52,7 @@ fn projection_envelope_text(message: &Message) -> Option<&str> {
     }
 }
 
+/// 为给定 marker 生成投影信封的前缀文本（用于匹配/查找），marker 为空时返回 `None`。
 fn projection_marker_prefix(marker: &str) -> Option<String> {
     if marker.is_empty() {
         return None;
@@ -61,29 +62,32 @@ fn projection_marker_prefix(marker: &str) -> Option<String> {
         .map(|encoded| format!("{PROJECTION_ENVELOPE_PREFIX}\nmarker={encoded}\n"))
 }
 
-/// Callback trait for promoting evicted messages to long-term memory.
+/// 将被驱逐消息提升为长期记忆的回调 trait。
 ///
-/// When compression evicts messages from the context, this trait allows
-/// extracting key facts and writing them to a memory Store for later recall.
-/// This is the "L3 Memory Promotion" mechanism.
+/// 当压缩从上下文中驱逐消息时，该 trait 允许提取关键事实并写入记忆 Store 以便后续召回。
+/// 这就是所谓的 "L3 记忆提升"（Memory Promotion）机制。
 pub trait MemoryPromoter: Send + Sync {
-    /// Process evicted messages and promote key facts to memory.
+    /// 处理被驱逐的消息，并将关键事实提升到记忆中。
     fn promote(
         &self,
         evicted: &[Message],
     ) -> futures::future::BoxFuture<'_, Result<MemoryPromotionReceipt>>;
 }
 
-/// Durable outcome of one memory-promotion attempt.
+/// 一次记忆提升操作的持久化结果。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MemoryPromotionReceipt {
+    /// 本次提交给记忆提升器的消息数量
     pub submitted: usize,
+    /// 实际成功提升到记忆中的数量
     pub promoted: usize,
+    /// 因重复而被去重、未再次写入的数量
     pub deduplicated: usize,
 }
 
-/// Blanket implementation for `Arc<dyn MemoryPromoter>`.
+/// `Arc<dyn MemoryPromoter>` 的统一实现（透传给内部对象）。
 impl MemoryPromoter for Arc<dyn MemoryPromoter> {
+    /// 转发调用给内部持有的 `MemoryPromoter` 实现。
     fn promote(
         &self,
         evicted: &[Message],
@@ -92,62 +96,74 @@ impl MemoryPromoter for Arc<dyn MemoryPromoter> {
     }
 }
 
-/// Metadata needed to restore protected messages near their original positions.
+/// 用于在压缩后把受保护消息还原到接近原始位置所需的元数据。
 struct ProtectedMessage {
+    /// 受保护的消息本身
     message: Message,
-    /// Number of compressible messages that originally appeared after this message.
+    /// 该消息原本之后出现的可压缩消息数量。
     compressible_after: usize,
-    /// Number of protected messages that originally appeared after this message.
+    /// 该消息原本之后出现的受保护消息数量。
     protected_after: usize,
 }
 
-/// Compression statistics returned by `force_compress()`
+/// `force_compress()` 返回的压缩统计信息
 pub struct ForceCompressStats {
-    /// Total message count before compression
+    /// 压缩前的消息总数
     pub before_count: usize,
-    /// Total message count after compression
+    /// 压缩后的消息总数
     pub after_count: usize,
-    /// Number of messages evicted
+    /// 被驱逐的消息数量
     pub evicted: usize,
-    /// Estimated token count before compression
+    /// 压缩前估算的 token 数
     pub before_tokens: usize,
-    /// Estimated token count after compression
+    /// 压缩后估算的 token 数
     pub after_tokens: usize,
 }
 
-/// Result of `ContextManager::prepare()` — includes the prepared messages and
-/// optional compression stats if auto-compression was triggered.
+/// `ContextManager::prepare()` 的返回结果 —— 包含准备好的消息列表，
+/// 以及在触发自动压缩时附带的压缩统计信息。
 pub struct PrepareResult {
-    /// The prepared message list to send to the LLM.
+    /// 准备发送给 LLM 的消息列表。
     pub messages: Vec<Message>,
-    /// Compression statistics, populated only when auto-compression occurred.
+    /// 压缩统计信息，仅在发生自动压缩时才有值。
     pub compressed: Option<ForceCompressStats>,
-    /// Compression checkpoint for audit, replay, and recovery.
+    /// 用于审计、重放和恢复的压缩检查点。
     pub checkpoint: Option<CompressionCheckpoint>,
-    /// Summary verification results (only when a summary was produced).
+    /// 摘要校验结果（仅在生成了摘要时才有值）。
     pub verification: Option<verifier::SummaryVerification>,
 }
 
-/// Token breakdown by message role.
+/// 按消息角色划分的 token 明细。
 ///
-/// Used by `/context` command to show where context window budget is spent.
+/// 供 `/context` 命令展示上下文窗口预算的具体分布情况。
 #[derive(Debug, Clone)]
 pub struct TokenBreakdown {
+    /// 系统消息（system）占用的 token 数
     pub system: usize,
+    /// 用户消息（user）占用的 token 数
     pub user: usize,
+    /// 助手消息（assistant）占用的 token 数
     pub assistant: usize,
+    /// 工具消息（tool）占用的 token 数
     pub tool: usize,
+    /// 对话历史摘要占用的 token 数
     pub summary: usize,
+    /// 记忆相关上下文占用的 token 数
     pub memory: usize,
+    /// 总 token 数
     pub total: usize,
+    /// 模型的最大上下文窗口（若已知）
     pub max_context: Option<usize>,
+    /// 当前配置的 token 上限
     pub token_limit: usize,
+    /// 累计触发压缩的次数
     pub compression_count: u64,
+    /// 累计压缩比率
     pub compression_ratio: f64,
 }
 
 impl TokenBreakdown {
-    /// Format as a human-readable progress bar display.
+    /// 将统计信息格式化为人类可读的进度条展示形式。
     pub fn format_bar(&self) -> String {
         let max = self.max_context.unwrap_or(self.total.max(1));
         let pct = |n: usize| -> f64 { if max == 0 { 0.0 } else { n as f64 / max as f64 } };
@@ -198,6 +214,7 @@ impl TokenBreakdown {
     }
 }
 
+/// 将 token 数格式化为带 K/M 单位的简短字符串（例如 1500 -> "1.5K"）。
 fn fmt_tokens(n: usize) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
@@ -208,26 +225,26 @@ fn fmt_tokens(n: usize) -> String {
     }
 }
 
-/// Cumulative compression metrics for observability.
+/// 用于可观测性的累计压缩指标。
 ///
-/// Tracks the total number of compression events, tokens saved, messages
-/// evicted, and which strategies were used over the lifetime of a
-/// [`ContextManager`].
+/// 记录 [`ContextManager`] 生命周期内触发的压缩事件总数、节省的 token 数、
+/// 被驱逐的消息数，以及各压缩策略的使用情况。
 #[derive(Debug, Clone)]
 pub struct CompressionMetrics {
-    /// Total number of compression events triggered.
+    /// 触发压缩事件的总次数。
     pub total_compressions: u64,
-    /// Sum of estimated tokens before compression across all events.
+    /// 所有压缩事件中，压缩前估算 token 数的总和。
     pub total_tokens_before: u64,
-    /// Sum of estimated tokens after compression across all events.
+    /// 所有压缩事件中，压缩后估算 token 数的总和。
     pub total_tokens_after: u64,
-    /// Total number of messages evicted across all events.
+    /// 所有压缩事件中，被驱逐的消息总数。
     pub total_messages_evicted: u64,
-    /// Count of times each compressor type name was used (e.g. "SlidingWindow" → 3).
+    /// 各压缩器类型名称的使用次数统计（例如 "SlidingWindow" → 3）。
     pub strategies_used: std::collections::HashMap<String, u64>,
 }
 
 impl CompressionMetrics {
+    /// 创建一个所有计数均为零的初始指标实例。
     fn new() -> Self {
         Self {
             total_compressions: 0,
@@ -238,13 +255,13 @@ impl CompressionMetrics {
         }
     }
 
-    /// Total tokens saved across all compression events.
+    /// 所有压缩事件累计节省的 token 数。
     pub fn total_tokens_saved(&self) -> u64 {
         self.total_tokens_before
             .saturating_sub(self.total_tokens_after)
     }
 
-    /// Compression ratio (0.0 = no savings, 1.0 = all tokens saved).
+    /// 压缩比率（0.0 表示没有节省，1.0 表示全部节省）。
     pub fn compression_ratio(&self) -> f64 {
         if self.total_tokens_before == 0 {
             return 0.0;
@@ -252,7 +269,7 @@ impl CompressionMetrics {
         self.total_tokens_saved() as f64 / self.total_tokens_before as f64
     }
 
-    /// Human-readable summary.
+    /// 生成人类可读的摘要文本。
     pub fn report(&self) -> String {
         let strategies: Vec<String> = self
             .strategies_used
@@ -269,7 +286,7 @@ impl CompressionMetrics {
         )
     }
 
-    /// Record a compression event.
+    /// 记录一次压缩事件。
     fn record(&mut self, stats: &ForceCompressStats, compressor_name: &str) {
         self.total_compressions += 1;
         self.total_tokens_before += stats.before_tokens as u64;
@@ -282,9 +299,9 @@ impl CompressionMetrics {
     }
 }
 
-/// Context manager: maintains full conversation history and automatically triggers compression when tokens exceed the limit.
+/// 上下文管理器：维护完整的对话历史，并在 token 超出限制时自动触发压缩。
 ///
-/// # Typical usage
+/// # 典型用法
 ///
 /// ```rust,no_run
 /// use echo_core::error::Result;
@@ -300,14 +317,14 @@ impl CompressionMetrics {
 /// ctx.push(Message::system("You are an assistant".to_string()));
 /// ctx.push(Message::user("Hello".to_string()));
 ///
-/// // Call prepare() before each LLM call to auto-compress over-limit messages
+/// // 每次调用 LLM 前调用 prepare()，自动压缩超出限制的消息
 /// let result = ctx.prepare(None).await?;
 /// let messages = result.messages;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # SummaryCompressor example (stage4 P4.3 default)
+/// # SummaryCompressor 示例（stage4 P4.3 默认策略）
 ///
 /// ```rust,no_run
 /// use echo_core::llm::LlmClient;
@@ -323,52 +340,54 @@ impl CompressionMetrics {
 /// # }
 /// ```
 pub struct ContextManager {
+    /// 当前维护的完整消息缓冲区
     messages: Vec<Message>,
+    /// 已配置的压缩策略（若未配置则不会自动压缩）
     compressor: Option<Box<dyn ContextCompressor>>,
+    /// 触发压缩的 token 上限
     token_limit: usize,
+    /// 用于估算 token 数的分词器
     tokenizer: Arc<dyn Tokenizer>,
-    /// Content markers that identify protected messages (survive compaction).
-    /// Any message whose content contains one of these markers is excluded from compression.
-    /// Used for static consumer-defined instructions that must survive compaction.
+    /// 用于标识受保护消息（在压缩中存活）的内容标记。
+    /// 任何内容包含这些标记之一的消息都会被排除在压缩之外。
+    /// 用于静态的、由调用方定义且必须在压缩中存活的指令。
     protected_markers: Vec<String>,
-    /// Protected content markers whose newest message supersedes older ones.
+    /// 最新消息会替代旧消息的受保护内容标记。
     ///
-    /// This is intended for dynamic context such as a subagent invocation brief:
-    /// the current value must survive compression, but retaining prior values
-    /// wastes tokens and can give the model conflicting instructions.
+    /// 适用于动态上下文，例如子 Agent 调用简报：当前值必须在压缩中存活，
+    /// 但保留历史值既浪费 token，又可能让模型接收到相互冲突的指令。
     replaceable_protected_markers: Vec<String>,
-    /// Last marker set emitted by each dynamic projection provider.
+    /// 每个动态投影提供方最近一次发出的标记集合。
     projection_scopes: HashMap<String, HashSet<String>>,
-    /// Optional hard message-count cap (supplementary OOM guard).
+    /// 可选的硬性消息数量上限（作为 OOM 防护的补充手段）。
     ///
-    /// (stage4 P4.3) The primary OOM defense is the token budget (`token_limit`
-    /// / `budget`); `max_messages` is an optional supplementary guard against
-    /// pathological message-count growth (e.g. many tiny messages that don't
-    /// trip the token threshold but slow rendering/processing). Industry主流
-    /// is token-driven (OpenAI/Anthropic/Letta all bill/window on tokens);
-    /// `max_messages` defaults to `None` (disabled) to align with that.
-    /// Consumers who want a message-count backstop can set it via
-    /// [`ContextManagerBuilder::max_messages`].
+    /// （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`token_limit` /
+    /// `budget`）；`max_messages` 是一种可选的补充防护，用于应对消息数量
+    /// 异常增长的极端情况（例如大量不足以触发 token 阈值、但会拖慢渲染/
+    /// 处理速度的小消息）。业界主流做法是以 token 驱动（OpenAI/Anthropic/
+    /// Letta 均按 token 计费/开窗）；因此 `max_messages` 默认是 `None`
+    /// （关闭状态），与这一主流做法保持一致。需要消息数量兜底的调用方，
+    /// 可以通过 [`ContextManagerBuilder::max_messages`] 进行设置。
     max_messages: Option<usize>,
-    /// Optional token budget for percentage-based allocation.
-    /// When set, `prepare()` uses budget.allocate() instead of simple token_limit comparison.
+    /// 可选的、用于按百分比分配的 token 预算。
+    /// 一旦设置，`prepare()` 会使用 budget.allocate() 而不是简单的 token_limit 比较。
     budget: Option<TokenBudget>,
-    /// Cumulative compression metrics for observability.
+    /// 用于可观测性的累计压缩指标。
     metrics: CompressionMetrics,
-    /// Optional visibility horizon compressor.
-    /// When set, `prepare()` runs horizon compaction as a pre-processing pass
-    /// before the main compressor, compacting tool traces beyond the active window.
+    /// 可选的可见性视界（visibility horizon）压缩器。
+    /// 一旦设置，`prepare()` 会在主压缩器之前先执行一轮视界压缩预处理，
+    /// 压缩活动窗口之外的工具调用轨迹。
     visibility_horizon: Option<horizon::VisibilityHorizonCompressor>,
-    /// Optional callback for promoting evicted messages to long-term memory.
-    /// When set, called with evicted messages after each compression pass.
+    /// 可选的、将被驱逐消息提升为长期记忆的回调。
+    /// 一旦设置，会在每次压缩后携带被驱逐的消息调用该回调。
     memory_promoter: Option<Arc<dyn MemoryPromoter>>,
-    /// Optional canonical context sources for re-injection after compression.
-    /// When set, system prompt, rules, and skill injections can be restored
-    /// if compression evicts them from the message buffer.
+    /// 可选的规范上下文来源，用于压缩后的重新注入。
+    /// 一旦设置，若系统提示词、规则、技能注入在压缩中被驱逐，可以据此恢复。
     canonical_context: Option<CanonicalContext>,
 }
 
 impl ContextManager {
+    /// 创建一个用于配置并构建 `ContextManager` 的构建器（builder）。
     pub fn builder(token_limit: usize) -> ContextManagerBuilder {
         ContextManagerBuilder {
             token_limit,
@@ -383,14 +402,13 @@ impl ContextManager {
         }
     }
 
-    /// Append a message to the context buffer.
+    /// 向上下文缓冲区追加一条消息。
     ///
-    /// (stage4 P4.3) The primary OOM defense is the token budget (`prepare()`
-    /// triggers when estimated tokens exceed `token_limit`). The optional
-    /// `max_messages` cap (if set via builder) is a supplementary backstop:
-    /// when exceeded, a sliding-window degradation preserves system + protected
-    /// + recent messages and discards the earliest in between. Defaults to
-    ///   `None` (no message-count cap, token-driven, aligned with industry).
+    /// （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`prepare()` 在估算
+    /// token 数超过 `token_limit` 时触发压缩）。可选的 `max_messages` 上限
+    /// （若通过 builder 设置）是一种补充兜底：一旦超出，会执行滑动窗口式
+    /// 降级处理，保留系统消息 + 受保护消息 + 最近消息，丢弃中间最早的部分。
+    /// 默认为 `None`（不设消息数量上限，以 token 驱动，与业界主流做法一致）。
     pub fn push(&mut self, message: Message) {
         if let Some(marker) = self.replaceable_marker_for(&message) {
             self.messages.retain(|existing| {
@@ -402,7 +420,7 @@ impl ContextManager {
         }
         self.messages.push(message);
 
-        // Optional supplementary hard cap (defaults to None = disabled).
+        // 可选的补充性硬上限（默认为 None，即关闭）。
         if let Some(cap) = self.max_messages
             && self.messages.len() > cap
         {
@@ -410,15 +428,14 @@ impl ContextManager {
         }
     }
 
-    /// Apply hard message cap: preserve system messages, protected messages,
-    /// and recent messages; discard the earliest in between. Only triggered
-    /// when `max_messages` is set and exceeded.
+    /// 应用消息数量硬上限：保留系统消息、受保护消息和最近的消息；
+    /// 丢弃中间最早的部分。仅在设置了 `max_messages` 且超出时触发。
     fn apply_hard_cap(&mut self, target: usize) {
         if self.messages.len() <= target {
             return;
         }
 
-        // Identify protected message indices (should not be deleted).
+        // 找出受保护消息的下标（不应被删除）。
         let protected: std::collections::HashSet<usize> = self
             .messages
             .iter()
@@ -432,15 +449,15 @@ impl ContextManager {
             })
             .collect();
 
-        // Find the position of the first non-system message
+        // 找到第一条非系统消息的位置
         let first_non_system = self
             .messages
             .iter()
             .position(|m| m.role != Role::System)
             .unwrap_or(0);
 
-        // Preserve: all system messages at the front + the last `target` messages.
-        // Discard the earliest non-system, non-protected messages in between.
+        // 保留：开头所有的系统消息 + 最后 `target` 条消息。
+        // 丢弃中间最早的、非系统且非受保护的消息。
         let keep_count = self.messages.len() - target;
         let mut to_remove: Vec<usize> = Vec::new();
         let mut removed = 0;
@@ -458,32 +475,32 @@ impl ContextManager {
                 removed += 1;
             }
         }
-        // Remove in reverse order to keep indices valid.
+        // 倒序删除，以保证索引在删除过程中保持有效。
         for i in to_remove.into_iter().rev() {
             self.messages.remove(i);
         }
     }
 
-    /// Batch-append messages
+    /// 批量追加消息
     pub fn push_many(&mut self, messages: impl IntoIterator<Item = Message>) {
         for message in messages {
             self.push(message);
         }
     }
 
-    /// Return all messages currently in the buffer (no compression)
+    /// 返回当前缓冲区中的全部消息（未经压缩）
     pub fn messages(&self) -> &[Message] {
         &self.messages
     }
 
-    /// Whether compression is imminent on the next `prepare()` call — i.e. a
-    /// compressor is installed AND the token budget is exceeded.
+    /// 判断下一次调用 `prepare()` 时是否即将触发压缩 —— 即已配置压缩器
+    /// 且 token 预算已超出。
     ///
-    /// (stage4 E1) Used by `pre_compaction_flush` to gate the flush LLM call so
-    /// it only fires when compaction is actually about to happen, not on every
-    /// ReAct iteration. Mirrors `prepare()`'s `needs_compression` decision
-    /// (mod.rs:1017-1025) as a non-mutating pre-check. Slight over/under-fire
-    /// vs. the budget path is acceptable — the flush is best-effort.
+    /// （stage4 E1）供 `pre_compaction_flush` 使用，用于控制刷新用的 LLM
+    /// 调用只在真正即将发生压缩时触发，而不是在每次 ReAct 迭代都触发。
+    /// 该方法是对 `prepare()` 中 `needs_compression` 判断逻辑（mod.rs:1017-1025）
+    /// 的非修改性预检查。相对预算路径存在轻微的过早/延迟触发是可以接受的——
+    /// 该刷新本身是尽力而为（best-effort）的。
     pub fn should_compress(&self) -> bool {
         if self.compressor.is_none() {
             return false;
@@ -497,17 +514,17 @@ impl ContextManager {
         }
     }
 
-    /// Replace the internal message buffer (used to restore conversation from persistent storage)
+    /// 替换内部消息缓冲区（用于从持久化存储中恢复对话）
     ///
-    /// Messages should include the system prompt as the first entry (if needed).
+    /// 消息列表应将系统提示词作为第一项（如果需要的话）。
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.projection_scopes.clear();
     }
 
-    /// Estimate the token count of the current context
+    /// 估算当前上下文的 token 数
     ///
-    /// Uses the configured [`Tokenizer`] implementation (default [`HeuristicTokenizer`], distinguishes ASCII/CJK).
+    /// 使用配置的 [`Tokenizer`] 实现（默认使用 [`HeuristicTokenizer`]，区分 ASCII/中日韩字符）。
     pub fn token_estimate(&self) -> usize {
         Self::estimate_tokens(&self.messages, &*self.tokenizer)
     }
@@ -517,30 +534,29 @@ impl ContextManager {
         &*self.tokenizer
     }
 
-    /// Dynamically replace the Tokenizer
+    /// 动态替换 Tokenizer
     pub fn set_tokenizer(&mut self, tokenizer: Arc<dyn Tokenizer>) {
         self.tokenizer = tokenizer;
     }
 
-    /// Atomically replace the live context limit and its derived token budget.
+    /// 原子性地替换当前生效的上下文限制及其派生的 token 预算。
     pub fn set_token_limit(&mut self, token_limit: usize, budget: Option<TokenBudget>) {
         self.token_limit = token_limit;
         self.budget = budget;
     }
 
-    /// Clear the context buffer (preserves configured compressor and protection markers)
+    /// 清空上下文缓冲区（保留已配置的压缩器和保护标记）
     pub fn clear(&mut self) {
         self.messages.clear();
         self.projection_scopes.clear();
     }
 
-    /// Register a content marker that protects messages from compression.
+    /// 注册一个用于保护消息不被压缩的内容标记。
     ///
-    /// Any message whose content contains this marker string will be excluded
-    /// from compression passes. This is intended for static consumer-defined
-    /// instructions that must not be evicted during context compaction.
+    /// 任何内容中包含该标记字符串的消息都会在压缩过程中被排除。
+    /// 用于静态的、由调用方定义且在上下文压缩过程中不能被驱逐的指令。
     ///
-    /// # Example
+    /// # 示例
     /// ```rust,no_run
     /// # use echo_state::compression::ContextManager;
     /// let mut ctx = ContextManager::builder(4096).build();
@@ -552,22 +568,21 @@ impl ContextManager {
         }
     }
 
-    /// Register a protected marker with latest-wins replacement semantics.
+    /// 注册一个具有"最新值替代旧值"语义的受保护标记。
     ///
-    /// Pushing a message containing this marker removes older messages that
-    /// contain the same marker before appending the new value.
+    /// 推入一条包含该标记的消息时，会先移除所有含有相同标记的旧消息，再追加新值。
     pub fn add_replaceable_protected_marker(&mut self, marker: String) {
         if !marker.is_empty() && !self.replaceable_protected_markers.contains(&marker) {
             self.replaceable_protected_markers.push(marker);
         }
     }
 
-    /// Replace marker-tagged model context at the system/history boundary.
+    /// 在系统消息与历史消息的边界处，替换带标记的模型上下文。
     ///
-    /// Projection messages receive a framework-reserved envelope. Each supplied
-    /// marker replaces only its previous value. A projection whose message is
-    /// `None` acts as a tombstone for that marker. Unmentioned projections stay
-    /// intact, allowing independent context sources to update safely.
+    /// 投影消息会被包裹上框架保留的信封（envelope）。每个给定的 marker 只替换
+    /// 它自己之前的值。若某个投影的 message 为 `None`，则视为对该 marker 的
+    /// 墓碑标记（删除）。未提及的投影保持不变，使独立的上下文来源可以安全地
+    /// 各自更新。
     pub fn apply_projections(&mut self, projections: &[ContextProjection]) {
         let mut replacements = Vec::new();
         for projection in projections {

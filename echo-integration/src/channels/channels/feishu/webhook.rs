@@ -1,8 +1,8 @@
-//! Feishu Webhook Server
+//! 飞书 Webhook 服务器
 //!
-//! HTTP event push mode; requires a public IP.
+//! HTTP 事件推送模式；需要公网 IP。
 //!
-//! Used to receive event messages pushed by Feishu.
+//! 用于接收飞书推送的事件消息。
 
 use super::super::super::types::*;
 use axum::response::IntoResponse;
@@ -18,21 +18,21 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-/// Feishu event type
+/// 飞书事件类型
 const FEISHU_IM_MESSAGE_RECEIVE: &str = "im.message.receive_v1";
 
-/// TTL for processed event dedup cache
+/// 已处理事件去重缓存的 TTL
 const DEDUP_TTL_SECS: u64 = 300;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Verify Feishu Webhook signature (constant-time comparison to prevent timing attacks).
+/// 校验飞书 Webhook 签名（使用常数时间比较以防止时序攻击）。
 ///
-/// Feishu signature algorithm:
-/// 1. Concatenate `timestamp + "\n" + nonce + "\n" + body`
-/// 2. Compute HMAC-SHA256 using signing_key
-/// 3. Base64-encode to get the signature
-/// 4. Compare `X-Lark-Signature` header with the computed value
+/// 飞书签名算法：
+/// 1. 拼接 `timestamp + "\n" + nonce + "\n" + body`
+/// 2. 使用 signing_key 计算 HMAC-SHA256
+/// 3. Base64 编码得到签名
+/// 4. 将 `X-Lark-Signature` 请求头与计算值进行比较
 fn verify_feishu_signature(
     signing_key: &str,
     timestamp: &str,
@@ -50,10 +50,10 @@ fn verify_feishu_signature(
     mac.update(body);
     let computed = mac.finalize().into_bytes();
 
-    // Base64-encode the computed result
+    // 对计算结果进行 Base64 编码
     let computed_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, computed);
 
-    // Constant-time comparison to prevent timing attacks
+    // 常数时间比较以防止时序攻击
     if computed_b64.len() != expected_signature.len() {
         return false;
     }
@@ -63,30 +63,34 @@ fn verify_feishu_signature(
         .into()
 }
 
-/// Webhook state
+/// Webhook 状态
 struct WebhookState {
+    /// 消息处理器。
     handler: Arc<dyn MessageHandler>,
+    /// 飞书事件订阅校验 token。
     verification_token: Option<String>,
-    /// Signing key (for HMAC signature verification)
+    /// 签名密钥（用于 HMAC 签名验证）
     signing_key: Option<String>,
-    /// Processed event dedup cache (message_id -> processing time)
+    /// 已处理事件去重缓存（message_id -> 处理时间）
     processed_events: DashMap<String, Instant>,
+    /// 按 message_id 序列化并发事件处理的互斥锁集合。
     event_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
+/// 构造一个指定状态码、空 body 的 HTTP 响应。
 fn empty_response(status: axum::http::StatusCode) -> axum::response::Response {
     let mut response = axum::response::Response::new(axum::body::Body::empty());
     *response.status_mut() = status;
     response
 }
 
-/// Handle Feishu event
+/// 处理飞书事件
 async fn handle_event(
     State(state): State<Arc<WebhookState>>,
     headers: axum::http::HeaderMap,
     raw_body: Bytes,
 ) -> axum::response::Response {
-    // Signature authority is the exact HTTP payload, before JSON normalization.
+    // 签名校验以原始 HTTP payload 为准，需在 JSON 规范化之前进行。
     if let Some(ref signing_key) = state.signing_key {
         let timestamp = headers
             .get("X-Lark-Request-Timestamp")
@@ -118,7 +122,7 @@ async fn handle_event(
         return axum::Json(json!({ "challenge": challenge })).into_response();
     }
 
-    // 2. Verify verification_token
+    // 2. 校验 verification_token
     if let Some(ref expected_token) = state.verification_token {
         let actual_token = body.get("header").and_then(|h| h["token"].as_str());
         if actual_token != Some(expected_token.as_str()) {
@@ -127,14 +131,14 @@ async fn handle_event(
         }
     }
 
-    // 4. Verify event type
+    // 4. 校验事件类型
     let event_type = body["header"]["event_type"].as_str();
     if event_type != Some(FEISHU_IM_MESSAGE_RECEIVE) {
         debug!("Feishu webhook: ignoring event type: {:?}", event_type);
         return axum::Json(json!({})).into_response();
     }
 
-    // 5. Parse message
+    // 5. 解析消息
     let event = &body["event"];
     let message = &event["message"];
 
@@ -144,7 +148,7 @@ async fn handle_event(
 
     let message_id = message["message_id"].as_str().unwrap_or("").to_string();
 
-    // 6. Serialize duplicate deliveries for the same event ID.
+    // 6. 对同一事件 ID 的重复投递做串行化处理。
     let event_lock = if message_id.is_empty() {
         None
     } else {
@@ -184,7 +188,7 @@ async fn handle_event(
     };
     let chat_type_str = message["chat_type"].as_str().unwrap_or("p2p").to_string();
 
-    // Only handle text messages
+    // 仅处理文本消息
     if message_type != "text" {
         debug!(
             "Feishu webhook: ignoring non-text message: {}",
@@ -193,7 +197,7 @@ async fn handle_event(
         return axum::Json(json!({})).into_response();
     }
 
-    // Parse text content
+    // 解析文本内容
     let content_str = message["content"].as_str().unwrap_or("{}").to_string();
     let content: serde_json::Value = serde_json::from_str(&content_str).unwrap_or_default();
     let text = content["text"].as_str().unwrap_or("").to_string();
@@ -218,7 +222,7 @@ async fn handle_event(
         }
     };
 
-    // A successful HTTP acknowledgement means handler and delivery completed.
+    // HTTP 响应成功即代表 handler 处理与消息投递均已完成。
     let handler = state.handler.clone();
     let chat_type = if chat_type_str == "group" {
         ChatType::Group
@@ -262,7 +266,7 @@ async fn handle_event(
     axum::Json(json!({})).into_response()
 }
 
-/// Start Webhook Server
+/// 启动 Webhook 服务器
 pub(super) async fn run_webhook_server(
     bind_addr: String,
     webhook_path: String,

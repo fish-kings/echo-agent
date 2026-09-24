@@ -2,6 +2,7 @@ use echo_agent_learning::serialization::{
     AgentProfile, ProfileError, parse_and_validate_profile, profile_to_json,
 };
 
+/// 演示使用 serde 对 `AgentProfile` 进行序列化、反序列化与校验。
 fn main() -> Result<(), ProfileError> {
     let profile = AgentProfile {
         name: "assistant".to_string(),

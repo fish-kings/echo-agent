@@ -1,6 +1,6 @@
-//! Web extract tool — extract structured content from HTML
+//! Web 内容提取工具 —— 从 HTML 中提取结构化内容
 //!
-//! Extracts title, links, headings, paragraphs, tables from HTML content.
+//! 从 HTML 内容中提取标题、链接、各级标题、段落、表格等信息。
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
@@ -8,17 +8,21 @@ use futures::future::BoxFuture;
 use scraper::{Html, Selector};
 use serde_json::Value;
 
+/// Web 内容提取工具，无状态。
 pub struct WebExtractTool;
 
 impl Tool for WebExtractTool {
+    /// 返回该工具在工具注册表中的名称：`"web_extract"`。
     fn name(&self) -> &str {
         "web_extract"
     }
 
+    /// 返回展示给模型/调用方的工具功能描述。
     fn description(&self) -> &str {
         "Extract structured information from HTML content: title, all links, paragraphs, tables, etc."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -37,6 +41,7 @@ impl Tool for WebExtractTool {
         })
     }
 
+    /// 执行提取：根据 `extract_type` 从给定 HTML 中解析出标题、链接、段落和表格数量等结构化信息。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let html = parameters

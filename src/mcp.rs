@@ -1,9 +1,9 @@
-//! MCP (Model Context Protocol) façade.
+//! MCP（Model Context Protocol，模型上下文协议）门面模块。
 //!
-//! Re-exports the public API of `echo_integration::mcp`.
-//! The authoritative implementation lives in `echo_integration`.
+//! 重新导出 `echo_integration::mcp` 的公共 API。
+//! 权威实现位于 `echo_integration`。
 
-/// Direct re-exports from `echo_integration::mcp`.
+/// 直接从 `echo_integration::mcp` 重新导出。
 pub mod integration {
     pub use echo_integration::mcp::*;
 }

@@ -1,5 +1,5 @@
-//! Per-iteration LLM call: fire `on_think_start`, run intervention
-//! callbacks, stream LLM chunks, derive token counts and emit `ThinkEnd`.
+//! 每次迭代的 LLM 调用：触发 `on_think_start`、运行干预（intervention）回调、
+//! 流式接收 LLM 分片、推导 token 计数，并发出 `ThinkEnd`。
 
 use super::super::processor::process_stream_chunk;
 use super::super::stream_macros::yield_event_or;
@@ -15,13 +15,14 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc};
 
-/// LLM-call phase: stream chunks, derive content / tool calls / token counts.
-///
-/// Returns:
-/// - [`ThinkOutcome::Continue`] with the assembled [`ThinkOutput`].
-/// - [`ThinkOutcome::Abandoned`] when the channel was closed mid-stream.
-/// - [`ThinkOutcome::TerminalSettled`] when this phase already persisted and
-///   published the single terminal outcome.
+/** LLM 调用阶段：流式接收分片，推导出内容 / 工具调用 / token 计数。
+
+返回值：
+- [`ThinkOutcome::Continue`]，携带已组装好的 [`ThinkOutput`]。
+- [`ThinkOutcome::Abandoned`]，当通道在流式过程中被关闭时。
+- [`ThinkOutcome::TerminalSettled`]，当本阶段已经持久化并发布了唯一的
+  终止结果时。
+*/
 pub(crate) async fn run_think(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -34,7 +35,7 @@ pub(crate) async fn run_think(
         cb.on_think_start(agent, &messages).await;
     }
 
-    // ── Intervention callbacks for think (streaming path) ──
+    // ── think 阶段的干预回调（流式路径）──
     for intervention in &snap.tools.intervention_callbacks {
         let result = intervention.on_think_start(agent, &messages).await;
         if result.cancel {
@@ -369,10 +370,9 @@ pub(crate) async fn run_think(
     })
     .await;
 
-    // Feed the actual prompt-token count back into the CalibratedTokenizer so
-    // future context-window / compression estimates converge to the model's
-    // real tokenization. Without this the calibration factor stays at 1.0 and
-    // the tokenizer is no more accurate than the raw heuristic.
+    // 把真实的 prompt token 数反馈给 CalibratedTokenizer，使后续的上下文窗口 /
+    // 压缩估算能够收敛到模型真实的分词结果。如果不这样做，校准系数会一直
+    // 停留在 1.0，分词器就不会比原始的启发式估算更准确。
     if pt > 0 {
         let estimated: usize = messages
             .iter()
@@ -384,7 +384,7 @@ pub(crate) async fn run_think(
         }
     }
 
-    // Record usage in the token tracker for cumulative tracking
+    // 把用量记录到 token tracker 中，用于累计追踪
     if let Some(ref u) = last_usage {
         snap.token_tracker.record_usage(u);
     }
@@ -495,7 +495,7 @@ async fn emit_partial_content_before_failure(tx: &mpsc::Sender<Result<AgentEvent
     }
 }
 
-/// Create a streaming LLM call wrapped in retry / circuit-breaker policy.
+/// 创建一次被重试 / 熔断策略包裹的流式 LLM 调用。
 pub(crate) async fn create_llm_stream(
     snap: &AgentRunSnapshot,
     messages: Vec<Message>,
@@ -508,10 +508,10 @@ pub(crate) async fn create_llm_stream(
     let tools = tools_for_request(snap, final_only);
     log_prompt_cache_shape(&messages, tools.as_deref());
 
-    // ── Trait path: when an LlmClient trait object is attached (production
-    // OpenAiClient / test MockLlmClient), route through it. This avoids the
-    // per-call model resolution, which keeps the core loop testable with a
-    // mock and avoids coupling execution to a global model registry.
+    // ── Trait 路径：当挂载了 LlmClient trait 对象时（生产环境的
+    // OpenAiClient / 测试用的 MockLlmClient），走这条路径。这样可以避免
+    // 每次调用都做一次模型解析，使核心循环能够用 mock 进行测试，
+    // 也避免执行逻辑与全局模型注册表耦合。
     // tracing::info!(
     //     agent = %snap.config.agent_name,
     //     model = %snap.config.model_name,
@@ -535,7 +535,7 @@ pub(crate) async fn create_llm_stream(
                 let temp = snap.config.temperature;
                 let max_tokens = snap.config.max_tokens;
                 async move {
-                    // Build cache hints before moving ownership into ChatRequest.
+                    // 在把所有权移入 ChatRequest 之前构建缓存提示（cache hints）。
                     let tools_ref: &[ToolDefinition] = t.as_deref().unwrap_or(&[]);
                     let layout =
                         echo_core::llm::cache::PromptCacheLayout::from_messages(&ms, tools_ref);
@@ -565,9 +565,9 @@ pub(crate) async fn create_llm_stream(
                         }),
                     };
                     let inner = llm_client.chat_stream(request).await?;
-                    // Adapt the trait's flattened ChatChunk back into the
-                    // ChatCompletionChunk shape consumed by the think phase.
-                    // Both originate from the same stream, so no information is lost.
+                    // 把 trait 扁平化后的 ChatChunk 适配回 think 阶段所消费的
+                    // ChatCompletionChunk 形状。两者来自同一个流，因此不会
+                    // 丢失任何信息。
                     let mapped = inner.map(|chunk_result| {
                         chunk_result.map(|c| crate::llm::types::ChatCompletionChunk {
                             id: String::new(),

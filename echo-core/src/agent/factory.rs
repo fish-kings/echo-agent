@@ -1,9 +1,9 @@
-//! Agent Factory pattern — configuration-based agent creation
+//! Agent 工厂模式 —— 基于配置创建 agent
 //!
-//! Provides an [`AgentFactoryConfig`] that captures configuration for creating an agent,
-//! and an [`AgentFactory`] trait that produces agents from a config.
+//! 提供 [`AgentFactoryConfig`]，用于承载创建 agent 所需的配置，
+//! 以及一个从配置生产 agent 的 [`AgentFactory`] trait。
 //!
-//! # Example
+//! # 示例
 //!
 //! ```rust,ignore
 //! use echo_core::agent::factory::{AgentFactory, AgentFactoryConfig};
@@ -14,12 +14,13 @@
 //!     .with_system_prompt("You are a helpful assistant");
 //!
 //! struct ProductFactory;
-//! // Implement `AgentFactory` in the product/facade that owns an Agent builder.
+//! // 在拥有 Agent builder 的产品/门面代码中实现 `AgentFactory`。
 //! ```
 
 use crate::error::Result;
 use crate::tools::Tool;
 
+/// 核心 agent 的默认系统提示词，描述其工作方式与响应风格。
 pub const DEFAULT_CORE_AGENT_SYSTEM_PROMPT: &str = r#"You are a practical local AI agent for real coding, research, data analysis, and task execution.
 
 Core operating model:
@@ -38,29 +39,29 @@ Response style:
 
 // ── Agent Factory Config ────────────────────────────────────────────────────
 
-/// Configuration for creating an agent via an [`AgentFactory`].
+/// 通过 [`AgentFactory`] 创建 agent 所需的配置。
 ///
-/// Captures model, name, system prompt, and tools needed to construct an agent.
-/// The factory reads this config and delegates to the appropriate builder.
+/// 承载构建 agent 所需的模型、名称、系统提示词与工具。工厂读取该配置
+/// 并委托给相应的 builder 完成构建。
 ///
-/// Note: This struct does **not** implement `Clone` because it owns
-/// `Box<dyn Tool>` instances which are not clonable. The factory consumes
-/// the config entirely via [`AgentFactoryConfig::into_tools`].
+/// 注意：该结构体**没有**实现 `Clone`，因为它持有不可克隆的
+/// `Box<dyn Tool>` 实例。工厂通过 [`AgentFactoryConfig::into_tools`]
+/// 完整消费该配置。
 pub struct AgentFactoryConfig {
-    /// LLM model identifier (e.g., "qwen3-max", "gpt-5.5").
+    /// LLM 模型标识符（例如 "qwen3-max"、"gpt-5.5"）。
     model: String,
-    /// Human-readable agent name used in logs and orchestration.
+    /// 用于日志与编排中展示的人类可读 agent 名称。
     name: String,
-    /// System prompt that seeds the agent's behavior.
+    /// 用于初始化 agent 行为的系统提示词。
     system_prompt: String,
-    /// Custom tools to register on the agent.
+    /// 要注册到该 agent 上的自定义工具。
     tools: Vec<Box<dyn Tool>>,
 }
 
 impl AgentFactoryConfig {
-    /// Create a new factory config.
+    /// 创建一个新的工厂配置。
     ///
-    /// Defaults: model = "", name = "assistant", and a practical agent system prompt.
+    /// 默认值：model = ""，name = "assistant"，并使用一份实用型 agent 系统提示词。
     pub fn new() -> Self {
         Self {
             model: String::new(),
@@ -70,70 +71,70 @@ impl AgentFactoryConfig {
         }
     }
 
-    // ── Builder-style setters ──────────────────────────────────────────────────
+    // ── Builder 风格的 setter ──────────────────────────────────────────────────
 
-    /// Set the LLM model name.
+    /// 设置 LLM 模型名称。
     pub fn model(mut self, model: impl Into<String>) -> Self {
         self.model = model.into();
         self
     }
 
-    /// Set the agent name.
+    /// 设置 agent 名称。
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
-    /// Set the system prompt.
+    /// 设置系统提示词。
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
     }
 
-    /// Register a single tool.
+    /// 注册单个工具。
     pub fn tool(mut self, tool: Box<dyn Tool>) -> Self {
         self.tools.push(tool);
         self
     }
 
-    /// Batch-register tools.
+    /// 批量注册多个工具。
     pub fn tools(mut self, tools: Vec<Box<dyn Tool>>) -> Self {
         self.tools.extend(tools);
         self
     }
 
-    // ── Accessors ──────────────────────────────────────────────────────────────
+    // ── 访问器 ──────────────────────────────────────────────────────────────
 
-    /// The LLM model identifier.
+    /// LLM 模型标识符。
     pub fn model_name(&self) -> &str {
         &self.model
     }
 
-    /// The agent name.
+    /// agent 名称。
     pub fn agent_name(&self) -> &str {
         &self.name
     }
 
-    /// The system prompt.
+    /// 系统提示词。
     pub fn system_prompt(&self) -> &str {
         &self.system_prompt
     }
 
-    /// Number of custom tools registered.
+    /// 已注册的自定义工具数量。
     pub fn tool_count(&self) -> usize {
         self.tools.len()
     }
 
-    /// Consume the config and return the owned tools vector.
+    /// 消费该配置并返回其持有的工具向量。
     ///
-    /// This is the primary way a factory extracts tools from the config,
-    /// since `Box<dyn Tool>` cannot be cloned.
+    /// 由于 `Box<dyn Tool>` 无法克隆，这是工厂从配置中取出工具的主要方式。
     pub fn into_tools(self) -> Vec<Box<dyn Tool>> {
         self.tools
     }
 }
 
 impl Default for AgentFactoryConfig {
+    /// 等价于 [`AgentFactoryConfig::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -141,9 +142,9 @@ impl Default for AgentFactoryConfig {
 
 // ── Agent Factory Trait ─────────────────────────────────────────────────────
 
-/// Trait for creating agents from an [`AgentFactoryConfig`].
+/// 从 [`AgentFactoryConfig`] 创建 agent 的 trait。
 pub trait AgentFactory: Send + Sync {
-    /// Create an agent from the given configuration.
+    /// 根据给定的配置创建一个 agent。
     fn create_agent(&self, config: AgentFactoryConfig) -> Result<Box<dyn crate::agent::Agent>>;
 }
 
@@ -151,6 +152,7 @@ pub trait AgentFactory: Send + Sync {
 mod tests {
     use super::*;
 
+    // 验证新建配置的默认值符合预期
     #[test]
     fn test_factory_config_new() {
         let config = AgentFactoryConfig::new();
@@ -159,6 +161,7 @@ mod tests {
         assert_eq!(config.system_prompt(), DEFAULT_CORE_AGENT_SYSTEM_PROMPT);
     }
 
+    // 验证 builder 风格的链式调用能正确设置各字段
     #[test]
     fn test_factory_config_builder() {
         let config = AgentFactoryConfig::new()
@@ -171,6 +174,7 @@ mod tests {
         assert_eq!(config.system_prompt(), "You are a coder");
     }
 
+    // 验证 Default 实现与 new() 行为一致
     #[test]
     fn test_factory_config_default() {
         let config = AgentFactoryConfig::default();

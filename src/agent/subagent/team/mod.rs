@@ -1,9 +1,8 @@
-//! Team intent compiled onto the canonical revisioned task runtime.
-//!
-//! Declarative [`TeamSpec`] values and programmatic [`Team`] values both become
-//! one revisioned task graph. Programmatic composition may own Agent handles,
-//! but dependency state, ready-frontier selection, cancellation, and terminal
-//! settlement remain exclusively owned by [`RuntimeTaskService`].
+/*! 将 Team 意图编译到规范的带修订版本任务运行时之上。
+
+声明式的 [`TeamSpec`] 与编程式构造的 [`Team`] 最终都会变成同一种
+带修订版本的任务图。编程式组合可以持有 Agent 句柄，但依赖状态、
+就绪前沿的选取、取消以及终态结算，始终唯一归属于 [`RuntimeTaskService`]。 */
 
 mod manager_subagent;
 
@@ -37,26 +36,32 @@ use super::registry::SubagentRegistry;
 use super::types::{ExecutionMode, SubagentDefinition, SubagentResult, SubagentStatus};
 use super::usage::LlmUsageStats;
 
-/// How a Team of registered or programmatically supplied Subagents collaborates.
+/// 由已注册或以编程方式提供的 Subagent 组成的 Team 之间的协作方式。
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamStrategy {
-    /// A manager produces a typed task plan, members execute it, and the manager
-    /// synthesizes the completed outputs.
+    /** 由一个管理者生成带类型的任务计划，成员执行该计划，
+    最终由管理者汇总完成后的产出。 */
     #[default]
     ManagerSubagent,
-    /// Registered Subagents execute in the specified order.
+    /// 已注册的 Subagent 按指定顺序依次执行。
     Pipeline(Vec<String>),
-    /// Debaters execute independently, then the judge synthesizes.
+    /// 各辩论者独立执行，随后由裁判进行综合。
     Debate {
+        /// 负责综合各方结论的裁判成员名。
         judge: String,
+        /// 独立执行的辩论者成员名列表。
         debaters: Vec<String>,
     },
-    /// Declared members execute independently, then the reducer synthesizes.
-    Swarm { reducer: String },
+    /// 声明的成员各自独立执行，随后由归约者进行综合。
+    Swarm {
+        /// 负责综合各成员结果的归约者成员名。
+        reducer: String,
+    },
 }
 
 impl TeamStrategy {
+    /// 返回该策略的稳定标识名（蛇形命名，用于序列化/展示）。
     pub fn name(&self) -> &'static str {
         match self {
             Self::ManagerSubagent => "manager_subagent",
@@ -66,6 +71,7 @@ impl TeamStrategy {
         }
     }
 
+    /// 返回该策略的一句话人类可读说明。
     pub fn description(&self) -> &'static str {
         match self {
             Self::ManagerSubagent => {
@@ -78,16 +84,17 @@ impl TeamStrategy {
     }
 }
 
-/// Runtime limits for a Team graph.
+/// Team 任务图的运行时限制。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamConfig {
-    /// Maximum concurrent Subagent dispatches in one ready wave.
+    /// 一个就绪批次内最多可并发派发的 Subagent 数量。
     pub max_concurrent: usize,
-    /// Whole-Team execution timeout in seconds. Zero disables the timeout.
+    /// 整个 Team 执行的超时时间（秒）。为 0 表示不设超时。
     #[serde(default = "default_team_timeout_secs")]
     pub default_timeout_secs: u64,
 }
 
+/// 默认的 Team 执行超时时间（秒）。
 const fn default_team_timeout_secs() -> u64 {
     600
 }
@@ -101,52 +108,71 @@ impl Default for TeamConfig {
     }
 }
 
-/// Declarative Team intent. All names resolve through the shared Subagent registry.
+/// 声明式的 Team 意图。所有成员名都通过共享的 Subagent 注册表解析。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamSpec {
+    /// 该 Team 使用的协作策略。
     pub strategy: TeamStrategy,
+    /// 管理者成员名（仅 ManagerSubagent 策略使用）。
     pub manager: String,
+    /// 可执行的 Subagent 成员名列表。
     pub subagents: Vec<String>,
+    /// 运行时限制配置。
     pub config: TeamConfig,
 }
 
+/// 附加在任务图节点上的 Team 专属扩展信息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TeamTaskExtension {
+    /// 负责执行该任务的 Team 成员名。
     member: String,
+    /// 该任务所属的编译阶段标签（如 "pipeline"）。
     #[serde(default)]
     phase: Option<String>,
 }
 
-/// Role of a programmatically supplied Team member.
+/// 以编程方式提供的 Team 成员所扮演的角色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TeamRole {
+    /// 管理者/领导者角色（ManagerSubagent 策略中的规划与综合方）。
     Leader,
+    /// 可执行任务的普通 Subagent 角色。
     Subagent,
+    /// 评审角色。
     Reviewer,
 }
 
-/// One programmatically supplied Team member.
+/// 一个以编程方式提供的 Team 成员。
 #[derive(Clone)]
 pub struct TeamMember {
+    /// 成员名（在同一 Team 内唯一）。
     pub name: String,
+    /// 该成员扮演的角色。
     pub role: TeamRole,
+    /// 该成员对应的具体 Agent 句柄。
     pub agent: Arc<dyn Agent>,
+    /// 该成员的 Subagent 定义（描述、模式等元信息）。
     pub definition: SubagentDefinition,
+    /// 防止同一成员被并发重入执行的互斥门。
     execution_gate: Arc<Mutex<()>>,
 }
 
-/// A reusable set of concrete Agent instances compiled through the canonical
-/// Team graph runtime when executed.
+/// 一组可复用的具体 Agent 实例集合，执行时会被编译进规范的 Team 任务图运行时。
 #[derive(Clone)]
 pub struct Team {
+    /// Team 的唯一标识。
     pub id: String,
+    /// Team 的展示名称。
     pub name: String,
+    /// 运行时限制配置。
     pub config: TeamConfig,
+    /// 按成员名索引的成员集合。
     members: HashMap<String, TeamMember>,
 }
 
 impl Team {
+    /// 创建一个空的 Team（尚未添加任何成员）。
     pub fn new(id: impl Into<String>, name: impl Into<String>, config: TeamConfig) -> Self {
         Self {
             id: id.into(),
@@ -156,6 +182,7 @@ impl Team {
         }
     }
 
+    /// 添加一个独占 Agent 句柄的成员（内部转为共享句柄存储）。
     pub fn add_member(
         &mut self,
         name: &str,
@@ -166,6 +193,7 @@ impl Team {
         self.add_shared_member(name, role, Arc::from(agent), definition)
     }
 
+    /// 添加一个共享 Agent 句柄的成员；若同名成员已存在或名称为空则返回错误。
     pub fn add_shared_member(
         &mut self,
         name: &str,
@@ -193,16 +221,19 @@ impl Team {
         Ok(())
     }
 
+    /// 按名称查找成员。
     pub fn get_member(&self, name: &str) -> Option<&TeamMember> {
         self.members.get(name)
     }
 
+    /// 返回所有成员名（按字典序排序）。
     pub fn member_names(&self) -> Vec<String> {
         let mut names = self.members.keys().cloned().collect::<Vec<_>>();
         names.sort();
         names
     }
 
+    /// 返回角色为 Subagent 的成员名（按字典序排序）。
     pub fn subagent_names(&self) -> Vec<String> {
         let mut names = self
             .members
@@ -214,29 +245,35 @@ impl Team {
         names
     }
 
+    /// 成员总数。
     pub fn len(&self) -> usize {
         self.members.len()
     }
 
+    /// 该 Team 是否尚未添加任何成员。
     pub fn is_empty(&self) -> bool {
         self.members.is_empty()
     }
 
+    /// 遍历所有成员。
     pub fn members(&self) -> impl Iterator<Item = &TeamMember> {
         self.members.values()
     }
 
+    /// 返回领导者/管理者成员名（若存在）。
     pub fn leader_name(&self) -> Option<&str> {
         self.members()
             .find(|member| member.role == TeamRole::Leader)
             .map(|member| member.name.as_str())
     }
 
+    /// 遍历角色为 Subagent 的成员。
     pub fn subagents(&self) -> impl Iterator<Item = &TeamMember> {
         self.members()
             .filter(|member| member.role == TeamRole::Subagent)
     }
 
+    /// 生成所有 Subagent 成员的“名称: 描述”列表文本（按字典序排序，用于提示词展示）。
     pub fn subagent_descriptions(&self) -> String {
         let mut descriptions = self
             .subagents()
@@ -246,6 +283,7 @@ impl Team {
         descriptions.join("\n")
     }
 
+    /// 把编程式构造的 Team 与给定策略编译为声明式的 [`TeamSpec`]，并校验其合法性。
     fn to_spec(&self, strategy: TeamStrategy) -> std::result::Result<TeamSpec, String> {
         let mut leaders = self
             .members()
@@ -275,6 +313,7 @@ impl Team {
         Ok(spec)
     }
 
+    /// 为该 Team 的成员构建一个共享注册表支持的调度控制器（承载派发与精确控制回调）。
     async fn dispatch_controller(
         &self,
     ) -> std::result::Result<Arc<dyn TeamDispatchController>, String> {
@@ -372,10 +411,11 @@ impl Team {
     }
 }
 
-/// Inseparable binding between one Team runtime authority and the canonical
-/// task service built from that exact `Arc<R>`.
+/// 一个 Team 运行时权威与基于该确切 `Arc<R>` 构建的规范任务服务之间的不可分离绑定。
 pub struct TeamRuntimeServiceHandle<R: TeamRuntime> {
+    /// 底层的 Team 运行时权威实现。
     runtime: Arc<R>,
+    /// 基于该运行时构建的规范任务服务。
     runtime_tasks: Arc<RuntimeTaskService<R>>,
 }
 
@@ -389,6 +429,7 @@ impl<R: TeamRuntime> Clone for TeamRuntimeServiceHandle<R> {
 }
 
 impl<R: TeamRuntime> TeamRuntimeServiceHandle<R> {
+    /// 基于给定的运行时权威和服务配置构建句柄，并同步创建对应的规范任务服务。
     pub fn new(runtime: Arc<R>, config: RuntimeTaskServiceConfig) -> Self {
         let runtime_tasks = Arc::new(RuntimeTaskService::new(runtime.clone(), config));
         Self {
@@ -397,29 +438,37 @@ impl<R: TeamRuntime> TeamRuntimeServiceHandle<R> {
         }
     }
 
+    /// 返回底层运行时权威。
     pub fn runtime(&self) -> &Arc<R> {
         &self.runtime
     }
 
+    /// 返回绑定的规范任务服务。
     pub fn runtime_tasks(&self) -> &Arc<RuntimeTaskService<R>> {
         &self.runtime_tasks
     }
 }
 
-/// Stable execution-time authority for one Team run.
-///
-/// The handle keeps the revisioned task store, canonical runtime service, and
-/// live Subagent control registry together. Exact control therefore cannot be
-/// accidentally issued through a fresh service that lacks the active attempt.
+/** 一次 Team 运行的稳定执行期权威。
+
+该句柄把带修订版本的任务存储、规范运行时服务，以及存活的 Subagent
+精确控制注册表绑定在一起，因此精确控制不可能被误发到一个缺少当前
+尝试记录的“新鲜”服务实例上。 */
 #[derive(Clone)]
 pub struct TeamRuntimeHandle {
+    /// 该句柄实例的唯一标识。
     handle_id: String,
+    /// 对应的 Team 运行 ID。
     run_id: String,
+    /// 绑定的运行时服务句柄。
     service: TeamRuntimeServiceHandle<TeamRuntimeController>,
+    /// 当前活跃执行计数，用于判断句柄是否仍在使用中。
     active_executions: Arc<AtomicUsize>,
 }
 
+/// 执行期存活标记的 RAII 守卫；析构时递减活跃执行计数。
 pub(super) struct TeamRuntimeExecutionGuard {
+    /// 关联的活跃执行计数器。
     active_executions: Arc<AtomicUsize>,
 }
 
@@ -430,6 +479,7 @@ impl Drop for TeamRuntimeExecutionGuard {
 }
 
 impl TeamRuntimeHandle {
+    /// 创建一个新的运行时句柄，初始活跃执行计数为 0。
     fn new(
         run_id: String,
         runtime: Arc<TeamRuntimeController>,
@@ -443,18 +493,22 @@ impl TeamRuntimeHandle {
         }
     }
 
+    /// 返回该句柄实例的唯一标识。
     pub fn handle_id(&self) -> &str {
         &self.handle_id
     }
 
+    /// 返回该句柄对应的 Team 运行 ID。
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
 
+    /// 是否存在正在进行中的执行。
     pub fn is_active(&self) -> bool {
         self.active_executions.load(Ordering::SeqCst) > 0
     }
 
+    /// 标记一次新的执行开始，返回一个在执行结束时自动递减计数的守卫。
     pub(super) fn start_execution(&self) -> TeamRuntimeExecutionGuard {
         self.active_executions.fetch_add(1, Ordering::SeqCst);
         TeamRuntimeExecutionGuard {
@@ -462,10 +516,12 @@ impl TeamRuntimeHandle {
         }
     }
 
+    /// 加载当前 Team 运行的计划快照。
     pub async fn snapshot(&self) -> Result<RuntimePlanSnapshot> {
         self.service.runtime().load_snapshot(&self.run_id).await
     }
 
+    /// 对指定任务的当前尝试请求精确中断。
     pub async fn request_attempt_interrupt(
         &self,
         task_id: &str,
@@ -480,6 +536,7 @@ impl TeamRuntimeHandle {
             .await
     }
 
+    /// 标记执行开始并运行该 Team 图，返回执行结果。
     pub(super) async fn execute(
         &self,
         spec: &TeamSpec,
@@ -490,6 +547,7 @@ impl TeamRuntimeHandle {
         self.execute_started(spec, objective, cancel, active).await
     }
 
+    /// 在执行标记已建立的前提下运行该 Team 图（持有 `_active` 守卫直至结束）。
     pub(super) async fn execute_started(
         &self,
         spec: &TeamSpec,
@@ -501,6 +559,7 @@ impl TeamRuntimeHandle {
     }
 }
 
+/// 基于给定的调度控制器构建一个新的 [`TeamRuntimeHandle`]。
 pub(super) fn runtime_handle_for_controller(
     run_id: String,
     controller: Arc<dyn TeamDispatchController>,
@@ -510,18 +569,25 @@ pub(super) fn runtime_handle_for_controller(
     Arc::new(TeamRuntimeHandle::new(run_id, runtime, config))
 }
 
-/// Programmatic Team facade. It owns only concrete Agent handles and delegates
-/// all graph semantics to [`TeamRuntimeHandle`].
+/** 编程式 Team 门面。它只持有具体的 Agent 句柄，所有任务图语义都委托给
+[`TeamRuntimeHandle`]。 */
 pub struct TeamAgent {
+    /// 底层的编程式 Team（成员集合）。
     team: Team,
+    /// 协作策略。
     strategy: TeamStrategy,
+    /// 可选的固定运行 ID（未指定时首次执行时随机生成）。
     run_id: Option<String>,
+    /// 该 TeamAgent 的根取消令牌。
     cancel: CancellationToken,
+    /// 可选的自定义调度控制器（未提供时由 Team 自动构建）。
     member_controller: Option<Arc<dyn TeamDispatchController>>,
+    /// 延迟初始化的运行时句柄（首次执行/查询时创建，此后复用）。
     runtime: OnceCell<Arc<TeamRuntimeHandle>>,
 }
 
 impl TeamAgent {
+    /// 用给定的 Team 与策略构造一个新的 TeamAgent。
     pub fn new(team: Team, strategy: TeamStrategy) -> Self {
         Self {
             team,
@@ -533,18 +599,22 @@ impl TeamAgent {
         }
     }
 
+    /// 返回一个新的构建器。
     pub fn builder() -> TeamAgentBuilder {
         TeamAgentBuilder::new()
     }
 
+    /// 返回底层的 Team。
     pub fn team(&self) -> &Team {
         &self.team
     }
 
+    /// 返回协作策略。
     pub fn strategy(&self) -> &TeamStrategy {
         &self.strategy
     }
 
+    /// 返回当前运行 ID（优先取已初始化运行时的实际 ID，否则取预先指定的 ID）。
     pub fn run_id(&self) -> Option<&str> {
         self.runtime
             .get()
@@ -552,16 +622,19 @@ impl TeamAgent {
             .or(self.run_id.as_deref())
     }
 
+    /// 返回该 TeamAgent 的根取消令牌。
     pub fn cancellation_token(&self) -> &CancellationToken {
         &self.cancel
     }
 
+    /// 执行该 Team，仅返回最终输出文本。
     pub async fn execute(&self, task: &str) -> std::result::Result<String, String> {
         self.execute_with_usage(task)
             .await
             .map(|result| result.output)
     }
 
+    /// 执行该 Team，返回包含输出、用量统计与最终修订版本号的完整结果。
     pub async fn execute_with_usage(
         &self,
         task: &str,
@@ -574,9 +647,8 @@ impl TeamAgent {
             .map_err(|error| error.to_string())
     }
 
-    /// Return the stable runtime/control handle used by every execution of
-    /// this TeamAgent. Calling this before `execute` prepares the same handle
-    /// without starting task work.
+    /** 返回该 TeamAgent 每次执行都会使用的稳定运行时/控制句柄。
+    在 `execute` 之前调用本方法，可以在不启动任务工作的情况下提前准备好同一个句柄。 */
     pub async fn runtime_handle(&self) -> std::result::Result<Arc<TeamRuntimeHandle>, String> {
         self.runtime
             .get_or_try_init(|| async {
@@ -602,14 +674,21 @@ impl TeamAgent {
     }
 }
 
-/// Fluent programmatic Team builder retained as a framework composition API.
+/// 流式的编程式 Team 构建器，作为框架组合 API 保留。
 pub struct TeamAgentBuilder {
+    /// Team 展示名称。
     name: String,
+    /// 待添加的成员列表：(名称, 角色, Agent 句柄, Subagent 定义)。
     members: Vec<(String, TeamRole, Arc<dyn Agent>, SubagentDefinition)>,
+    /// 协作策略。
     strategy: TeamStrategy,
+    /// 运行时限制配置。
     config: TeamConfig,
+    /// 可选的固定运行 ID。
     run_id: Option<String>,
+    /// 根取消令牌。
     cancel: CancellationToken,
+    /// 可选的自定义调度控制器。
     member_controller: Option<Arc<dyn TeamDispatchController>>,
 }
 
@@ -620,6 +699,7 @@ impl Default for TeamAgentBuilder {
 }
 
 impl TeamAgentBuilder {
+    /// 创建一个使用默认策略与配置的空构建器。
     pub fn new() -> Self {
         Self {
             name: "team".to_string(),
@@ -632,11 +712,13 @@ impl TeamAgentBuilder {
         }
     }
 
+    /// 设置 Team 展示名称。
     pub fn name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
     }
 
+    /// 添加一个独占 Agent 句柄的管理者成员。
     pub fn manager(
         self,
         name: &str,
@@ -646,6 +728,7 @@ impl TeamAgentBuilder {
         self.manager_shared(name, Arc::from(agent), definition)
     }
 
+    /// 添加一个共享 Agent 句柄的管理者成员。
     pub fn manager_shared(
         mut self,
         name: &str,
@@ -657,6 +740,7 @@ impl TeamAgentBuilder {
         self
     }
 
+    /// 添加一个独占 Agent 句柄的 Subagent 成员。
     pub fn subagent(
         self,
         name: &str,
@@ -666,6 +750,7 @@ impl TeamAgentBuilder {
         self.subagent_shared(name, Arc::from(agent), definition)
     }
 
+    /// 添加一个共享 Agent 句柄的 Subagent 成员。
     pub fn subagent_shared(
         mut self,
         name: &str,
@@ -677,6 +762,7 @@ impl TeamAgentBuilder {
         self
     }
 
+    /// 添加一个独占 Agent 句柄的评审成员。
     pub fn reviewer(
         self,
         name: &str,
@@ -686,6 +772,7 @@ impl TeamAgentBuilder {
         self.reviewer_shared(name, Arc::from(agent), definition)
     }
 
+    /// 添加一个共享 Agent 句柄的评审成员。
     pub fn reviewer_shared(
         mut self,
         name: &str,
@@ -697,26 +784,31 @@ impl TeamAgentBuilder {
         self
     }
 
+    /// 设置协作策略。
     pub fn strategy(mut self, strategy: TeamStrategy) -> Self {
         self.strategy = strategy;
         self
     }
 
+    /// 设置整体执行超时时间（秒）。
     pub fn timeout_secs(mut self, timeout_secs: u64) -> Self {
         self.config.default_timeout_secs = timeout_secs;
         self
     }
 
+    /// 设置完整的运行时限制配置。
     pub fn config(mut self, config: TeamConfig) -> Self {
         self.config = config;
         self
     }
 
+    /// 设置根取消令牌。
     pub fn cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = cancel;
         self
     }
 
+    /// 设置自定义的成员调度控制器（用于接管派发/精确控制，通常用于测试或复用外部执行器）。
     pub fn member_dispatch_controller(
         mut self,
         controller: Arc<dyn TeamDispatchController>,
@@ -725,11 +817,13 @@ impl TeamAgentBuilder {
         self
     }
 
+    /// 设置固定的运行 ID（用于恢复已有运行）。
     pub fn run_id(mut self, run_id: Option<String>) -> Self {
         self.run_id = run_id;
         self
     }
 
+    /// 构建最终的 [`TeamAgent`]；若成员名重复或为空会返回错误。
     pub fn build(self) -> std::result::Result<TeamAgent, String> {
         let mut team = Team::new(
             format!("team-{}", uuid::Uuid::new_v4().as_simple()),
@@ -747,23 +841,26 @@ impl TeamAgentBuilder {
     }
 }
 
-/// Structured request sent to one exact Team member attempt.
+/// 发送给某一次确切 Team 成员执行尝试的结构化请求。
 #[derive(Debug, Clone)]
 pub struct TeamDispatchRequest {
+    /// 目标成员名。
     pub member: String,
+    /// 派发给该成员的任务提示词。
     pub task: String,
+    /// 本次任务尝试的 Subagent 上下文。
     pub context: TaskSubagentContext,
 }
 
-/// Canonical member execution adapter supplied by [`super::SubagentExecutor`].
+/// 由 [`super::SubagentExecutor`] 提供的规范成员执行适配器。
 pub type TeamDispatchFn =
     Arc<dyn Fn(TeamDispatchRequest) -> BoxFuture<'static, Result<SubagentResult>> + Send + Sync>;
 
-/// Process-local reservation hook paired with a Team dispatch callback.
+/// 与 Team 派发回调配套的进程内预留钩子。
 pub type TeamReserveAttemptFn =
     Arc<dyn Fn(TaskSubagentContext) -> std::result::Result<(), String> + Send + Sync>;
 
-/// Live exact-interrupt projection hook paired with a Team runtime.
+/// 与 Team 运行时配套的、存活状态下的精确中断投影钩子。
 pub type TeamRequestInterruptFn = Arc<
     dyn Fn(
             String,
@@ -776,21 +873,27 @@ pub type TeamRequestInterruptFn = Arc<
         + Sync,
 >;
 
-/// Post-settlement cleanup hook for a Team attempt control projection.
+/// Team 尝试控制投影结算后的清理钩子。
 pub type TeamRetireAttemptFn = Arc<
     dyn Fn(String, Task, TaskClaim) -> BoxFuture<'static, RuntimeAttemptControlCleanupReceipt>
         + Send
         + Sync,
 >;
 
+/// 用于协调（核对）当前存活执行 ID 集合的钩子。
 pub type TeamReconcileAttemptFn =
     Arc<dyn Fn(String, HashSet<String>) -> std::result::Result<(), String> + Send + Sync>;
 
+/// 打包在一起的一组 Team 精确控制回调（预留/请求中断/退役/协调）。
 #[derive(Clone)]
 pub(super) struct TeamDispatchControl {
+    /// 预留尝试的回调。
     pub reserve_attempt: TeamReserveAttemptFn,
+    /// 请求精确中断的回调。
     pub request_interrupt: TeamRequestInterruptFn,
+    /// 结算后清理尝试的回调。
     pub retire_attempt: TeamRetireAttemptFn,
+    /// 协调存活执行 ID 集合的回调。
     pub reconcile_attempts: TeamReconcileAttemptFn,
 }
 
@@ -807,14 +910,17 @@ impl Default for TeamDispatchControl {
     }
 }
 
-/// Complete execution and exact-control contract for Team member attempts.
-/// Implementations must keep dispatch and control on the same live registry.
+/** Team 成员尝试的完整执行与精确控制契约。
+实现必须让派发与控制作用于同一个存活注册表上。 */
 #[async_trait]
 pub trait TeamDispatchController: Send + Sync {
+    /// 向目标成员派发一次任务执行请求。
     async fn dispatch(&self, request: TeamDispatchRequest) -> Result<SubagentResult>;
 
+    /// 为给定的任务尝试预留执行资格。
     fn reserve_attempt(&self, context: TaskSubagentContext) -> std::result::Result<(), String>;
 
+    /// 请求对指定任务的当前尝试进行精确中断。
     fn request_interrupt(
         &self,
         run_id: String,
@@ -825,6 +931,7 @@ pub trait TeamDispatchController: Send + Sync {
         RuntimeTaskAttemptInterruptProjectionError,
     >;
 
+    /// 在结算之后清理该尝试所占用的资源。
     async fn retire_attempt(
         &self,
         run_id: String,
@@ -832,6 +939,7 @@ pub trait TeamDispatchController: Send + Sync {
         claim: TaskClaim,
     ) -> RuntimeAttemptControlCleanupReceipt;
 
+    /// 将控制器状态与当前存活的执行 ID 集合核对一致。
     fn reconcile_attempts(
         &self,
         run_id: String,
@@ -839,8 +947,11 @@ pub trait TeamDispatchController: Send + Sync {
     ) -> std::result::Result<(), String>;
 }
 
+/// 基于一组闭包回调实现的 [`TeamDispatchController`]。
 struct ClosureTeamDispatchController {
+    /// 派发回调。
     dispatch: TeamDispatchFn,
+    /// 精确控制回调集合。
     control: TeamDispatchControl,
 }
 
@@ -884,6 +995,7 @@ impl TeamDispatchController for ClosureTeamDispatchController {
     }
 }
 
+/// 用一组派发/控制闭包构建一个 [`TeamDispatchController`]。
 pub(super) fn closure_dispatch_controller(
     dispatch: TeamDispatchFn,
     control: TeamDispatchControl,
@@ -891,39 +1003,43 @@ pub(super) fn closure_dispatch_controller(
     Arc::new(ClosureTeamDispatchController { dispatch, control })
 }
 
-/// Terminal output of one Team graph execution.
+/// 一次 Team 任务图执行的终态输出。
 #[derive(Debug, Clone)]
 pub struct TeamExecutionResult {
+    /// 最终产出文本。
     pub output: String,
+    /// 聚合后的 LLM 用量统计（若可用）。
     pub usage: Option<LlmUsageStats>,
-    /// Last task-graph revision observed after execution.
+    /// 执行结束后观察到的最新任务图修订版本号。
     pub final_revision: u64,
 }
 
+/// 编译得到的 Team 任务图：任务集合及其终态任务 ID。
 pub(super) struct CompiledTeamGraph {
+    /// 编译出的全部任务。
     tasks: Vec<Task>,
+    /// 代表整个 Team 执行最终产出的终态任务 ID。
     terminal_task_id: String,
 }
 
-/// Canonical persistence and dispatch boundary for resumable Team execution.
-///
-/// Implementations own storage and product-specific dispatch, while
-/// [`RuntimeTaskService`] remains the only dependency, claim, cancellation,
-/// and settlement engine. A runtime must durably persist a successful
-/// [`SubagentResult`] before it exposes the corresponding task as Completed.
+/** 可恢复 Team 执行的规范持久化与派发边界。
+
+实现方拥有存储与产品特定的派发逻辑，而 [`RuntimeTaskService`] 始终是
+唯一的依赖、认领、取消与结算引擎。运行时必须先将成功的 [`SubagentResult`]
+持久化，之后才能把对应任务暴露为 Completed 状态。 */
 #[async_trait]
 pub trait TeamRuntime: RuntimeDagController<DispatchOutput = SubagentResult> {
-    /// Revision service backed by the same graph authority as this controller.
+    /// 与该控制器共享同一图权威的修订版本服务。
     fn revisions(&self) -> &TaskRevisionService;
 
-    /// Load one reusable result for a completed task.
+    /// 加载某个已完成任务的可复用结果。
     async fn task_result(&self, run_id: &str, task_id: &str) -> Result<Option<SubagentResult>>;
 
-    /// Load all reusable results for usage aggregation and recovery checks.
+    /// 加载全部可复用结果，用于用量聚合与恢复检查。
     async fn task_results(&self, run_id: &str) -> Result<Vec<SubagentResult>>;
 }
 
-/// Execute Team intent through the framework's single revisioned DAG runtime.
+/// 通过框架统一的、带修订版本的 DAG 运行时执行 Team 意图。
 pub async fn execute_team(
     spec: &TeamSpec,
     objective: &str,
@@ -945,11 +1061,11 @@ pub(super) async fn execute_team_with_runtime_dispatch(
     execute_team_on_runtime(spec, objective, run_id, cancel, runtime).await
 }
 
-/// Execute or resume Team intent on a caller-supplied canonical runtime.
-///
-/// Reusing `run_id` resumes the existing revisioned graph. The stored objective
-/// and Team specification must match exactly; a mismatched identity fails
-/// closed instead of dispatching into an unrelated run.
+/** 在调用方提供的规范运行时上执行或恢复 Team 意图。
+
+复用 `run_id` 会恢复既有的带修订版本的图。已存储的 objective
+与 Team 规格说明必须精确匹配；身份不匹配时会安全失败（fail closed），
+而不会被派发到无关的运行上。 */
 pub async fn execute_team_on_runtime<R>(
     spec: &TeamSpec,
     objective: &str,
@@ -970,11 +1086,10 @@ where
     execute_team_on_runtime_service(spec, objective, run_id, cancel, &service).await
 }
 
-/// Execute or resume a Team with a caller-retained runtime service.
-///
-/// Use this entry point when exact control must run concurrently with a
-/// caller-supplied [`TeamRuntime`]; the same service owns execution, supervisor
-/// handles, reconciliation, and interrupt requests.
+/** 使用调用方持有的运行时服务执行或恢复 Team。
+
+当精确控制必须与调用方提供的 [`TeamRuntime`] 并发运行时使用此入口；
+同一个服务负责承载执行、监督句柄、协调与中断请求。 */
 pub async fn execute_team_on_runtime_service<R>(
     spec: &TeamSpec,
     objective: &str,
@@ -1797,8 +1912,8 @@ impl RuntimeDagController for TeamRuntimeController {
             .await
             .map_err(|error| ReactError::Other(error.to_string()));
         if matches!(&settlement, Ok(RuntimeTaskResolution::Completed)) {
-            // Candidate ownership and the output lock precede CAS. Keep the
-            // commit-to-publication section below free of cancellation points.
+            /* 候选归属权与输出锁先于 CAS 获取。保持下面从提交到发布
+            这一段代码不含任何取消点。 */
             let staged = staged_candidate.ok_or_else(|| {
                 ReactError::Other(format!(
                     "Team result for settled claim '{}' disappeared",

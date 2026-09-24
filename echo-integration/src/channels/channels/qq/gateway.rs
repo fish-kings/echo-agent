@@ -1,12 +1,12 @@
-//! QQ Bot WebSocket Gateway — receive messages.
+//! QQ 机器人 WebSocket Gateway —— 接收消息。
 //!
-//! Connects to the official QQ WebSocket Gateway, parses events, and forwards them to MessageHandler.
+//! 连接到官方 QQ WebSocket Gateway，解析事件并转发给 MessageHandler。
 //!
-//! QQ Bot WebSocket protocol:
-//! 1. After connecting, receive a HELLO event (contains heartbeat_interval)
-//! 2. Send IDENTIFY (contains token, intents, etc.)
-//! 3. Periodically send HEARTBEAT
-//! 4. Receive message events (C2C_MESSAGE_CREATE, GROUP_AT_MESSAGE_CREATE, etc.)
+//! QQ 机器人 WebSocket 协议：
+//! 1. 连接建立后，接收 HELLO 事件（包含 heartbeat_interval）
+//! 2. 发送 IDENTIFY（包含 token、intents 等）
+//! 3. 周期性发送 HEARTBEAT
+//! 4. 接收消息事件（C2C_MESSAGE_CREATE、GROUP_AT_MESSAGE_CREATE 等）
 
 use super::super::super::types::*;
 use crate::redaction::text_with_secrets;
@@ -20,21 +20,22 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
-/// QQ Bot WebSocket opcodes (Discord Gateway protocol)
-const OP_DISPATCH: u32 = 0; // Event message
-const OP_HEARTBEAT: u32 = 1; // Heartbeat request (client sends)
-const OP_IDENTIFY: u32 = 2; // Authentication (client sends)
-const OP_RECONNECT: u32 = 7; // Reconnect request (server sends)
-const OP_HELLO: u32 = 10; // Hello (server sends, contains heartbeat interval)
-const OP_HEARTBEAT_ACK: u32 = 11; // Heartbeat acknowledgment (server sends)
+/// QQ 机器人 WebSocket 操作码（Discord Gateway 协议）
+const OP_DISPATCH: u32 = 0; // 事件消息
+const OP_HEARTBEAT: u32 = 1; // 心跳请求（客户端发送）
+const OP_IDENTIFY: u32 = 2; // 鉴权（客户端发送）
+const OP_RECONNECT: u32 = 7; // 重连请求（服务端发送）
+const OP_HELLO: u32 = 10; // Hello（服务端发送，包含心跳间隔）
+const OP_HEARTBEAT_ACK: u32 = 11; // 心跳确认（服务端发送）
 
-/// QQ Bot intents (event subscription bitmask)
-/// Reference: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
-/// Important: GROUP_AND_C2C_EVENT (1<<25) contains QQ direct and group @message events
-const INTENT_GUILDS: u32 = 1 << 0; // Guild events (default permission)
-const INTENT_GUILD_MEMBERS: u32 = 1 << 1; // Guild member events (default permission)
-const INTENT_GROUP_AND_C2C_EVENT: u32 = 1 << 25; // QQ direct + group chat events (critical! includes C2C_MESSAGE_CREATE)
+/// QQ 机器人 intents（事件订阅位掩码）
+/// 参考：https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
+/// 重要：GROUP_AND_C2C_EVENT（1<<25）包含 QQ 私聊与群 @ 消息事件
+const INTENT_GUILDS: u32 = 1 << 0; // 频道事件（默认权限）
+const INTENT_GUILD_MEMBERS: u32 = 1 << 1; // 频道成员事件（默认权限）
+const INTENT_GROUP_AND_C2C_EVENT: u32 = 1 << 25; // QQ 私聊 + 群聊事件（关键！包含 C2C_MESSAGE_CREATE）
 
+/// 连接到 QQ Gateway，完成鉴权、心跳维护并持续处理接收到的事件消息，直至连接关闭或出错。
 pub(super) async fn connect_to_gateway(
     wss_url: String,
     handler: Arc<dyn MessageHandler>,
@@ -49,15 +50,15 @@ pub(super) async fn connect_to_gateway(
 
     info!("QQ Gateway: WebSocket connected");
 
-    // Split WebSocket into sender and receiver
+    // 将 WebSocket 拆分为发送端和接收端
     let (ws_sender, mut ws_receiver) = ws_stream.split();
 
-    // Shared state
+    // 共享状态
     let last_seq = Arc::new(Mutex::new(0u64));
     let heartbeat_interval = Arc::new(Mutex::new(Duration::from_secs(30)));
     let identified = Arc::new(Mutex::new(false));
 
-    // Start heartbeat task
+    // 启动心跳任务
     let last_seq_clone = last_seq.clone();
     let heartbeat_interval_clone = heartbeat_interval.clone();
     let identified_clone = identified.clone();
@@ -66,12 +67,12 @@ pub(super) async fn connect_to_gateway(
     let token_for_heartbeat = token.clone();
 
     let heartbeat_task = tokio::spawn(async move {
-        // Wait for IDENTIFY to complete
+        // 等待 IDENTIFY 完成
         while !*identified_clone.lock().await {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
-        // Start heartbeat loop
+        // 启动心跳循环
         let interval = *heartbeat_interval_clone.lock().await;
         let mut timer = tokio::time::interval(interval);
 
@@ -96,7 +97,7 @@ pub(super) async fn connect_to_gateway(
         }
     });
 
-    // Process message loop
+    // 处理消息循环
     loop {
         match ws_receiver.next().await {
             Some(Ok(Message::Text(text))) => {
@@ -118,7 +119,7 @@ pub(super) async fn connect_to_gateway(
 
                 match op as u32 {
                     OP_HELLO => {
-                        // HELLO: get heartbeat interval and send IDENTIFY
+                        // HELLO：获取心跳间隔并发送 IDENTIFY
                         let interval_ms =
                             payload["d"]["heartbeat_interval"].as_u64().unwrap_or(30000);
 
@@ -132,7 +133,7 @@ pub(super) async fn connect_to_gateway(
                             *interval = Duration::from_millis(interval_ms);
                         }
 
-                        // Send IDENTIFY
+                        // 发送 IDENTIFY
                         let identify = serde_json::json!({
                             "op": OP_IDENTIFY,
                             "d": {
@@ -172,7 +173,7 @@ pub(super) async fn connect_to_gateway(
                         ));
                     }
                     OP_DISPATCH => {
-                        // Event message (op=0 means dispatch event)
+                        // 事件消息（op=0 表示分发事件）
                         if *identified.lock().await
                             && let Err(e) =
                                 handle_gateway_event(handler.clone(), &payload, &token).await
@@ -224,7 +225,7 @@ pub(super) async fn connect_to_gateway(
     }
 }
 
-/// Parse and handle Gateway events (op=0)
+/// 解析并处理 Gateway 事件（op=0）
 async fn handle_gateway_event(
     handler: Arc<dyn MessageHandler>,
     payload: &serde_json::Value,
@@ -248,14 +249,14 @@ async fn handle_gateway_event(
             handle_group_at_message(handler, payload, access_token).await?;
         }
         _ => {
-            // Ignore other events
+            // 忽略其他事件
         }
     }
 
     Ok(())
 }
 
-/// Handle direct message
+/// 处理私聊消息
 async fn handle_c2c_message(
     handler: Arc<dyn MessageHandler>,
     payload: &serde_json::Value,
@@ -283,7 +284,7 @@ async fn handle_c2c_message(
     dispatch_to_handler(handler, inbound, access_token).await
 }
 
-/// Handle group @message
+/// 处理群 @ 消息
 async fn handle_group_at_message(
     handler: Arc<dyn MessageHandler>,
     payload: &serde_json::Value,
@@ -292,7 +293,7 @@ async fn handle_group_at_message(
     let data = &payload["d"];
 
     let sender_id = require_sender_id(data["author"]["id"].as_str())?;
-    // In QQ Bot v2 API the group chat ID field is group_openid; also compatible with legacy format group.id
+    // 在 QQ 机器人 v2 API 中群聊 ID 字段是 group_openid；同时兼容旧格式的 group.id
     let group_id = require_conversation_id(
         data["group_openid"]
             .as_str()
@@ -317,7 +318,7 @@ async fn handle_group_at_message(
     dispatch_to_handler(handler, inbound, access_token).await
 }
 
-/// Unified dispatch to Handler and send reply
+/// 统一分发给 Handler 并发送回复
 async fn dispatch_to_handler(
     handler: Arc<dyn MessageHandler>,
     inbound: InboundMessage,
@@ -325,7 +326,7 @@ async fn dispatch_to_handler(
 ) -> std::result::Result<(), ChannelError> {
     match handler.handle(inbound).await {
         Ok(outbound) => {
-            // Safely truncate UTF-8 string using chars()
+            // 使用 chars() 安全地截断 UTF-8 字符串
             let redacted = text_with_secrets(&outbound.text, [access_token]);
             let mut characters = redacted.chars();
             let text_preview: String = characters.by_ref().take(50).collect();
@@ -340,7 +341,7 @@ async fn dispatch_to_handler(
                 }
             );
 
-            // Send reply to QQ
+            // 将回复发送给 QQ
             if let Err(e) = handler.reply(outbound).await {
                 warn!(
                     "Failed to send reply: {}",

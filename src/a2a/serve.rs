@@ -1,27 +1,29 @@
-//! A2A HTTP service layer.
-//!
-//! Provides a full A2A HTTP server based on axum, including:
-//! - `GET /.well-known/agent.json` — Agent Card discovery endpoint
-//! - `POST /` — JSON-RPC task requests (sync + SSE streaming)
-//! - `GET /health` — K8s liveness probe
-//! - `GET /ready` — K8s readiness probe
-//! - Optional JWT Bearer Token auth middleware
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use echo_agent::a2a::{A2AServer, AgentCard, serve};
-//! use echo_agent::prelude::*;
-//!
-//! # #[tokio::main]
-//! # async fn main() -> echo_agent::error::Result<()> {
-//! let card = AgentCard::builder("my-agent", "http://localhost:3000").build();
-//! let agent = ReactAgentBuilder::simple("qwen3-max", "test")?;
-//! let server = A2AServer::new(card, agent);
-//! serve(server, "0.0.0.0:3000").await?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+A2A HTTP 服务层。
+
+提供基于 axum 的完整 A2A HTTP 服务器，包括：
+- `GET /.well-known/agent.json` —— Agent Card 发现端点
+- `POST /` —— JSON-RPC 任务请求（同步 + SSE 流式）
+- `GET /health` —— K8s 存活探针
+- `GET /ready` —— K8s 就绪探针
+- 可选的 JWT Bearer Token 鉴权中间件
+
+# 用法
+
+```rust,no_run
+use echo_agent::a2a::{A2AServer, AgentCard, serve};
+use echo_agent::prelude::*;
+
+# #[tokio::main]
+# async fn main() -> echo_agent::error::Result<()> {
+let card = AgentCard::builder("my-agent", "http://localhost:3000").build();
+let agent = ReactAgentBuilder::simple("qwen3-max", "test")?;
+let server = A2AServer::new(card, agent);
+serve(server, "0.0.0.0:3000").await?;
+# Ok(())
+# }
+```
+*/
 
 use super::auth::{JwtConfig, jwt_middleware};
 use super::server::A2AServer;
@@ -40,18 +42,19 @@ use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{info, warn};
 
-/// Default request body size limit (1 MB).
+/// 默认的请求体大小上限（1 MB）。
 pub const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 
-/// A2A server shared state.
+/// A2A 服务器的共享状态。
 #[derive(Clone)]
 struct AppState {
+    /// 底层 A2A 服务器实例。
     server: Arc<A2AServer>,
 }
 
-/// Start A2A HTTP server (no auth, default 1 MB body limit).
+/// 启动 A2A HTTP 服务器（不鉴权，默认 1 MB 请求体上限）。
 ///
-/// Binds to the given address and serves Agent Card discovery, JSON-RPC task handling, health checks, etc.
+/// 绑定到给定地址，提供 Agent Card 发现、JSON-RPC 任务处理、健康检查等能力。
 pub async fn serve(server: A2AServer, bind_addr: &str) -> crate::error::Result<()> {
     serve_inner(
         server,
@@ -62,10 +65,10 @@ pub async fn serve(server: A2AServer, bind_addr: &str) -> crate::error::Result<(
     .await
 }
 
-/// Start A2A HTTP server (with JWT auth, default 1 MB body limit).
+/// 启动 A2A HTTP 服务器（带 JWT 鉴权，默认 1 MB 请求体上限）。
 ///
-/// All `/` endpoint requests must carry a valid `Authorization: Bearer <token>` header.
-/// `/health` and `/ready` endpoints are not subject to authentication.
+/// 所有 `/` 端点请求都必须携带合法的 `Authorization: Bearer <token>` 请求头。
+/// `/health` 与 `/ready` 端点不受鉴权约束。
 pub async fn serve_with_auth(
     server: A2AServer,
     bind_addr: &str,
@@ -74,14 +77,14 @@ pub async fn serve_with_auth(
     serve_inner(server, bind_addr, jwt_config, DEFAULT_MAX_BODY_BYTES).await
 }
 
-/// Internal unified implementation
+/// 内部统一实现。
 async fn serve_inner(
     server: A2AServer,
     bind_addr: &str,
     jwt_config: JwtConfig,
     max_body_bytes: usize,
 ) -> crate::error::Result<()> {
-    // Security warning: log prominently when auth is disabled on non-loopback addresses
+    // 安全警告：在非回环地址上禁用鉴权时，需要醒目地记录日志
     if !jwt_config.is_enabled() {
         let is_loopback = bind_addr.starts_with("127.0.0.1")
             || bind_addr.starts_with("localhost")
@@ -104,7 +107,7 @@ async fn serve_inner(
     let jwt_enabled = jwt_config.is_enabled();
     let jwt_state = Arc::new(jwt_config);
 
-    // Auth-protected route group
+    // 受鉴权保护的路由组
     let protected = Router::new()
         .route("/.well-known/agent.json", get(agent_card))
         .route("/", get(|| async { "A2A Server" }).post(handle_json_rpc));
@@ -118,7 +121,7 @@ async fn serve_inner(
         protected
     };
 
-    // Health check endpoints are not subject to authentication
+    // 健康检查端点不受鉴权约束
     let app = Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -145,7 +148,7 @@ async fn serve_inner(
     Ok(())
 }
 
-/// Wait for SIGINT or SIGTERM signal for graceful shutdown
+/// 等待 SIGINT 或 SIGTERM 信号以实现优雅关闭。
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(error) = signal::ctrl_c().await {
@@ -180,7 +183,7 @@ async fn shutdown_signal() {
     }
 }
 
-// ── Endpoint handlers ─────────────────────────────────────────────────────────
+// ── 端点处理函数 ─────────────────────────────────────────────────────────
 
 /// `GET /.well-known/agent.json`
 async fn agent_card(State(state): State<AppState>) -> Response {
@@ -200,9 +203,9 @@ async fn agent_card(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `GET /health` — K8s liveness probe
+/// `GET /health` —— K8s 存活探针。
 ///
-/// Returns 200 as long as the process is alive.
+/// 只要进程存活就返回 200。
 async fn health() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -211,9 +214,9 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-/// `GET /ready` — K8s readiness probe
+/// `GET /ready` —— K8s 就绪探针。
 ///
-/// Returns 200 to indicate the service is ready to accept requests.
+/// 返回 200 表示服务已准备好接受请求。
 async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     let _ = state.server.agent_card();
     (
@@ -223,7 +226,7 @@ async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     )
 }
 
-/// `POST /` — JSON-RPC handler
+/// `POST /` —— JSON-RPC 处理函数。
 async fn handle_json_rpc(State(state): State<AppState>, body: String) -> Response {
     let method = parse_method(&body);
 
@@ -234,7 +237,7 @@ async fn handle_json_rpc(State(state): State<AppState>, body: String) -> Respons
     }
 }
 
-/// Synchronous JSON-RPC response
+/// 同步 JSON-RPC 响应。
 async fn handle_sync(state: AppState, body: &str) -> Response {
     let response_json = state.server.handle_request(body).await;
     (
@@ -245,7 +248,7 @@ async fn handle_sync(state: AppState, body: &str) -> Response {
         .into_response()
 }
 
-/// SSE streaming response (tasks/sendSubscribe)
+/// SSE 流式响应（tasks/sendSubscribe）。
 async fn handle_sse(state: AppState, body: &str) -> Response {
     let server = state.server.clone();
     let body_owned = body.to_string();
@@ -273,7 +276,7 @@ async fn handle_sse(state: AppState, body: &str) -> Response {
     }
 }
 
-/// Quickly extract the method field from a JSON-RPC request body
+/// 从 JSON-RPC 请求体中快速提取 method 字段。
 fn parse_method(body: &str) -> Option<String> {
     let body = body.trim();
 
@@ -306,7 +309,7 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    // ── Deterministic unit tests ──────────────────────────────────────────────
+    // ── 确定性单元测试 ──────────────────────────────────────────────
 
     #[test]
     fn test_parse_method_tasks_send() {
@@ -362,26 +365,26 @@ mod tests {
 
     #[test]
     fn test_parse_method_nested_object_with_method_key() {
-        // "method" inside nested params should not be extracted
+        // 嵌套 params 内部的 "method" 不应被提取出来
         let body = r#"{"jsonrpc":"2.0","method":"tasks/send","params":{"method":"inner"}}"#;
         assert_eq!(parse_method(body), Some("tasks/send".to_string()));
     }
 
-    // ── Proptest property-based tests ─────────────────────────────────────────
+    // ── Proptest 基于属性的测试 ─────────────────────────────────────────
 
-    /// Helper: build a minimal JSON-RPC-like body with a method field
+    /// 辅助函数：构造一个带 method 字段的最小 JSON-RPC 风格请求体。
     fn json_body(method: &str) -> String {
         format!("{{\"method\":\"{}\"}}", method)
     }
 
     proptest! {
-        /// parse_method never panics on arbitrary strings
+        /// parse_method 对任意字符串都不应 panic
         #[test]
         fn parse_method_never_panics(s in "\\PC*") {
             let _ = parse_method(&s);
         }
 
-        /// parse_method correctly extracts valid method names from well-formed JSON
+        /// parse_method 应能从格式良好的 JSON 中正确提取合法的 method 名称
         #[test]
         fn parse_method_extracts_valid_method(
             method in "[a-zA-Z0-9_/\\.]+"
@@ -391,7 +394,7 @@ mod tests {
             assert_eq!(result, Some(method));
         }
 
-        /// parse_method handles whitespace around colon
+        /// parse_method 应能处理冒号前后的空白字符
         #[test]
         fn parse_method_handles_whitespace_before_colon(
             spaces_before in "[ ]*",
@@ -406,7 +409,7 @@ mod tests {
             assert_eq!(result, Some(method));
         }
 
-        /// parse_method returns None for random non-JSON strings
+        /// parse_method 对随机的非 JSON 字符串应返回 None
         #[test]
         fn parse_method_returns_none_for_random_strings(
             s in "[^\\{\\}\"m]*"
@@ -415,7 +418,7 @@ mod tests {
             assert_eq!(result, None);
         }
 
-        /// parse_method handles deeply nested JSON without panic
+        /// parse_method 处理深度嵌套 JSON 时不应 panic
         #[test]
         fn parse_method_deeply_nested_no_panic(
             depth in 1usize..20usize
@@ -427,7 +430,7 @@ mod tests {
             let _ = parse_method(&body);
         }
 
-        /// parse_method handles unicode method names without panic
+        /// parse_method 处理 unicode method 名称时不应 panic
         #[test]
         fn parse_method_unicode_methods_no_panic(
             method in "[\\p{L}\\p{N}_/]+"

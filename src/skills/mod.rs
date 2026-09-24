@@ -1,15 +1,15 @@
-//! Skill System — agentskills.io aligned (core re-export from echo_core + echo_execution)
+//! Skill 系统 —— 对齐 agentskills.io（核心部分从 echo_core + echo_execution 重新导出）
 //!
-//! Two kinds of skills:
+//! 支持两种 Skill：
 //!
-//! | Kind | Registration | Progressive disclosure |
+//! | 类型 | 注册方式 | 渐进式披露 |
 //! |------|-------------|----------------------|
-//! | **Code-based** | `agent.add_skill(Box::new(MySkill))` | Eager (tools + prompt injected immediately) |
-//! | **File-based** | `agent.discover_skills(path)` | 3-tier (catalog → activate → resources) |
+//! | **代码型** | `agent.add_skill(Box::new(MySkill))` | 即时（工具与提示词立刻注入） |
+//! | **文件型** | `agent.discover_skills(path)` | 三层式（目录 → 激活 → 资源） |
 //!
-//! File-based skills follow the [agentskills.io specification](https://agentskills.io/specification).
+//! 文件型 Skill 遵循 [agentskills.io 规范](https://agentskills.io/specification)。
 
-/// Built-in skills provided by the Echo Agent framework (re-export from echo_execution).
+/// Echo Agent 框架提供的内置 Skill（从 echo_execution 重新导出）。
 pub mod builtin {
     #[cfg(feature = "files")]
     pub use echo_tools::skills::FileSystemSkill;
@@ -17,30 +17,30 @@ pub mod builtin {
     pub use echo_tools::skills::ShellSkill;
 }
 
-/// Dependency declarations and local availability probes for file-based Skills.
+/// 文件型 Skill 的依赖声明与本地可用性探测。
 pub mod dependency_probe {
     pub use echo_execution::skills::dependency_probe::*;
 }
 
-/// File-based external skill loading (re-export from echo_execution).
+/// 文件型外部 Skill 加载（从 echo_execution 重新导出）。
 pub mod external {
     pub use echo_execution::skills::external::*;
 }
 
-/// Skill hook system (re-export from echo_execution).
+/// Skill 钩子（hook）系统（从 echo_execution 重新导出）。
 pub mod hooks {
     pub use echo_execution::skills::hooks::*;
 }
 
-/// Skill registry (re-export from echo_execution).
+/// Skill 注册表（从 echo_execution 重新导出）。
 pub mod registry {
     pub use echo_execution::skills::registry::*;
 }
 
-// Core Skill trait + SkillInfo (defined in echo_core::tools::skill)
+// 核心 Skill trait + SkillInfo（定义于 echo_core::tools::skill）
 pub use echo_core::tools::skill::{
     Skill, SkillInfo, is_path_safe, minimal_env, minimal_hook_env, minimal_hook_env_with_context,
 };
 
-// Execution-layer types (SkillRegistry, etc.)
+// 执行层类型（SkillRegistry 等）
 pub use echo_execution::skills::{SkillActivationHandle, SkillRegistry};

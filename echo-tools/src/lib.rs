@@ -1,26 +1,26 @@
-//! Echo Tools — Domain tools for the echo-agent framework
+//! Echo Tools —— echo-agent 框架的领域工具集
 //!
-//! Feature-gated tool modules that can be registered via
-//! [`register_all_tools`] into any [`ToolRegistrar`](echo_core::tools::ToolRegistrar).
+//! 提供按 feature 门控的工具模块，可通过 [`register_all_tools`] 注册到
+//! 任意 [`ToolRegistrar`](echo_core::tools::ToolRegistrar) 中。
 //!
 //! # Features
 //!
-//! | Feature   | Tools                                     |
+//! | Feature   | 工具                                     |
 //! |-----------|-------------------------------------------|
-//! | `artifact`| Verified, paged reads of spilled tool output |
-//! | `files`   | Artifact reader and filesystem tools      |
-//! | `web`     | `web` (WebFetchTool, WebSearchTool, WebExtractTool, providers) |
-//! | `chart`   | `chart` (GenerateChartTool)               |
-//! | `data`    | `data` (11 data-analysis tools), `data_quality` (3 data-quality tools) |
-//! | `statistics`| `statistics` (`exploratory_statistics`; formal inference uses sandboxed `run_code`) |
-//! | `database`| `database` (SqlQueryTool, …)              |
-//! | `media`   | `excel`, `image`, `pdf`, `word`, `text`, `media` |
-//! | `git`     | `git` (6 git CLI tools)                   |
-//! | `rag`     | `rag` (RagIndexTool, RagSearchTool, …)    |
-//! | `full`    | All of the above                          |
+//! | `artifact`| 对溢出工具输出做校验、分页读取 |
+//! | `files`   | Artifact 读取器与文件系统工具      |
+//! | `web`     | `web`（WebFetchTool、WebSearchTool、WebExtractTool、各搜索提供方） |
+//! | `chart`   | `chart`（GenerateChartTool）               |
+//! | `data`    | `data`（11 个数据分析工具）、`data_quality`（3 个数据质量工具） |
+//! | `statistics`| `statistics`（`exploratory_statistics`；正式的统计推断走沙箱化的 `run_code`） |
+//! | `database`| `database`（SqlQueryTool 等）              |
+//! | `media`   | `excel`、`image`、`pdf`、`word`、`text`、`media` |
+//! | `git`     | `git`（6 个 git CLI 工具）                   |
+//! | `rag`     | `rag`（RagIndexTool、RagSearchTool 等）    |
+//! | `full`    | 以上全部                          |
 
-/// Sandboxed inline or persisted-script execution (`run_code`). Gated under
-/// `shell` because it is the same execute/risk class (spawns an interpreter).
+/// 沙箱化的内联或持久化脚本执行工具（`run_code`）。归入 `shell` feature 门控，
+/// 因为它与 shell 属于相同的执行/风险等级（都会启动一个解释器）。
 #[cfg(feature = "shell")]
 #[cfg_attr(docsrs, doc(cfg(feature = "shell")))]
 pub mod code;

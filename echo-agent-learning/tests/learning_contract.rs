@@ -6,11 +6,13 @@ use echo_agent_learning::project_patterns::run_greet_tool;
 use echo_agent_learning::smart_pointers::arc_weak::{AgentHandle, AgentRegistry};
 use std::sync::Arc;
 
+/// 验证按 Unicode 标量值（而非字节）截取字符串时对中文、Emoji 都是安全的。
 #[test]
 fn unicode_examples_are_scalar_safe() {
     assert_eq!(unicode_preview("中文🦀Rust", 3), "中文🦀...");
 }
 
+/// 验证当持有者被释放后，注册表中的弱引用条目会被正确清理。
 #[test]
 fn weak_registry_releases_expired_entries() -> Result<(), LearningError> {
     let registry = AgentRegistry::default();
@@ -24,6 +26,7 @@ fn weak_registry_releases_expired_entries() -> Result<(), LearningError> {
     Ok(())
 }
 
+/// 验证异步子任务与工具调用示例均可离线运行，无需真实网络或外部服务。
 #[tokio::test]
 async fn async_and_framework_examples_are_offline() -> EchoResult<()> {
     let results = run_subagents(vec!["reviewer".to_string()])

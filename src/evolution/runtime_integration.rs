@@ -1,8 +1,9 @@
-//! Runtime wiring helpers for layered memory.
-//!
-//! This module owns framework-level plumbing only: layer manager creation,
-//! change-log construction and write observers. Product
-//! lifecycle policy and scheduling remain in app code.
+/*!
+分层记忆的运行时装配辅助工具。
+
+该模块只负责框架层面的管线搭建：创建 layer manager、构建 change-log
+以及写入观察者。产品层面的生命周期策略和调度逻辑仍然保留在应用代码中。
+*/
 
 use super::{ChangeLog, EvolutionObserver, JsonlChangeLog, MemoryLayerManager};
 use crate::error::Result;
@@ -13,16 +14,20 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Builds a [`MemoryLayerManager`] with consistent runtime wiring.
+/// 以一致的运行时装配方式构建 [`MemoryLayerManager`]。
 pub struct MemoryRuntimeIntegrationBuilder {
+    /// `.echo-agent/` 目录路径
     echo_agent_dir: PathBuf,
+    /// 底层存储实现
     store: Arc<dyn Store>,
+    /// 成功发生持久化演化事件后要通知的观察者
     evolution_observer: Option<Arc<dyn EvolutionObserver>>,
+    /// 自定义的 JSONL change-log 路径（未设置时使用默认路径）
     change_log_path: Option<PathBuf>,
 }
 
 impl MemoryRuntimeIntegrationBuilder {
-    /// Create a new builder for the given `.echo-agent/` directory and Store.
+    /// 为给定的 `.echo-agent/` 目录和 Store 创建一个新的构建器。
     pub fn new(echo_agent_dir: PathBuf, store: Arc<dyn Store>) -> Self {
         Self {
             echo_agent_dir,
@@ -32,26 +37,26 @@ impl MemoryRuntimeIntegrationBuilder {
         }
     }
 
-    /// Register an observer called after successful durable evolution events.
+    /// 注册一个观察者，在持久化的演化事件成功发生后被调用。
     pub fn evolution_observer(mut self, observer: Arc<dyn EvolutionObserver>) -> Self {
         self.evolution_observer = Some(observer);
         self
     }
 
-    /// Override the JSONL change-log path.
+    /// 覆盖 JSONL change-log 的路径。
     pub fn change_log_path(mut self, path: PathBuf) -> Self {
         self.change_log_path = Some(path);
         self
     }
 
-    /// Return the default change-log path for this integration.
+    /// 返回该集成使用的默认 change-log 路径。
     pub fn default_change_log_path(&self) -> PathBuf {
         self.echo_agent_dir
             .join("evolution")
             .join("change-log.jsonl")
     }
 
-    /// Create a JSONL change log, ensuring the parent directory exists.
+    /// 创建一个 JSONL change log，并确保其父目录存在。
     pub fn create_change_log(&self) -> Result<Box<dyn ChangeLog>> {
         let log_path = self
             .change_log_path
@@ -63,7 +68,7 @@ impl MemoryRuntimeIntegrationBuilder {
         Ok(Box::new(JsonlChangeLog::new(log_path)?))
     }
 
-    /// Create the fully wired layer manager.
+    /// 创建装配完整的 layer manager。
     pub fn build_layer_manager(&self) -> Result<MemoryLayerManager> {
         let mut layer_manager = MemoryLayerManager::try_new(
             self.echo_agent_dir.clone(),
@@ -78,7 +83,7 @@ impl MemoryRuntimeIntegrationBuilder {
         Ok(layer_manager)
     }
 
-    /// Build and reconcile before publishing the underlying Store to runtime readers.
+    /// 构建并执行 reconcile，然后再将底层 Store 发布给运行时的读取方。
     pub async fn build_layer_manager_reconciled(&self) -> Result<MemoryLayerManager> {
         let manager = self.build_layer_manager()?;
         manager.reconcile_pending().await?;
@@ -86,15 +91,18 @@ impl MemoryRuntimeIntegrationBuilder {
     }
 }
 
-/// Adapter that publishes framework evolution events through a HookRegistry.
+/// 通过 HookRegistry 发布框架演化事件的适配器。
 pub struct HookEvolutionObserver {
+    /// 共享的钩子注册表
     hook_registry: Arc<RwLock<HookRegistry>>,
+    /// 会话 ID
     session_id: String,
+    /// agent 名称
     agent_name: String,
 }
 
 impl HookEvolutionObserver {
-    /// Bind evolution events to one agent's shared hook registry.
+    /// 将演化事件绑定到某个 agent 的共享钩子注册表。
     pub fn new(
         hook_registry: Arc<RwLock<HookRegistry>>,
         session_id: impl Into<String>,
@@ -107,15 +115,18 @@ impl HookEvolutionObserver {
         }
     }
 
+    /// 触发一次生命周期钩子
     async fn fire(&self, context: HookContext) {
         let registry = self.hook_registry.read().await.clone();
         let _ = registry.run_lifecycle_hooks(&context).await;
     }
 
+    /// 构建一次内存写入事件对应的钩子上下文
     fn memory_write_context(&self, key: &str, source: &str) -> HookContext {
         HookContext::for_post_memory_write(key, source, &self.session_id, &self.agent_name)
     }
 
+    /// 构建一次内存分层变更事件对应的钩子上下文
     fn memory_layer_context(&self, key: &str, from_layer: &str, to_layer: &str) -> HookContext {
         HookContext::for_memory_layer_change(
             key,
@@ -126,18 +137,21 @@ impl HookEvolutionObserver {
         )
     }
 
+    /// 构建一次技能相关事件对应的钩子上下文
     fn skill_context(&self, event: echo_core::hooks::HookEvent, skill_name: &str) -> HookContext {
         HookContext::for_lifecycle(event, skill_name, &self.session_id, &self.agent_name)
     }
 }
 
 impl EvolutionObserver for HookEvolutionObserver {
+    /// 内存写入发生时触发 `PostMemoryWrite` 钩子
     fn on_memory_write<'a>(&'a self, key: &'a str, source: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             self.fire(self.memory_write_context(key, source)).await;
         })
     }
 
+    /// 内存分层发生变化时触发 `MemoryLayerChange` 钩子
     fn on_memory_layer_change<'a>(
         &'a self,
         key: &'a str,
@@ -150,6 +164,7 @@ impl EvolutionObserver for HookEvolutionObserver {
         })
     }
 
+    /// 检测到候选技能时触发 `SkillCandidateDetected` 钩子
     fn on_skill_candidate_detected<'a>(&'a self, skill_name: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             self.fire(self.skill_context(
@@ -160,6 +175,7 @@ impl EvolutionObserver for HookEvolutionObserver {
         })
     }
 
+    /// 执行技能健康检查时触发 `SkillHealthCheck` 钩子
     fn on_skill_health_check<'a>(&'a self, skill_name: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             self.fire(
@@ -281,3 +297,4 @@ mod tests {
         }
     }
 }
+</content>

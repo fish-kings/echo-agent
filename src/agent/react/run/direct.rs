@@ -1,11 +1,11 @@
-//! Direct execution entry points (run_direct / run_chat_direct)
+//! 直接执行入口点（run_direct / run_chat_direct）
 
 use super::super::ReactAgent;
 use crate::error::Result;
 use tracing::{Instrument, debug, info, info_span};
 
 impl ReactAgent {
-    /// Direct execution (no planning): reset/restore context, then enter ReAct loop
+    /// 直接执行（不做规划）：重置/恢复上下文，然后进入 ReAct 循环
     pub(crate) async fn run_direct(&self, task: &str) -> Result<String> {
         self.validate_persistence_configuration()?;
         let agent = self.config.agent_name.clone();
@@ -25,7 +25,7 @@ impl ReactAgent {
             .await
     }
 
-    /// Multi-turn conversation: do not reset context, append message then enter ReAct loop
+    /// 多轮对话：不重置上下文，追加消息后进入 ReAct 循环
     pub(crate) async fn run_chat_direct(&self, message: &str) -> Result<String> {
         self.validate_persistence_configuration()?;
         let agent = self.config.agent_name.clone();

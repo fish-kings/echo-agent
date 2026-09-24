@@ -19,6 +19,8 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// 程序入口：依次演示 SqliteStore 的 CRUD、FTS5 检索、命名空间隔离、
+/// 向量语义检索、Agent 集成与跨实例持久化六个部分。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -79,6 +81,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: CRUD ────────────────────────────────────────────────────────────
 
+/// Part 1 演示：验证 SqliteStore 的基本增删改查（put/get/delete）行为。
 async fn demo_crud(db_path: &Path) -> echo_agent::error::Result<()> {
     let store = SqliteStore::new(db_path)?;
     let ns = &["demo27", "crud"];
@@ -169,6 +172,7 @@ async fn demo_crud(db_path: &Path) -> echo_agent::error::Result<()> {
 
 // ── Part 2: FTS5 ────────────────────────────────────────────────────────────
 
+/// Part 2 演示：验证 FTS5 全文检索（基于 BM25 排序）能否正确命中相关记忆。
 async fn demo_fts5_search(db_path: &Path) -> echo_agent::error::Result<()> {
     let store = SqliteStore::new(db_path)?;
     let ns = &["demo27", "fts5"];
@@ -238,6 +242,7 @@ async fn demo_fts5_search(db_path: &Path) -> echo_agent::error::Result<()> {
 
 // ── Part 3: 命名空间隔离 ────────────────────────────────────────────────────
 
+/// Part 3 演示：验证不同命名空间下的数据相互隔离，跨命名空间既读取不到也搜索不到。
 async fn demo_namespace_isolation(db_path: &Path) -> echo_agent::error::Result<()> {
     let store = SqliteStore::new(db_path)?;
 
@@ -307,6 +312,8 @@ async fn demo_namespace_isolation(db_path: &Path) -> echo_agent::error::Result<(
 
 // ── Part 4: 向量语义检索 ────────────────────────────────────────────────────
 
+/// Part 4 演示：验证基于向量余弦相似度的语义检索，能够用跨语言查询命中中文记忆，
+/// 并与关键词检索的结果进行对比。
 async fn demo_semantic_search(db_path: &Path) -> echo_agent::error::Result<()> {
     let store = SqliteStore::with_embedder(db_path, load_verified_embedder_from_config().await?)?;
     let ns = &["demo27", "semantic"];
@@ -387,6 +394,8 @@ async fn demo_semantic_search(db_path: &Path) -> echo_agent::error::Result<()> {
 
 // ── Part 5: Agent 集成 ──────────────────────────────────────────────────────
 
+/// Part 5 演示：将 SqliteStore 作为长期记忆挂载到 Agent 上，验证 Agent
+/// 能结合预填充的记忆给出个性化回答。
 async fn demo_agent_integration(db_path: &Path) -> echo_agent::error::Result<()> {
     let llm_config = require_configured_model(None)?;
     let model_name = llm_config.model.clone();
@@ -437,6 +446,8 @@ async fn demo_agent_integration(db_path: &Path) -> echo_agent::error::Result<()>
 
 // ── Part 6: 持久化验证 ──────────────────────────────────────────────────────
 
+/// Part 6 演示：验证数据在关闭并重新打开 SqliteStore 实例后仍然持久保存，
+/// 且 FTS5 索引也能跨实例正常检索。
 async fn demo_persistence(db_path: &Path) -> echo_agent::error::Result<()> {
     println!("  验证 SQLite 数据跨实例持久化\n");
 
@@ -500,6 +511,7 @@ async fn demo_persistence(db_path: &Path) -> echo_agent::error::Result<()> {
 
 // ── 辅助 ────────────────────────────────────────────────────────────────────
 
+/// 从记忆条目的 JSON 值中取出 `content` 字符串字段，缺失时返回带上下文说明的错误。
 fn required_content<'a>(value: &'a Value, context: &str) -> echo_agent::error::Result<&'a str> {
     value.get("content").and_then(Value::as_str).ok_or_else(|| {
         echo_agent::error::ReactError::Other(format!(
@@ -508,6 +520,7 @@ fn required_content<'a>(value: &'a Value, context: &str) -> echo_agent::error::R
     })
 }
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("{}", "═".repeat(64));
     println!("      Echo Agent × SQLite 持久化记忆 (demo27)");
@@ -516,15 +529,18 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线与小节标题。
 fn separator(title: &str) {
     println!("{}", "─".repeat(64));
     println!("{title}\n");
 }
 
+/// 根据环境变量配置构建一个 HTTP 嵌入模型客户端。
 fn load_embedder_from_config() -> echo_agent::error::Result<Arc<dyn echo_agent::memory::Embedder>> {
     Ok(Arc::new(HttpEmbedder::from_env()))
 }
 
+/// 构建嵌入模型客户端，并通过一次健康检查请求验证其可用性。
 async fn load_verified_embedder_from_config()
 -> echo_agent::error::Result<Arc<dyn echo_agent::memory::Embedder>> {
     let embedder = load_embedder_from_config()?;
@@ -539,16 +555,19 @@ async fn load_verified_embedder_from_config()
     Ok(embedder)
 }
 
+/// 生成本次演示使用的临时 SQLite 数据库文件路径（按进程 ID 区分）。
 fn demo27_db_path() -> PathBuf {
     std::env::temp_dir().join(format!("echo-agent-demo27-{}.db", std::process::id()))
 }
 
+/// 删除 SQLite 主数据库文件及其 WAL / SHM 辅助文件。
 fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
+/// 读取已配置的模型信息，若环境变量未正确配置 provider/model 则返回明确的错误。
 fn require_configured_model(preferred: Option<&str>) -> echo_agent::error::Result<LlmConfig> {
     support::llm_config(preferred).map_err(|error| {
         echo_agent::error::ReactError::Other(format!(

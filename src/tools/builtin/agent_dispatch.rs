@@ -11,28 +11,29 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, warn};
 
+/// 将子 Agent 的执行结果（outcome）序列化为 JSON 字符串，返回给父级。
 fn serialize_parent_result(
     outcome: &SubagentOutcome,
 ) -> std::result::Result<String, serde_json::Error> {
     serde_json::to_string(outcome)
 }
 
-/// Factory for lazily building parent context at dispatch time.
-///
-/// Holds Arc references to the parent agent's shared subsystems so
-/// that `SubagentContext` can be built with the latest messages and
-/// tool definitions when a dispatch actually occurs.
+/** 用于在派发（dispatch）时延迟构建父级上下文的工厂。
+ *
+ * 持有父 Agent 共享子系统的 Arc 引用，以便在真正发生派发时，
+ * 能够用最新的消息和工具定义构建出 `SubagentContext`。
+ */
 pub struct ParentContextFactory {
-    /// Parent's tool manager (to get current tool definitions).
+    /// 父级的工具管理器（用于获取当前的工具定义）。
     pub tool_manager: Arc<crate::tools::ToolManager>,
-    /// Parent's context manager (to get recent messages).
+    /// 父级的上下文管理器（用于获取最近的消息）。
     pub context: Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
-    /// Parent's memory store (for sharing with subagent).
+    /// 父级的记忆存储（用于与子 Agent 共享）。
     pub store: Option<Arc<dyn crate::memory::Store>>,
 }
 
 impl ParentContextFactory {
-    /// Build a SubagentContext using an explicit inheritance policy.
+    /// 使用显式的继承策略构建一个 SubagentContext。
     pub async fn build_with_inheritance(
         &self,
         inheritance: &ContextInheritance,
@@ -49,29 +50,38 @@ impl ParentContextFactory {
     }
 }
 
+/** 将任务派发给已注册子 Agent 的工具（对应 `agent_tool`）。
+ *
+ * 封装了子 Agent 执行器、父级身份信息、取消令牌的传播，
+ * 以及可选的父级上下文继承逻辑。
+ */
 pub struct AgentDispatchTool {
+    /// 子 Agent 执行器，负责实际执行派发请求。
     executor: Arc<SubagentExecutor>,
+    /// 发起派发的父级 Agent 名称。
     parent_agent: String,
-    /// Shared, updatable handle to the parent run's cancel token (P1-11).
-    ///
-    /// The tool is constructed during agent build, before any run starts, so
-    /// the parent's cancel token is not known yet. We hold an `Arc<Mutex<..>>`
-    /// that the parent run updates when it begins; `execute` reads the latest
-    /// value and derives a `child_token` so a subagent dispatched via this tool
-    /// is cancelled when the parent run is. Previously this was a fixed
-    /// `CancellationToken::new()` captured at build time — an inert token that
-    /// could never fire, so LLM-initiated dispatches were detached from the
-    /// parent's cancellation entirely.
+    /** 指向父级运行取消令牌的共享、可更新句柄（P1-11）。
+     *
+     * 该工具是在 Agent 构建期间创建的，此时任何运行都还未开始，
+     * 因此父级的取消令牌尚未可知。我们持有一个 `Arc<Mutex<..>>`，
+     * 父级运行在开始时会更新它；`execute` 读取最新值并据此派生出
+     * `child_token`，这样通过该工具派发的子 Agent 会随父级运行一起被取消。
+     * 此前这里固定使用构建期捕获的 `CancellationToken::new()`——一个永远
+     * 不会触发的惰性令牌，导致由 LLM 发起的派发完全脱离了父级的取消机制。
+     */
     cancel: Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
-    /// Optional factory for building parent context at dispatch time.
-    /// When set, explicit Fork mode can inherit filtered conversation history.
+    /** 用于在派发时构建父级上下文的可选工厂。
+     * 设置后，显式的 Fork 模式可以继承经过过滤的会话历史。
+     */
     parent_context_factory: Option<Arc<ParentContextFactory>>,
-    /// Snapshot of available subagents exposed to the LLM through the tool schema.
+    /// 通过工具 schema 暴露给 LLM 的可用子 Agent 快照。
     catalog: Arc<std::sync::RwLock<Vec<crate::agent::subagent::SubagentDefinition>>>,
+    /// 目录（catalog）的版本号，用于检测 schema 是否需要刷新。
     catalog_revision: Arc<AtomicU64>,
 }
 
 impl AgentDispatchTool {
+    /// 创建一个新的 `AgentDispatchTool`。
     pub fn new(
         executor: Arc<SubagentExecutor>,
         parent_agent: impl Into<String>,
@@ -87,12 +97,13 @@ impl AgentDispatchTool {
         }
     }
 
-    /// Create with a parent context factory for context inheritance.
+    /// 使用父级上下文工厂创建实例，以支持上下文继承。
     pub fn with_parent_context(mut self, factory: Arc<ParentContextFactory>) -> Self {
         self.parent_context_factory = Some(factory);
         self
     }
 
+    /// 根据调用上下文推导子 Agent 的委派（delegation）策略。
     fn delegation_policy_from_context(
         ctx: Option<&ToolContext>,
     ) -> std::result::Result<NestedDelegationPolicy, String> {
@@ -109,11 +120,12 @@ impl AgentDispatchTool {
         }
     }
 
-    /// Build [`ExternalRunContext`] for application UI identity pinning.
-    ///
-    /// Uses the formal run id when present and always preserves the chat turn id.
-    /// `execution_id` has no `:` so the Tauri bridge uses the full string as
-    /// `subagent_run_id` (avoids colliding parallel same-role dispatches).
+    /** 构建用于应用 UI 身份定位的 [`ExternalRunContext`]。
+     *
+     * 存在正式 run id 时优先使用，并始终保留聊天回合（turn）id。
+     * `execution_id` 中不含 `:`，因此 Tauri 桥接层会将完整字符串
+     * 用作 `subagent_run_id`（避免并行的同角色派发相互冲突）。
+     */
     fn runtime_context_from_tool_ctx(ctx: Option<&ToolContext>) -> Option<ExternalRunContext> {
         let c = ctx?;
         if c.conversation_id.is_none()
@@ -143,13 +155,14 @@ impl AgentDispatchTool {
             trace_sink: c.trace_sink.clone(),
             delegation_policy: c.delegation_policy,
             resource_guards: c.resource_guards.clone(),
-            // The child's lineage is stamped below from the invoking
-            // context's own lineage — the parent's value must not leak.
+            /* 子级的世系（lineage）信息将在下面根据调用方自身的
+             * 上下文世系来标记——父级的值不能在此泄露。 */
             subagent_lineage: None,
             uplink: None,
         })
     }
 
+    /// 根据调用方取消令牌与共享句柄，派生出子 Agent 使用的取消令牌。
     async fn child_cancel_token(
         cancel_handle: &Arc<tokio::sync::Mutex<Option<CancellationToken>>>,
         invocation_cancel: Option<&CancellationToken>,
@@ -166,6 +179,7 @@ impl AgentDispatchTool {
             .unwrap_or_else(CancellationToken::new)
     }
 
+    /// 携带可选工具上下文执行一次派发，构建请求并调用执行器。
     fn dispatch_with_context(
         &self,
         parameters: ToolParameters,
@@ -177,8 +191,8 @@ impl AgentDispatchTool {
         let factory = self.parent_context_factory.clone();
         let mut runtime_context = Self::runtime_context_from_tool_ctx(ctx);
         let active_message = ctx.and_then(|context| context.active_message.clone());
-        // Owned parent lineage values for stamping the child's identity
-        // inside the async block (the ctx reference must not be captured).
+        /* 持有所有权的父级世系值，用于在异步块内部标记子级身份
+         * （ctx 引用本身不能被捕获进异步块）。 */
         let parent_lineage = ctx.and_then(|context| context.subagent_lineage.clone());
         let parent_execution_id = ctx.and_then(|context| context.execution_id.clone());
         let parent_call_id = ctx.and_then(|context| context.call_id.clone());
@@ -195,12 +209,11 @@ impl AgentDispatchTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("agent_name".to_string()))?;
 
-            // Stamp the child's lineage from the invoking context: the parent
-            // path chains (`root/<parent>/<child>`), and the parent's own
-            // execution id lets the default uplink steer the parent when the
-            // child escalates. The parent's uplink is deliberately NOT
-            // inherited — the executor installs a fresh default sink bound to
-            // this child.
+            /* 根据调用方上下文标记子级的世系：父级路径会不断串联
+             * （形如 `root/<parent>/<child>`），父级自身的执行 id 使得默认的
+             * 上行链路（uplink）在子级升级时能够定位到父级。父级的
+             * uplink 被有意地不被继承——执行器会为该子级安装一个全新的
+             * 默认 sink。 */
             if let Some(context) = runtime_context.as_mut() {
                 let parent_path = parent_lineage
                     .as_ref()
@@ -272,14 +285,14 @@ impl AgentDispatchTool {
                 })
                 .unwrap_or_default();
 
-            // Inheritance is independent of execution mode:
-            // - omit / sync → fresh (no parent system/history/memory)
-            // - fork → inherit a filtered parent slice
-            // (applied below when building parent_context)
+            /* 上下文继承与执行模式相互独立：
+             * - 省略 / sync → 全新上下文（不含父级 system/历史/记忆）
+             * - fork → 继承经过过滤的父级片段
+             * （在下面构建 parent_context 时应用） */
 
-            // Execution mode: keep caller's choice, but force Fork when the
-            // target role declares worktree/workspace isolation (those paths
-            // only exist on dispatch_fork today).
+            /* 执行模式：保留调用方的选择，但当目标角色声明了
+             * worktree/workspace 隔离时强制使用 Fork（目前这些路径
+             * 只在 dispatch_fork 上存在）。 */
             let registered = executor.registry().get(agent_name).await.ok_or_else(|| {
                 ToolError::ExecutionFailed {
                     tool: "agent_tool".to_string(),
@@ -308,19 +321,19 @@ impl AgentDispatchTool {
                 "Dispatching task to subagent via SubagentExecutor"
             );
 
-            // Build parent context if factory is available. Fork, teammate,
-            // and team all use the same structured-history policy; the
-            // compiler decides the final bounded message set. Fresh sync
-            // dispatches intentionally carry only the scoped parent goal.
+            /* 如果工厂可用，则构建父级上下文。Fork、teammate 和 team
+             * 三种模式使用同一套结构化历史策略；由编译器决定最终的
+             * 有界消息集合。全新的 sync 派发则有意只携带限定范围内的
+             * 父级目标。 */
             let parent_context = if let Some(ref f) = factory {
                 let ctx = if matches!(
                     exec_mode,
                     ExecutionMode::Fork | ExecutionMode::Teammate | ExecutionMode::Team
                 ) {
                     let inheritance = ContextInheritance {
-                        // Preserve the complete raw snapshot here. The
-                        // configured prompt compiler performs the single
-                        // provider-safe filter and applies the role limit.
+                        /* 这里保留完整的原始快照。由配置好的提示词编译器
+                         * 执行统一的、面向 provider 安全的过滤，并应用
+                         * 角色限制。 */
                         inherit_history: Some(0),
                         ..ContextInheritance::fork_default()
                     };
@@ -334,9 +347,9 @@ impl AgentDispatchTool {
                 None
             };
 
-            // ToolContext is invocation-scoped and therefore authoritative for
-            // pooled agents. The shared handle remains a compatibility fallback
-            // for callers that execute the tool without runtime context.
+            /* ToolContext 是与本次调用绑定的作用域，因此对于池化 Agent
+             * 而言它是权威来源。共享句柄仅作为兼容性回退，供那些不带
+             * 运行时上下文执行该工具的调用方使用。 */
             let cancel =
                 Self::child_cancel_token(&cancel_handle, invocation_cancel.as_deref()).await;
 
@@ -461,10 +474,12 @@ impl AgentDispatchTool {
 }
 
 impl Tool for AgentDispatchTool {
+    /// 返回该工具的名称。
     fn name(&self) -> &str {
         "agent_tool"
     }
 
+    /// 返回该工具提供给 LLM 的描述文本。
     fn description(&self) -> &str {
         "Dispatch tasks to specialized Subagents in an isolated context. \
          Default is fresh context (no parent conversation). Use mode=fork only when \
@@ -481,15 +496,16 @@ impl Tool for AgentDispatchTool {
          To run multiple independent Subagents in parallel, send a single message with multiple agent_tool calls."
     }
 
-    /// `agent_tool` dispatches a subagent that runs its own multi-step ReAct
-    /// (latency far higher than typical file/shell tools). Exempt it from the
-    /// parallel batch timeout so it doesn't dominate the batch budget and
-    /// prematurely cancel peers; it has its own per-dispatch timeout instead
-    /// (see `SubagentExecutor` default 600s).
+    /** `agent_tool` 会派发一个运行自己多步 ReAct 流程的子 Agent
+     * （延迟远高于典型的文件/shell 工具）。将其从并行批次超时中豁免，
+     * 避免它占满批次预算并过早取消同批的其他任务；它自身另有单独的
+     * 单次派发超时（参见 `SubagentExecutor`，默认 600 秒）。
+     */
     fn exempt_from_batch_timeout(&self) -> bool {
         true
     }
 
+    /// 返回该工具的调用参数 JSON Schema。
     fn parameters(&self) -> Value {
         let catalog = self
             .catalog
@@ -547,10 +563,12 @@ impl Tool for AgentDispatchTool {
         })
     }
 
+    /// 返回当前工具 schema 的版本号。
     fn schema_revision(&self) -> u64 {
         self.catalog_revision.load(Ordering::Acquire)
     }
 
+    /// 在没有工具上下文的情况下执行该工具。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -558,6 +576,7 @@ impl Tool for AgentDispatchTool {
         self.dispatch_with_context(parameters, None)
     }
 
+    /// 携带工具上下文执行该工具。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,

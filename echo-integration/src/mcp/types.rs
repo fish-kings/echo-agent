@@ -17,16 +17,20 @@ pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
 /// JSON-RPC 2.0 请求（Client → Server）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRpcRequest {
+    /// 协议版本号，固定为 `"2.0"`
     pub jsonrpc: String,
     /// 请求 ID（由传输层自动填充，调用方可留空）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<Value>,
+    /// 要调用的方法名
     pub method: String,
+    /// 方法参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl JsonRpcRequest {
+    /// 构造一个新的 JSON-RPC 请求（`id` 留空，由传输层负责填充）
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -40,10 +44,14 @@ impl JsonRpcRequest {
 /// JSON-RPC 2.0 响应（Server → Client）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRpcResponse {
+    /// 协议版本号，固定为 `"2.0"`
     pub jsonrpc: String,
+    /// 对应请求的 ID
     pub id: Option<Value>,
+    /// 成功时的返回结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// 失败时的错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
 }
@@ -51,13 +59,17 @@ pub struct JsonRpcResponse {
 /// JSON-RPC 2.0 通知（单向，无需响应）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRpcNotification {
+    /// 协议版本号，固定为 `"2.0"`
     pub jsonrpc: String,
+    /// 通知方法名
     pub method: String,
+    /// 通知参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Value>,
 }
 
 impl JsonRpcNotification {
+    /// 构造一个新的 JSON-RPC 通知
     pub fn new(method: impl Into<String>, params: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".to_string(),
@@ -70,8 +82,11 @@ impl JsonRpcNotification {
 /// JSON-RPC 2.0 错误对象
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct JsonRpcError {
+    /// 错误码
     pub code: i32,
+    /// 错误描述信息
     pub message: String,
+    /// 附加的错误数据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
 }
@@ -81,9 +96,12 @@ pub struct JsonRpcError {
 /// initialize 请求参数
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InitializeParams {
+    /// 客户端期望使用的协议版本
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
+    /// 客户端能力声明
     pub capabilities: ClientCapabilities,
+    /// 客户端身份信息
     #[serde(rename = "clientInfo")]
     pub client_info: ClientInfo,
 }
@@ -125,7 +143,9 @@ pub struct ElicitationCapability {}
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientInfo {
+    /// 客户端名称
     pub name: String,
+    /// 客户端版本号
     pub version: String,
     /// 人类可读的显示名称
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -144,9 +164,12 @@ pub struct ClientInfo {
 /// initialize 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InitializeResult {
+    /// 服务端选定的协议版本
     #[serde(rename = "protocolVersion")]
     pub protocol_version: String,
+    /// 服务端能力声明
     pub capabilities: ServerCapabilities,
+    /// 服务端身份信息
     #[serde(rename = "serverInfo", skip_serializing_if = "Option::is_none")]
     pub server_info: Option<ServerInfo>,
     /// 指令信息（可选）
@@ -237,7 +260,9 @@ pub struct Icon {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
+    /// 服务端名称
     pub name: String,
+    /// 服务端版本号
     pub version: String,
     /// 人类可读的显示名称
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -301,7 +326,7 @@ pub struct ToolAnnotations {
     /// 工具是否幂等
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idempotent_hint: Option<bool>,
-    /// 工具是否需要人工确认
+    /// 工具是否与开放、不可预测的外部环境交互（如联网搜索）；false 表示作用域封闭、确定
     #[serde(skip_serializing_if = "Option::is_none")]
     pub open_world_hint: Option<bool>,
 }
@@ -318,6 +343,7 @@ pub struct ToolExecution {
 /// tools/list 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpToolsListResult {
+    /// 工具列表
     pub tools: Vec<McpTool>,
     /// 分页游标（如有下一页）
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
@@ -327,7 +353,9 @@ pub struct McpToolsListResult {
 /// tools/call 请求参数
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpToolCallParams {
+    /// 要调用的工具名称
     pub name: String,
+    /// 调用参数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Value>,
 }
@@ -382,6 +410,7 @@ pub struct McpResource {
 /// resources/list 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourcesListResult {
+    /// 资源列表
     pub resources: Vec<McpResource>,
     /// 分页游标（如有下一页）
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
@@ -391,12 +420,14 @@ pub struct McpResourcesListResult {
 /// resources/read 请求参数
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourceReadParams {
+    /// 要读取的资源 URI
     pub uri: String,
 }
 
 /// resources/read 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourceReadResult {
+    /// 资源内容列表
     pub contents: Vec<McpResourceContents>,
 }
 
@@ -404,19 +435,28 @@ pub struct McpResourceReadResult {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum McpResourceContents {
+    /// 文本形式的资源内容
     Text {
+        /// 资源 URI
         uri: String,
+        /// MIME 类型
         #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
+        /// 文本内容
         text: String,
+        /// 其余未识别的扩展字段
         #[serde(flatten)]
         extra: Map<String, Value>,
     },
+    /// 二进制形式的资源内容
     Blob {
+        /// 资源 URI
         uri: String,
+        /// MIME 类型
         #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
         mime_type: Option<String>,
         blob: String, // Base64 编码
+        /// 其余未识别的扩展字段
         #[serde(flatten)]
         extra: Map<String, Value>,
     },
@@ -428,7 +468,7 @@ pub struct McpResourceTemplate {
     /// 模板 URI（包含参数占位符）
     #[serde(rename = "uriTemplate")]
     pub uri_template: String,
-    /// 模板名称
+    /// 模板名称（作为唯一标识）
     pub name: String,
     /// 人类可读的显示名称（2025-11-25）
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -450,6 +490,7 @@ pub struct McpResourceTemplate {
 /// resources/templates/list 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourceTemplatesListResult {
+    /// 资源模板列表
     #[serde(rename = "resourceTemplates")]
     pub resource_templates: Vec<McpResourceTemplate>,
     /// 分页游标
@@ -488,6 +529,7 @@ pub struct McpPromptArgument {
 /// prompts/list 响应结果
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpPromptsListResult {
+    /// 提示词列表
     pub prompts: Vec<McpPrompt>,
     /// 分页游标
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
@@ -497,6 +539,7 @@ pub struct McpPromptsListResult {
 /// prompts/get 请求参数
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpPromptGetParams {
+    /// 要获取的提示词名称
     pub name: String,
     /// 参数值映射
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -526,7 +569,9 @@ pub struct McpPromptMessage {
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum McpPromptMessageRole {
+    /// 用户角色
     User,
+    /// 助手角色
     Assistant,
 }
 
@@ -536,19 +581,29 @@ pub enum McpPromptMessageRole {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpContent {
+    /// 纯文本内容
     Text {
+        /// 文本内容
         text: String,
     },
+    /// 图片内容
     Image {
+        /// Base64 编码的图片数据
         data: String,
+        /// MIME 类型
         #[serde(rename = "mimeType")]
         mime_type: String,
     },
+    /// 资源引用内容
     Resource {
+        /// 被引用的资源链接
         resource: McpResourceLink,
     },
+    /// 音频内容
     Audio {
+        /// Base64 编码的音频数据
         data: String,
+        /// MIME 类型
         #[serde(rename = "mimeType")]
         mime_type: String,
     },
@@ -557,14 +612,18 @@ pub enum McpContent {
 /// 资源链接（嵌入在内容中的资源引用）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct McpResourceLink {
+    /// 资源 URI
     pub uri: String,
+    /// MIME 类型
     #[serde(rename = "mimeType", skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
+    /// 资源名称
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
 
 impl McpContent {
+    /// 若内容为文本类型则返回其文本切片，否则返回 `None`
     pub fn as_text(&self) -> Option<&str> {
         match self {
             McpContent::Text { text } => Some(text),
@@ -579,14 +638,17 @@ use tokio::sync::{Mutex, broadcast};
 
 /// 通知接收者 trait，用于接收服务端推送的通知
 pub trait JsonRpcNotificationReceiver: Send + Sync {
+    /// 非阻塞地尝试接收一条通知，若当前没有可用通知则返回 `None`
     fn try_recv(&self) -> Option<JsonRpcNotification>;
 }
 
-/// broadcast::Receiver 的包装类型，实现 JsonRpcNotificationReceiver trait
-/// 同时提供异步 `recv()` 方法。
+/** `broadcast::Receiver` 的包装类型，实现 `JsonRpcNotificationReceiver` trait，
+同时提供异步 `recv()` 方法。
+*/
 pub struct NotificationReceiver(Mutex<broadcast::Receiver<JsonRpcNotification>>);
 
 impl NotificationReceiver {
+    /// 基于给定的 broadcast 接收端构造一个新的通知接收器
     pub fn new(rx: broadcast::Receiver<JsonRpcNotification>) -> Self {
         Self(Mutex::new(rx))
     }
@@ -599,6 +661,7 @@ impl NotificationReceiver {
 }
 
 impl JsonRpcNotificationReceiver for NotificationReceiver {
+    /// 非阻塞地尝试获取锁并接收一条通知；获取锁失败或无新通知时返回 `None`
     fn try_recv(&self) -> Option<JsonRpcNotification> {
         self.0.try_lock().ok()?.try_recv().ok()
     }

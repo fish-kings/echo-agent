@@ -1,11 +1,11 @@
-//! LSP (Language Server Protocol) integration layer.
+//! LSP（语言服务器协议）集成层。
 //!
-//! This module provides:
-//! - `LspManager` — manages multiple language server processes
-//! - `StdioLspClient` — JSON-RPC client over stdio for a single server
-//! - Configuration loading from `.lsp.yaml` files
+//! 本模块提供：
+//! - `LspManager` —— 管理多个语言服务器进程
+//! - `StdioLspClient` —— 通过 stdio 与单个服务器通信的 JSON-RPC 客户端
+//! - 从 `.lsp.yaml` 文件加载配置
 //!
-//! ## Architecture
+//! ## 架构
 //!
 //! ```text
 //! LspManager

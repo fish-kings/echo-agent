@@ -7,17 +7,20 @@ use crate::error::ToolError;
 use crate::human_loop::{HumanLoopProvider, HumanLoopRequest, HumanLoopResponse};
 use crate::tools::{Tool, ToolParameters, ToolResult};
 
-/// LLM-triggered human-in-the-loop tool.
-///
-/// Called when the LLM is uncertain about user intent, needs additional
-/// information, or requires user confirmation. Uses the injected
-/// [`HumanLoopProvider`] to asynchronously request user input, supporting
-/// multiple channels such as CLI, HTTP Webhook, WebSocket, etc.
+/**
+由 LLM 触发的人机协同（human-in-the-loop）工具。
+
+在 LLM 不确定用户意图、需要额外信息，或需要用户确认时被调用。
+使用注入的 [`HumanLoopProvider`] 异步请求用户输入，支持
+CLI、HTTP Webhook、WebSocket 等多种渠道。
+*/
 pub struct HumanInLoop {
+    /// 用于实际发起人机协同请求的底层 provider。
     provider: Arc<dyn HumanLoopProvider>,
 }
 
 impl HumanInLoop {
+    /// 基于给定的 provider 创建一个新的 [`HumanInLoop`] 工具。
     pub fn new(provider: Arc<dyn HumanLoopProvider>) -> Self {
         Self { provider }
     }

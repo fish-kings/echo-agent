@@ -1,9 +1,9 @@
-//! Graph workflow nodes
+//! 图工作流节点
 //!
-//! Each node is an execution unit in the graph, which can be:
-//! - **Agent node**: drains a cancellable Agent stream and writes its final answer to state
-//! - **Function node**: arbitrary `async fn(SharedState) -> Result<()>`
-//! - **Router node**: pure routing (no execution, conditional branching only)
+//! 每个节点都是图中的一个执行单元，可以是：
+//! - **Agent 节点**：消费一个可取消的 Agent 流，并将其最终答案写入状态
+//! - **函数节点**：任意的 `async fn(SharedState) -> Result<()>`
+//! - **路由节点**：纯路由（不执行任何逻辑，仅用于条件分支）
 
 use super::state::SharedState;
 use echo_core::agent::{Agent, AgentEvent};
@@ -16,30 +16,34 @@ use tokio_util::sync::CancellationToken;
 
 // ── NodeAction ──────────────────────────────────────────────────────────────
 
-/// Type-safe wrapper for node execution logic
+/// 节点执行逻辑的类型安全包装
 pub(crate) enum NodeAction {
-    /// Agent execution: reads input_key from state as prompt, writes output to output_key
+    /// Agent 执行：从状态中读取 input_key 作为 prompt，将输出写入 output_key
     Agent {
+        /// 要执行的 agent
         agent: Arc<dyn Agent>,
+        /// 从状态中读取输入所使用的键
         input_key: String,
+        /// 将输出写入状态所使用的键
         output_key: String,
-        /// Whether to use execute (multi-turn with tools) or chat (single turn)
+        /// 使用 execute（带工具的多轮）还是 chat（单轮）模式
         use_execute: bool,
     },
-    /// Nested subgraph execution — the node itself is a complete compiled Graph
+    /// 嵌套子图执行 —— 该节点本身就是一个完整的已编译 Graph
     Subgraph(Box<super::graph::Graph>),
-    /// Custom async function
+    /// 自定义异步函数
     Function(Box<dyn NodeFn>),
-    /// No-op (used for router nodes)
+    /// 空操作（用于路由节点）
     Passthrough,
 }
 
-/// Custom node function trait (object-safe)
+/// 自定义节点函数 trait（对象安全）
 pub(crate) trait NodeFn: Send + Sync {
+    /// 执行该节点函数
     fn call<'a>(&'a self, state: &'a SharedState) -> BoxFuture<'a, Result<()>>;
 }
 
-/// Implements NodeFn using a closure
+/// 使用闭包实现 NodeFn
 struct FnWrapper<F>(F);
 
 impl<F> NodeFn for FnWrapper<F>
@@ -53,16 +57,17 @@ where
 
 // ── Node ────────────────────────────────────────────────────────────────────
 
-/// Node definition in the graph
+/// 图中的节点定义
 pub(crate) struct Node {
-    /// Execution logic
+    /// 执行逻辑
     pub action: NodeAction,
 }
 
 impl Node {
+    /// 将 agent 输出提交到共享状态中
     fn commit_agent_output(state: &SharedState, output_key: &str, output: String) -> Result<()> {
-        // Use merge_overwrite to support structural data merge semantics
-        // rather than simple key-level overwrite.
+        // 使用 merge_overwrite 以支持结构化数据合并语义，
+        // 而不是简单的键级覆盖。
         state.merge_overwrite(&SharedState::from_values(
             [(
                 output_key.to_string(),
@@ -75,7 +80,7 @@ impl Node {
         Ok(())
     }
 
-    /// Create an Agent node (defaults to execute, i.e., multi-turn with tools)
+    /// 创建一个 Agent 节点（默认使用 execute，即带工具的多轮模式）
     pub fn agent(
         _name: impl Into<String>,
         agent: impl Agent + 'static,
@@ -92,7 +97,7 @@ impl Node {
         }
     }
 
-    /// Create an Agent node (configurable execute/chat mode)
+    /// 创建一个 Agent 节点（可配置 execute/chat 模式）
     pub fn agent_with_mode(
         _name: impl Into<String>,
         agent: impl Agent + 'static,
@@ -110,7 +115,7 @@ impl Node {
         }
     }
 
-    /// Create an Agent node (pre-wrapped as Arc<dyn Agent>)
+    /// 创建一个 Agent 节点（预先包装为 Arc<dyn Agent>）
     pub fn agent_shared(
         _name: impl Into<String>,
         agent: Arc<dyn Agent>,
@@ -127,7 +132,7 @@ impl Node {
         }
     }
 
-    /// Create an Agent node (pre-wrapped + configurable execute/chat)
+    /// 创建一个 Agent 节点（预先包装 + 可配置 execute/chat 模式）
     pub fn agent_shared_with_mode(
         _name: impl Into<String>,
         agent: Arc<dyn Agent>,
@@ -145,7 +150,7 @@ impl Node {
         }
     }
 
-    /// Create a function node
+    /// 创建一个函数节点
     pub fn function<F>(_name: impl Into<String>, f: F) -> Self
     where
         F: for<'a> Fn(&'a SharedState) -> BoxFuture<'a, Result<()>> + Send + Sync + 'static,
@@ -155,24 +160,23 @@ impl Node {
         }
     }
 
-    /// Create a passthrough (router) node
+    /// 创建一个直通（路由）节点
     pub fn passthrough(_name: impl Into<String>) -> Self {
         Self {
             action: NodeAction::Passthrough,
         }
     }
 
-    /// Create a subgraph node — embeds a compiled Graph as a node.
+    /// 创建一个子图节点 —— 将一个已编译的 Graph 作为节点嵌入其中。
     ///
-    /// The subgraph shares the parent's `SharedState` and executes within
-    /// the parent's step count limit.
+    /// 该子图与父图共享同一个 `SharedState`，并在父图的步骤数限制内执行。
     pub fn subgraph(_name: impl Into<String>, graph: super::graph::Graph) -> Self {
         Self {
             action: NodeAction::Subgraph(Box::new(graph)),
         }
     }
 
-    /// Execute through the cancellable Agent stream and expose token deltas to Graph.
+    /// 通过可取消的 Agent 流执行，并将 token 增量向 Graph 暴露出去。
     pub(crate) fn execute_stream<'a>(
         &'a self,
         state: &'a SharedState,
@@ -265,7 +269,7 @@ mod tests {
         let state = SharedState::new();
         state.set("x", 1)?;
         drain_node(&node, &state).await?;
-        assert_eq!(state.get::<i64>("x"), Some(1)); // unchanged
+        assert_eq!(state.get::<i64>("x"), Some(1)); // 未发生变化
         Ok(())
     }
 }

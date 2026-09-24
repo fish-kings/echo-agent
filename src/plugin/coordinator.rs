@@ -1,4 +1,4 @@
-//! Serialized host-level coordination for plugin desired and actual state.
+//! 对插件的期望状态与实际状态进行序列化的宿主级协调。
 
 use super::{
     PluginIntegrator, PluginLifecycle, PluginLifecycleManager, PluginPublicationTarget,
@@ -10,112 +10,168 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 
-/// The host operation represented by a coordinator receipt.
+/// 协调器回执所代表的宿主操作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginOperationKind {
+    /// 启动：扫描持久化插件位置后收敛出一个全新的 Agent。
     Startup,
+    /// 在不改变期望状态的前提下进行对账。
     Reconcile,
-    Enable { plugin_id: String },
+    /// 启用某个插件。
+    Enable {
+        /// 要启用的插件 id。
+        plugin_id: String,
+    },
+    /// 重新加载全部插件。
     Reload,
-    Disable { plugin_id: String },
-    Uninstall { plugin_id: String, keep_data: bool },
+    /// 禁用某个插件。
+    Disable {
+        /// 要禁用的插件 id。
+        plugin_id: String,
+    },
+    /// 卸载某个插件。
+    Uninstall {
+        /// 要卸载的插件 id。
+        plugin_id: String,
+        /// 是否保留其数据。
+        keep_data: bool,
+    },
+    /// 关闭：撤回进程内效果，同时保留持久化的启用意图。
     Shutdown,
 }
 
-/// The next phase that must settle before an operation can advance.
+/// 一个操作在推进之前必须先结算完成的下一阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginOperationPhase {
+    /// 期望状态已提交。
     DesiredCommitted,
+    /// 正在准备（解析依赖、校验）。
     Preparation,
+    /// 正在撤回回调。
     CallbackWithdrawal,
+    /// 正在撤回接线（wiring）。
     WiringWithdrawal,
+    /// 正在发布接线。
     WiringPublication,
+    /// 正在激活回调。
     CallbackActivation,
+    /// 正在发出事件。
     EventEmission,
+    /// 已提交完成。
     Committed,
 }
 
-/// Whether the runtime has converged to the durable registry intent.
+/// 运行时是否已收敛到持久化注册表所表达的意图。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginRuntimeStatus {
+    /// 实际状态仍处于待定（pending）。
     ActualPending,
+    /// 已收敛完成。
     Converged,
 }
 
-/// Stable in-process receipt for one serialized plugin transition.
+/// 一次序列化插件转换的、进程内稳定的回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginOperationReceipt {
+    /// 该操作的 id。
     operation_id: u64,
+    /// 该操作的种类。
     kind: PluginOperationKind,
+    /// 该操作对应的期望状态版本号。
     desired_revision: u64,
+    /// 当前所处阶段。
     phase: PluginOperationPhase,
+    /// 当前运行时状态。
     status: PluginRuntimeStatus,
+    /// 已发布接线对应的代数（generation），若有。
     actual_generation: Option<u64>,
+    /// 本次操作已经发出的 PluginDisabled 尝试。
     disabled_event_attempts: Vec<String>,
+    /// 本次操作已经发出的 PluginLoaded 尝试。
     loaded_event_attempts: Vec<String>,
+    /// 最近一次记录的错误信息。
     last_error: Option<String>,
 }
 
 impl PluginOperationReceipt {
+    /// 该操作的 id。
     pub fn operation_id(&self) -> u64 {
         self.operation_id
     }
 
+    /// 该操作的种类。
     pub fn kind(&self) -> &PluginOperationKind {
         &self.kind
     }
 
+    /// 该操作对应的期望状态版本号。
     pub fn desired_revision(&self) -> u64 {
         self.desired_revision
     }
 
+    /// 当前所处阶段。
     pub fn phase(&self) -> PluginOperationPhase {
         self.phase
     }
 
+    /// 当前运行时状态。
     pub fn status(&self) -> PluginRuntimeStatus {
         self.status
     }
 
+    /// 已发布接线对应的代数（generation），若有。
     pub fn actual_generation(&self) -> Option<u64> {
         self.actual_generation
     }
 
-    /// PluginDisabled attempts already issued by this operation.
+    /// 本次操作已经发出的 PluginDisabled 尝试。
     pub fn disabled_event_attempts(&self) -> &[String] {
         &self.disabled_event_attempts
     }
 
-    /// PluginLoaded attempts already issued by this operation.
+    /// 本次操作已经发出的 PluginLoaded 尝试。
     pub fn loaded_event_attempts(&self) -> &[String] {
         &self.loaded_event_attempts
     }
 
+    /// 最近一次记录的错误信息。
     pub fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
 }
 
-/// Coordinator refusal or a retryable actual-state gap.
+/// 协调器拒绝，或一个可重试的实际状态缺口（gap）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginCoordinatorError {
+    /// 已有一个操作正在等待中。
     OperationPending(Box<PluginOperationReceipt>),
+    /// 当前没有等待中的操作。
     NoPendingOperation,
+    /// 操作 id 已耗尽。
     OperationIdExhausted,
+    /// 协调器被绑定到了另一个 Agent 上。
     WrongAgentTarget {
+        /// 当前绑定的代数（generation），若有。
         active_generation: Option<u64>,
     },
+    /// 期望状态的变更失败。
     DesiredMutation {
+        /// 失败所属的操作种类。
         kind: PluginOperationKind,
+        /// 错误说明。
         message: String,
     },
+    /// 期望状态已提交，但实际状态仍处于待定。
     ActualPending {
+        /// 当前的操作回执。
         receipt: Box<PluginOperationReceipt>,
+        /// 错误说明。
         message: String,
     },
 }
 
 impl PluginCoordinatorError {
+    /// 若该错误携带一个操作回执，则返回它。
     pub fn receipt(&self) -> Option<&PluginOperationReceipt> {
         match self {
             Self::OperationPending(receipt) | Self::ActualPending { receipt, .. } => {
@@ -165,38 +221,62 @@ impl fmt::Display for PluginCoordinatorError {
 
 impl std::error::Error for PluginCoordinatorError {}
 
+/// 一次尚未结算的插件操作的进行中状态。
 struct PendingOperation {
+    /// 该操作的回执（会随阶段推进而更新）。
     receipt: PluginOperationReceipt,
+    /// 操作开始前的活跃插件 id 列表。
     previous_ids: Vec<String>,
+    /// 本次操作解析出的期望插件 id 列表。
     desired_ids: Vec<String>,
+    /// 已校验完成的准备结果。
     prepared: Option<Arc<PreparedPluginSet>>,
+    /// 撤回接线之后拍摄的 hook 注册表快照。
     disabled_hooks: Option<HookRegistry>,
+    /// 需要发出 PluginDisabled 事件的插件 id（按撤回顺序）。
     disabled_ids: Vec<String>,
+    /// 需要发出 PluginLoaded 事件的插件 id。
     loaded_ids: Vec<String>,
+    /// disabled_ids 中已处理到的位置。
     disabled_cursor: usize,
+    /// loaded_ids 中已处理到的位置。
     loaded_cursor: usize,
+    /// 上一次回调激活是否失败、需要重试前清理。
     callback_retry_required: bool,
 }
 
-/// Coordinates durable plugin intent, Agent publication, and callbacks.
-///
-/// Methods require `&mut self`, making this value the transition admission
-/// token. Hosts sharing it across tasks should place the coordinator and its
-/// Agent behind the same async mutex.
+/**
+协调插件的持久化意图、Agent 发布与回调。
+
+各方法都要求 `&mut self`，使该值本身成为转换操作的准入令牌。
+在多个任务间共享它的宿主应当把协调器与其 Agent 放在同一个
+异步互斥锁之后。
+*/
 pub struct PluginCoordinator {
+    /// 插件注册表（持久化的期望状态）。
     registry: PluginRegistry,
+    /// 插件集成器。
     integrator: PluginIntegrator,
+    /// 插件生命周期回调管理器。
     lifecycle: PluginLifecycleManager,
+    /// 当前绑定的发布目标（Agent）。
     publication_target: Option<PluginPublicationTarget>,
+    /// 当前已发布接线的回执。
     active_receipt: Option<PluginWiringResult>,
+    /// 当前已激活的插件 id 列表。
     active_ids: Vec<String>,
+    /// 当前已收敛到的期望状态版本号。
     active_revision: Option<u64>,
+    /// 正在进行中的操作（若有）。
     pending: Option<PendingOperation>,
+    /// 最近一次完成的操作回执。
     last_receipt: Option<PluginOperationReceipt>,
+    /// 下一个待分配的操作 id。
     next_operation_id: u64,
 }
 
 impl PluginCoordinator {
+    /// 使用给定的注册表与集成器创建一个新的协调器。
     pub fn new(registry: PluginRegistry, integrator: PluginIntegrator) -> Self {
         Self {
             registry,
@@ -212,10 +292,12 @@ impl PluginCoordinator {
         }
     }
 
+    /// 该协调器持有的插件注册表。
     pub fn registry(&self) -> &PluginRegistry {
         &self.registry
     }
 
+    /// 注册某个插件的生命周期回调。若有操作正在进行中则失败。
     pub fn register_lifecycle(
         &mut self,
         plugin_id: impl Into<String>,
@@ -232,21 +314,24 @@ impl PluginCoordinator {
         Ok(())
     }
 
+    /// 最近一次完成的操作回执。
     pub fn last_receipt(&self) -> Option<&PluginOperationReceipt> {
         self.last_receipt.as_ref()
     }
 
+    /// 当前正在进行中的操作回执（若有）。
     pub fn pending_receipt(&self) -> Option<&PluginOperationReceipt> {
         self.pending.as_ref().map(|pending| &pending.receipt)
     }
 
+    /// 当前已发布接线的代数（generation）。
     pub fn active_generation(&self) -> Option<u64> {
         self.active_receipt
             .as_ref()
             .map(PluginWiringResult::generation)
     }
 
-    /// Scan durable plugin locations, then converge a fresh Agent.
+    /// 扫描持久化插件位置，然后收敛出一个全新的 Agent。
     pub async fn startup(
         &mut self,
         agent: &mut ReactAgent,
@@ -264,7 +349,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
-    /// Reconcile current registry intent without mutating it.
+    /// 在不改变当前注册表意图的前提下进行对账。
     pub async fn reconcile(
         &mut self,
         agent: &mut ReactAgent,
@@ -279,6 +364,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
+    /// 启用一个插件。
     pub async fn enable(
         &mut self,
         agent: &mut ReactAgent,
@@ -303,6 +389,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
+    /// 重新加载全部插件。
     pub async fn reload(
         &mut self,
         agent: &mut ReactAgent,
@@ -314,6 +401,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
+    /// 禁用一个插件。
     pub async fn disable(
         &mut self,
         agent: &mut ReactAgent,
@@ -338,6 +426,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
+    /// 卸载一个插件。
     pub async fn uninstall(
         &mut self,
         agent: &mut ReactAgent,
@@ -361,7 +450,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
-    /// Withdraw process-local effects while retaining durable enabled intent.
+    /// 撤回进程内效果，同时保留持久化的启用意图。
     pub async fn shutdown(
         &mut self,
         agent: &mut ReactAgent,
@@ -372,7 +461,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
-    /// Resume the exact phase retained by the failed or cancelled operation.
+    /// 从失败或被取消的操作所停留的确切阶段处恢复执行。
     pub async fn retry(
         &mut self,
         agent: &mut ReactAgent,
@@ -384,6 +473,7 @@ impl PluginCoordinator {
         self.run_pending(agent).await
     }
 
+    /// 若已有操作正在进行中，则拒绝新的操作。
     fn ensure_idle(&self) -> Result<(), PluginCoordinatorError> {
         if let Some(pending) = &self.pending {
             Err(PluginCoordinatorError::OperationPending(Box::new(
@@ -394,6 +484,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 确认该协调器当前绑定的目标就是给定的 Agent。
     fn ensure_agent_target(&self, agent: &ReactAgent) -> Result<(), PluginCoordinatorError> {
         if self
             .publication_target
@@ -408,6 +499,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 开始一个新的操作：分配操作 id 并初始化其进行中状态。
     fn begin(&mut self, kind: PluginOperationKind) -> Result<(), PluginCoordinatorError> {
         let operation_id = self.next_operation_id;
         self.next_operation_id = self
@@ -448,6 +540,7 @@ impl PluginCoordinator {
         Ok(())
     }
 
+    /// 当前运行时是否已经收敛到注册表的期望状态、且绑定到给定 Agent。
     fn is_converged(&self, agent: &ReactAgent) -> bool {
         self.active_receipt.is_some()
             && self.active_revision == Some(self.registry.revision())
@@ -461,6 +554,7 @@ impl PluginCoordinator {
                 .is_some_and(|target| target.is_for_agent(agent))
     }
 
+    /// 提交一次无需变更（no-op）的操作：直接产出一个已收敛的回执。
     fn commit_noop(
         &mut self,
         kind: PluginOperationKind,
@@ -485,6 +579,7 @@ impl PluginCoordinator {
         Ok(receipt)
     }
 
+    /// 驱动当前进行中的操作，依次推进各阶段直至提交完成。
     async fn run_pending(
         &mut self,
         agent: &mut ReactAgent,
@@ -537,6 +632,7 @@ impl PluginCoordinator {
         self.commit_pending()
     }
 
+    /// 当前进行中操作所处的阶段。
     fn phase(&self) -> Result<PluginOperationPhase, PluginCoordinatorError> {
         self.pending
             .as_ref()
@@ -544,6 +640,7 @@ impl PluginCoordinator {
             .ok_or(PluginCoordinatorError::NoPendingOperation)
     }
 
+    /// 设置当前进行中操作所处的阶段。
     fn set_phase(&mut self, phase: PluginOperationPhase) -> Result<(), PluginCoordinatorError> {
         let pending = self
             .pending
@@ -553,6 +650,7 @@ impl PluginCoordinator {
         Ok(())
     }
 
+    /// 当前进行中的操作是否为 Shutdown。
     fn is_shutdown(&self) -> Result<bool, PluginCoordinatorError> {
         self.pending
             .as_ref()
@@ -560,6 +658,7 @@ impl PluginCoordinator {
             .ok_or(PluginCoordinatorError::NoPendingOperation)
     }
 
+    /// 刷新注册表并解析期望依赖，为当前进行中的操作准备一份已校验的插件集合。
     async fn prepare_pending(&mut self) -> Result<(), PluginCoordinatorError> {
         if let Err(error) = self.registry.refresh_current_view() {
             self.clear_failed_preparation();
@@ -615,6 +714,7 @@ impl PluginCoordinator {
         Ok(())
     }
 
+    /// 清理一次失败的准备工作产生的中间状态。
     fn clear_failed_preparation(&mut self) {
         self.integrator.invalidate(&self.registry);
         if let Some(pending) = &mut self.pending {
@@ -625,6 +725,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 按插件依赖图的逆序撤回回调（deactivate/unregister/shutdown）。
     fn withdraw_callbacks(&mut self) -> Result<(), PluginCoordinatorError> {
         let kind = self
             .pending
@@ -655,8 +756,8 @@ impl PluginCoordinator {
                         .unregister_in_order(installed_ids.iter().map(String::as_str)),
                 );
                 if errors.is_empty() {
-                    // Registrations without an installed package have no graph
-                    // position; settle those only after graph-owned callbacks.
+                    /* 没有对应已安装包的注册项在依赖图中没有位置；
+                    只在图所拥有的回调都结算完之后再结算这些注册项。 */
                     errors.extend(self.lifecycle.shutdown());
                 }
             }
@@ -673,6 +774,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 若存在已发布的接线，则将其回滚。
     async fn withdraw_wiring(
         &mut self,
         agent: &mut ReactAgent,
@@ -690,6 +792,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 发布已准备好的插件集合的接线，必要时先回滚待清理的旧接线。
     async fn publish_wiring(
         &mut self,
         agent: &mut ReactAgent,
@@ -729,6 +832,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 按依赖顺序激活期望插件的回调；若上一次尝试失败过，先重置状态再重试。
     fn activate_callbacks(&mut self) -> Result<(), PluginCoordinatorError> {
         let desired_ids = self
             .pending
@@ -766,6 +870,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 依次发出 PluginDisabled 与 PluginLoaded 生命周期事件。
     async fn emit_events(&mut self, agent: &mut ReactAgent) -> Result<(), PluginCoordinatorError> {
         loop {
             let next = {
@@ -815,6 +920,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 惰性获取并缓存该协调器绑定的发布目标。
     fn target(&mut self, agent: &ReactAgent) -> PluginPublicationTarget {
         match &self.publication_target {
             Some(target) => target.clone(),
@@ -826,6 +932,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 将进行中的操作标记为“实际状态待定”，记录错误并构造对应的错误值。
     fn actual_pending(&mut self, message: String) -> PluginCoordinatorError {
         let receipt = match &mut self.pending {
             Some(pending) => {
@@ -841,6 +948,7 @@ impl PluginCoordinator {
         }
     }
 
+    /// 将当前进行中的操作提交为已收敛状态，并更新协调器的活跃状态。
     fn commit_pending(&mut self) -> Result<PluginOperationReceipt, PluginCoordinatorError> {
         let mut pending = self
             .pending
@@ -860,6 +968,7 @@ impl PluginCoordinator {
     }
 }
 
+/// 将接线错误格式化为可读消息。
 fn wiring_error_message(error: PluginWiringError) -> String {
     error.to_string()
 }

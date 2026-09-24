@@ -1,16 +1,16 @@
-//! Graph-based workflow engine (LangGraph-style state machines).
+//! 基于图（Graph）的工作流引擎（类 LangGraph 风格的状态机）。
 //!
-//! Model agent execution as a **directed graph with shared state**.
-//! Supports linear pipelines, conditional branches, loops, and parallel fan-out/fan-in.
+//! 将 Agent 执行建模为**带共享状态的有向图**。
+//! 支持线性流水线、条件分支、循环以及并行的扇出/扇入。
 //!
-//! # Builders
+//! # 构建方式
 //!
-//! | Builder | Style | Best For |
+//! | 构建器 | 风格 | 最适合场景 |
 //! |---------|-------|----------|
-//! | [`GraphBuilder`] | Programmatic Rust API | Complex logic, type safety |
-//! | [`WorkflowDefinition`] | YAML/JSON declaration | Simple pipelines, no-code config |
+//! | [`GraphBuilder`] | 编程式 Rust API | 复杂逻辑、类型安全 |
+//! | [`WorkflowDefinition`] | YAML/JSON 声明式配置 | 简单流水线、无代码配置 |
 //!
-//! # Quick Start (Programmatic)
+//! # 快速开始（编程式）
 //!
 //! ```rust,no_run
 //! use echo_agent::prelude::*;
@@ -27,7 +27,7 @@
 //! # }
 //! ```
 //!
-//! # Quick Start (Declarative YAML)
+//! # 快速开始（声明式 YAML）
 //!
 //! ```rust,ignore
 //! use echo_agent::prelude::*;
@@ -39,41 +39,41 @@
 //! # }
 //! ```
 //!
-//! # Key Types
+//! # 关键类型
 //!
-//! | Type | Description |
+//! | 类型 | 说明 |
 //! |------|-------------|
-//! | [`Graph`] / [`GraphBuilder`] | Build and run directed workflows |
-//! | [`SequentialWorkflow`] | Simple linear step execution |
-//! | [`ConcurrentWorkflow`] | Parallel step execution |
-//! | [`DagWorkflow`] | Dependency-based scheduling |
-//! | [`SharedState`] | State passed between nodes |
-//! | [`WorkflowEvent`] | Streaming events per node |
-//! | [`WorkflowDefinition`] | YAML/JSON workflow definition |
+//! | [`Graph`] / [`GraphBuilder`] | 构建并运行有向工作流 |
+//! | [`SequentialWorkflow`] | 简单的线性步骤执行 |
+//! | [`ConcurrentWorkflow`] | 并行步骤执行 |
+//! | [`DagWorkflow`] | 基于依赖关系的调度 |
+//! | [`SharedState`] | 节点之间传递的状态 |
+//! | [`WorkflowEvent`] | 每个节点的流式事件 |
+//! | [`WorkflowDefinition`] | YAML/JSON 工作流定义 |
 //!
-//! # Pre-built Pipelines
+//! # 预置流水线
 //!
-//! | Pipeline | Stages | Description |
+//! | 流水线 | 阶段 | 说明 |
 //! |----------|--------|-------------|
-//! | [`run_data_pipeline`] | inspect -> persist script -> execute -> verify artifacts | Code-first reproducible data analysis |
-//! | [`run_writing_pipeline`] | outline -> draft -> review -> revise (loop) -> finalize | Content creation with quality loop |
+//! | [`run_data_pipeline`] | inspect -> persist script -> execute -> verify artifacts | 代码优先、可复现的数据分析 |
+//! | [`run_writing_pipeline`] | outline -> draft -> review -> revise (循环) -> finalize | 带质量把控循环的内容创作 |
 
-/// Direct re-exports from `echo_orchestration::workflow`.
+/// 直接从 `echo_orchestration::workflow` 重新导出。
 pub mod orchestration {
     pub use echo_orchestration::workflow::*;
 }
 
 pub use echo_orchestration::workflow::*;
 
-/// Root-crate declarative DSL built on top of the orchestration workflow types.
+/// 构建在 orchestration 工作流类型之上的根 crate 声明式 DSL。
 pub mod dsl;
-/// Root-crate file/YAML loader built on top of the orchestration workflow types.
+/// 构建在 orchestration 工作流类型之上的根 crate 文件/YAML 加载器。
 pub mod loader;
 
 pub use loader::WorkflowDefinition;
 
-// The `Graph::resume` decision parameter lives in the orchestration-level
-// human-loop module; re-export it with the workflow surface so consumers
-// of `echo_agent::workflow` reach the full run/resume API without a
-// direct echo-orchestration dependency.
+// `Graph::resume` 的决策参数定义在 orchestration 层的 human-loop
+// 模块中；在此随 workflow 接口一并重新导出，使 `echo_agent::workflow`
+// 的使用方无需直接依赖 echo-orchestration，也能获得完整的
+// run/resume API。
 pub use echo_orchestration::human_loop::ApprovalDecision;

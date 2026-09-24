@@ -1,13 +1,13 @@
-//! ReactAgent subsystem modules
+//! ReactAgent 子系统模块
 //!
-//! Splits ReactAgent's ~25 fields into 4 subsystems by responsibility:
+//! 按职责将 ReactAgent 约 25 个字段拆分为 4 个子系统：
 //!
-//! | Module | Subsystem | Responsibility |
+//! | 模块 | 子系统 | 职责 |
 //! |--------|-----------|----------------|
-//! | `tool_exec` | `ToolExecutionSubsystem` | Tool registration/execution, Skill, Hook, MCP, Subagent, Sandbox |
-//! | `guard` | `GuardSubsystem` | Guardrails, permission policies, audit logs, circuit breaker |
-//! | `memory` | `MemorySubsystem` | Context management, long-term memory, snapshots, Checkpoint, conversation persistence |
-//! | `approval` | `ApprovalSubsystem` | Human-in-the-loop approval |
+//! | `tool_exec` | `ToolExecutionSubsystem` | 工具注册/执行、Skill、Hook、MCP、Subagent、Sandbox |
+//! | `guard` | `GuardSubsystem` | 护栏（Guardrails）、权限策略、审计日志、熔断器 |
+//! | `memory` | `MemorySubsystem` | 上下文管理、长期记忆、快照、Checkpoint、会话持久化 |
+//! | `approval` | `ApprovalSubsystem` | 人机协作（Human-in-the-loop）审批 |
 
 #[cfg(feature = "human-loop")]
 pub(crate) mod approval;

@@ -1,41 +1,44 @@
-//! LLM usage statistics accumulator for subagent dispatches.
+//! 面向子 Agent 派发（dispatch）的 LLM 用量统计累加器。
 //!
-//! Tracks cumulative token usage across all LLM calls within a single
-//! subagent dispatch, aligned with `AgentEvent::LlmUsage` fields.
+//! 跟踪单次子 Agent 派发内所有 LLM 调用的累计 token 用量，
+//! 字段与 `AgentEvent::LlmUsage` 保持一致。
 
 use serde::{Deserialize, Serialize};
 
-/// Cumulative LLM usage snapshot across one or more LLM calls within a
-/// single subagent dispatch.
-///
-/// Fields align with `AgentEvent::LlmUsage`. Token counts use `u64` to
-/// safely accumulate across many calls without overflow.
+/**
+单次子 Agent 派发内，一次或多次 LLM 调用的累计用量快照。
+
+字段与 `AgentEvent::LlmUsage` 对齐。token 计数使用 `u64`，
+以便在多次调用累加时安全地避免溢出。
+*/
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct LlmUsageStats {
-    /// Model name (last seen — within a single dispatch it's typically the same).
+    /// 模型名称（取最近一次看到的值 —— 单次派发内通常都是同一个模型）。
     pub model: String,
-    /// Cumulative prompt/input tokens.
+    /// 累计的 prompt / 输入 token 数。
     pub prompt_tokens: u64,
-    /// Cumulative completion/output tokens.
+    /// 累计的 completion / 输出 token 数。
     pub completion_tokens: u64,
-    /// Cumulative total tokens.
+    /// 累计的总 token 数。
     pub total_tokens: u64,
-    /// Cumulative cached prompt tokens.
+    /// 累计的已缓存 prompt token 数。
     pub cached_prompt_tokens: u64,
-    /// Cumulative cache-creation prompt tokens.
+    /// 累计的缓存创建 prompt token 数。
     pub cache_creation_prompt_tokens: u64,
-    /// Whether any call reported real usage metadata.
-    /// Once set to `true` it stays `true` (sticky).
+    /// 是否有任意一次调用上报了真实的用量元数据。
+    /// 一旦被置为 `true`，就会一直保持 `true`（粘滞状态）。
     pub usage_reported: bool,
-    /// Number of LLM calls recorded.
+    /// 已记录的 LLM 调用次数。
     pub call_count: u64,
 }
 
 impl LlmUsageStats {
-    /// Record a single LLM usage event, accumulating into the running totals.
-    ///
-    /// `model` is overwritten each call (last-seen wins), which is fine
-    /// because a single dispatch typically uses one model.
+    /**
+    记录一次 LLM 用量事件，将其累加到运行总量中。
+
+    `model` 会在每次调用时被覆盖（以最近一次为准），这没有问题，
+    因为单次派发通常只会使用一个模型。
+    */
     #[allow(clippy::too_many_arguments)]
     pub fn record(
         &mut self,
@@ -59,8 +62,7 @@ impl LlmUsageStats {
         self.call_count += 1;
     }
 
-    /// Convert to a JSON payload compatible with
-    /// `cacheUsageFromEvents` on the frontend.
+    /// 转换为与前端 `cacheUsageFromEvents` 兼容的 JSON payload。
     pub fn to_payload(&self, session_id: &str) -> serde_json::Value {
         serde_json::json!({
             "session_id": session_id,

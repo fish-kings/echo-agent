@@ -1,8 +1,9 @@
-//! Trajectory saving for fine-tuning data generation.
-//!
-//! Converts completed [`Run`] traces into ShareGPT-format JSONL, suitable for
-//! training the next generation of tool-calling models. Inspired by Hermes Agent's
-//! trajectory saving approach.
+/*!
+用于生成微调数据的轨迹保存。
+
+将已完成的 [`Run`] 轨迹转换为 ShareGPT 格式的 JSONL，适用于训练下一代
+工具调用模型。设计思路借鉴了 Hermes Agent 的轨迹保存方式。
+*/
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,91 +12,100 @@ use std::path::PathBuf;
 use crate::error::Result;
 use crate::trace::{Run, RunEvent, RunStatus};
 
-// ── ShareGPT format ─────────────────────────────────────────────────
+// ── ShareGPT 格式 ─────────────────────────────────────────────────
 
-/// A single message in ShareGPT conversation format.
+/// ShareGPT 对话格式中的单条消息。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShareGPTMessage {
-    /// "human", "gpt", "tool", or "system"
+    /// "human"、"gpt"、"tool" 或 "system"。
     pub from: String,
-    /// Message content
+    /// 消息内容。
     pub value: String,
 }
 
-/// A complete trajectory entry stored as JSONL.
+/// 以 JSONL 形式存储的一条完整轨迹记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryEntry {
-    /// Unique ID (same as run_id)
+    /// 唯一 ID（与 run_id 相同）。
     pub id: String,
-    /// Session this trajectory belongs to
+    /// 该轨迹所属的会话。
     pub session_id: String,
-    /// Conversation turns in ShareGPT format
+    /// ShareGPT 格式的对话轮次。
     pub conversations: Vec<ShareGPTMessage>,
-    /// Model used for this run (filled by CLI layer)
+    /// 本次运行使用的模型（由 CLI 层填充）。
     #[serde(default)]
     pub model: String,
-    /// Whether the task completed successfully
+    /// 任务是否成功完成。
     pub completed: bool,
-    /// Timestamp when saved
+    /// 保存时的时间戳。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub timestamp: DateTime<Utc>,
-    /// Total token usage
+    /// token 使用总量。
     pub token_usage: u32,
-    /// Number of admitted tool requests. Requests marked `ToolExecutionSkipped`
-    /// remain included because trajectory export preserves request/result pairing.
+    /// 被受理的工具请求数量。标记为 `ToolExecutionSkipped` 的请求依然
+    /// 计入，因为轨迹导出需要保持请求/结果的配对关系。
     pub tool_call_count: usize,
-    /// Duration in milliseconds
+    /// 耗时（毫秒）。
     pub duration_ms: u64,
 }
 
-/// Aggregate statistics for saved trajectories.
+/// 已保存轨迹的汇总统计。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryStats {
+    /// 轨迹总数。
     pub total: usize,
+    /// 已完成的数量。
     pub completed: usize,
+    /// 失败的数量。
     pub failed: usize,
+    /// token 使用总量。
     pub total_tokens: u64,
-    /// Total admitted tool requests across exported trajectories.
+    /// 所有导出轨迹中被受理的工具请求总数。
     pub total_tool_calls: usize,
+    /// 平均耗时（毫秒）。
     pub avg_duration_ms: u64,
 }
 
 // ── TrajectorySaver ─────────────────────────────────────────────────
 
-/// Saves completed runs as ShareGPT-format JSONL for fine-tuning.
-///
-/// Each trajectory is stored as a single JSON line under the caller-supplied
-/// directory.
+/**
+将已完成的运行以 ShareGPT 格式的 JSONL 保存下来，用于微调。
+
+每条轨迹在调用方指定的目录下以单独一行 JSON 的形式存储。
+*/
 pub struct TrajectorySaver {
+    /// 轨迹文件所在的基础目录。
     base_dir: PathBuf,
 }
 
 impl TrajectorySaver {
-    /// Create a new saver with the given base directory.
+    /// 使用给定的基础目录创建一个新的保存器。
     pub fn new(base_dir: impl Into<PathBuf>) -> Result<Self> {
         let base_dir = base_dir.into();
         std::fs::create_dir_all(&base_dir)?;
         Ok(Self { base_dir })
     }
 
-    /// Convert a completed run into ShareGPT conversation format.
-    ///
-    /// Maps each relevant `RunEvent` to a conversation turn:
-    /// - User input → "human"
-    /// - LLM calls (with their content) → "gpt"
-    /// - Tool calls → "gpt" with tool invocation
-    /// - Tool results → "tool"
-    /// - Final output → "gpt"
+    /**
+    将一次已完成的运行转换为 ShareGPT 对话格式。
+
+    将每个相关的 `RunEvent` 映射为一轮对话：
+    - 用户输入 → "human"
+    - LLM 调用（及其内容）→ "gpt"
+    - 工具调用 → 携带工具调用信息的 "gpt"
+    - 工具结果 → "tool"
+    - 最终输出 → "gpt"
+    */
     pub fn convert_run_to_sharegpt(run: &Run) -> Vec<ShareGPTMessage> {
         let mut messages = Vec::new();
 
-        // System context: include input as the user's request
+        // 系统上下文：将输入作为用户的请求
         messages.push(ShareGPTMessage {
             from: "human".to_string(),
             value: run.input.clone(),
         });
 
-        // Walk events and build conversation turns
+        // 遍历事件并构建对话轮次
         let mut pending_tool_calls: Vec<(String, String)> = Vec::new(); // (call_id, name+args)
 
         for event in &run.events {
@@ -120,7 +130,7 @@ impl TrajectorySaver {
                     output_preview,
                     ..
                 } => {
-                    // Emit the tool call as a GPT message if we have it
+                    // 如果存在挂起的工具调用，则将其作为一条 GPT 消息发出
                     if let Some(pos) = pending_tool_calls.iter().position(|(id, _)| id == call_id) {
                         let (_, tool_msg) = pending_tool_calls.remove(pos);
                         messages.push(ShareGPTMessage {
@@ -155,12 +165,12 @@ impl TrajectorySaver {
                     });
                 }
                 _ => {
-                    // Skip non-conversation events (LlmCall, PhaseTransition, etc.)
+                    // 跳过非对话类事件（LlmCall、PhaseTransition 等）
                 }
             }
         }
 
-        // Flush remaining pending tool calls
+        // 输出剩余的挂起工具调用
         for (_, tool_msg) in pending_tool_calls {
             messages.push(ShareGPTMessage {
                 from: "gpt".to_string(),
@@ -168,7 +178,7 @@ impl TrajectorySaver {
             });
         }
 
-        // Final output as the assistant's response
+        // 将最终输出作为助手的回复
         if let Some(ref output) = run.final_output {
             messages.push(ShareGPTMessage {
                 from: "gpt".to_string(),
@@ -179,11 +189,12 @@ impl TrajectorySaver {
         messages
     }
 
-    /// Save a completed run as a trajectory.
+    /// 将一次已完成的运行保存为轨迹。
     ///
-    /// Only saves runs with `Completed` or `Failed` status (skips `Pending`/`Running`/`Cancelled`).
+    /// 只保存状态为 `Completed` 或 `Failed` 的运行（跳过
+    /// `Pending`/`Running`/`Cancelled`）。
     pub async fn save(&self, run: &Run, model: &str) -> Result<bool> {
-        // Only save terminal states
+        // 只保存终态运行
         if !matches!(run.status, RunStatus::Completed | RunStatus::Failed) {
             return Ok(false);
         }
@@ -228,7 +239,7 @@ impl TrajectorySaver {
         Ok(true)
     }
 
-    /// List all trajectory entries, optionally filtered by date prefix.
+    /// 列出所有轨迹记录，可选按日期前缀过滤。
     pub async fn list(&self, date_prefix: Option<&str>) -> Result<Vec<TrajectoryEntry>> {
         let mut entries = Vec::new();
 
@@ -257,7 +268,7 @@ impl TrajectorySaver {
         Ok(entries)
     }
 
-    /// Get aggregate statistics for all saved trajectories.
+    /// 获取所有已保存轨迹的汇总统计。
     pub async fn stats(&self) -> Result<TrajectoryStats> {
         let entries = self.list(None).await?;
         let total = entries.len();
@@ -345,23 +356,23 @@ mod tests {
         let run = make_test_run();
         let messages = TrajectorySaver::convert_run_to_sharegpt(&run);
 
-        assert!(messages.len() >= 3); // human, tool call gpt, tool result, final gpt
+        assert!(messages.len() >= 3); // human、工具调用 gpt、工具结果、最终 gpt
         assert_eq!(messages[0].from, "human");
         assert_eq!(messages[0].value, "Read the file foo.txt");
 
-        // Should have a gpt message with tool call
+        // 应当有一条包含工具调用的 gpt 消息
         assert!(
             messages
                 .iter()
                 .any(|m| m.from == "gpt" && m.value.contains("read_file"))
         );
-        // Should have a tool result
+        // 应当有一条工具结果
         assert!(
             messages
                 .iter()
                 .any(|m| m.from == "tool" && m.value.contains("Hello"))
         );
-        // Final output
+        // 最终输出
         assert!(messages.last().unwrap().from == "gpt");
         assert!(messages.last().unwrap().value.contains("Hello, world!"));
     }
@@ -371,8 +382,8 @@ mod tests {
         let _saver = TrajectorySaver::new(std::env::temp_dir().join("echo_traj_test")).unwrap();
         let mut run = make_test_run();
         run.status = RunStatus::Running;
-        // This is an async method but we test the logic: non-terminal should return false
-        // We test the conversion which always works, the save() filters
+        // save() 是异步方法，这里只测试其逻辑：非终态应返回 false
+        // 我们测试的是始终有效的转换逻辑，过滤则发生在 save() 内部
     }
 
     #[tokio::test]
@@ -397,7 +408,7 @@ mod tests {
         assert_eq!(stats.total_tokens, 150);
         assert_eq!(stats.total_tool_calls, 1);
 
-        // Cleanup
+        // 清理
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
@@ -408,12 +419,12 @@ mod tests {
         let run = make_test_run();
         saver.save(&run, "m").await.unwrap();
 
-        // Filter with today's date should find it
+        // 用今天的日期过滤应当能找到该条记录
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let entries = saver.list(Some(&today)).await.unwrap();
         assert_eq!(entries.len(), 1);
 
-        // Filter with wrong date should not find it
+        // 用错误的日期过滤应当找不到该条记录
         let entries = saver.list(Some("2020-01-01")).await.unwrap();
         assert_eq!(entries.len(), 0);
 

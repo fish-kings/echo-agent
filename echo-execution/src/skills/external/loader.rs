@@ -1,18 +1,18 @@
-//! Skill Loader -- multi-scope discovery and agentskills.io-compliant parsing.
+//! 技能加载器 —— 多作用域发现，并遵循 agentskills.io 规范进行解析。
 //!
-//! Supports the [agentskills.io](https://agentskills.io/specification) directory
-//! convention: official frontmatter fields only; routing is description-driven
-//! and per-skill files do not define private hook extensions.
+//! 支持 [agentskills.io](https://agentskills.io/specification) 的目录约定:
+//! 仅接受官方 frontmatter 字段;路由完全由 description 驱动,
+//! 单技能文件不定义私有钩子扩展。
 //!
-//! # Discovery scopes
+//! # 发现作用域
 //!
-//! | Scope | Paths scanned |
+//! | 作用域 | 扫描路径 |
 //! |-------|--------------|
-//! | Project | `./skills/`, `./.agents/skills/` |
-//! | User | `~/.agents/skills/` |
-//! | Custom | Any user-specified path |
+//! | 项目级 | `./skills/`、`./.agents/skills/` |
+//! | 用户级 | `~/.agents/skills/` |
+//! | 自定义 | 任意用户指定路径 |
 //!
-//! Project-level skills override user-level skills when names collide.
+//! 当名称冲突时,项目级技能会覆盖用户级技能。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ use super::types::{RawFrontmatter, SkillDescriptor, SkillDocument};
 const SKILL_FILE: &str = "SKILL.md";
 const MAX_SCAN_DEPTH: usize = 4;
 
-/// Directories to skip during scanning.
+/// 扫描过程中需要跳过的目录名。
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -41,54 +41,57 @@ const SKIP_DIRS: &[&str] = &[
 
 // -- DiscoveryScope --
 
-/// Where to scan for skills.
+/// 扫描技能的位置范围。
 #[derive(Debug, Clone)]
 pub enum DiscoveryScope {
-    /// Project-level: `<root>/skills/` and `<root>/.agents/skills/`
+    /// 项目级: `<root>/skills/` 与 `<root>/.agents/skills/`
     Project(PathBuf),
-    /// User-level: `~/.agents/skills/`
+    /// 用户级: `~/.agents/skills/`
     User,
-    /// Custom path (scanned as-is)
+    /// 自定义路径(按原样扫描)
     Custom(PathBuf),
 }
 
-/// Product-supplied authority for deciding whether a discovered skill may load.
+/// 由产品方提供的权威判定,用于决定已发现的技能是否可以被加载。
 ///
-/// The framework intentionally knows nothing about product lifecycle files. A
-/// consumer can implement this trait using its own enabled/disabled or curator
-/// state while the loader remains a reusable discovery primitive.
+/// 框架本身刻意不了解产品的生命周期文件。调用方可以基于自己的
+/// 启用/禁用状态或审核状态实现该 trait,而加载器本身仍是一个
+/// 可复用的发现原语。
 pub trait SkillLoadPolicy: Send + Sync {
-    /// Return `true` when this descriptor may enter the runtime catalog.
+    /// 当该描述符可以进入运行时目录时返回 `true`。
     ///
-    /// The decision is asynchronous so an embedding application or source SDK
-    /// can remain the live policy authority without blocking the Agent runtime.
+    /// 该判定是异步的,这样嵌入方应用或来源 SDK 可以作为实时的
+    /// 策略权威,而不会阻塞 Agent 运行时。
     fn allows<'a>(&'a self, descriptor: &'a SkillDescriptor) -> BoxFuture<'a, bool>;
 }
 
 // -- SkillLoader --
 
-/// Multi-scope skill loader with agentskills.io-compliant parsing.
+/// 支持多作用域发现、并遵循 agentskills.io 规范解析的技能加载器。
 ///
-/// # Parsing behavior
+/// # 解析行为
 ///
-/// - **Current format**: YAML frontmatter (`name`, `description` required),
-///   Markdown body = instructions.
-/// - **Strict file validation**: unknown fields, invalid types, name mismatch,
-///   and empty descriptions reject the document before registration.
+/// - **当前格式**: YAML frontmatter(`name`、`description` 为必填),
+///   Markdown 正文即为说明文本。
+/// - **严格文件校验**: 未知字段、类型错误、名称不匹配以及描述为空
+///   都会在注册前拒绝该文档。
 pub struct SkillLoader {
-    /// Discovered descriptors keyed by skill name.
+    /// 已发现的描述符,以技能名称为键。
     descriptors: HashMap<String, SkillDescriptor>,
+    /// 已发现的完整已解析文档,以技能名称为键。
     documents: HashMap<String, SkillDocument>,
+    /// 已准备好的身份文档列表(文件路径与来源内容),以技能名称为键。
     prepared_identity_documents: HashMap<String, Vec<(PathBuf, String)>>,
+    /// 发现过程中产生的诊断信息(如解析失败、被拒绝的私有扩展等)。
     discovery_diagnostics: Vec<SkillDiscoveryDiagnostic>,
-    /// Optional authority consulted after parsing and before registration.
+    /// 解析完成后、注册之前所咨询的可选权威策略。
     policy: Option<Arc<dyn SkillLoadPolicy>>,
-    /// Optional plugin variable context applied before SKILL.md metadata and
-    /// body are parsed.
+    /// 在解析 SKILL.md 元数据与正文之前应用的可选插件变量上下文。
     plugin_variables: Option<echo_core::plugin::PluginVariables>,
 }
 
 impl SkillLoader {
+    /// 构造一个空的技能加载器。
     pub fn new() -> Self {
         Self {
             descriptors: HashMap::new(),
@@ -100,23 +103,22 @@ impl SkillLoader {
         }
     }
 
-    /// Install a product-owned skill loading policy.
+    /// 安装一个由产品方拥有的技能加载策略。
     pub fn with_policy(mut self, policy: Arc<dyn SkillLoadPolicy>) -> Self {
         self.policy = Some(policy);
         self
     }
 
-    /// Apply plugin variables to skill metadata and hooks during discovery.
+    /// 在发现过程中,对技能元数据与钩子应用插件变量。
     pub fn with_plugin_variables(mut self, variables: echo_core::plugin::PluginVariables) -> Self {
         self.plugin_variables = Some(variables);
         self
     }
 
-    /// Discover skills from multiple scopes.
+    /// 从多个作用域发现技能。
     ///
-    /// Returns all successfully parsed `SkillDescriptor`s. Name collisions
-    /// are resolved by order: earlier scopes take precedence. A warning is
-    /// logged when a skill is shadowed.
+    /// 返回所有成功解析的 `SkillDescriptor`。名称冲突按顺序解决:
+    /// 更靠前的作用域优先。当某个技能被遮蔽时会记录警告日志。
     pub async fn discover(&mut self, scopes: &[DiscoveryScope]) -> Result<Vec<SkillDescriptor>> {
         let mut results = Vec::new();
 
@@ -167,16 +169,16 @@ impl SkillLoader {
 
         info!("Skill discovery complete: {} skills found", results.len());
 
-        // Validate dependencies and topological sort
+        // 校验依赖关系并进行拓扑排序
         validate_and_sort_dependencies(&results);
 
         Ok(results)
     }
 
-    /// Discover Agent Plugin Skills from immediate child directories only.
+    /// 仅从直接子目录中发现 Agent Plugin 技能。
     ///
-    /// Agent Plugins 1.0 fixes the component at `skills/<name>/SKILL.md` and
-    /// does not recursively search category directories.
+    /// Agent Plugins 1.0 将组件固定在 `skills/<name>/SKILL.md`,
+    /// 不会递归搜索分类目录。
     pub async fn discover_agent_plugin_skills(
         &mut self,
         dir: impl Into<PathBuf>,
@@ -222,7 +224,7 @@ impl SkillLoader {
         Ok(results)
     }
 
-    /// Discover Skills below one explicit directory.
+    /// 在一个显式指定的目录下发现技能。
     pub async fn discover_directory(
         &mut self,
         dir: impl Into<PathBuf>,
@@ -230,7 +232,7 @@ impl SkillLoader {
         self.discover(&[DiscoveryScope::Custom(dir.into())]).await
     }
 
-    /// Scan a single directory for SKILL.md files.
+    /// 扫描单个目录,查找 SKILL.md 文件。
     async fn scan_directory(
         &mut self,
         dir: &Path,
@@ -318,11 +320,11 @@ impl SkillLoader {
                     }
                 }
             } else if recursive {
-                // No SKILL.md in this direct subdir: recurse into it to support
-                // nested category layouts (skills/<category>/<name>/SKILL.md).
-                // Without this, only flat skills/<name>/SKILL.md would be found.
-                // MAX_SCAN_DEPTH caps recursion to avoid infinite loops / huge trees.
-                // Box::pin because async fn cannot recurse directly (Rust constraint).
+                // 该直接子目录下没有 SKILL.md:递归进入以支持嵌套分类
+                // 布局(skills/<category>/<name>/SKILL.md)。
+                // 如果没有这一步,只能发现扁平的 skills/<name>/SKILL.md。
+                // MAX_SCAN_DEPTH 用于限制递归深度,避免无限循环/过大的目录树。
+                // 使用 Box::pin 是因为 async fn 不能直接递归调用自身(Rust 的限制)。
                 let nested = Box::pin(self.scan_directory(&path, depth + 1, true)).await?;
                 found.extend(nested);
             }
@@ -331,67 +333,75 @@ impl SkillLoader {
         Ok(found)
     }
 
-    /// Get a descriptor by name.
+    /// 按名称获取一个描述符。
     pub fn get_descriptor(&self, name: &str) -> Option<&SkillDescriptor> {
         self.descriptors.get(name)
     }
 
-    /// List all discovered descriptors.
+    /// 列出所有已发现的描述符。
     pub fn list_descriptors(&self) -> Vec<&SkillDescriptor> {
         let mut descs: Vec<&SkillDescriptor> = self.descriptors.values().collect();
         descs.sort_by_key(|d| &d.name);
         descs
     }
 
-    /// Consume the loader and return all descriptors.
+    /// 消费该加载器并返回所有描述符。
     pub fn into_descriptors(self) -> Vec<SkillDescriptor> {
         let mut descs: Vec<SkillDescriptor> = self.descriptors.into_values().collect();
         descs.sort_by(|a, b| a.name.cmp(&b.name));
         descs
     }
 
-    /// Number of discovered skills.
+    /// 已发现的技能数量。
     pub fn skill_count(&self) -> usize {
         self.descriptors.len()
     }
 
+    /// 按名称获取已解析的完整技能文档。
     pub fn get_document(&self, name: &str) -> Option<&SkillDocument> {
         self.documents.get(name)
     }
 
+    /// 按名称获取该技能已准备好的身份文档列表(文件路径与来源内容)。
     pub fn get_prepared_identity_documents(&self, name: &str) -> Option<&[(PathBuf, String)]> {
         self.prepared_identity_documents
             .get(name)
             .map(Vec::as_slice)
     }
 
+    /// 返回发现过程中产生的所有诊断信息。
     pub fn discovery_diagnostics(&self) -> &[SkillDiscoveryDiagnostic] {
         &self.discovery_diagnostics
     }
 }
 
+/// 一条技能发现诊断信息,记录解析失败或被拒绝的文件及其原因。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDiscoveryDiagnostic {
+    /// 触发该诊断信息的文件路径。
     pub path: PathBuf,
+    /// 诊断信息的描述文本。
     pub message: String,
+    /// 是否为错误级别(而非普通警告)。
     pub is_error: bool,
 }
 
 impl Default for SkillLoader {
+    /// 构造一个默认(空)的技能加载器,等价于 [`SkillLoader::new`]。
     fn default() -> Self {
         Self::new()
     }
 }
 
-// -- Parsing --
+// -- 解析 --
 
-/// Parse a single SKILL.md file into catalog metadata and its prepared document.
+/// 将单个 SKILL.md 文件解析为目录元数据及其已准备好的文档。
 ///
-/// Enforces the file-format parts of agentskills.io validation:
-/// - Name must match the containing skill directory
-/// - Name must satisfy the lowercase kebab-case constraints
-/// - Description must be present and non-empty
-/// - Unknown fields and invalid YAML are rejected
+/// 强制执行 agentskills.io 校验中与文件格式相关的部分:
+/// - 名称必须与所在的技能目录名一致
+/// - 名称必须满足小写 kebab-case 约束
+/// - 描述必须存在且非空
+/// - 未知字段和非法 YAML 会被拒绝
 ///
 async fn parse_skill_file_with_variables(
     path: &Path,
@@ -421,12 +431,12 @@ async fn parse_skill_file_with_variables(
 }
 
 impl SkillDocument {
-    /// Parse and validate one in-memory `SKILL.md` document.
+    /// 解析并校验一份内存中的 `SKILL.md` 文档。
     pub fn parse(content: &str) -> Result<Self> {
         Self::parse_at(content, PathBuf::new())
     }
 
-    /// Parse and validate one `SKILL.md` document with its source location.
+    /// 解析并校验一份带有来源位置的 `SKILL.md` 文档。
     pub fn parse_at(content: &str, location: impl Into<PathBuf>) -> Result<Self> {
         let (raw, instructions) = parse_document(content)?;
         let descriptor = raw.into_descriptor(location.into());
@@ -435,9 +445,9 @@ impl SkillDocument {
     }
 }
 
-/// Validate official agentskills.io limits shared by every file-based entry
-/// point. Keeping these checks here prevents runtime discovery, SkillsHub,
-/// install, and the standalone validator from accepting different formats.
+/// 校验所有基于文件的入口共用的官方 agentskills.io 限制。
+/// 将这些检查集中在此处,可以防止运行时发现、SkillsHub、
+/// 安装流程以及独立校验器各自接受不同的格式。
 fn validate_official_descriptor(descriptor: &SkillDescriptor) -> Result<()> {
     let name_errors = descriptor.validate_name();
     if !name_errors.is_empty() {
@@ -469,6 +479,7 @@ fn validate_official_descriptor(descriptor: &SkillDescriptor) -> Result<()> {
     Ok(())
 }
 
+/// 将 SKILL.md 原始文本拆分为原始 frontmatter 与 Markdown 正文两部分。
 fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
     if !content.starts_with("---") {
         return Err(ReactError::Other(
@@ -477,31 +488,31 @@ fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
     }
     let trimmed = content;
 
-    // Skip the opening --- and the newline after it
+    // 跳过起始的 --- 以及其后的换行符
     let after_open = trimmed
         .get(3..)
         .unwrap_or("")
         .trim_start_matches('\r')
         .trim_start_matches('\n');
 
-    // Find the closing --- which must be on its own line.
-    // This prevents markdown horizontal rules (e.g., `---` mid-document)
-    // from being mistaken for the frontmatter terminator.
-    // The closing --- must appear at the start of a line.
+    // 查找结束的 ---,它必须独占一行。
+    // 这可以防止 Markdown 的水平分隔线(例如文档中间出现的 `---`)
+    // 被误认为是 frontmatter 的结束符。
+    // 结束的 --- 必须出现在某一行的行首。
     let close_idx = after_open
         .find("\n---")
         .ok_or_else(|| ReactError::Other("SKILL.md frontmatter missing closing ---".to_string()))?;
 
-    // Verify the closing --- is actually at the start of a line (not mid-line)
+    // 校验结束的 --- 确实位于行首(而非行中间)
     let yaml_str = after_open.get(..close_idx).unwrap_or_default();
 
-    // Ensure there's no trailing content on the closing --- line
-    // (the --- should be followed only by whitespace, \r, or \n)
+    // 确保结束的 --- 所在行没有多余内容
+    // (--- 之后应当只跟随空白字符、\r 或 \n)
     let after_close_start = after_open
         .get(close_idx.saturating_add(4)..)
-        .unwrap_or_default(); // skip "\n---"
-    // The first non-whitespace after "---" should be the markdown body or end of file
-    // If there's text on the same line as "---", it's not a proper separator
+        .unwrap_or_default(); // 跳过 "\n---"
+    // "---" 之后第一个非空白字符应当是 Markdown 正文或文件结尾
+    // 如果 "---" 同一行还有其他文本,说明它不是一个合法的分隔符
     let close_line_end = after_close_start
         .find('\n')
         .unwrap_or(after_close_start.len());
@@ -525,9 +536,8 @@ fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
     Ok((raw, instructions))
 }
 
-/// Reject present-but-null or otherwise non-string values before serde's
-/// `Option<T>` defaults can erase the distinction between omission and an
-/// invalid explicit value.
+/// 在 serde 的 `Option<T>` 默认值机制抹去"字段缺省"与"显式非法值"
+/// 之间的区别之前,拒绝那些存在但为 null 或其他非字符串类型的值。
 fn validate_official_frontmatter_types(yaml: &str) -> Result<()> {
     let value: Value = serde_yaml_ng::from_str(yaml)
         .map_err(|error| ReactError::Other(format!("SKILL.md YAML parse error: {error}")))?;
@@ -571,17 +581,17 @@ fn validate_official_frontmatter_types(yaml: &str) -> Result<()> {
     Ok(())
 }
 
-// -- Dependency validation --
+// -- 依赖校验 --
 
-/// Validate skill dependencies and log warnings for issues.
+/// 校验技能依赖关系,并对发现的问题记录警告日志。
 ///
-/// Performs DFS-based cycle detection across all discovered skills.
-/// Circular dependencies and missing dependencies are logged as warnings
-/// but do not prevent skill loading (they are handled at activation time).
+/// 在所有已发现的技能之间执行基于 DFS 的环检测。
+/// 循环依赖和缺失依赖都会被记录为警告,但不会阻止技能加载
+/// (它们会在激活阶段被处理)。
 fn validate_and_sort_dependencies(skills: &[SkillDescriptor]) {
     let name_set: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
 
-    // Check for missing dependencies
+    // 检查是否存在缺失的依赖
     for skill in skills {
         for dep in &skill.depends_on {
             if !name_set.contains(dep.as_str()) {
@@ -593,7 +603,7 @@ fn validate_and_sort_dependencies(skills: &[SkillDescriptor]) {
         }
     }
 
-    // Detect circular dependencies via DFS
+    // 通过 DFS 检测循环依赖
     let skill_deps: HashMap<&str, &[String]> = skills
         .iter()
         .map(|s| (s.name.as_str(), s.depends_on.as_slice()))
@@ -612,7 +622,7 @@ fn validate_and_sort_dependencies(skills: &[SkillDescriptor]) {
     }
 }
 
-/// DFS cycle detection. Logs a warning and skips the cycle edge if detected.
+/// 基于 DFS 的环检测。如果检测到环,记录警告日志并跳过该成环的边。
 fn detect_cycle<'a>(
     name: &'a str,
     deps: &HashMap<&'a str, &'a [String]>,
@@ -639,9 +649,9 @@ fn detect_cycle<'a>(
     visited.insert(name);
 }
 
-// -- Scope resolution --
+// -- 作用域解析 --
 
-/// Resolve a `DiscoveryScope` into concrete directory paths to scan.
+/// 将一个 `DiscoveryScope` 解析为要扫描的具体目录路径列表。
 fn scope_to_dirs(scope: &DiscoveryScope) -> Vec<PathBuf> {
     match scope {
         DiscoveryScope::Project(root) => {
@@ -661,12 +671,13 @@ fn scope_to_dirs(scope: &DiscoveryScope) -> Vec<PathBuf> {
     }
 }
 
-// -- Tests --
+// -- 测试 --
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证标准的 SKILL.md 文档能被正确解析,包括名称、许可证及正文说明。
     #[test]
     fn test_skill_document_standard() -> std::result::Result<(), String> {
         let content = r#"---
@@ -692,6 +703,8 @@ Instructions here.
         Ok(())
     }
 
+    /// 验证已移除的旧版 echo-agent 专有字段(version、author、tags 等)
+    /// 会导致解析失败。
     #[test]
     fn test_skill_document_rejects_removed_echo_agent_fields() {
         let content = r#"---
@@ -711,12 +724,15 @@ resources:
         assert!(SkillDocument::parse(content).is_err());
     }
 
+    /// 验证空的 description 字段会导致解析失败。
     #[test]
     fn test_skill_document_rejects_empty_description() {
         let content = "---\nname: test\ndescription: \"\"\n---\n";
         assert!(SkillDocument::parse(content).is_err());
     }
 
+    /// 验证官方规定的长度限制及字段类型约束(description/compatibility 长度、
+    /// license/compatibility/allowed-tools/metadata 字段的类型)均被强制执行。
     #[test]
     fn test_skill_document_enforces_official_limits_and_types() {
         let long_description = "x".repeat(1025);
@@ -739,18 +755,21 @@ resources:
         );
     }
 
+    /// 验证缺少 frontmatter 的文档会导致解析失败。
     #[test]
     fn test_skill_document_rejects_missing_frontmatter() {
         let content = "# Just markdown";
         assert!(SkillDocument::parse(content).is_err());
     }
 
+    /// 验证 frontmatter 未正确关闭时解析会失败。
     #[test]
     fn test_skill_document_rejects_unclosed_frontmatter() {
         let content = "---\nname: test\ndescription: Test\n";
         assert!(SkillDocument::parse(content).is_err());
     }
 
+    /// 验证 frontmatter 之后的 Markdown 正文会被正确用作说明文本。
     #[test]
     fn test_skill_document_uses_markdown_body_as_instructions() -> std::result::Result<(), String> {
         let content = "---\nname: test\ndescription: Test\n---\n\n# Instructions\n\nDo stuff.";
@@ -833,6 +852,7 @@ resources:
         Ok(())
     }
 
+    /// 验证 `SkillLoadPolicy` 能在发现阶段排除掉被拒绝的技能描述符。
     #[tokio::test]
     async fn load_policy_excludes_disallowed_descriptor()
     -> std::result::Result<(), Box<dyn std::error::Error>> {

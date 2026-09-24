@@ -1,14 +1,15 @@
-//! A2A HTTP server
-//!
-//! Provides A2A protocol-compliant HTTP endpoints:
-//! - `GET /.well-known/agent.json` — Returns Agent Card
-//! - `POST /` — Handles JSON-RPC task requests
-//!
-//! Supported JSON-RPC methods:
-//! - `tasks/send`          — Synchronously send a task and wait for completion
-//! - `tasks/sendSubscribe` — Stream a task and receive real-time events via SSE
-//! - `tasks/get`           — Query task status
-//! - `tasks/cancel`        — Cancel a task
+/*! A2A HTTP 服务器
+ *
+ * 提供符合 A2A 协议的 HTTP 端点：
+ * - `GET /.well-known/agent.json` —— 返回 Agent Card
+ * - `POST /` —— 处理 JSON-RPC 任务请求
+ *
+ * 支持的 JSON-RPC 方法：
+ * - `tasks/send`          —— 同步发送任务并等待完成
+ * - `tasks/sendSubscribe` —— 流式发送任务，通过 SSE 接收实时事件
+ * - `tasks/get`           —— 查询任务状态
+ * - `tasks/cancel`        —— 取消任务
+ */
 
 use super::types::*;
 use crate::agent::Agent;
@@ -22,25 +23,30 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-/// A2A server
-///
-/// Exposes an Agent as an A2A protocol-compliant HTTP service.
-///
-/// # State machine
-///
-/// ```text
-/// submitted → working → [input-required] → completed / failed
-///                      ↑___________________↓
-/// ```
+/** A2A 服务器。
+ *
+ * 将一个 Agent 暴露为符合 A2A 协议的 HTTP 服务。
+ *
+ * # 状态机
+ *
+ * ```text
+ * submitted → working → [input-required] → completed / failed
+ *                      ↑___________________↓
+ * ```
+ */
 pub struct A2AServer {
+    /// 该服务对外暴露的 Agent Card。
     card: AgentCard,
+    /// 被本服务包装的底层 Agent。
     agent: Arc<dyn Agent>,
+    /// 按任务 id 索引的任务状态表。
     tasks: Arc<RwLock<HashMap<String, A2ATask>>>,
+    /// 按任务 id 索引的取消令牌表。
     cancel_tokens: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 impl A2AServer {
-    /// Create a new A2A server instance.
+    /// 创建一个新的 A2A 服务器实例。
     pub fn new(card: AgentCard, agent: impl Agent + 'static) -> Self {
         Self {
             card,
@@ -50,7 +56,7 @@ impl A2AServer {
         }
     }
 
-    /// Create an A2A server instance from a boxed agent.
+    /// 从一个装箱（boxed）的 Agent 创建 A2A 服务器实例。
     pub fn from_boxed(card: AgentCard, agent: Box<dyn Agent>) -> Self {
         Self {
             card,
@@ -60,24 +66,25 @@ impl A2AServer {
         }
     }
 
-    /// Get the Agent Card (for `/.well-known/agent.json`)
+    /// 获取 Agent Card（供 `/.well-known/agent.json` 使用）
     pub fn agent_card(&self) -> &AgentCard {
         &self.card
     }
 
-    /// Return Agent Card as a JSON string
+    /// 将 Agent Card 以 JSON 字符串形式返回
     pub fn agent_card_json(&self) -> Result<String> {
         serde_json::to_string_pretty(&self.card).map_err(|e| {
             crate::error::ReactError::Other(format!("Agent Card serialization failed: {}", e))
         })
     }
 
-    // ── Request dispatch ──────────────────────────────────────────────────────
+    // ── 请求分发 ──────────────────────────────────────────────────────
 
-    /// Handle A2A JSON-RPC request (synchronous methods)
-    ///
-    /// Supports `tasks/send`, `tasks/get`, `tasks/cancel`.
-    /// For `tasks/sendSubscribe`, use `handle_request_stream` instead.
+    /** 处理 A2A JSON-RPC 请求（同步方法）。
+     *
+     * 支持 `tasks/send`、`tasks/get`、`tasks/cancel`。
+     * 如需 `tasks/sendSubscribe`，请改用 `handle_request_stream`。
+     */
     pub async fn handle_request(&self, request_json: &str) -> String {
         let request: A2ATaskRequest = match serde_json::from_str(request_json) {
             Ok(req) => req,
@@ -124,19 +131,20 @@ impl A2AServer {
         serde_json::to_string(&response).unwrap_or_default()
     }
 
-    /// Handle streaming request `tasks/sendSubscribe`
-    ///
-    /// Returns an SSE event stream, each event serialized as one line of JSON (`data: <json>\n\n`).
-    /// The caller is responsible for writing the stream to the HTTP response body (Content-Type: text/event-stream).
-    ///
-    /// # Example event sequence
-    ///
-    /// ```text
-    /// data: {"type":"status","taskId":"...","status":{"state":"submitted"},"final":false}
-    /// data: {"type":"status","taskId":"...","status":{"state":"working"},"final":false}
-    /// data: {"type":"artifact","taskId":"...","artifact":{"index":0,"parts":[...],"append":true},"final":false}
-    /// data: {"type":"status","taskId":"...","status":{"state":"completed",...},"final":true}
-    /// ```
+    /** 处理流式请求 `tasks/sendSubscribe`。
+     *
+     * 返回一个 SSE 事件流，每个事件序列化为一行 JSON（`data: <json>\n\n`）。
+     * 调用方负责将该流写入 HTTP 响应体（Content-Type: text/event-stream）。
+     *
+     * # 事件序列示例
+     *
+     * ```text
+     * data: {"type":"status","taskId":"...","status":{"state":"submitted"},"final":false}
+     * data: {"type":"status","taskId":"...","status":{"state":"working"},"final":false}
+     * data: {"type":"artifact","taskId":"...","artifact":{"index":0,"parts":[...],"append":true},"final":false}
+     * data: {"type":"status","taskId":"...","status":{"state":"completed",...},"final":true}
+     * ```
+     */
     pub async fn handle_request_stream(
         self: &Arc<Self>,
         request_json: &str,
@@ -162,7 +170,7 @@ impl A2AServer {
 
         info!(task_id = %task_id, "A2A Stream: received streaming task request");
 
-        // submitted
+        // 已提交（submitted）
         let initial_task = A2ATask {
             id: task_id.clone(),
             session_id: session_id.clone(),
@@ -175,7 +183,7 @@ impl A2AServer {
             tasks.insert(task_id.clone(), initial_task);
         }
 
-        // Create and store cancellation token
+        // 创建并保存取消令牌
         let cancel_token = CancellationToken::new();
         self.cancel_tokens
             .write()
@@ -187,14 +195,14 @@ impl A2AServer {
         let cancel_tokens = self.cancel_tokens.clone();
 
         let stream = async_stream::stream! {
-            // Event 1: submitted
+            // 事件 1：submitted
             yield A2AStreamEvent::StatusUpdate(TaskStatusUpdateEvent {
                 task_id: task_id.clone(),
                 status: A2ATaskStatus::new(TaskState::Submitted),
                 is_final: false,
             });
 
-            // Event 2: working
+            // 事件 2：working
             Self::update_task_state(&tasks, &task_id, TaskState::Working, None).await;
             yield A2AStreamEvent::StatusUpdate(TaskStatusUpdateEvent {
                 task_id: task_id.clone(),
@@ -202,7 +210,7 @@ impl A2AServer {
                 is_final: false,
             });
 
-            // Execute agent with streaming
+            // 以流式方式执行 Agent
             let agent_guard = agent.as_ref();
             let stream_result = agent_guard.execute_stream(&input_text).await;
 
@@ -309,7 +317,7 @@ impl A2AServer {
                         }
                     }
 
-                    // completed
+                    // 已完成（completed）
                     let result_message = A2AMessage::agent_text(&accumulated_text);
 
                     let completed_status = A2ATaskStatus::with_message(
@@ -362,20 +370,21 @@ impl A2AServer {
         Ok(Box::pin(stream))
     }
 
-    /// Format a streaming event as an SSE `data:` line
-    ///
-    /// Convenient for direct use in HTTP frameworks:
-    /// ```rust
-    /// use echo_agent::a2a::{A2AServer, A2AStreamEvent, A2ATaskStatus, TaskState, TaskStatusUpdateEvent};
-    ///
-    /// let event = A2AStreamEvent::StatusUpdate(TaskStatusUpdateEvent {
-    ///     task_id: "task-1".to_string(),
-    ///     status: A2ATaskStatus::new(TaskState::Working),
-    ///     is_final: false,
-    /// });
-    /// let sse = A2AServer::format_sse_event(&event, "req-1");
-    /// assert!(sse.starts_with("data: "));
-    /// ```
+    /** 将一个流式事件格式化为 SSE 的 `data:` 行。
+     *
+     * 便于在 HTTP 框架中直接使用：
+     * ```rust
+     * use echo_agent::a2a::{A2AServer, A2AStreamEvent, A2ATaskStatus, TaskState, TaskStatusUpdateEvent};
+     *
+     * let event = A2AStreamEvent::StatusUpdate(TaskStatusUpdateEvent {
+     *     task_id: "task-1".to_string(),
+     *     status: A2ATaskStatus::new(TaskState::Working),
+     *     is_final: false,
+     * });
+     * let sse = A2AServer::format_sse_event(&event, "req-1");
+     * assert!(sse.starts_with("data: "));
+     * ```
+     */
     pub fn format_sse_event(event: &A2AStreamEvent, request_id: &str) -> String {
         let response = A2AStreamResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -391,6 +400,8 @@ impl A2AServer {
 
     // ── tasks/send ───────────────────────────────────────────────────────────
 
+    /// 处理同步的 `tasks/send` 请求：创建任务、以流式方式驱动 Agent 执行，
+    /// 并等待其完成、失败或被取消。
     async fn handle_task_send(&self, request: &A2ATaskRequest) -> A2ATaskResponse {
         let task_id = request
             .params
@@ -402,7 +413,7 @@ impl A2AServer {
 
         info!(task_id = %task_id, input_len = input_text.len(), "A2A: received task request");
 
-        // submitted → working
+        // 状态从 submitted 变为 working
         let task = A2ATask {
             id: task_id.clone(),
             session_id: request.params.session_id.clone(),
@@ -416,7 +427,7 @@ impl A2AServer {
             tasks.insert(task_id.clone(), task);
         }
 
-        // Create and store cancellation token
+        // 创建并保存取消令牌
         let cancel_token = CancellationToken::new();
         self.cancel_tokens
             .write()
@@ -425,7 +436,7 @@ impl A2AServer {
 
         Self::update_task_state(&self.tasks, &task_id, TaskState::Working, None).await;
 
-        // working → completed / failed / canceled
+        // 状态从 working 变为 completed / failed / canceled
         let agent = self.agent.as_ref();
         let execution = async {
             let mut stream = agent
@@ -557,6 +568,7 @@ impl A2AServer {
 
     // ── tasks/get ────────────────────────────────────────────────────────────
 
+    /// 处理 `tasks/get` 请求：按任务 id 查询任务当前状态。
     async fn handle_task_get(&self, request: &A2ATaskRequest) -> A2ATaskResponse {
         let task_id = match &request.params.id {
             Some(id) => id.clone(),
@@ -595,6 +607,7 @@ impl A2AServer {
 
     // ── tasks/cancel ─────────────────────────────────────────────────────────
 
+    /// 处理 `tasks/cancel` 请求：将任务状态转为 Canceled，并触发其取消令牌。
     async fn handle_task_cancel(&self, request: &A2ATaskRequest) -> A2ATaskResponse {
         let task_id = match &request.params.id {
             Some(id) => id.clone(),
@@ -630,7 +643,7 @@ impl A2AServer {
 
             task.status = A2ATaskStatus::new(TaskState::Canceled);
 
-            // Cancel the token if it exists
+            // 若取消令牌存在，则触发取消
             if let Some(token) = self.cancel_tokens.read().await.get(&task_id) {
                 token.cancel();
             }
@@ -654,8 +667,9 @@ impl A2AServer {
         }
     }
 
-    // ── Internal helpers ─────────────────────────────────────────────────────
+    // ── 内部辅助函数 ─────────────────────────────────────────────────────
 
+    /// 在校验状态转换合法之后，更新任务状态；非法转换会被跳过并记录警告。
     async fn update_task_state(
         tasks: &Arc<RwLock<HashMap<String, A2ATask>>>,
         task_id: &str,
@@ -672,7 +686,7 @@ impl A2AServer {
         }
     }
 
-    /// Clean up completed/failed/canceled tasks (called periodically by the caller)
+    /// 清理已完成/失败/取消的任务（由调用方周期性调用）
     pub async fn cleanup_completed_tasks(&self, max_age_secs: u64) {
         let mut tasks = self.tasks.write().await;
         let now = std::time::SystemTime::now()
@@ -683,9 +697,9 @@ impl A2AServer {
             if !task.status.state.is_terminal() {
                 return true;
             }
-            // Keep task if we can't determine age (no timestamp) or if it's recent
+            // 若无法确定任务年龄（没有时间戳）或任务较新，则保留该任务
             if let Some(ts_str) = &task.status.timestamp {
-                // Try parsing as ISO 8601; if parsing fails, keep the task
+                // 尝试按 ISO 8601 解析；解析失败则保留该任务
                 if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
                     let task_secs = ts.timestamp() as u64;
                     return now.saturating_sub(task_secs) < max_age_secs;

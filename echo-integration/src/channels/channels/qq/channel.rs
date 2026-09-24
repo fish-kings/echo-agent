@@ -1,4 +1,4 @@
-//! QQ Bot ChannelPlugin implementation
+//! QQ 机器人的 ChannelPlugin 实现
 
 use super::super::super::types::*;
 use super::super::{DeliveryRequest, DeliverySender};
@@ -13,14 +13,14 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── 配置 ────────────────────────────────────────────────────────────────────
 
-/// QQ Bot channel configuration
+/// QQ 机器人渠道配置
 #[derive(Clone)]
 pub struct QqConfig {
-    /// QQ Bot App ID
+    /// QQ 机器人应用 ID
     pub app_id: String,
-    /// QQ Bot Client Secret
+    /// QQ 机器人应用密钥
     pub client_secret: String,
 }
 
@@ -35,6 +35,7 @@ impl fmt::Debug for QqConfig {
 }
 
 impl QqConfig {
+    /// 使用给定的 `app_id` 与 `client_secret` 创建 QQ 机器人配置。
     pub fn new(app_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
@@ -45,18 +46,24 @@ impl QqConfig {
 
 // ── Channel ───────────────────────────────────────────────────────────────────
 
-/// QQ Bot IM channel implementation
+/// QQ 机器人 IM 渠道实现
 pub struct QqChannel {
+    /// 渠道配置（app_id、client_secret）。
     config: QqConfig,
-    /// Shared HTTP client (connection pool reuse)
+    /// 共享的 HTTP 客户端（复用连接池）
     http: reqwest::Client,
+    /// access_token 管理器，渠道启动后才会创建。
     token_manager: Option<Arc<TokenManager>>,
+    /// 出站消息投递队列的发送端，渠道启动后才会创建。
     send_tx: Option<DeliverySender>,
+    /// 后台消息发送任务的句柄。
     send_handle: Option<JoinHandle<()>>,
+    /// Gateway 连接循环任务的句柄。
     gateway_handle: Option<JoinHandle<()>>,
 }
 
 impl QqChannel {
+    /// 使用给定配置创建一个新的 QQ 渠道实例；`app_id`/`client_secret` 缺失时返回错误。
     pub fn new(config: QqConfig) -> Result<Self> {
         if config.app_id.is_empty() || config.client_secret.is_empty() {
             return Err(ReactError::Channel(Box::new(ChannelError::InvalidConfig(
@@ -77,14 +84,17 @@ impl QqChannel {
 
 #[async_trait]
 impl ChannelPlugin for QqChannel {
+    /// 返回渠道唯一标识 `"qqbot"`。
     fn id(&self) -> &str {
         "qqbot"
     }
 
+    /// 返回渠道的展示名称 `"QQ Bot"`。
     fn label(&self) -> &str {
         "QQ Bot"
     }
 
+    /// 返回该渠道支持的能力（会话类型、媒体、话题等）。
     fn capabilities(&self) -> &ChannelCapabilities {
         static CAPS: std::sync::OnceLock<ChannelCapabilities> = std::sync::OnceLock::new();
         CAPS.get_or_init(|| ChannelCapabilities {
@@ -94,6 +104,7 @@ impl ChannelPlugin for QqChannel {
         })
     }
 
+    /// 启动 QQ 渠道：初始化 token 管理器、启动后台发送任务与 Gateway 连接循环。
     async fn start(&mut self, handler: Arc<dyn MessageHandler>) -> Result<()> {
         if self.gateway_handle.is_some() || self.send_handle.is_some() {
             return Err(ReactError::Channel(Box::new(ChannelError::Other(
@@ -102,18 +113,18 @@ impl ChannelPlugin for QqChannel {
         }
         info!("Starting QQ Bot channel...");
 
-        // 1. Initialize token manager
+        // 1. 初始化 token 管理器
         let token_manager = Arc::new(TokenManager::new(
             self.config.app_id.clone(),
             self.config.client_secret.clone(),
         ));
         self.token_manager = Some(token_manager.clone());
 
-        // 2. Start background message sending task
+        // 2. 启动后台消息发送任务
         let (send_tx, mut send_rx) = mpsc::channel::<DeliveryRequest>(256);
         let token_manager_clone = token_manager.clone();
 
-        // 3. Create wrapper handler — calls inner handler then auto-sends reply
+        // 3. 创建包装 handler —— 调用内部 handler 后自动发送回复
         let send_tx_clone = send_tx.clone();
         self.send_tx = Some(send_tx);
         let wrapper = Arc::new(QqMessageHandler {
@@ -121,7 +132,7 @@ impl ChannelPlugin for QqChannel {
             send_tx: send_tx_clone,
         });
 
-        // 4. Start message sending task
+        // 4. 启动消息发送任务
         let http_for_send = self.http.clone();
         let token_manager_clone2 = token_manager.clone();
         let send_handle = tokio::spawn(async move {
@@ -150,12 +161,12 @@ impl ChannelPlugin for QqChannel {
         });
         self.send_handle = Some(send_handle);
 
-        // 5. Start Gateway connection loop (with exponential backoff reconnect)
+        // 5. 启动 Gateway 连接循环（带指数退避重连）
         let http_for_gw = self.http.clone();
         let gateway_handle = tokio::spawn(async move {
             let mut reconnect_delay: u64 = 1;
             const MAX_DELAY: u64 = 60;
-            // If connection exceeds this threshold it is considered stable; reset backoff delay
+            // 若连接时长超过此阈值则视为稳定，重置退避延迟
             const STABLE_THRESHOLD_SECS: u64 = 60;
 
             loop {
@@ -204,7 +215,7 @@ impl ChannelPlugin for QqChannel {
                     }
                 }
 
-                // If connection ran stably beyond threshold, reset backoff delay
+                // 若连接稳定运行超过阈值，重置退避延迟
                 if connected_at.elapsed().as_secs() >= STABLE_THRESHOLD_SECS {
                     reconnect_delay = 1;
                 } else {
@@ -221,6 +232,7 @@ impl ChannelPlugin for QqChannel {
         Ok(())
     }
 
+    /// 停止 QQ 渠道：终止 Gateway 连接任务与发送任务，并清空运行时状态。
     async fn stop(&mut self) -> Result<()> {
         info!("Stopping QQ Bot channel...");
 
@@ -239,6 +251,7 @@ impl ChannelPlugin for QqChannel {
         Ok(())
     }
 
+    /// 直接发送一条出站消息（不经过后台发送队列）。
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         let _delivery_permit = msg.begin_delivery()?;
         let token_manager = self.token_manager.as_ref().ok_or_else(|| {
@@ -258,6 +271,7 @@ impl ChannelPlugin for QqChannel {
         .await
     }
 
+    /// 健康检查：确认 Gateway 任务仍在运行，并尝试获取一次 access_token。
     async fn health_check(&self) -> Result<()> {
         if self
             .gateway_handle
@@ -275,20 +289,23 @@ impl ChannelPlugin for QqChannel {
     }
 }
 
-/// Wrapper: calls inner handler then automatically sends reply via send_tx
+/// 包装器：调用内部 handler 后自动经 send_tx 发送回复
 struct QqMessageHandler {
+    /// 被包装的内部消息处理器。
     inner: Arc<dyn MessageHandler>,
+    /// 用于投递出站消息的发送端。
     send_tx: DeliverySender,
 }
 
 #[async_trait]
 impl MessageHandler for QqMessageHandler {
+    /// 消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
+    /// (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
     async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
-        // 消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
-        // (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
         super::super::dispatch_stream_to_send_tx(&self.inner, &self.send_tx, msg).await
     }
 
+    /// 对空 text 视为流式占位不做发送，非空 text 则正常经 send_tx 投递。
     async fn reply(&self, msg: OutboundMessage) -> Result<()> {
         super::super::reply_with_empty_guard(&self.send_tx, msg).await
     }

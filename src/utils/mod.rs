@@ -1,4 +1,4 @@
-//! Common utility modules (re-exported from echo_core)
+//! 通用工具模块（从 echo_core 重新导出）
 
 pub use echo_core::utils::json_parse;
 pub use echo_core::utils::retention;

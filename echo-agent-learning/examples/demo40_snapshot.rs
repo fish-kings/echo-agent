@@ -11,6 +11,7 @@
 
 use echo_agent::prelude::*;
 
+/// 演示 agent 状态快照的自动创建、查看快照列表以及手动回滚到历史状态。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
@@ -83,6 +84,7 @@ async fn main() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 截取 ID 的前 8 个字符，用于简洁展示。
 fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }

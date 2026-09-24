@@ -6,43 +6,55 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-// Prepared ordinals are ordered across independent Integrators in one process.
+// 准备生成号（generation）在同一进程内的多个独立 Integrator 之间保持有序。
 static NEXT_PREPARED_GENERATION: AtomicU64 = AtomicU64::new(0);
 
-/// Severity of a preparation diagnostic.
+/// 准备阶段诊断信息的严重程度。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PluginDiagnosticSeverity {
+    /// 警告：不影响本次生成的可用性。
     Warning,
+    /// 错误：可能导致相关组件或整个生成不可用。
     Error,
 }
 
-/// Structured diagnostic captured while preparing a plugin generation.
+/// 在准备某个插件生成过程中捕获到的结构化诊断信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginPreparationDiagnostic {
+    /// 关联的插件 ID；为 `None` 表示是生成级别（非单个插件）的诊断。
     plugin_id: Option<String>,
+    /// 产生该诊断的组件名称（如 "manifest"、"skill"、"hooks" 等）。
     component: String,
+    /// 该诊断的严重程度。
     severity: PluginDiagnosticSeverity,
+    /// 关联的文件路径（若适用）。
     path: Option<PathBuf>,
+    /// 诊断说明信息。
     message: String,
 }
 
 impl PluginPreparationDiagnostic {
+    /// 返回关联的插件 ID（若有）。
     pub fn plugin_id(&self) -> Option<&str> {
         self.plugin_id.as_deref()
     }
 
+    /// 返回产生该诊断的组件名称。
     pub fn component(&self) -> &str {
         &self.component
     }
 
+    /// 返回该诊断的严重程度。
     pub fn severity(&self) -> PluginDiagnosticSeverity {
         self.severity
     }
 
+    /// 返回关联的文件路径（若有）。
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
     }
 
+    /// 返回诊断说明信息。
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -62,154 +74,207 @@ impl fmt::Display for PluginPreparationDiagnostic {
     }
 }
 
-/// Frozen Skill parsed from one package read.
+/// 由一次包读取解析得到的、被冻结的 Skill。
 #[derive(Debug, Clone)]
 pub struct PreparedPluginSkill {
+    /// 解析出的 Skill 文档。
     document: crate::skills::external::SkillDocument,
 }
 
 impl PreparedPluginSkill {
+    /// 返回该 Skill 的解析文档。
     pub fn document(&self) -> &crate::skills::external::SkillDocument {
         &self.document
     }
 }
 
-/// Owner-preserving frozen application document.
+/// 保留归属者（owner）信息的、被冻结的应用文档。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedPluginDocument {
+    /// 拥有该文档的插件 ID。
     plugin_id: String,
+    /// 文档的源文件路径。
     source_path: PathBuf,
+    /// 已完成变量替换的文档内容。
     contents: String,
 }
 
 impl PreparedPluginDocument {
+    /// 返回拥有该文档的插件 ID。
     pub fn plugin_id(&self) -> &str {
         &self.plugin_id
     }
 
+    /// 返回该文档的源文件路径。
     pub fn source_path(&self) -> &Path {
         &self.source_path
     }
 
+    /// 返回该文档的内容。
     pub fn contents(&self) -> &str {
         &self.contents
     }
 }
 
-/// One dependency-ordered prepared plugin.
+/// 一个按依赖顺序排列的已准备插件。
 #[derive(Debug, Clone)]
 pub struct PreparedPlugin {
+    /// 插件 ID。
     id: String,
+    /// 该插件解析出的变量集合。
     variables: PluginVariables,
+    /// 该插件携带的 Skill 列表。
     skills: Vec<PreparedPluginSkill>,
+    /// 该插件的 Hooks 定义（若有）。
     hooks: Option<echo_execution::skills::hooks::HooksDefinition>,
+    /// 该插件的 MCP 配置（若有，需启用 "mcp" 特性）。
     #[cfg(feature = "mcp")]
     mcp: Option<crate::mcp::McpConfigFile>,
+    /// 该插件携带的子代理（subagent）文档列表。
     subagent_documents: Vec<PreparedPluginDocument>,
+    /// 该插件的 LSP 配置文档（若有）。
     lsp_document: Option<PreparedPluginDocument>,
 }
 
 impl PreparedPlugin {
+    /// 返回插件 ID。
     pub fn id(&self) -> &str {
         &self.id
     }
 
+    /// 返回插件根目录路径。
     pub fn root(&self) -> &Path {
         &self.variables.plugin_root
     }
 
+    /// 返回该插件解析出的变量集合。
     pub fn variables(&self) -> &PluginVariables {
         &self.variables
     }
 
+    /// 返回该插件携带的 Skill 列表。
     pub fn skills(&self) -> &[PreparedPluginSkill] {
         &self.skills
     }
 
+    /// 返回该插件的 Hooks 定义（若有）。
     pub fn hooks(&self) -> Option<&echo_execution::skills::hooks::HooksDefinition> {
         self.hooks.as_ref()
     }
 
+    /// 返回该插件的 MCP 配置（若有）。
     #[cfg(feature = "mcp")]
     pub fn mcp(&self) -> Option<&crate::mcp::McpConfigFile> {
         self.mcp.as_ref()
     }
 
+    /// 返回该插件携带的子代理文档列表。
     pub fn subagent_documents(&self) -> &[PreparedPluginDocument] {
         &self.subagent_documents
     }
 
+    /// 返回该插件的 LSP 配置文档（若有）。
     pub fn lsp_document(&self) -> Option<&PreparedPluginDocument> {
         self.lsp_document.as_ref()
     }
 }
 
-/// Immutable output of one complete preparation generation.
-///
-/// Error diagnostics may describe components excluded from an otherwise
-/// applicable generation. Applicability is reserved for generation-wide
-/// invariants required to publish this snapshot atomically.
+/**
+ * 一次完整准备生成（generation）的不可变输出结果。
+ *
+ * 错误诊断信息可能描述的是被排除在一次仍然可用的生成之外的组件。
+ * “可用性（applicable）”仅保留给那些为了原子发布本快照而必须满足的、
+ * 面向整个生成的不变量。
+ */
 #[derive(Debug, Clone)]
 pub struct PreparedPluginSet {
+    /// 本次生成的序号。
     generation: u64,
+    /// 本次生成内容的身份摘要（用于判断内容是否发生变化）。
     identity: String,
+    /// 本次生成包含的、按依赖顺序排列的插件列表。
     plugins: Vec<PreparedPlugin>,
+    /// 本次准备过程中收集到的诊断信息。
     diagnostics: Vec<PluginPreparationDiagnostic>,
+    /// 本次生成整体是否可用（可被应用/发布）。
     applicable: bool,
 }
 
 impl PreparedPluginSet {
+    /// 返回本次生成的序号。
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    /// 返回本次生成内容的身份摘要。
     pub fn identity(&self) -> &str {
         &self.identity
     }
 
+    /// 返回本次生成包含的插件列表。
     pub fn plugins(&self) -> &[PreparedPlugin] {
         &self.plugins
     }
 
+    /// 返回本次准备过程中收集到的诊断信息。
     pub fn diagnostics(&self) -> &[PluginPreparationDiagnostic] {
         &self.diagnostics
     }
 
+    /// 返回本次生成整体是否可用。
     pub fn is_applicable(&self) -> bool {
         self.applicable
     }
 }
 
+/// 已准备生成结果的进程内缓存。
 #[derive(Default)]
 struct PluginPreparationCache {
+    /// 以（缓存 ID，修订号）为键缓存的已准备插件集合。
     sets: HashMap<(String, u64), Arc<PreparedPluginSet>>,
 }
 
-/// Successfully applied framework components grouped by plugin owner.
+/// 按插件归属者分组的、已成功应用的框架组件。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WiredPluginComponents {
+    /// 已注册的 Skill 名称列表。
     pub skills: Vec<String>,
+    /// 是否已注册 Hooks。
     pub hooks_registered: bool,
+    /// 已连接的 MCP 服务器名称列表。
     pub mcp_servers: Vec<String>,
+    /// 已连接的 MCP 服务器 ID 列表（需启用 "mcp" 特性）。
     #[cfg(feature = "mcp")]
     pub mcp_server_ids: Vec<crate::mcp::McpServerId>,
 }
 
-/// Apply receipt. It contains no package inventory and owns no reload policy.
+/// 应用（apply）操作的回执。它不包含任何包清单信息，也不拥有重载策略。
 #[derive(Debug, Clone, Default)]
 pub struct PluginWiringResult {
+    /// 对应的准备生成序号。
     generation: u64,
+    /// 对应的准备生成身份摘要。
     identity: String,
+    /// 用于标识本次发布的唯一令牌，供比较两个回执是否属于同一次发布。
     publication_token: Option<Arc<()>>,
+    /// 已成功加载的插件 ID 列表。
     pub plugins_loaded: Vec<String>,
+    /// 已加载的 Skill 名称列表。
     pub skills_loaded: Vec<String>,
+    /// 已注册 Hooks 的插件 ID 列表。
     pub hooks_registered: Vec<String>,
+    /// 已连接的 MCP 服务器名称列表。
     pub mcp_connected: Vec<String>,
+    /// 已连接的 MCP 服务器 ID 列表（需启用 "mcp" 特性）。
     #[cfg(feature = "mcp")]
     pub mcp_connected_ids: Vec<crate::mcp::McpServerId>,
+    /// 发现的子代理描述列表。
     pub agents_discovered: Vec<String>,
+    /// 发现的 LSP 配置描述列表。
     pub lsp_discovered: Vec<String>,
+    /// 应用过程中产生的警告信息列表。
     pub warnings: Vec<String>,
+    /// 按插件 ID 分组的已连接组件详情。
     pub components_by_plugin: HashMap<String, WiredPluginComponents>,
 }
 
@@ -246,63 +311,91 @@ impl PartialEq for PluginWiringResult {
 impl Eq for PluginWiringResult {}
 
 impl PluginWiringResult {
+    /// 返回本回执对应的准备生成序号。
     pub fn generation(&self) -> u64 {
         self.generation
     }
 
+    /// 返回本回执对应的准备生成身份摘要。
     pub fn identity(&self) -> &str {
         &self.identity
     }
 
+    /// 始终返回 `true`；一个存在的回执即代表操作已成功。
     pub fn is_ok(&self) -> bool {
         true
     }
 
+    /// 返回本次成功接入的组件总数（Skill、Hooks、MCP 服务器之和）。
     pub fn total_wired(&self) -> usize {
         self.skills_loaded.len() + self.hooks_registered.len() + self.mcp_connected.len()
     }
 }
 
-/// Typed refusal or apply failure. An unsettled rollback retains its receipt.
+/// 带类型的拒绝或应用失败错误。未结算的回滚会保留其回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginWiringError {
+    /// 给定的已准备集合不可用，无法发布。
     InvalidPreparedSet {
+        /// 该集合的生成序号。
         generation: u64,
     },
+    /// 请求的生成已过期，目标已存在更新的生成。
     StaleGeneration {
+        /// 请求发布的生成序号。
         requested: u64,
+        /// 目标当前的最新生成序号。
         latest: u64,
     },
+    /// 该生成此前已在目标上发布过。
     AlreadyPublished {
+        /// 已发布的生成序号。
         generation: u64,
     },
+    /// 目标已有一个处于活跃状态的生成，必须先撤回才能替换。
     ActiveGeneration {
+        /// 当前活跃的生成序号。
         generation: u64,
     },
+    /// 该生成存在尚未结算的清理工作。
     CleanupPending {
+        /// 待清理的生成序号。
         generation: u64,
     },
+    /// 提交的回执生成已过期。
     StaleReceipt {
+        /// 请求撤回的生成序号。
         requested: u64,
+        /// 目标当前的最新生成序号。
         latest: u64,
     },
+    /// 提交的回执并非由该目标签发。
     InvalidReceipt {
+        /// 回执中携带的生成序号。
         generation: u64,
     },
+    /// 该发布目标属于另一个 Agent，不能在此操作。
     WrongTarget,
+    /// 应用过程失败。
     ApplyFailed {
+        /// 失败所在的生成序号。
         generation: u64,
+        /// 汇总的诊断信息。
         diagnostics: String,
     },
+    /// 回滚清理未能成功结算。
     RollbackFailed {
+        /// 失败所在的生成序号。
         generation: u64,
+        /// 汇总的诊断信息。
         diagnostics: String,
+        /// 尚未结算清理的部分应用回执。
         receipt: Box<PluginWiringResult>,
     },
 }
 
 impl PluginWiringError {
-    /// Return the partial apply receipt only when cleanup remains unsettled.
+    /// 仅当仍存在未结算的清理工作时，返回部分应用回执。
     pub fn cleanup_receipt(&self) -> Option<&PluginWiringResult> {
         match self {
             Self::RollbackFailed { receipt, .. } => Some(receipt),
@@ -310,7 +403,7 @@ impl PluginWiringError {
         }
     }
 
-    /// Transfer an unsettled receipt to the caller's retry/withdraw owner.
+    /// 将一个未结算的回执转交给调用方，供其重试或撤回。
     pub fn into_cleanup_receipt(self) -> Option<PluginWiringResult> {
         match self {
             Self::RollbackFailed { receipt, .. } => Some(*receipt),
@@ -374,33 +467,42 @@ impl fmt::Display for PluginWiringError {
 
 impl std::error::Error for PluginWiringError {}
 
+/// 插件发布目标的内部状态。
 #[derive(Default)]
 struct PluginPublicationState {
+    /// 目前已知的最新（生成号，身份摘要）。
     latest: Option<(u64, String)>,
+    /// 当前处于活跃状态的应用回执。
     active: Option<PluginWiringResult>,
+    /// 尚未结算的清理债务回执。
     cleanup_debt: Option<PluginWiringResult>,
+    /// 最近一次成功结算（撤回）后保留的回执。
     settled: Option<PluginWiringResult>,
 }
 
-/// One canonical state authority per ReactAgent, shared by its publication handles.
+/// 每个 ReactAgent 唯一的规范状态权威，被其发布句柄共享。
 #[derive(Default)]
 pub(crate) struct PluginPublicationAuthority {
+    /// 受互斥锁保护的发布状态。
     state: tokio::sync::Mutex<PluginPublicationState>,
 }
 
-/// Agent-bound handle for publishing and withdrawing immutable plugin generations.
+/// 绑定到某个 Agent、用于发布和撤回不可变插件生成的句柄。
 #[derive(Clone)]
 pub struct PluginPublicationTarget {
+    /// 底层共享的发布状态权威。
     authority: Arc<PluginPublicationAuthority>,
 }
 
 impl PluginPublicationTarget {
+    /// 为指定 Agent 构造对应的发布目标句柄。
     fn for_agent(agent: &crate::agent::react::ReactAgent) -> Self {
         Self {
             authority: Arc::clone(&agent.plugin_publication),
         }
     }
 
+    /// 校验本句柄是否确实属于给定 Agent。
     fn check_agent(
         &self,
         agent: &crate::agent::react::ReactAgent,
@@ -412,16 +514,17 @@ impl PluginPublicationTarget {
         }
     }
 
+    /// 返回本句柄是否绑定到给定 Agent。
     pub(crate) fn is_for_agent(&self, agent: &crate::agent::react::ReactAgent) -> bool {
         Arc::ptr_eq(&self.authority, &agent.plugin_publication)
     }
 
-    /// A cancelled apply retains a cleanup receipt in the target authority.
+    /// 一次被取消的应用操作会在目标权威中保留一份清理回执。
     pub async fn pending_cleanup_receipt(&self) -> Option<PluginWiringResult> {
         self.authority.state.lock().await.cleanup_debt.clone()
     }
 
-    /// Publish only a generation newer than this target's settled publication.
+    /// 仅当生成号新于本目标已结算的发布时才允许发布。
     pub async fn wire_prepared(
         &self,
         agent: &mut crate::agent::react::ReactAgent,
@@ -519,7 +622,7 @@ impl PluginPublicationTarget {
         })
     }
 
-    /// Withdraw only the exact receipt issued for this Agent's current generation.
+    /// 仅撤回本 Agent 当前生成所签发的那份确切回执。
     pub async fn rollback(
         &self,
         agent: &mut crate::agent::react::ReactAgent,
@@ -565,18 +668,22 @@ impl PluginPublicationTarget {
     }
 }
 
+/// 判断提交的回执是否与权威保存的规范回执确为同一次发布（依据发布令牌与内容）。
 fn receipt_matches(canonical: &PluginWiringResult, submitted: &PluginWiringResult) -> bool {
     canonical.publication_token.is_some() && canonical == submitted
 }
 
-/// Shared preparation cache and zero-read apply manager.
+/// 共享的准备结果缓存，以及零重复读取的应用（apply）管理器。
 #[derive(Clone)]
 pub struct PluginIntegrator {
+    /// 已准备生成结果的共享缓存。
     cache: Arc<Mutex<PluginPreparationCache>>,
+    /// 用于串行化准备过程的异步互斥锁。
     preparation: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl PluginIntegrator {
+    /// 构造一个新的插件集成器实例。
     pub fn new() -> Self {
         Self {
             cache: Arc::new(Mutex::new(PluginPreparationCache::default())),
@@ -584,7 +691,7 @@ impl PluginIntegrator {
         }
     }
 
-    /// Resolve the canonical publication authority attached to one Agent.
+    /// 解析出绑定在某个 Agent 上的规范发布权威句柄。
     pub fn publication_target(
         &self,
         agent: &crate::agent::react::ReactAgent,
@@ -592,7 +699,7 @@ impl PluginIntegrator {
         PluginPublicationTarget::for_agent(agent)
     }
 
-    /// Evict the cached revision. Existing `Arc` generations remain valid.
+    /// 淘汰缓存中的对应修订版本。已存在的 `Arc` 生成句柄仍然有效。
     pub fn invalidate(&self, registry: &PluginRegistry) {
         if let Ok(mut cache) = self.cache.lock() {
             cache
@@ -601,7 +708,7 @@ impl PluginIntegrator {
         }
     }
 
-    /// Capture and parse one immutable generation.
+    /// 捕获并解析出一个不可变的生成（generation）。
     pub async fn prepare(&self, registry: &mut PluginRegistry) -> Arc<PreparedPluginSet> {
         let _preparation = self.preparation.lock().await;
         let key = (
@@ -634,9 +741,11 @@ impl PluginIntegrator {
             .collect::<Vec<_>>();
         let mut identity = Sha256::new();
         let mut plugins = Vec::new();
-        // A component parse/read failure is isolated to that component. Only
-        // failures that prevent constructing the complete dependency-ordered
-        // generation make the snapshot inapplicable.
+        /*
+         * 单个组件的解析/读取失败仅影响该组件本身。
+         * 只有那些导致无法构造出完整的、按依赖排序的生成的失败，
+         * 才会使整个快照变为不可用。
+         */
         let mut applicable = true;
         let ordered = match registry.resolve_enabled_dependencies() {
             Ok(ordered) => ordered,
@@ -960,7 +1069,7 @@ impl PluginIntegrator {
             .checked_add(1)
     }
 
-    /// Apply a frozen generation. No package files are read here.
+    /// 应用一个已冻结的生成。此处不会再读取任何包文件。
     pub async fn wire_prepared(
         &self,
         agent: &mut crate::agent::react::ReactAgent,
@@ -971,6 +1080,7 @@ impl PluginIntegrator {
             .await
     }
 
+    /// 将一个已准备生成中的各插件组件实际注册到 Agent 上，并把结果写入回执。
     async fn apply_prepared(
         agent: &mut crate::agent::react::ReactAgent,
         prepared: &PreparedPluginSet,
@@ -987,8 +1097,10 @@ impl PluginIntegrator {
 
         for plugin in prepared.plugins() {
             let source = format!("plugin:{}", plugin.id());
-            // The receipt must already name possible mutations while an awaited
-            // registration is in flight, so cancellation retains a cleanup owner.
+            /*
+             * 在一次被 await 的注册操作进行中，回执就必须已经写明可能发生的变更，
+             * 这样即便操作被取消，也仍然保留一个可用于清理的归属者。
+             */
             if !plugin.skills().is_empty() || plugin.hooks().is_some() {
                 let owned = receipt
                     .components_by_plugin
@@ -1146,7 +1258,7 @@ impl PluginIntegrator {
         errors
     }
 
-    /// Undo exactly the registrations recorded by one apply receipt.
+    /// 精确撤销某次应用回执中记录的全部注册项。
     pub async fn rollback(
         &self,
         agent: &mut crate::agent::react::ReactAgent,

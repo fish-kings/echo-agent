@@ -1,8 +1,12 @@
-//! Manager-Subagent planning compiled into the canonical revisioned Team graph.
-//!
-//! This module owns no ready-frontier loop or checkpoint format. The manager's
-//! plan is committed as a graph revision, then ordinary runtime tasks are added
-//! through [`TaskRevisionService`](echo_orchestration::tasks::TaskRevisionService).
+/*!
+Manager-Subagent 规划，编译为规范的、带版本控制的 Team 图。
+
+本模块不持有任何就绪前沿（ready-frontier）循环或 checkpoint 格式。
+manager 的计划会作为一次图版本（graph revision）被提交，之后
+普通的运行时任务会通过
+[`TaskRevisionService`](echo_orchestration::tasks::TaskRevisionService)
+添加进去。
+*/
 
 use echo_core::error::{ReactError, Result};
 use echo_orchestration::planning::PlanValidator;
@@ -14,22 +18,30 @@ use super::{CompiledTeamGraph, team_task};
 const PLAN_TASK_ID: &str = "team-plan";
 const SYNTHESIS_TASK_ID: &str = "team-synthesis";
 
+/// manager 从 LLM 输出中解析出的原始计划。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TeamManagerPlan {
+    /// 计划中包含的任务列表。
     tasks: Vec<TeamManagerTask>,
 }
 
+/// manager 计划中单个任务的原始（尚未编译为运行时 id）表示。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TeamManagerTask {
+    /// manager 分配的稳定逻辑 id。
     id: String,
+    /// 负责执行该任务的已注册子 Agent 名称。
     subagent: String,
+    /// 任务的具体描述。
     description: String,
+    /// 该任务依赖的其他逻辑 id 列表。
     #[serde(default)]
     depends_on: Vec<String>,
 }
 
+/// 构建仅包含 manager 规划任务的初始 Team 图。
 pub(super) fn initial_graph(spec: &super::TeamSpec, objective: &str) -> CompiledTeamGraph {
     let member_names = spec.subagents.join(", ");
     CompiledTeamGraph {
@@ -52,6 +64,7 @@ pub(super) fn initial_graph(spec: &super::TeamSpec, objective: &str) -> Compiled
     }
 }
 
+/// 解析 manager 生成的计划文本，并将其展开为完整的运行时 Team 图。
 pub(super) fn expand_graph(
     spec: &super::TeamSpec,
     objective: &str,
@@ -172,6 +185,7 @@ pub(super) fn expand_graph(
     })
 }
 
+/// 返回汇总（synthesis）任务的 id。
 pub(super) const fn synthesis_task_id() -> &'static str {
     SYNTHESIS_TASK_ID
 }

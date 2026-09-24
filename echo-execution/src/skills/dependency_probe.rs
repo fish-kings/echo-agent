@@ -1,58 +1,61 @@
-//! Lightweight dependency probe for skill scripts.
-//!
-//! Reads `metadata.requires-binaries` and `metadata.requires-python-packages`
-//! from a [`SkillDescriptor`]'s frontmatter and produces a structured
-//! [`ProbeReport`].  System binaries are probed via `which`; Python packages
-//! are documentation-only (uv + PEP 723 handles them at runtime).
-//!
-//! Never auto-installs anything — only detects and suggests.
+/*! 面向 skill 脚本的轻量级依赖探测器。
+
+从 [`SkillDescriptor`] 的 frontmatter 中读取 `metadata.requires-binaries` 和
+`metadata.requires-python-packages`，生成结构化的 [`ProbeReport`]。系统二进制
+通过 `which` 探测；Python 包仅作文档记录（运行时由 uv + PEP 723 处理）。
+
+从不自动安装任何东西 —— 仅探测并给出建议。
+*/
 
 use crate::skills::external::types::SkillDescriptor;
 
-/// Kind of an external dependency.
+/// 外部依赖的种类。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DepKind {
-    /// A system binary (e.g. `soffice`, `pdftoppm`).
+    /// 系统二进制程序（例如 `soffice`、`pdftoppm`）。
     Binary,
-    /// A Python package (handled by uv + PEP 723; documentation-only).
+    /// Python 包（由 uv + PEP 723 处理；仅作文档记录）。
     PythonPkg,
-    /// A Node.js module.
+    /// Node.js 模块。
     NodeModule,
 }
 
-/// A single dependency declared by a skill.
+/// skill 声明的单个依赖项。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillDependency {
+    /// 依赖的种类。
     pub kind: DepKind,
+    /// 依赖的名称（二进制名或包名）。
     pub name: String,
-    /// `true` = skill unusable without it; `false` = optional feature degrades.
+    /// `true` 表示缺失该依赖时 skill 无法使用；`false` 表示仅是某项可选功能会降级。
     pub required: bool,
-    /// Human-readable install hint (e.g. "brew install --cask libreoffice").
+    /// 可读的安装提示（例如 "brew install --cask libreoffice"）。
     pub install_hint: String,
 }
 
-/// Result of probing all declared dependencies for a skill.
+/// 探测某个 skill 声明的全部依赖后得到的结果。
 #[derive(Debug, Clone, Default)]
 pub struct ProbeReport {
-    /// Dependencies found on the system.
+    /// 系统中已找到的依赖名称。
     pub satisfied: Vec<String>,
-    /// Required dependencies that are missing (skill cannot function).
+    /// 缺失的必需依赖（skill 无法工作）。
     pub missing_required: Vec<SkillDependency>,
-    /// Optional dependencies that are missing (degraded functionality).
+    /// 缺失的可选依赖（功能会降级）。
     pub missing_optional: Vec<SkillDependency>,
 }
 
 impl ProbeReport {
-    /// `true` when all required dependencies are present.
+    /// 当所有必需依赖都已满足时返回 `true`。
     pub fn is_ok(&self) -> bool {
         self.missing_required.is_empty()
     }
 }
 
-/// Parse a comma-separated or JSON-array-like string value from metadata
-/// into a list of individual items.  Frontmatter `metadata:` values are
-/// stored as `HashMap<String, String>`, so YAML lists like
-/// `[soffice, pdftoppm]` come through as `"[soffice, pdftoppm]"`.
+/** 将 metadata 中逗号分隔或类似 JSON 数组的字符串值解析为独立条目列表。
+
+frontmatter 的 `metadata:` 值存储为 `HashMap<String, String>`，因此像
+`[soffice, pdftoppm]` 这样的 YAML 列表会被读成字符串 `"[soffice, pdftoppm]"`。
+*/
 fn parse_metadata_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| {
@@ -64,9 +67,11 @@ fn parse_metadata_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-/// Extract declared dependencies from a [`SkillDescriptor`]'s frontmatter
-/// metadata.  Reads `requires-binaries` and `requires-python-packages` keys
-/// from the metadata map (both stored as comma-separated strings).
+/** 从 [`SkillDescriptor`] 的 frontmatter metadata 中提取声明的依赖。
+
+读取 metadata map 中的 `requires-binaries` 和 `requires-python-packages`
+两个键（均以逗号分隔的字符串形式存储）。
+*/
 pub fn extract_dependencies(desc: &SkillDescriptor) -> Vec<SkillDependency> {
     let mut deps = Vec::new();
 
@@ -87,7 +92,7 @@ pub fn extract_dependencies(desc: &SkillDescriptor) -> Vec<SkillDependency> {
                 kind: DepKind::PythonPkg,
                 install_hint: format!("uv run 自动处理: {}", name),
                 name,
-                required: false, // uv + PEP 723 handles it
+                required: false, // 由 uv + PEP 723 处理
             });
         }
     }
@@ -95,9 +100,11 @@ pub fn extract_dependencies(desc: &SkillDescriptor) -> Vec<SkillDependency> {
     deps
 }
 
-/// 探测单个二进制是否在 PATH 上(走 `which` 子进程,不引入 which crate)。
-/// 失败(无 which 命令等)返回 false —— 偏保守,把声明二进制当缺失显示,
-/// 这样用户至少能看到提示而非静默通过。
+/** 探测单个二进制是否在 PATH 上（通过 `which` 子进程，不引入 which crate）。
+
+失败时（例如没有 which 命令）返回 false —— 偏保守处理，把声明的二进制当作
+缺失显示，这样用户至少能看到提示，而不是静默通过。
+*/
 fn binary_available(name: &str) -> bool {
     std::process::Command::new("which")
         .arg(name)
@@ -108,9 +115,11 @@ fn binary_available(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 探测一个 skill 声明的全部必需二进制,返回**缺失**的二进制名列表。
-/// 供 SkillsHub scan 调用,结果存进 SkillHubEntry.missing_dependencies,
-/// 前端据此显示 ⚠️ 提示。Python 包不探测(uv + PEP 723 运行时处理)。
+/** 探测一个 skill 声明的全部必需二进制，返回**缺失**的二进制名称列表。
+
+供 SkillsHub scan 调用，结果存入 SkillHubEntry.missing_dependencies，
+前端据此显示 ⚠️ 提示。不探测 Python 包（由 uv + PEP 723 在运行时处理）。
+*/
 pub fn missing_binary_names(desc: &SkillDescriptor) -> Vec<String> {
     extract_dependencies(desc)
         .into_iter()
@@ -119,7 +128,7 @@ pub fn missing_binary_names(desc: &SkillDescriptor) -> Vec<String> {
         .collect()
 }
 
-/// Return a human-readable install hint for common binaries.
+/// 为常见的二进制程序返回可读的安装提示。
 fn install_hint_for_binary(bin: &str) -> String {
     match bin {
         "soffice" => "brew install --cask libreoffice".into(),
@@ -137,6 +146,7 @@ mod tests {
     use crate::skills::external::types::SkillSandboxPolicy;
     use std::collections::HashMap;
 
+    /// 构造一个仅指定 metadata、其余字段取默认值的测试用 SkillDescriptor。
     fn desc_with_metadata(md: HashMap<String, String>) -> SkillDescriptor {
         SkillDescriptor {
             source: None,
@@ -156,6 +166,7 @@ mod tests {
         }
     }
 
+    // metadata 为空时应提取出空依赖列表。
     #[test]
     fn extract_empty_for_no_metadata() {
         let desc = desc_with_metadata(HashMap::new());
@@ -163,6 +174,7 @@ mod tests {
         assert!(deps.is_empty());
     }
 
+    // 应从 frontmatter 的 requires-binaries 中正确解析出二进制依赖。
     #[test]
     fn extract_binaries_from_frontmatter() {
         let mut md = HashMap::new();
@@ -176,6 +188,7 @@ mod tests {
         assert_eq!(deps[1].name, "pdftoppm");
     }
 
+    // Python 包依赖应被标记为可选（非必需）。
     #[test]
     fn extract_python_packages_as_optional() {
         let mut md = HashMap::new();
@@ -191,6 +204,7 @@ mod tests {
         );
     }
 
+    // ProbeReport 的默认值（无缺失依赖）应判定为 is_ok。
     #[test]
     fn probe_report_default_is_ok() {
         let report = ProbeReport::default();

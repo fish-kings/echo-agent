@@ -1,24 +1,24 @@
 //! # echo_orchestration
 //!
-//! Orchestration layer for the [echo-agent](https://crates.io/crates/echo_agent) framework.
+//! [echo-agent](https://crates.io/crates/echo_agent) 框架的编排层。
 //!
-//! ## Modules
+//! ## 模块
 //!
-//! | Module | Description |
+//! | 模块 | 说明 |
 //! |--------|-------------|
-//! | [`workflow`] | Graph workflow engine — `GraphBuilder`, `Graph`, streaming events |
-//! | [`human_loop`] | Human-in-the-loop approvals — console, webhook, WebSocket, permission pipeline |
-//! | [`tasks`] | Revisioned task graphs, DAG execution, scheduling, and progress events |
-//! | [`scheduler`] | Cron-based task scheduling — `CronTask`, `SchedulerRunner` |
-//! | [`planning`] | Structural validation for revisioned task graphs |
-//! | [`runtime`] | Generic turn driver — `AgentTurnDriver`, `TurnRequest`, execution and delivery outcomes |
+//! | [`workflow`] | 图工作流引擎 —— `GraphBuilder`、`Graph`、流式事件 |
+//! | [`human_loop`] | 人工介入审批 —— 控制台、Webhook、WebSocket、权限流水线 |
+//! | [`tasks`] | 可修订任务图、DAG 执行、调度与进度事件 |
+//! | [`scheduler`] | 基于 Cron 的任务调度 —— `CronTask`、`SchedulerRunner` |
+//! | [`planning`] | 面向可修订任务图的结构校验 |
+//! | [`runtime`] | 通用回合驱动器 —— `AgentTurnDriver`、`TurnRequest`、执行与投递结果 |
 //!
-//! ## Feature Flags
+//! ## Feature 开关
 //!
-//! - `websocket` — Enable `WebSocketHumanLoopProvider` for WebSocket-based approvals
+//! - `websocket` —— 启用基于 WebSocket 的审批实现 `WebSocketHumanLoopProvider`
 //!
-//! Most users should depend on `echo_agent` (the facade crate) instead of
-//! depending on `echo_orchestration` directly.
+//! 大多数使用者应当依赖门面 crate `echo_agent`，而不是直接依赖
+//! `echo_orchestration`。
 
 pub mod human_loop;
 pub mod planning;

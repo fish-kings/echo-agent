@@ -1,24 +1,25 @@
-//! OpenTelemetry Integration
-//!
-//! Provides OTLP export configuration and initialization functions, integrating with
-//! the existing `tracing` infrastructure. Also provides Metrics infrastructure
-//! (Counter / Histogram) for recording key indicators such as LLM calls,
-//! Token usage, and tool execution.
-//!
-//! # Usage
-//!
-//! ```rust,no_run
-//! use echo_agent::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
-//!
-//! # fn main() -> echo_agent::error::Result<()> {
-//! init_telemetry(TelemetryConfig::default())?;
-//!
-//! // ... Run Agent ...
-//!
-//! shutdown_telemetry()?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+OpenTelemetry 集成
+
+提供 OTLP 导出配置和初始化函数，与现有的 `tracing` 基础设施集成。
+同时提供 Metrics 基础设施（Counter / Histogram），用于记录 LLM 调用、
+Token 使用量、工具执行等关键指标。
+
+# 用法
+
+```rust,no_run
+use echo_agent::telemetry::{TelemetryConfig, init_telemetry, shutdown_telemetry};
+
+# fn main() -> echo_agent::error::Result<()> {
+init_telemetry(TelemetryConfig::default())?;
+
+// ... Run Agent ...
+
+shutdown_telemetry()?;
+# Ok(())
+# }
+```
+*/
 
 use crate::error::{ReactError, Result};
 use opentelemetry::KeyValue;
@@ -31,16 +32,16 @@ use std::sync::{Mutex, OnceLock};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-// ── Config ───────────────────────────────────────────────────────────────────
+// ── 配置 ───────────────────────────────────────────────────────────────────
 
-/// OpenTelemetry configuration
+/// OpenTelemetry 配置
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
-    /// OTLP endpoint (gRPC)
+    /// OTLP 端点（gRPC）
     pub otlp_endpoint: String,
-    /// Service name
+    /// 服务名称
     pub service_name: String,
-    /// Also output to console
+    /// 是否同时输出到控制台
     pub enable_console: bool,
 }
 
@@ -54,43 +55,50 @@ impl Default for TelemetryConfig {
     }
 }
 
-// ── Metrics ──────────────────────────────────────────────────────────────────
+// ── Metrics 指标 ──────────────────────────────────────────────────────────────
 
-/// Global Metrics instance (lazy initialized)
+/// 全局 Metrics 实例（懒初始化）
 static METRICS: OnceLock<Metrics> = OnceLock::new();
+/// 全局遥测运行时状态（懒初始化）
 static TELEMETRY_RUNTIME: OnceLock<TelemetryRuntime> = OnceLock::new();
+/// 保护初始化过程的互斥锁，防止并发重复初始化
 static TELEMETRY_INIT_LOCK: Mutex<()> = Mutex::new(());
 
+/// 保存 tracer/meter provider 的运行时句柄，用于 shutdown 时统一关闭
 struct TelemetryRuntime {
+    /// OpenTelemetry tracing provider
     tracer_provider: TracerProvider,
+    /// OpenTelemetry metrics provider
     meter_provider: SdkMeterProvider,
 }
 
-/// Agent runtime metrics
-///
-/// Provides recording interfaces for core metrics such as LLM calls, Token usage,
-/// and tool execution. All metrics are exported via OTLP Metrics exporter.
+/**
+Agent 运行时指标
+
+提供 LLM 调用、Token 使用量、工具执行等核心指标的记录接口。
+所有指标都会通过 OTLP Metrics exporter 导出。
+*/
 #[derive(Debug, Clone)]
 pub struct Metrics {
-    /// LLM call counter (labels: provider, model, status)
+    /// LLM 调用计数器（标签：provider、model、status）
     llm_calls: Counter<u64>,
-    /// LLM Token usage counter (labels: provider, model, type=input|output)
+    /// LLM Token 使用量计数器（标签：provider、model、type=input|output）
     llm_tokens: Counter<u64>,
-    /// LLM call latency histogram (labels: provider, model)
+    /// LLM 调用延迟直方图（标签：provider、model）
     llm_latency: Histogram<f64>,
-    /// Tool execution counter (labels: tool, status)
+    /// 工具执行计数器（标签：tool、status）
     tool_executions: Counter<u64>,
-    /// Tool execution latency histogram (labels: tool)
+    /// 工具执行延迟直方图（标签：tool）
     tool_latency: Histogram<f64>,
 }
 
 impl Metrics {
-    /// Get global Metrics instance
+    /// 获取全局 Metrics 实例
     pub fn get() -> Option<&'static Metrics> {
         METRICS.get()
     }
 
-    /// Record an LLM call
+    /// 记录一次 LLM 调用
     pub fn record_llm_call(provider: &str, model: &str, status: &str) {
         if let Some(m) = Self::get() {
             m.llm_calls.add(
@@ -104,7 +112,7 @@ impl Metrics {
         }
     }
 
-    /// Record LLM Token usage
+    /// 记录 LLM Token 使用量
     pub fn record_llm_tokens(provider: &str, model: &str, token_type: &str, count: u64) {
         if let Some(m) = Self::get() {
             m.llm_tokens.add(
@@ -118,7 +126,7 @@ impl Metrics {
         }
     }
 
-    /// Record LLM call latency (milliseconds)
+    /// 记录 LLM 调用延迟（毫秒）
     pub fn record_llm_latency(provider: &str, model: &str, duration_ms: f64) {
         if let Some(m) = Self::get() {
             m.llm_latency.record(
@@ -131,7 +139,7 @@ impl Metrics {
         }
     }
 
-    /// Record a tool execution
+    /// 记录一次工具执行
     pub fn record_tool_execution(tool: &str, status: &str) {
         if let Some(m) = Self::get() {
             m.tool_executions.add(
@@ -144,7 +152,7 @@ impl Metrics {
         }
     }
 
-    /// Record tool execution latency (milliseconds)
+    /// 记录工具执行延迟（毫秒）
     pub fn record_tool_latency(tool: &str, duration_ms: f64) {
         if let Some(m) = Self::get() {
             m.tool_latency
@@ -153,14 +161,16 @@ impl Metrics {
     }
 }
 
-// ── Init / Shutdown ──────────────────────────────────────────────────────────
+// ── 初始化 / 关闭 ──────────────────────────────────────────────────────────
 
-/// Initialize OpenTelemetry tracing + metrics
-///
-/// Registers OTLP exporter + tracing-opentelemetry layer to the global subscriber,
-/// and initializes MeterProvider and global Metrics.
-///
-/// If `enable_console` is true, also registers a fmt layer.
+/**
+初始化 OpenTelemetry 的 tracing 和 metrics。
+
+向全局 subscriber 注册 OTLP exporter 和 tracing-opentelemetry layer，
+并初始化 MeterProvider 和全局 Metrics。
+
+如果 `enable_console` 为 true，还会额外注册一个 fmt layer。
+*/
 pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
     let _init_guard = TELEMETRY_INIT_LOCK.lock().map_err(|error| {
         ReactError::Other(format!("telemetry initialization lock poisoned: {error}"))
@@ -170,7 +180,7 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
             "Telemetry is already initialized".to_string(),
         ));
     }
-    // ── Tracing ──
+    // ── Tracing 追踪 ──
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(&config.otlp_endpoint)
@@ -214,7 +224,7 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
             })?;
     }
 
-    // Publish globals only after exporters and the subscriber are all ready.
+    // 只有在 exporter 和 subscriber 都准备就绪之后才发布全局实例。
     METRICS
         .set(metrics)
         .map_err(|_| ReactError::Other("Metrics already initialized".to_string()))?;
@@ -229,7 +239,7 @@ pub fn init_telemetry(config: TelemetryConfig) -> Result<()> {
     Ok(())
 }
 
-/// Initialize Metrics (MeterProvider + global Instruments)
+/// 初始化 Metrics（MeterProvider + 全局 Instruments）
 fn build_metrics(config: &TelemetryConfig) -> Result<(Metrics, SdkMeterProvider)> {
     let metrics_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
@@ -279,7 +289,7 @@ fn build_metrics(config: &TelemetryConfig) -> Result<(Metrics, SdkMeterProvider)
     Ok((metrics, meter_provider))
 }
 
-/// Shutdown OpenTelemetry, flush pending spans and metrics
+/// 关闭 OpenTelemetry，刷新未发送的 span 和 metrics
 pub fn shutdown_telemetry() -> Result<()> {
     let runtime = TELEMETRY_RUNTIME
         .get()
@@ -294,3 +304,4 @@ pub fn shutdown_telemetry() -> Result<()> {
         .map_err(|error| ReactError::Other(format!("tracing shutdown failed: {error}")))?;
     Ok(())
 }
+</content>

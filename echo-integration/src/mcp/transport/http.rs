@@ -20,23 +20,30 @@ use super::{McpTransport, redact_response_error};
 /// 通过 HTTP POST 发送 JSON-RPC 请求，适用于远程 MCP 服务端。
 /// 符合 MCP Streamable HTTP 规范：直接 POST 到端点 URL。
 ///
-/// This request/response transport has no server-to-client receive channel.
-/// Servers that return asynchronous `202 Accepted` responses must use the SSE
-/// transport instead.
+/// 该请求/响应式传输层没有服务端到客户端的接收通道。
+/// 若服务端会返回异步的 `202 Accepted` 响应，则必须改用 SSE 传输层。
 pub struct HttpTransport {
+    /// 底层 HTTP 客户端。
     client: reqwest::Client,
     /// MCP 服务端端点 URL
     endpoint: String,
+    /// 每次请求都会附带的自定义请求头。
     headers: HashMap<String, String>,
+    /// 用于生成下一个 JSON-RPC 请求 ID 的自增计数器。
     next_id: Arc<AtomicU64>,
     /// 服务端在 initialize 响应中返回的会话 ID
     session_id: Arc<Mutex<Option<String>>>,
+    /// 标记该传输层是否已关闭。
     closed: AtomicBool,
+    /// 当前正在进行中的操作数量。
     in_flight: AtomicUsize,
+    /// 用于在 in_flight 变化时唤醒等待关闭完成的任务。
     operations_changed: Notify,
 }
 
+/// 一次在途操作的守卫；`Drop` 时自动递减 `in_flight` 计数并唤醒等待者。
 struct HttpOperationGuard<'a> {
+    /// 所属的 HTTP 传输层。
     transport: &'a HttpTransport,
 }
 
@@ -48,6 +55,7 @@ impl Drop for HttpOperationGuard<'_> {
 }
 
 impl HttpTransport {
+    /// 使用给定端点 URL 与自定义请求头创建一个新的 HTTP 传输层。
     pub fn new(endpoint: String, headers: HashMap<String, String>) -> Self {
         Self {
             client: reqwest::Client::builder()
@@ -69,6 +77,7 @@ impl HttpTransport {
         }
     }
 
+    /// 尝试为一次新操作占用一个在途名额；若传输层已关闭则返回错误。
     fn admit_operation(&self) -> Result<HttpOperationGuard<'_>> {
         if self.closed.load(Ordering::Acquire) {
             return Err(ReactError::Mcp(Box::new(McpError::TransportClosed)));
@@ -82,6 +91,7 @@ impl HttpTransport {
         Ok(HttpOperationGuard { transport: self })
     }
 
+    /// 标记传输层为已关闭，并等待所有已被接纳的在途操作结束，超时则返回错误。
     async fn close_with_timeout(&self, timeout: Duration) -> Result<()> {
         self.closed.store(true, Ordering::Release);
         let deadline = tokio::time::Instant::now() + timeout;
@@ -104,6 +114,8 @@ impl HttpTransport {
 }
 
 impl McpTransport for HttpTransport {
+    /// 通过 HTTP POST 发送一次 JSON-RPC 请求并同步等待响应，
+    /// 对瞬时性错误（连接重置、超时、DNS、TLS、5xx 等）进行有限次重试。
     fn send(&self, request: JsonRpcRequest) -> BoxFuture<'_, Result<JsonRpcResponse>> {
         Box::pin(async move {
             let _operation = self.admit_operation()?;

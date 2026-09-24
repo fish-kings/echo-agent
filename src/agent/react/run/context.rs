@@ -1,4 +1,4 @@
-//! Context management + long-term memory + persistence + audit
+//! 上下文管理 + 长期记忆 + 持久化 + 审计
 
 use super::super::ReactAgent;
 use super::types::StreamMode;
@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 pub(crate) const TURN_MEMORY_CONTEXT_PROJECTION: &str = "echo-agent:turn-memory-context";
 pub(crate) const WORKSPACE_CONTEXT_PROJECTION: &str = "echo-agent:workspace-context";
 
-/// (stage4 E1) Prompt for the pre-compaction flush LLM call.
+/// (stage4 E1) 压缩前刷写（pre-compaction flush）LLM 调用所使用的提示词。
 const PRE_COMPACTION_FLUSH_PROMPT: &str = "\
 You are a memory-compaction flusher. The conversation below is about to be \
 compressed (older messages will be summarized away). Identify DURABLE facts \
@@ -21,16 +21,20 @@ Reply with a JSON array of items to persist, each: \
 {\"content\": \"<concise fact>\", \"type\": \"user_preference|project_fact|architecture_decision|debugging_lesson|error_resolution|command_pattern|tool_usage\", \"recall_weight\": <0.0-1.0>}.\n\
 If nothing is durable, reply exactly: NO_REPLY";
 
+/// 按钩子执行时机（pre/post）分组收集到的消息文本批次。
 #[derive(Clone, Default)]
 pub(crate) struct HookMessageBatches {
+    /// 钩子执行之前收集到的消息。
     pub pre: Vec<String>,
+    /// 钩子执行之后收集到的消息。
     pub post: Vec<String>,
 }
 
 impl ReactAgent {
-    /// Detect memory-worthy conversational triggers and persist them through the
-    /// real layered memory manager. Currently this wires the reliable
-    /// user-correction path; explicit saves are handled by the `remember` tool.
+    /** 检测值得记忆的对话触发条件，并通过真实的分层记忆管理器将其持久化。
+     *
+     * 目前只接入了可靠的“用户纠正”路径；显式保存由 `remember` 工具负责处理。
+     */
     pub(crate) async fn detect_and_write_memory_triggers(&self, user_message: &str) {
         let Some(layer_manager) = &self.memory_layer_manager else {
             return;
@@ -136,13 +140,13 @@ impl ReactAgent {
         }
     }
 
-    /// Reset message history, keeping only the system prompt to ensure each execution is independent
+    /// 重置消息历史，只保留 system prompt，确保每次执行相互独立
     pub(crate) async fn reset_messages(&self) {
         let mut ctx = self.memory.context.lock().await;
         ctx.clear();
         ctx.push(Message::system(self.current_system_prompt()));
         drop(ctx);
-        // Fire SessionStart hook with matcher "clear"
+        // 以 matcher "clear" 触发 SessionStart 钩子
         let start_result = self
             .fire_lifecycle_hook(HookEvent::SessionStart, Some("clear"))
             .await;
@@ -151,6 +155,7 @@ impl ReactAgent {
         }
     }
 
+    /// 重置运行时上下文：清空消息历史、重置技能激活状态与快照游标。
     async fn reset_runtime_context(&self) {
         self.reset_messages().await;
         self.tools.skill_registry.reset_activation_state();
@@ -159,9 +164,11 @@ impl ReactAgent {
         self.set_working_dir(self.memory.configured_working_dir.clone());
     }
 
-    /// Hydrate the managed runtime identity before an input guard can produce
-    /// a terminal. This restores only durable runtime state; lifecycle hooks
-    /// and the raw user input remain deferred until normal context preparation.
+    /** 在输入守卫（input guard）可能产生终态结果之前，恢复受管运行时身份。
+     *
+     * 这里只恢复持久化的运行时状态；生命周期钩子与原始用户输入仍然会
+     * 推迟到常规上下文准备阶段再处理。
+     */
     pub(crate) async fn hydrate_managed_runtime_before_input_guard(
         &self,
         scope_id: &str,
@@ -183,6 +190,7 @@ impl ReactAgent {
         Ok(())
     }
 
+    /// 将运行时状态水合标记置为“水合中”，并返回替换前的旧状态。
     pub(crate) async fn begin_runtime_state_hydration(
         &self,
         runtime_state_id: Option<&str>,
@@ -196,6 +204,7 @@ impl ReactAgent {
         )
     }
 
+    /// 将运行时状态水合标记提交为“已水合”。
     pub(crate) async fn commit_runtime_state_hydration(&self, runtime_state_id: Option<&str>) {
         let mut hydration = self.memory.runtime_state_hydration.lock().await;
         *hydration = super::super::subsystems::memory::RuntimeStateHydration::Hydrated(
@@ -203,6 +212,7 @@ impl ReactAgent {
         );
     }
 
+    /// 清空运行时快照管理器中保存的所有快照。
     pub(crate) fn clear_runtime_snapshots(&self) {
         let mut snapshots = match self.memory.snapshot_manager.write() {
             Ok(snapshots) => snapshots,
@@ -216,6 +226,7 @@ impl ReactAgent {
         }
     }
 
+    /// 测试专用：以当前配置的会话 id 恢复线程上下文。
     #[cfg(test)]
     pub(crate) async fn restore_thread_context(&self) -> crate::error::Result<()> {
         let runtime_state_id = self.config.conversation_id.clone();
@@ -223,6 +234,7 @@ impl ReactAgent {
             .await
     }
 
+    /// 在恢复上下文之前，先协调（reconcile）已配置的、待处理的转录投影。
     async fn reconcile_configured_pending_projection(
         &self,
         runtime_state_id: Option<&str>,
@@ -241,6 +253,7 @@ impl ReactAgent {
         Ok(())
     }
 
+    /// 从 RuntimeStateStore 检查点恢复线程上下文（消息 + 技能），并触发 SessionStart 钩子。
     pub(crate) async fn restore_thread_context_for(
         &self,
         scope_id: Option<&str>,
@@ -253,7 +266,7 @@ impl ReactAgent {
         let agent = self.config.agent_name.clone();
         let mut session_matcher = "startup";
 
-        // Try RuntimeStateStore checkpoint (messages + skills).
+        // 尝试从 RuntimeStateStore 检查点恢复（消息 + 技能）。
         if self.memory.state_store.is_some() {
             let restored = match runtime_state_id {
                 Some(runtime_state_id) => {
@@ -284,7 +297,7 @@ impl ReactAgent {
             self.reset_runtime_context().await;
         }
 
-        // Fire SessionStart hook with appropriate matcher
+        // 以合适的 matcher 触发 SessionStart 钩子
         let start_result = self
             .fire_lifecycle_hook(HookEvent::SessionStart, Some(session_matcher))
             .await;
@@ -295,9 +308,10 @@ impl ReactAgent {
         Ok(())
     }
 
-    /// Restore a persisted chat exactly once on a cold agent instance.
-    /// Existing in-process history is authoritative and must never be replaced
-    /// between turns.
+    /** 在“冷”Agent 实例上，仅恢复一次持久化的聊天记录。
+     *
+     * 进程内已有的历史记录是权威数据，绝不能在多个回合之间被替换。
+     */
     #[cfg(test)]
     pub(crate) async fn restore_chat_context_if_cold(&self) -> crate::error::Result<()> {
         let runtime_state_id = self.config.conversation_id.clone();
@@ -308,6 +322,7 @@ impl ReactAgent {
         .await
     }
 
+    /// 在“冷”Agent 实例上恢复聊天上下文；若已经水合过（非冷启动）则跳过。
     pub(crate) async fn restore_chat_context_if_cold_for(
         &self,
         scope_id: Option<&str>,
@@ -354,9 +369,10 @@ impl ReactAgent {
         Ok(())
     }
 
-    /// (stage4 D1) Unified recall — delegates to `MemoryRecaller` so the auto
-    /// recall path and the tool recall path (`LayeredRecallTool`) share one
-    /// composite-score entry over the unified namespace (割裂点 3/9).
+    /** (stage4 D1) 统一召回入口 —— 委托给 `MemoryRecaller`，使得自动召回路径
+     * 与工具召回路径（`LayeredRecallTool`）在统一命名空间下共享同一套
+     * 综合评分入口（割裂点 3/9）。
+     */
     pub(crate) async fn recall_long_term_memories(
         &self,
         query: &str,
@@ -368,7 +384,7 @@ impl ReactAgent {
         reca.recall(query, 5).await
     }
 
-    /// Fire a lifecycle hook and inject any results into the agent context.
+    /// 触发一个生命周期钩子，并将任何结果注入到 Agent 上下文中。
     pub async fn fire_lifecycle_hook(
         &self,
         event: HookEvent,
@@ -391,15 +407,15 @@ impl ReactAgent {
                 HookContext::for_notification(matcher.unwrap_or(""), &session_id, &agent_name)
             }
             HookEvent::UserPromptSubmit => {
-                // User input text is passed via the `matcher` parameter by the
-                // caller (prepare_stream_context / prepare_react_context).
-                // This enables content-based hook matchers (e.g. "\\.docx")
-                // to match against the actual user input via glob::Pattern.
+                /* 用户输入文本由调用方（prepare_stream_context /
+                 * prepare_react_context）通过 `matcher` 参数传入。
+                 * 这样一来，基于内容的钩子匹配器（例如 "\\.docx"）就能够
+                 * 通过 glob::Pattern 对真实的用户输入进行匹配。 */
                 let prompt_text = matcher.unwrap_or("");
                 HookContext::for_user_prompt_submit(prompt_text, matcher, &session_id, &agent_name)
             }
             HookEvent::PreCompact | HookEvent::PostCompact => {
-                // Compress stats are set by caller, use default here
+                // 压缩统计信息由调用方设置，这里使用默认值
                 let stats = Default::default();
                 if event == HookEvent::PreCompact {
                     HookContext::for_pre_compact(
@@ -430,7 +446,7 @@ impl ReactAgent {
                 &agent_name,
             ),
             HookEvent::PostToolBatch => {
-                // Batch details are set by caller; use defaults here
+                // 批次明细由调用方设置；这里使用默认值
                 HookContext::for_post_tool_batch(&[], 0, 0, &session_id, &agent_name)
             }
             HookEvent::StopFailure => {
@@ -447,9 +463,9 @@ impl ReactAgent {
                 "",
                 "",
                 matcher.unwrap_or(""),
-                // Fallback mapping lacks a real terminal status; callers that
-                // fire SubagentStop directly pass the actual status. Default
-                // to Completed so this placeholder compiles without guessing.
+                /* 该回退映射并不知道真实的终态状态；直接触发 SubagentStop
+                 * 的调用方会传入真实状态。这里默认使用 Completed，使这个
+                 * 占位调用能够编译通过，而不必去猜测真实状态。 */
                 echo_core::hooks::SubagentStopStatus::Completed,
                 &session_id,
                 &agent_name,
@@ -464,18 +480,18 @@ impl ReactAgent {
                 "",
                 matcher.unwrap_or(""),
                 "",
-                // Fallback mapping lacks a real terminal status; direct
-                // callers pass the actual status. Default Completed so this
-                // placeholder compiles without guessing.
+                /* 该回退映射并不知道真实的终态状态；直接调用的调用方会
+                 * 传入真实状态。这里默认使用 Completed，使这个占位调用
+                 * 能够编译通过，而不必去猜测真实状态。 */
                 echo_core::hooks::TaskTerminalStatus::Completed,
                 &session_id,
                 &agent_name,
             ),
-            // New events — use generic lifecycle context
+            // 新事件 —— 使用通用生命周期上下文
             HookEvent::PluginLoaded | HookEvent::PluginDisabled => {
                 HookContext::for_lifecycle(event, matcher.unwrap_or(""), &session_id, &agent_name)
             }
-            // Evolution events — use dedicated factory methods
+            // 演化（Evolution）事件 —— 使用专用的工厂方法
             HookEvent::PostMemoryWrite => HookContext::for_post_memory_write(
                 "",
                 matcher.unwrap_or(""),
@@ -489,7 +505,7 @@ impl ReactAgent {
                 &session_id,
                 &agent_name,
             ),
-            // Phase 5 evolution events — use generic lifecycle context
+            // 第五阶段演化事件 —— 使用通用生命周期上下文
             HookEvent::SkillCandidateDetected
             | HookEvent::SkillLifecycleTransition
             | HookEvent::SkillHealthCheck
@@ -498,7 +514,7 @@ impl ReactAgent {
             | HookEvent::RulePromoted => {
                 HookContext::for_lifecycle(event, matcher.unwrap_or(""), &session_id, &agent_name)
             }
-            // Tool events should use run_pre_tool_use / run_post_tool_use / run_post_tool_use_failure directly
+            // 工具类事件应直接使用 run_pre_tool_use / run_post_tool_use / run_post_tool_use_failure
             HookEvent::PreToolUse
             | HookEvent::PostToolUse
             | HookEvent::PostToolUseFailure
@@ -512,7 +528,7 @@ impl ReactAgent {
         let registry = self.tools.hook_registry.read().await.clone();
         let mut result = registry.run_lifecycle_hooks(&context).await;
 
-        // Inject context from hook results (single lock acquisition for batching)
+        // 从钩子结果中注入上下文（合并为一次加锁以做批量处理）
         let event_name = event.as_str();
         if result.injected_context.is_some() || !result.messages.is_empty() {
             let mut ctx = self.memory.context.lock().await;
@@ -527,9 +543,9 @@ impl ReactAgent {
             }
         }
 
-        // ActivateSkill hook: directly activate the requested skill.
-        // On success, clear the field so callers (prepare phase → cache writer)
-        // don't also hand it to TriggerSupervisor for a double activation.
+        /* ActivateSkill 钩子：直接激活被请求的技能。
+         * 成功后清空该字段，使调用方（准备阶段 → 缓存写入器）不会再把它
+         * 交给 TriggerSupervisor，从而避免重复激活。 */
         if let Some((ref skill, ref reason)) = result.activate_skill {
             match self.activate_skill(skill).await {
                 Ok(()) => {
@@ -537,12 +553,12 @@ impl ReactAgent {
                     let mut ctx = self.memory.context.lock().await;
                     ctx.push(runtime_context_note("Hook:ActivateSkill", &note));
                     info!(skill = %skill, reason = %reason, "Hook activated skill");
-                    // Consumed — prevent double activation by supervisor (P4)
+                    // 已消费 —— 防止被 supervisor（P4）重复激活
                     result.activate_skill = None;
                 }
                 Err(e) => {
                     warn!(skill = %skill, error = %e, "Hook-requested skill activation failed");
-                    // Leave activate_skill in result so supervisor (P4) can retry
+                    // 保留 result 中的 activate_skill，以便 supervisor（P4）重试
                 }
             }
         }
@@ -550,10 +566,11 @@ impl ReactAgent {
         result
     }
 
-    /// Common initialization logic for streaming execution
-    ///
-    /// Decides whether to reset context or restore from checkpoint based on the mode.
-    /// Returns the number of recalled long-term memories (0 means no memories were injected).
+    /** 流式执行的通用初始化逻辑。
+     *
+     * 根据模式决定是重置上下文，还是从检查点恢复。
+     * 返回召回的长期记忆条数（0 表示没有注入任何记忆）。
+     */
     pub(crate) async fn prepare_stream_context(
         &self,
         mode: StreamMode,
@@ -562,9 +579,9 @@ impl ReactAgent {
         scope_id: Option<&str>,
         runtime_state_id: Option<&str>,
     ) -> crate::error::Result<usize> {
-        // Clear read-before-edit tracking for the new conversation turn
-        // (converged with prepare_react_context; the entry layer no longer
-        // clears it separately to avoid a double clear).
+        /* 为新的对话回合清空“编辑前必读”跟踪状态
+         * （已与 prepare_react_context 合并；入口层不再单独清空，
+         * 以避免重复清空）。 */
         self.clear_read_files();
         match mode {
             StreamMode::Execute => {
@@ -579,7 +596,7 @@ impl ReactAgent {
 
         self.detect_and_write_memory_triggers(input).await;
 
-        // Recall relevant long-term memories for this turn.
+        // 为本回合召回相关的长期记忆。
         let mut recalled = 0usize;
         let mut memory_context = None;
         if let Ok(items) = self.recall_long_term_memories(input).await
@@ -605,13 +622,13 @@ impl ReactAgent {
             context.push(message.clone());
         }
         context.push(Message::user(input.to_string()));
-        // Drop context lock before hook execution (avoid deadlock with
-        // fire_lifecycle_hook's own context acquisition)
+        /* 在执行钩子之前先释放 context 锁（避免与 fire_lifecycle_hook
+         * 自身获取 context 锁时发生死锁）。 */
         drop(context);
 
-        // Fire UserPromptSubmit hook: passes user input so content-based
-        // matchers (e.g. "\\.docx") can trigger ActivateSkill actions, and
-        // static "*" matchers inject the forced-checklist prompt every turn.
+        /* 触发 UserPromptSubmit 钩子：传入用户输入，使基于内容的匹配器
+         * （例如 "\\.docx"）能够触发 ActivateSkill 动作，静态的 "*" 匹配器
+         * 则会在每个回合都注入强制清单提示词。 */
         let hook_result = self
             .fire_lifecycle_hook(HookEvent::UserPromptSubmit, Some(input))
             .await;
@@ -621,7 +638,7 @@ impl ReactAgent {
                 hook_result.block_reason.unwrap_or_default()
             )));
         }
-        // Cache hook activation result for TriggerSupervisor (P4) consumption
+        // 缓存钩子激活结果，供 TriggerSupervisor（P4）消费
         if hook_result.activate_skill.is_some()
             && let Ok(mut cache) = self.hook_activation_cache.lock()
         {
@@ -631,10 +648,11 @@ impl ReactAgent {
         Ok(recalled)
     }
 
-    /// Streaming execution context initialization (multimodal message version)
-    ///
-    /// Same as `prepare_stream_context`, but accepts a pre-built `Message` instead of a string,
-    /// supporting multimodal content parts (images, files, etc.).
+    /** 流式执行上下文初始化（多模态消息版本）。
+     *
+     * 与 `prepare_stream_context` 相同，但接受一个预先构建好的 `Message`
+     * 而非字符串，支持多模态内容部分（图片、文件等）。
+     */
     pub(crate) async fn prepare_stream_context_with_message(
         &self,
         mode: StreamMode,
@@ -643,7 +661,7 @@ impl ReactAgent {
         scope_id: Option<&str>,
         runtime_state_id: Option<&str>,
     ) -> crate::error::Result<usize> {
-        // Clear read-before-edit tracking (see prepare_stream_context).
+        // 清空“编辑前必读”跟踪状态（参见 prepare_stream_context）。
         self.clear_read_files();
         match mode {
             StreamMode::Execute => {
@@ -656,7 +674,7 @@ impl ReactAgent {
             }
         }
 
-        // Extract text from message for long-term memory retrieval
+        // 从消息中提取文本，用于长期记忆检索
         let text = message.content.as_text().unwrap_or_default();
         if !text.is_empty() {
             self.detect_and_write_memory_triggers(&text).await;
@@ -690,7 +708,7 @@ impl ReactAgent {
         context.push(message.clone());
         drop(context);
 
-        // Fire UserPromptSubmit hook (see prepare_stream_context for rationale)
+        // 触发 UserPromptSubmit 钩子（原因参见 prepare_stream_context）
         if !text.is_empty() {
             let hook_result = self
                 .fire_lifecycle_hook(HookEvent::UserPromptSubmit, Some(&text))
@@ -712,6 +730,7 @@ impl ReactAgent {
     }
 }
 
+/// 构造一条运行时上下文提示消息，并推送到给定的上下文管理器中。
 pub(crate) async fn push_runtime_context_note(
     context: &tokio::sync::Mutex<crate::compression::ContextManager>,
     source: &str,
@@ -723,12 +742,14 @@ pub(crate) async fn push_runtime_context_note(
         .push(runtime_context_note(source, body));
 }
 
+/// 构造一条带来源标记的运行时上下文提示消息（`user` 角色）。
 pub(crate) fn runtime_context_note(source: &str, body: &str) -> Message {
     Message::user(format!(
         "[runtime_context:{source}]\n{body}\n[Use this runtime context to continue the current task. It is dynamic turn state, not stable system policy.]"
     ))
 }
 
+/// 将召回到的记忆条目格式化为一段供模型阅读的上下文文本。
 pub(crate) fn format_memory_context(items: &[crate::memory::store::StoreItem]) -> String {
     let mut lines = vec!["[memory_context] Relevant historical memories:".to_string()];
     for (i, item) in items.iter().enumerate() {
@@ -746,22 +767,23 @@ pub(crate) fn format_memory_context(items: &[crate::memory::store::StoreItem]) -
     lines.join("\n")
 }
 
-// (stage4 D1) recall helpers (composite_score / age_days_from_storeitem /
-// incr_recall_count) moved to `evolution::recall::MemoryRecaller`.
+// (stage4 D1) 召回相关的辅助函数（composite_score / age_days_from_storeitem /
+// incr_recall_count）已迁移到 `evolution::recall::MemoryRecaller`。
 
 impl crate::agent::snapshot::AgentRunSnapshot {
-    /// (stage4 E1) Pre-compaction flush — a bounded LLM call identifies durable
-    /// rules/skills/facts in the about-to-be-compressed conversation and persists
-    /// them to the unified memory store so they survive compaction (割裂点 1/7).
-    ///
-    /// Approach: pragmatic structured-return flush — the LLM decides what's
-    /// durable and returns a JSON array; the framework writes each item via the
-    /// shared `MemoryLayerManager` (typed memory, security checks, audit hooks).
-    /// This is the user-chosen variant (overrides D14-G1's "真 subagent" — a
-    /// subagent fork was judged higher-cost for equivalent durable-extraction
-    /// value on a local single-user assistant). Best-effort — errors/timeouts
-    /// never block compaction. Gated by `ContextManager::should_compress()` so it
-    /// only fires when compaction is imminent, not every ReAct iteration.
+    /** (stage4 E1) 压缩前刷写（Pre-compaction flush）—— 通过一次有超时限制的
+     * LLM 调用，从即将被压缩的对话中识别出持久性的规则/技能/事实，并将其
+     * 持久化到统一记忆存储中，使其在压缩后依然留存（割裂点 1/7）。
+     *
+     * 实现思路：一种务实的“结构化返回式刷写”—— 由 LLM 判断哪些内容值得
+     * 长期保留并返回一个 JSON 数组；框架通过共享的 `MemoryLayerManager`
+     * （类型化记忆、安全检查、审计钩子）逐条写入。这是用户选定的方案
+     * （取代了 D14-G1 中的“真 subagent”方案 —— 对于本地单用户助手场景，
+     * 派生一个 subagent fork 来做等价的持久信息抽取被判定为成本过高）。
+     * 该流程是尽力而为的 —— 出错或超时都绝不会阻塞压缩流程。受
+     * `ContextManager::should_compress()` 门控，因此只在压缩即将发生时
+     * 才会触发，而不是每次 ReAct 迭代都触发。
+     */
     pub(crate) async fn pre_compaction_flush(
         &self,
         context: &std::sync::Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -769,21 +791,21 @@ impl crate::agent::snapshot::AgentRunSnapshot {
         let (Some(llm_client), Some(layer_manager)) =
             (self.llm_client.as_ref(), self.memory_layer_manager.as_ref())
         else {
-            return; // no LLM or no layer manager — skip
+            return; // 没有 LLM 或没有层管理器 —— 跳过
         };
 
-        // Snapshot the about-to-be-compressed messages (last ~40, chronological).
+        // 对即将被压缩的消息做快照（最近约 40 条，按时间顺序）。
         let transcript = {
             let ctx = context.lock().await;
-            // (stage4 E1) Only flush when compression is imminent — mirrors
-            // `ContextManager::prepare`'s `needs_compression` decision. Avoids
-            // firing an LLM call every ReAct iteration when no compaction is due.
+            /* (stage4 E1) 仅在压缩即将发生时才刷写 —— 与
+             * `ContextManager::prepare` 的 `needs_compression` 判定逻辑保持
+             * 一致。避免在无需压缩时，每次 ReAct 迭代都触发一次 LLM 调用。 */
             if !ctx.should_compress() {
                 return;
             }
             let msgs = ctx.messages();
             if msgs.len() < 8 {
-                return; // too short to warrant a flush even if tokens say so
+                return; // 太短，即使 token 数超标也不值得刷写
             }
             let mut buf = String::new();
             for m in msgs
@@ -817,7 +839,7 @@ impl crate::agent::snapshot::AgentRunSnapshot {
             ..Default::default()
         };
 
-        // Bounded 15s; errors/timeouts never block compaction.
+        // 限时 15 秒；出错或超时都绝不会阻塞压缩流程。
         let response = match tokio::time::timeout(
             std::time::Duration::from_secs(15),
             llm_client.chat(request),
@@ -839,7 +861,7 @@ impl crate::agent::snapshot::AgentRunSnapshot {
             return;
         }
 
-        // Parse a JSON array of {content, type, recall_weight}; write each.
+        // 解析出一个 {content, type, recall_weight} 的 JSON 数组，逐条写入。
         let items: Vec<serde_json::Value> = match (content.find('['), content.rfind(']')) {
             (Some(start), Some(end)) if end > start => content
                 .get(start..=end)

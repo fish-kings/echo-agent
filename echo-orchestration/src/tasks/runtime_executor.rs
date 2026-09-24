@@ -1,9 +1,8 @@
-//! Store- and policy-driven DAG execution for dynamic Agent plans.
+//! 面向动态 Agent 计划的、由存储与策略驱动的 DAG 执行器。
 //!
-//! The framework owns dependency traversal, revision safe points, bounded
-//! Subagent waves, cancellation, failure propagation, and stall detection.
-//! Applications provide persistence, dispatch, review, and product policy
-//! through [`RuntimeDagController`].
+//! 框架自身负责依赖遍历、修订版本安全点、有界的 Subagent 波次调度、
+//! 取消、失败传播以及停滞检测。应用方则通过 [`RuntimeDagController`]
+//! 提供持久化、派发、复核与产品策略。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -28,149 +27,209 @@ use super::runtime_service::{
 };
 use crate::planning::PlanValidator;
 
-/// One coherent plan revision loaded from the runtime authority.
+/// 从运行时权威存储加载的、内部一致的某个计划修订版本。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimePlanSnapshot {
+    /// 该快照对应的计划修订版本号，用于乐观并发控制。
     pub revision: u64,
+    /// 该修订版本下的全部任务列表。
     pub tasks: Vec<Task>,
 }
 
-/// Product decision when a task cannot proceed automatically.
+/// 当任务无法自动继续推进时，产品层做出的处置决定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeStopDisposition {
+    /// 判定为失败，终止该 DAG 的执行。
     Fail,
+    /// 判定为暂停，可在之后恢复执行。
     Pause,
 }
 
-/// Uncommitted application assessment of one completed dispatch attempt.
+/// 应用方对一次已完成派发尝试的、尚未提交的评估结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeTaskResolutionRequest {
+    /// 任务已成功完成。
     Completed,
+    /// 请求重新排队等待重试。
     Requeue {
+        /// 失败指纹，用于识别相同类型的失败以支持去重或统计。
         failure_fingerprint: Option<String>,
+        /// 本次失败的错误描述。
         error: String,
+        /// 若重试次数耗尽，最终应归为失败还是超时。
         exhaustion: RuntimeRetryExhaustion,
     },
+    /// 任务被跳过，不再执行。
     Skipped,
+    /// 任务最终失败。
     Failed {
+        /// 失败原因描述。
         error: String,
     },
+    /// 任务执行超时。
     TimedOut {
+        /// 超时相关的错误描述。
         error: String,
     },
+    /// 任务被阻塞，需要产品策略决定后续处置。
     Blocked {
+        /// 阻塞原因描述。
         error: String,
+        /// 阻塞后应采取的处置方式（失败或暂停）。
         disposition: RuntimeStopDisposition,
     },
+    /// 任务被取消。
     Cancelled,
 }
 
-/// Committed result of applying a typed resolution request to one exact claim.
+/// 对某个具体 claim 应用一次类型化解决请求后，已提交的最终结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeTaskResolution {
+    /// 已完成。
     Completed,
+    /// 已重新置为等待中（重试）。
     Pending,
+    /// 已跳过。
     Skipped,
+    /// 已失败。
     Failed {
+        /// 失败原因描述。
         error: String,
     },
+    /// 已超时。
     TimedOut {
+        /// 超时相关的错误描述。
         error: String,
     },
+    /// 已阻塞。
     Blocked {
+        /// 阻塞原因描述。
         error: String,
+        /// 阻塞后的处置方式。
         disposition: RuntimeStopDisposition,
     },
+    /// 已取消。
     Cancelled,
+    /// 该 claim 已被更新的一次尝试取代，本次结算不生效。
     Superseded,
 }
 
-/// Receipt from the process-local control projection after durable claim
-/// settlement. The durable task state is already authoritative when this is
-/// returned; a retryable cleanup failure is reported separately and must not
-/// trigger a second CAS or reverse the committed terminal state.
+/// 持久化 claim 结算完成后，进程本地控制投影给出的回执。
+/// 此时持久化任务状态已经是权威状态；可重试的清理失败会单独上报，
+/// 且不得触发第二次 CAS，也不得反转已提交的终态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeAttemptControlCleanupReceipt {
+    /// 本地控制投影已成功清退。
     Retired,
+    /// 未找到对应的本地控制投影。
     NotFound,
+    /// 该投影此前已被消费（清理过）。
     AlreadyConsumed,
-    RetryableFailure { error: String },
+    /// 清理失败，但可以重试；不影响已提交的持久化终态。
+    RetryableFailure {
+        /// 失败原因描述。
+        error: String,
+    },
 }
 
+/// 一次尝试控制清理动作的可观测记录，供诊断观察者使用。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeAttemptControlObservation {
+    /// 所属的运行 ID。
     pub run_id: String,
+    /// 所属的任务 ID。
     pub task_id: TaskId,
+    /// 触发本次清理的 claim。
     pub claim: TaskClaim,
+    /// 本次清理动作得到的回执。
     pub receipt: RuntimeAttemptControlCleanupReceipt,
 }
 
+/// 用于观察尝试控制清理动作的诊断回调类型。
 pub type RuntimeAttemptControlObserver =
     Arc<dyn Fn(&RuntimeAttemptControlObservation) + Send + Sync>;
 
-/// Terminal state used when a requeued claim consumes its final retry.
+/// 当一次重新排队的 claim 用尽最后一次重试机会时使用的终态。
 ///
-/// The retry decision remains separate from the terminal classification so an
-/// application can preserve a typed timeout without mutating canonical task
-/// state after framework settlement.
+/// 重试决策与终态分类保持分离，使应用方能够在框架完成结算后，
+/// 保留一个类型化的超时状态，而无需再修改规范化的任务状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeRetryExhaustion {
+    /// 重试耗尽后归为失败。
     Failed,
+    /// 重试耗尽后归为超时。
     TimedOut,
 }
 
-/// Result of atomically claiming a task from one loaded plan revision.
+/// 从已加载的某个计划修订版本中原子性地认领一个任务后得到的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeTaskClaimOutcome {
+    /// 认领成功，得到对应的 claim。
     Claimed(TaskClaim),
-    /// The revision, status, or specification changed. Reload the snapshot;
-    /// this is optimistic-concurrency control, not a task failure.
+    /// 修订版本、状态或规格已发生变化。应重新加载快照；
+    /// 这是乐观并发控制的表现，而非任务失败。
     ReloadSnapshot,
 }
 
-/// Terminal settlement for a claim that cannot reach normal resolution.
+/// 一个无法达成正常结算结果的 claim 的终态结算方式。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeClaimAbandonment {
-    /// The run stopped and this still-owned claim follows the typed stop policy.
+    /// 运行已停止，这个仍被持有的 claim 按类型化的停止策略处理。
     Interrupted {
+        /// 具体的中断处置方式（取消或暂停）。
         disposition: RuntimeInterruptionDisposition,
     },
-    /// Dispatch or settlement infrastructure failed before normal resolution.
-    Failed { error: String },
-}
-
-/// Terminal result of driving one dynamic plan snapshot sequence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuntimeDagOutcome {
-    Completed,
+    /// 在达成正常结算结果之前，派发或结算基础设施出现了故障。
     Failed {
-        failed_task_id: TaskId,
+        /// 失败原因描述。
         error: String,
     },
+}
+
+/// 推进一次动态计划快照序列后得到的最终结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeDagOutcome {
+    /// 全部任务已完成。
+    Completed,
+    /// 某个任务失败，导致整个 DAG 执行失败。
+    Failed {
+        /// 失败任务的 ID。
+        failed_task_id: TaskId,
+        /// 失败原因描述。
+        error: String,
+    },
+    /// 执行被暂停，可在之后恢复。
     Paused {
+        /// 触发暂停的任务 ID（若有）。
         task_id: Option<TaskId>,
+        /// 暂停原因描述。
         reason: String,
     },
+    /// DAG 陷入停滞（例如存在环或无法解除的阻塞）。
     Stalled {
+        /// 停滞原因描述。
         reason: String,
     },
+    /// 整个执行被取消。
     Cancelled,
 }
 
-/// Persistence, dispatch, and product-policy adapter for [`super::RuntimeTaskService`].
+/// 面向 [`super::RuntimeTaskService`] 的持久化、派发与产品策略适配器。
 ///
-/// `resolve_dispatch` owns application-specific review but returns an
-/// uncommitted request. `settle_resolution` provides the adapter transaction
-/// boundary and must apply [`super::settle_runtime_resolution`] rather than
-/// reimplementing claim, retry, or terminal transitions.
+/// `resolve_dispatch` 负责具体应用层面的复核逻辑，但只返回一个尚未提交的
+/// 请求。`settle_resolution` 提供适配器的事务边界，必须调用
+/// [`super::settle_runtime_resolution`] 来完成提交，而不能自行重新实现
+/// claim、重试或终态迁移的逻辑。
 #[async_trait]
 pub trait RuntimeDagController: Send + Sync + 'static {
+    /// 一次任务派发成功后返回的输出类型。
     type DispatchOutput: Send + 'static;
 
+    /// 加载当前运行所对应的最新计划快照。
     async fn load_snapshot(&self, run_id: &str) -> Result<RuntimePlanSnapshot>;
 
-    /// Atomically transition one Pending task from `expected_revision` into a
-    /// claimed Running attempt.
+    /// 原子性地将一个处于 Pending 状态、基于 `expected_revision` 的任务
+    /// 转换为一次已认领的 Running 尝试。
     async fn claim_task(
         &self,
         run_id: &str,
@@ -178,7 +237,7 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         expected_revision: u64,
     ) -> Result<RuntimeTaskClaimOutcome>;
 
-    /// Verify whether one exact physical claim still owns its task.
+    /// 校验某个具体的物理 claim 是否仍然拥有其对应任务。
     async fn claim_is_current(
         &self,
         run_id: &str,
@@ -186,32 +245,32 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         claim: &TaskClaim,
     ) -> Result<bool>;
 
-    /// Select a conflict-free subset of the ready frontier.
+    /// 从就绪前沿中选出一个互不冲突的子集用于派发。
     ///
-    /// The default dispatches the whole frontier. Applications may defer tasks
-    /// for product-specific resource or file-ownership policy, but must return
-    /// at least one id when `ready_task_ids` is non-empty.
+    /// 默认实现会派发整个前沿。应用方可以出于产品特定的资源或文件所有权
+    /// 策略而推迟某些任务，但当 `ready_task_ids` 非空时，必须至少返回一个
+    /// 任务 ID。
     fn select_ready_wave(&self, _tasks: &[Task], ready_task_ids: Vec<TaskId>) -> Vec<TaskId> {
         ready_task_ids
     }
 
+    /// 派发一个任务并等待其执行结果。
     async fn dispatch_task(
         &self,
         context: TaskSubagentContext,
         task: Task,
     ) -> Result<Self::DispatchOutput>;
 
-    /// Register the exact claim-derived context before shared admission or a
-    /// semaphore can delay dispatch. Implementations may bind the context to a
-    /// process-local live-control registry; the durable claim remains the
-    /// authority and is validated by the caller before this hook runs.
+    /// 在共享准入或信号量可能延迟派发之前，先注册由本次 claim 派生出的
+    /// 精确上下文。实现可以将该上下文绑定到进程本地的实时控制注册表；
+    /// 持久化 claim 仍然是权威来源，调用方会在触发该钩子之前先完成校验。
     async fn reserve_attempt_control(&self, _context: &TaskSubagentContext) -> Result<()> {
         Ok(())
     }
 
-    /// Project a durable exact interrupt into the live reservation/attempt
-    /// registry. Returning `true` means the controller accepted the request;
-    /// the runtime still re-checks the durable claim before returning.
+    /// 将一次持久化的精确中断请求投影到实时的预留/尝试注册表中。
+    /// 返回 `true` 表示控制器已接受该请求；运行时在返回前仍会重新校验
+    /// 持久化 claim 的状态。
     async fn request_live_interrupt(
         &self,
         _run_id: &str,
@@ -224,9 +283,8 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// Retire the process-local control projection after the durable claim has
-    /// reached a terminal or superseded outcome. Cleanup is diagnostic and must
-    /// never mutate the already committed task state.
+    /// 在持久化 claim 已经达成终态或被取代之后，清退进程本地的控制投影。
+    /// 该清理动作仅用于诊断目的，绝不能修改已经提交的任务状态。
     async fn retire_attempt_control(
         &self,
         _run_id: &str,
@@ -236,8 +294,8 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         RuntimeAttemptControlCleanupReceipt::Retired
     }
 
-    /// Reconcile process-local attempt projections with the execution IDs
-    /// still owned by the durable snapshot for this run.
+    /// 将进程本地的尝试投影与该运行的持久化快照中仍然有效的执行 ID
+    /// 进行核对与协调。
     async fn reconcile_attempt_control(
         &self,
         _run_id: &str,
@@ -246,6 +304,7 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         Ok(())
     }
 
+    /// 根据一次派发的结果，产出一个尚未提交的解决请求。
     async fn resolve_dispatch(
         &self,
         run_id: &str,
@@ -254,8 +313,7 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         dispatch: Result<Self::DispatchOutput>,
     ) -> Result<RuntimeTaskResolutionRequest>;
 
-    /// Atomically apply one framework-owned resolution request and return its
-    /// typed committed receipt.
+    /// 原子性地应用一个由框架发起的解决请求，并返回其类型化的、已提交的回执。
     async fn settle_resolution(
         &self,
         run_id: &str,
@@ -264,9 +322,8 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         request: RuntimeTaskResolutionRequest,
     ) -> Result<RuntimeTaskResolution>;
 
-    /// Settle a claim whose dispatch cannot reach normal resolution. The
-    /// implementation must use compare-and-set semantics so a superseded
-    /// claim cannot overwrite newer work.
+    /// 结算一个无法达成正常解决结果的 claim。实现必须使用比较并交换（CAS）
+    /// 语义，以避免一个已被取代的 claim 覆盖更新的工作结果。
     async fn abandon_claim(
         &self,
         run_id: &str,
@@ -275,6 +332,8 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         abandonment: RuntimeClaimAbandonment,
     ) -> Result<RuntimeTaskSettlementOutcome>;
 
+    /// 在任务失败时，决定应将整个 DAG 判定为失败还是暂停。
+    /// 默认实现：当所有未完成任务都已失败或被阻塞时判定为失败，否则暂停。
     async fn failed_task_disposition(
         &self,
         _run_id: &str,
@@ -288,8 +347,8 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         })
     }
 
-    /// Map a cancellation-token stop request to product-neutral cancellation or
-    /// resumable pause. Framework task settlement remains authoritative.
+    /// 将取消令牌发出的停止请求映射为与产品无关的取消或可恢复的暂停。
+    /// 框架自身的任务结算结果始终是权威判断。
     async fn interruption_disposition(
         &self,
         _run_id: &str,
@@ -297,9 +356,9 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         Ok(RuntimeInterruptionDisposition::Cancelled)
     }
 
-    /// Atomically settle unfinished tasks at an interruption safe point using
-    /// [`super::settle_runtime_interruption`]. A revision mismatch must return
-    /// `ReloadSnapshot`; adapters must not recreate claim or retry semantics.
+    /// 使用 [`super::settle_runtime_interruption`]，在一个中断安全点原子性地
+    /// 结算所有未完成任务。若修订版本不匹配，必须返回 `ReloadSnapshot`；
+    /// 适配器不得重新实现 claim 或重试相关的语义。
     async fn settle_interruption(
         &self,
         run_id: &str,
@@ -307,6 +366,7 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         disposition: RuntimeInterruptionDisposition,
     ) -> Result<RuntimeInterruptionSettlementOutcome>;
 
+    /// 通知应用方 DAG 已进入停滞状态（例如存在环或无法解除的阻塞）。
     async fn note_stalled(&self, _run_id: &str, _reason: &str) -> Result<()> {
         Ok(())
     }

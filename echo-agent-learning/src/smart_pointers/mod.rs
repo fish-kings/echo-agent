@@ -1,4 +1,4 @@
-//! Smart pointers and shared-state building blocks used by echo-agent.
+//! echo-agent 使用的智能指针与共享状态构建模块。
 
 pub mod arc_weak;
 pub mod box_pointer;

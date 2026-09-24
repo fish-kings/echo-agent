@@ -1,12 +1,12 @@
-//! Content filtering and safety guardrails.
+//! 内容过滤与安全护栏（Guardrails）。
 //!
-//! Guards inspect user input, LLM output, and tool calls, blocking or modifying
-//! unsafe content. Two guard types are supported:
+//! 护栏（Guard）会检查用户输入、LLM 输出以及工具调用，对不安全的内容
+//! 进行拦截或修改。支持两种护栏类型：
 //!
-//! - **Rule-based** (`RuleGuard`, `RuleGuardBuilder`) — Pattern matching, length limits, regex
-//! - **LLM-based** (`LlmGuard`) — AI-powered content classification
+//! - **基于规则**（`RuleGuard`、`RuleGuardBuilder`） —— 模式匹配、长度限制、正则表达式
+//! - **基于 LLM**（`LlmGuard`） —— AI 驱动的内容分类
 //!
-//! # Quick Start
+//! # 快速开始
 //!
 //! ```rust,ignore
 //! use echo_agent::prelude::*;
@@ -23,13 +23,13 @@
 //! # }
 //! ```
 //!
-//! # Key Types
+//! # 关键类型
 //!
-//! | Type | Description |
+//! | 类型 | 说明 |
 //! |------|-------------|
-//! | [`Guard`] | Trait — implement to create custom guards |
-//! | [`GuardManager`] | Runs multiple guards in sequence, short-circuits on block |
-//! | [`GuardResult`] | `Pass` / `Block { reason }` / `Warn { message }` |
+//! | [`Guard`] | Trait —— 实现它以创建自定义护栏 |
+//! | [`GuardManager`] | 按顺序运行多个护栏，遇到拦截即短路 |
+//! | [`GuardResult`] | `Pass`（通过）/ `Block { reason }`（拦截）/ `Warn { message }`（警告） |
 //! | [`GuardDirection`] | `Input` / `Output` / `ToolInput` / `ToolOutput` |
 
 #[cfg(feature = "content-guard")]
@@ -37,7 +37,7 @@ pub mod llm;
 #[cfg(feature = "content-guard")]
 pub mod rule;
 
-/// Direct re-exports from `echo_core::guard`.
+/// 直接从 `echo_core::guard` 重新导出。
 pub mod core {
     pub use echo_core::guard::*;
 }

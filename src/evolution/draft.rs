@@ -1,14 +1,17 @@
-//! Skill draft generation — creates SKILL.md files from detected candidates.
-//!
-//! Takes a [`SkillCandidate`] (produced by [`super::candidate::SkillCandidateDetector`]) and
-//! generates a draft SKILL.md file at `<consumer-root>/skills/_drafts/<name>/SKILL.md`.
-//! The draft is a *proposal* — a human reviews it before promoting to Active.
-//!
-//! # Template-based generation
-//!
-//! Phase 3 uses deterministic templates (no LLM call). This keeps the system
-//! fast, free, and reproducible. A future iteration can add LLM-assisted
-//! refinement through the optional eval-driven improvement pipeline.
+/*!
+ * Skill 草稿生成 —— 根据检测到的候选项创建 SKILL.md 文件。
+ *
+ * 接收一个 [`SkillCandidate`]（由 [`super::candidate::SkillCandidateDetector`]
+ * 产出），并在 `<consumer-root>/skills/_drafts/<name>/SKILL.md` 处
+ * 生成一份草稿 SKILL.md 文件。该草稿只是一份*提案* —— 需要人工
+ * 审核后才能晋升为 Active 状态。
+ *
+ * # 基于模板的生成方式
+ *
+ * Phase 3 使用确定性的模板（不调用 LLM）。这样可以保持系统
+ * 快速、免费且可复现。未来的迭代可以通过可选的、由评测驱动的
+ * 改进流水线加入 LLM 辅助的精修能力。
+ */
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,44 +29,49 @@ use echo_core::error::ReactError;
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-/// Where draft SKILL.md files are saved, relative to the consumer root.
+/// 草稿 SKILL.md 文件的保存位置，相对于 consumer root。
 const DRAFTS_DIR: &str = "skills/_drafts";
 
 // ── DraftResult ────────────────────────────────────────────────────────
 
-/// Result of generating a skill draft.
+/// 生成 skill 草稿的结果。
 #[derive(Debug, Clone)]
 pub struct DraftResult {
-    /// Name of the skill.
+    /// skill 的名称。
     pub name: String,
-    /// Path to the created SKILL.md file.
+    /// 生成的 SKILL.md 文件路径。
     pub skill_md_path: PathBuf,
-    /// Whether this was a new creation (true) or an update (false).
+    /// 本次是新建（true）还是更新（false）。
     pub created: bool,
 }
 
-/// Exact reviewed draft request and its digest-bound preview.
+/// 一次经过审核的确切草稿请求，及其与摘要（digest）绑定的预览。
 pub struct SkillDraftPreview {
+    /// 草稿生成的结果
     pub result: DraftResult,
+    /// 提交给权威的变更请求
     pub request: SkillMutationRequest,
+    /// 该请求对应的预览（含操作摘要）
     pub preview: SkillMutationPreview,
 }
 
 // ── SkillDraftGenerator ────────────────────────────────────────────────
 
-/// Generates draft SKILL.md files from skill candidates.
-///
-/// The generator writes template-based SKILL.md files to the `_drafts`
-/// directory and promotes the candidate to `Draft` lifecycle state via
-/// the [`Curator`].
+/**
+ * 根据 skill 候选项生成草稿 SKILL.md 文件。
+ *
+ * 该生成器会把基于模板生成的 SKILL.md 文件写入 `_drafts`
+ * 目录，并通过 [`Curator`] 将候选项晋升为 `Draft` 生命周期状态。
+ */
 pub struct SkillDraftGenerator {
-    /// Consumer-supplied evolution storage root.
+    /// 由 consumer 提供的 evolution 存储根目录。
     storage_root: PathBuf,
+    /// 用于审核并执行文件/生命周期变更的权威
     authority: Arc<SkillMutationAuthority>,
 }
 
 impl SkillDraftGenerator {
-    /// Create a new generator.
+    /// 创建一个新的生成器。
     pub fn new(storage_root: PathBuf, authority: Arc<SkillMutationAuthority>) -> Self {
         Self {
             storage_root,
@@ -71,8 +79,10 @@ impl SkillDraftGenerator {
         }
     }
 
-    /// Legacy named-candidate entry point. It reads the candidate but fails
-    /// closed because no reviewed approval artifact is available.
+    /**
+     * 旧版的按名称查找候选项的入口。它会读取候选项，但由于
+     * 没有经过审核的批准工件（approval artifact），会失败关闭。
+     */
     #[deprecated(
         note = "load the candidate, call preview_generate_from_candidate, then generate_from_preview with approval"
     )]
@@ -81,7 +91,7 @@ impl SkillDraftGenerator {
         name: &str,
         typed_store: &TypedMemoryStore,
     ) -> Result<DraftResult> {
-        // 1. Read candidate from Store.
+        // 1. 从 Store 中读取候选项。
         let entry = typed_store
             .get_typed(CANDIDATE_NAMESPACE, name)
             .await?
@@ -99,7 +109,7 @@ impl SkillDraftGenerator {
         )))
     }
 
-    /// Legacy direct entry point; it fails closed without an approval artifact.
+    /// 旧版的直接入口；没有批准工件时会失败关闭。
     #[deprecated(note = "use preview_generate_from_candidate followed by generate_from_preview")]
     pub async fn generate_from_candidate(&self, candidate: &SkillCandidate) -> Result<DraftResult> {
         Err(ReactError::Other(format!(
@@ -108,7 +118,7 @@ impl SkillDraftGenerator {
         )))
     }
 
-    /// Build the exact file/lifecycle mutation reviewed by the host.
+    /// 构建由宿主审核的确切文件/生命周期变更。
     pub async fn preview_generate_from_candidate(
         &self,
         candidate: &SkillCandidate,
@@ -179,7 +189,7 @@ impl SkillDraftGenerator {
         })
     }
 
-    /// Apply an exact preview using a one-use digest-bound approval artifact.
+    /// 使用一次性的、与摘要绑定的批准工件来应用一份确切的预览。
     pub async fn generate_from_preview(
         &self,
         preview: SkillDraftPreview,
@@ -196,15 +206,16 @@ impl SkillDraftGenerator {
     }
 }
 
-// ── Template rendering ─────────────────────────────────────────────────
+// ── 模板渲染 ──────────────────────────────────────────────────────────
 
-/// Render a SKILL.md file from a candidate using a deterministic template.
+/// 使用确定性模板，根据候选项渲染出一个 SKILL.md 文件。
 fn render_skill_md(candidate: &SkillCandidate) -> String {
     let SkillCandidate {
         name,
         description,
-        // Trigger patterns stay in curator state: the standard SKILL.md
-        // format has no field for routing triggers.
+        /* 触发模式（trigger patterns）保留在 curator 状态中：标准的
+         * SKILL.md 格式没有用于路由触发的字段。
+         */
         trigger_patterns: _,
         tool_sequence,
         sample_count,
@@ -214,9 +225,10 @@ fn render_skill_md(candidate: &SkillCandidate) -> String {
         created_at,
     } = candidate;
 
-    // Official agentskills.io format: one space-separated plain string.
-    // Routing is description-driven; trigger patterns stay in curator state
-    // because the standard format has no field for them.
+    /* 官方 agentskills.io 格式：一个以空格分隔的纯字符串。
+     * 路由由 description 驱动；触发模式保留在 curator 状态中，
+     * 因为标准格式没有对应的字段。
+     */
     let tools_inline = (!tool_sequence.is_empty()).then(|| {
         tool_sequence
             .iter()
@@ -249,7 +261,7 @@ fn render_skill_md(candidate: &SkillCandidate) -> String {
         _ => "usage",
     };
 
-    // Escape values that go into YAML frontmatter to prevent injection.
+    // 转义将写入 YAML frontmatter 的值，以防止注入。
     let safe_name = yaml_escape(name);
     let safe_description = yaml_escape(description);
     let safe_topic = yaml_escape(topic);
@@ -302,16 +314,18 @@ Confidence: {confidence:.0}%.
     )
 }
 
-/// Escape a string value for safe inclusion in YAML double-quoted or unquoted context.
-///
-/// Replaces characters that would break YAML parsing or inject additional frontmatter
-/// fields (`: `, `"`, `\`, newlines, `---`).
-/// Escape a value for inclusion inside a **double-quoted** YAML string.
-///
-/// The YAML template wraps values in `"..."`, so escaping `\`, `"`, newlines,
-/// `\r`, and `---` (frontmatter delimiter) is sufficient. Additional characters
-/// (`:`, `#`, `[`, `]`, `{`, `}`) are harmless inside double quotes per the
-/// YAML 1.2 spec §7.3.1.
+/**
+ * 转义一个字符串值，以便安全地写入 YAML 的双引号或无引号上下文中。
+ *
+ * 替换掉会破坏 YAML 解析或注入额外 frontmatter 字段的字符
+ * （`: `、`"`、`\`、换行符、`---`）。
+ * 转义一个值，以便将其写入**双引号**包裹的 YAML 字符串中。
+ *
+ * 该 YAML 模板会用 `"..."` 包裹取值，因此只需转义 `\`、`"`、
+ * 换行符、`\r` 以及 `---`（frontmatter 分隔符）即可。根据
+ * YAML 1.2 规范 §7.3.1，双引号内的其他字符（`:`、`#`、`[`、
+ * `]`、`{`、`}`）都是无害的。
+ */
 fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('"', "\\\"")
@@ -320,7 +334,7 @@ fn yaml_escape(s: &str) -> String {
         .replace("---", "-\\-\\-")
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── 测试 ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -441,7 +455,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&result.skill_md_path).unwrap();
 
-        // Extract YAML frontmatter.
+        // 提取 YAML frontmatter。
         let yaml = if let Some(rest) = content.strip_prefix("---") {
             let end = rest.find("---").unwrap_or(rest.len());
             &rest[..end]
@@ -449,12 +463,12 @@ mod tests {
             panic!("Missing frontmatter delimiter");
         };
 
-        // Should be valid YAML.
+        // 应当是合法的 YAML。
         let parsed: serde_yaml_ng::Value =
             serde_yaml_ng::from_str(yaml).expect("YAML should parse");
         assert_eq!(parsed["name"].as_str(), Some("cargo-build"));
         assert_eq!(parsed["metadata"]["lifecycle"].as_str(), Some("draft"));
-        // Standard-only layout: no routing namespace, string allowed-tools.
+        // 仅标准布局：没有路由命名空间，allowed-tools 为字符串。
         assert!(parsed.get("triggers").is_none());
         assert!(parsed["metadata"].get("echo-agent").is_none());
         assert!(parsed["allowed-tools"].as_str().is_some());
@@ -467,11 +481,11 @@ mod tests {
 
         let candidate = sample_candidate();
 
-        // First generation: created.
+        // 第一次生成：新建。
         let result1 = generate_approved(&generator, &candidate).await.unwrap();
         assert!(result1.created);
 
-        // Second generation: updated, not created.
+        // 第二次生成：更新，而非新建。
         let mut candidate2 = candidate.clone();
         candidate2.sample_count = 7;
         let preview = generator
@@ -490,7 +504,7 @@ mod tests {
             .unwrap();
         assert!(!result2.created);
 
-        // Content should reflect the updated sample count.
+        // 内容应当反映更新后的样本数量。
         let content = std::fs::read_to_string(&result2.skill_md_path).unwrap();
         assert!(content.contains("7 observed"));
     }
@@ -500,7 +514,7 @@ mod tests {
         let candidate = sample_candidate();
         let md = render_skill_md(&candidate);
 
-        // Basic structure checks.
+        // 基础结构检查。
         assert!(md.starts_with("---"));
         assert!(md.contains("name: cargo-build"));
         assert!(md.contains("lifecycle: draft"));

@@ -1,62 +1,68 @@
-//! Store-backed memory promoter — L3 memory promotion from evicted messages.
-//!
-//! Implements [`MemoryPromoter`] to extract key facts from messages evicted
-//! during compression and write them to a [`crate::memory::Store`] for later recall.
-//!
-//! # Fact extraction heuristic
-//!
-//! 1. **Assistant conclusions** — last paragraph of assistant messages (often summaries)
-//! 2. **User questions** — original user inputs are useful context for recall
-//! 3. **Keyword signals** — messages containing "decided", "important", "remember", "conclusion"
-//! 4. **Skip**: tool results, system messages, very short messages (<50 chars)
-//!
-//! # Deduplication
-//!
-//! Facts are deduplicated by content hash: instead of a sequential counter,
-//! the key is derived from a hash of the fact text. This means the same fact
-//! extracted multiple times will overwrite (upsert) rather than create duplicates.
-//!
+/*!
+基于存储的记忆推广器 —— 将被淘汰的消息推广为 L3 记忆。
+
+实现 [`MemoryPromoter`]，从压缩过程中被淘汰的消息里提取关键事实，
+并写入 [`crate::memory::Store`] 以便后续召回。
+
+# 事实提取启发式规则
+
+1. **助手结论** —— 助手消息的最后一段（通常是摘要）
+2. **用户问题** —— 原始用户输入对召回而言是有用的上下文
+3. **关键词信号** —— 消息中包含 “decided”（已决定）、“important”（重要）、
+   “remember”（记住）、“conclusion”（结论）等词
+4. **跳过**：工具结果、系统消息、过短的消息（少于 50 字符）
+
+# 去重
+
+事实按内容哈希去重：不使用顺序计数器，而是根据事实文本的哈希值
+派生出键。这意味着同一事实被多次提取时会覆盖（upsert）而不是产生重复项。
+*/
 use echo_core::llm::types::{Message, Role};
 use echo_core::memory::types::{MemoryMeta, MemorySource, MemoryType};
 use echo_state::compression::{MemoryPromoter, MemoryPromotionReceipt};
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
-/// Store-backed memory promoter.
-///
-/// Extracts key facts from messages evicted during compression and writes them
-/// as typed memories (`MemoryMeta`) to the unified namespace
-/// (`crate::evolution::layer::WARM_NAMESPACE` = `["agent","memories"]`) for
-/// later recall. (stage4 A2: previously raw JSON to `["l3_promoted"]` —
-/// 割裂点1: promoter-written facts now flow through the same typed path as
-/// agent-written memories and are recallable by composite-score recall.)
+/**
+基于存储的记忆推广器。
+
+从压缩过程中被淘汰的消息里提取关键事实，并将其作为带类型的记忆
+（`MemoryMeta`）写入统一命名空间
+（`crate::evolution::layer::WARM_NAMESPACE` = `["agent","memories"]`），
+以便后续召回。（stage4 A2：此前是以原始 JSON 写入 `["l3_promoted"]` ——
+割裂点1：推广器写入的事实现在与 agent 写入的记忆走相同的带类型路径，
+并且可以通过复合分数召回检索到。）
+*/
 pub struct StoreMemoryPromoter {
+    /// 负责持久化写入的分层记忆管理器。
     layer_manager: Arc<crate::evolution::MemoryLayerManager>,
 }
 
 impl StoreMemoryPromoter {
-    /// Create a promoter that writes through the canonical layered-memory
-    /// authority (content-based dedup is always on).
+    /// 创建一个通过规范分层记忆权威写入的推广器（内容去重始终开启）。
     pub fn new(layer_manager: Arc<crate::evolution::MemoryLayerManager>) -> Self {
         Self { layer_manager }
     }
 
-    /// Compute a deterministic content-based key for deduplication.
-    ///
-    /// Uses FNV-1a hash (deterministic across process restarts) to ensure
-    /// the same fact always maps to the same key, enabling cross-session dedup.
+    /**
+    为去重计算一个确定性的、基于内容的键。
+
+    使用 FNV-1a 哈希（在进程重启后依然保持确定性），确保同一事实
+    始终映射到同一个键，从而实现跨会话去重。
+    */
     fn content_key(fact: &str) -> String {
         durable_memory_content_key(fact)
     }
 }
 
-/// Stable content-derived key shared by every compression memory writer.
+/// 所有压缩记忆写入方共用的、基于内容派生的稳定键。
 pub(crate) fn durable_memory_content_key(content: &str) -> String {
     let hash = echo_core::utils::hash::fnv1a_64(content.trim().as_bytes());
     format!("l3_{hash:016x}")
 }
 
 impl MemoryPromoter for StoreMemoryPromoter {
+    /// 从被淘汰的消息中提取事实并写入分层记忆管理器，返回推广回执。
     fn promote(
         &self,
         evicted: &[Message],
@@ -98,7 +104,7 @@ impl MemoryPromoter for StoreMemoryPromoter {
     }
 }
 
-/// Map a promoter fact-type string to a `MemoryType`.
+/// 将推广器使用的事实类型字符串映射为 `MemoryType`。
 fn fact_type_to_memory_type(fact_type: &str) -> MemoryType {
     match fact_type {
         "error" => MemoryType::ErrorResolution,
@@ -112,34 +118,34 @@ fn fact_type_to_memory_type(fact_type: &str) -> MemoryType {
     }
 }
 
-/// Extract key facts from evicted messages using heuristics.
+/// 使用启发式规则从被淘汰的消息中提取关键事实。
 fn extract_key_facts(messages: &[Message]) -> Vec<(String, &'static str)> {
     let mut facts = Vec::new();
 
     for msg in messages {
         let text = match msg.content.as_text() {
             Some(t) if t.chars().count() >= 50 => t,
-            _ => continue, // Skip short or empty messages
+            _ => continue, // 跳过过短或空的消息
         };
 
         match msg.role {
             Role::System => {
-                // Skip system messages — they're not conversation facts
+                // 跳过系统消息——它们不属于对话事实
                 continue;
             }
             Role::Tool => {
-                // Extract a tool digest: key findings from tool outputs
+                // 提取工具摘要：工具输出中的关键发现
                 if let Some(digest) = tool_digest(&text) {
                     facts.push((truncate_fact(&digest), "tool_output"));
                 }
                 continue;
             }
             Role::Assistant => {
-                // Extract conclusion-like content from assistant messages
+                // 从助手消息中提取类似结论的内容
                 if contains_signal_word(&text) {
                     facts.push((truncate_fact(&text), classify_fact_type(&text, &msg.role)));
                 } else {
-                    // Take the last paragraph as a potential conclusion
+                    // 取最后一段作为可能的结论
                     if let Some(last_para) = last_paragraph(&text)
                         && last_para.chars().count() >= 50
                     {
@@ -151,7 +157,7 @@ fn extract_key_facts(messages: &[Message]) -> Vec<(String, &'static str)> {
                 }
             }
             Role::User
-                // User questions are useful context for recall
+                // 用户问题是对召回有用的上下文
                 if text.chars().count() >= 50 && !text.starts_with('[') => {
                     facts.push((truncate_fact(&text), classify_fact_type(&text, &msg.role)));
                 }
@@ -162,7 +168,7 @@ fn extract_key_facts(messages: &[Message]) -> Vec<(String, &'static str)> {
     facts
 }
 
-/// Classify a fact by content patterns.
+/// 根据内容模式对事实进行分类。
 fn classify_fact_type(text: &str, role: &Role) -> &'static str {
     let lower = text.to_lowercase();
     if lower.contains("todo") || lower.contains("fixme") || lower.contains("待处理") {
@@ -203,8 +209,11 @@ fn classify_fact_type(text: &str, role: &Role) -> &'static str {
     }
 }
 
-/// Extract a concise digest from tool output — key findings, errors, file paths.
-/// Returns `None` if nothing meaningful can be extracted.
+/**
+从工具输出中提取简洁摘要——关键发现、错误、文件路径。
+
+若无法提取到任何有意义的内容，则返回 `None`。
+*/
 fn tool_digest(text: &str) -> Option<String> {
     let mut highlights: Vec<&str> = Vec::new();
 
@@ -245,7 +254,7 @@ fn tool_digest(text: &str) -> Option<String> {
     }
 }
 
-/// Check if text contains signal words indicating important facts.
+/// 检查文本中是否包含表示重要事实的信号词。
 fn contains_signal_word(text: &str) -> bool {
     let lower = text.to_lowercase();
     const SIGNALS: &[&str] = &[
@@ -267,12 +276,12 @@ fn contains_signal_word(text: &str) -> bool {
     SIGNALS.iter().any(|s| lower.contains(s))
 }
 
-/// Extract the last paragraph from text (separated by double newline).
+/// 从文本中提取最后一段（以双换行符分隔）。
 fn last_paragraph(text: &str) -> Option<String> {
     text.rsplit("\n\n").next().map(|s| s.trim().to_string())
 }
 
-/// Truncate a fact to a reasonable length (~300 chars), UTF-8 safe.
+/// 将事实截断到合理长度（约 300 字符），保证 UTF-8 安全。
 fn truncate_fact(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= 300 {
@@ -282,7 +291,7 @@ fn truncate_fact(text: &str) -> String {
     }
 }
 
-/// FNV-1a hash — deterministic across process restarts.
+/// FNV-1a 哈希——进程重启后依然保持确定性。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,8 +299,8 @@ mod tests {
     #[test]
     fn test_extract_key_facts_skips_short_messages() {
         let messages = vec![
-            Message::user("Hi".to_string()),      // too short
-            Message::assistant("OK".to_string()), // too short
+            Message::user("Hi".to_string()),      // 太短
+            Message::assistant("OK".to_string()), // 太短
         ];
         let facts = extract_key_facts(&messages);
         assert!(facts.is_empty());
@@ -302,7 +311,7 @@ mod tests {
         let messages = vec![Message::tool_result(
             "call_1".into(),
             "read_file".into(),
-            "x".repeat(500), // long tool output
+            "x".repeat(500), // 较长的工具输出
         )];
         let facts = extract_key_facts(&messages);
         assert!(facts.is_empty(), "Tool results should be skipped");
@@ -366,10 +375,12 @@ mod tests {
         assert!(!contains_signal_word("Hello world"));
     }
 
-    /// RFC 5.2.2: End-to-end quality verification.
-    ///
-    /// Builds a conversation with important facts → extracts key facts →
-    /// writes to an in-memory Store → verifies the facts are recallable.
+    /**
+    RFC 5.2.2：端到端质量验证。
+
+    构建一个包含重要事实的对话 → 提取关键事实 → 写入内存态 Store →
+    验证这些事实是可以被召回的。
+    */
     #[tokio::test]
     async fn test_e2e_fact_extraction_and_recall() -> echo_core::error::Result<()> {
         use crate::evolution::MemoryLayerManager;
@@ -386,22 +397,22 @@ mod tests {
         ));
         let promoter = StoreMemoryPromoter::new(layer_manager);
 
-        // Build a conversation with important facts that should be preserved
+        // 构建一个包含应当被保留的重要事实的对话
         let messages = vec![
-            // This assistant message contains a decision (signal word)
+            // 这条助手消息包含一个决定（信号词）
             Message::assistant(
                 "After thorough analysis, we decided to use PostgreSQL for the database layer \
                  because it provides better JSON support and full-text search capabilities. \
                  This is an important architectural decision."
                     .to_string(),
             ),
-            // This user message is a meaningful question
+            // 这条用户消息是一个有意义的问题
             Message::user(
                 "How should we handle authentication in the microservice architecture? \
                  We need to support both OAuth2 and API keys for different clients."
                     .to_string(),
             ),
-            // This assistant message has a conclusion in the last paragraph
+            // 这条助手消息的最后一段包含结论
             Message::assistant(
                 "Let me analyze the authentication options available.\n\n\
                  In conclusion, we recommend using JWT tokens with OAuth2 for external \
@@ -409,17 +420,17 @@ mod tests {
                  This provides the best balance of security and simplicity."
                     .to_string(),
             ),
-            // This should be skipped (tool result)
+            // 这条应当被跳过（工具结果）
             Message::tool_result(
                 "call_1".into(),
                 "read_file".into(),
                 "file contents here that are not important facts".repeat(20),
             ),
-            // This should be skipped (too short)
+            // 这条应当被跳过（太短）
             Message::user("ok".to_string()),
         ];
 
-        // Step 1: Extract facts
+        // 第 1 步：提取事实
         let facts = extract_key_facts(&messages);
         assert!(
             facts.len() >= 2,
@@ -427,7 +438,7 @@ mod tests {
             facts.len()
         );
 
-        // Verify extracted facts contain key information
+        // 验证提取出的事实包含关键信息
         let all_facts: String = facts
             .iter()
             .map(|(s, _)| s.as_str())
@@ -442,10 +453,10 @@ mod tests {
             "Should preserve the user's question about authentication"
         );
 
-        // Step 2: Promote to Store (writes via the promoter)
+        // 第 2 步：推广到 Store（通过推广器写入）
         promoter.promote(&messages).await?;
 
-        // Step 3: Verify facts are recallable via Store search
+        // 第 3 步：验证事实可以通过 Store 搜索被召回
         let results = store.search(&["agent", "memories"], "PostgreSQL", 5).await;
         assert!(results.is_ok(), "Store search should succeed");
         let items = results.unwrap_or_default();
@@ -454,7 +465,7 @@ mod tests {
             "Should be able to recall the PostgreSQL decision fact from Store"
         );
 
-        // Step 4: Verify quality — the recalled item contains meaningful content
+        // 第 4 步：验证质量——被召回的条目包含有意义的内容
         let content = items
             .first()
             .and_then(|recalled| recalled.value.get("content"))

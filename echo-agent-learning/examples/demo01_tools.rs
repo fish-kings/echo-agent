@@ -6,6 +6,7 @@ use echo_agent::error::Result;
 use echo_agent::prelude::*;
 use echo_agent::tool;
 
+/// 计算两数之和的工具。
 #[tool(name = "add", description = "两数相加")]
 async fn add(
     /// 第一个数
@@ -16,6 +17,7 @@ async fn add(
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 计算两数之差的工具。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(
     /// 第一个数
@@ -26,6 +28,7 @@ async fn subtract(
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 计算两数之积的工具。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(
     /// 第一个数
@@ -36,6 +39,7 @@ async fn multiply(
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 计算两数之商的工具；除数为零时返回错误结果。
 #[tool(name = "divide", description = "两数相除")]
 async fn divide(
     /// 被除数
@@ -49,6 +53,7 @@ async fn divide(
     Ok(ToolResult::success(format!("{} / {} = {}", a, b, a / b)))
 }
 
+/// 演示 `#[tool]` 宏定义的工具如何被 agent 调用来完成一次计算任务。
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()

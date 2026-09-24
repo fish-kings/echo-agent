@@ -1,83 +1,86 @@
-//! A2A protocol type definitions
+//! A2A 协议类型定义
 //!
-//! Agent Card, Task, and other types defined according to the Google A2A protocol specification.
+//! 根据 Google A2A 协议规范定义的 Agent Card、Task 等类型。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-// ── JSON-RPC / A2A constants ─────────────────────────────────────────────────
+// ── JSON-RPC / A2A 常量 ─────────────────────────────────────────────────
 
-/// JSON-RPC protocol version
+/// JSON-RPC 协议版本
 pub const JSONRPC_VERSION: &str = "2.0";
 
-/// A2A method names
+/// A2A 方法名
 pub const METHOD_SEND: &str = "tasks/send";
-/// Subscribe to task updates.
+/// 订阅任务更新。
 pub const METHOD_SEND_SUBSCRIBE: &str = "tasks/sendSubscribe";
-/// Get task status.
+/// 获取任务状态。
 pub const METHOD_GET: &str = "tasks/get";
-/// Cancel a running task.
+/// 取消一个正在运行的任务。
 pub const METHOD_CANCEL: &str = "tasks/cancel";
 
-/// A2A error codes
+/// A2A 错误码
 pub const ERROR_CODE_PARSE: i64 = -32700;
-/// Method not found.
+/// 方法未找到。
 pub const ERROR_CODE_METHOD_NOT_FOUND: i64 = -32601;
-/// Invalid parameters.
+/// 参数无效。
 pub const ERROR_CODE_INVALID_PARAMS: i64 = -32602;
-/// Task execution failed.
+/// 任务执行失败。
 pub const ERROR_CODE_TASK_FAILED: i64 = -32000;
-/// Task not found.
+/// 任务未找到。
 pub const ERROR_CODE_TASK_NOT_FOUND: i64 = -32001;
-/// Task is already in terminal state.
+/// 任务已处于终态。
 pub const ERROR_CODE_TERMINAL_STATE: i64 = -32002;
-/// Invalid state transition.
+/// 无效的状态转换。
 pub const ERROR_CODE_INVALID_TRANSITION: i64 = -32003;
 
 // ── Agent Card ───────────────────────────────────────────────────────────────
 
-/// Agent Card — describes an Agent's capabilities and interfaces (A2A spec core type)
-///
-/// Published via the `/.well-known/agent.json` endpoint for discovery and invocation by other Agents.
+/**
+Agent Card——描述一个 Agent 的能力与接口（A2A 规范的核心类型）
+
+通过 `/.well-known/agent.json` 端点发布，供其他 Agent 发现与调用。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCard {
-    /// Agent name
+    /// Agent 名称
     pub name: String,
-    /// Agent description
+    /// Agent 描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Agent service URL endpoint
+    /// Agent 服务的 URL 端点
     pub url: String,
-    /// Agent version
+    /// Agent 版本
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// Agent provider information
+    /// Agent 提供方信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<AgentProvider>,
-    /// Agent skills list
+    /// Agent 技能列表
     #[serde(default)]
     pub skills: Vec<AgentSkill>,
-    /// Supported input content types
+    /// 支持的输入内容类型
     #[serde(default = "default_content_types")]
     pub default_input_modes: Vec<String>,
-    /// Supported output content types
+    /// 支持的输出内容类型
     #[serde(default = "default_content_types")]
     pub default_output_modes: Vec<String>,
-    /// Authentication methods
+    /// 认证方式
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authentication: Option<AgentAuthentication>,
-    /// Extra capability flags
+    /// 额外的能力标志
     #[serde(default)]
     pub capabilities: AgentCapabilities,
 }
 
+/// 默认的内容类型列表。
 fn default_content_types() -> Vec<String> {
     vec!["text/plain".to_string()]
 }
 
 impl AgentCard {
-    /// Create an AgentCard builder
+    /// 创建一个 AgentCard 构建器
     pub fn builder(name: impl Into<String>, url: impl Into<String>) -> AgentCardBuilder {
         AgentCardBuilder {
             name: name.into(),
@@ -93,7 +96,7 @@ impl AgentCard {
         }
     }
 
-    /// Auto-generate an Agent Card from an existing Agent trait object
+    /// 从一个已有的 Agent trait 对象自动生成 Agent Card
     pub fn from_agent(agent: &dyn crate::agent::Agent, url: impl Into<String>) -> Self {
         let skills: Vec<AgentSkill> = agent
             .tool_definitions()
@@ -116,82 +119,92 @@ impl AgentCard {
     }
 }
 
-/// Agent Card builder
+/// Agent Card 构建器
 pub struct AgentCardBuilder {
+    /// Agent 名称。
     name: String,
+    /// Agent 服务的 URL 端点。
     url: String,
+    /// Agent 描述。
     description: Option<String>,
+    /// Agent 版本。
     version: Option<String>,
+    /// Agent 提供方信息。
     provider: Option<AgentProvider>,
+    /// Agent 技能列表。
     skills: Vec<AgentSkill>,
+    /// 支持的输入内容类型。
     default_input_modes: Vec<String>,
+    /// 支持的输出内容类型。
     default_output_modes: Vec<String>,
+    /// 认证方式。
     authentication: Option<AgentAuthentication>,
+    /// 额外的能力标志。
     capabilities: AgentCapabilities,
 }
 
 impl AgentCardBuilder {
-    /// Set the description of the agent.
+    /// 设置该 agent 的描述。
     pub fn description(mut self, desc: impl Into<String>) -> Self {
         self.description = Some(desc.into());
         self
     }
 
-    /// Set the version of the agent.
+    /// 设置该 agent 的版本。
     pub fn version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
         self
     }
 
-    /// Set the provider information of the agent.
+    /// 设置该 agent 的提供方信息。
     pub fn provider(mut self, provider: AgentProvider) -> Self {
         self.provider = Some(provider);
         self
     }
 
-    /// Add a single skill to the agent.
+    /// 为该 agent 添加一个技能。
     pub fn skill(mut self, skill: AgentSkill) -> Self {
         self.skills.push(skill);
         self
     }
 
-    /// Add multiple skills to the agent.
+    /// 为该 agent 添加多个技能。
     pub fn skills(mut self, skills: Vec<AgentSkill>) -> Self {
         self.skills.extend(skills);
         self
     }
 
-    /// Set the default input modes (content types) supported by the agent.
+    /// 设置该 agent 支持的默认输入模式（内容类型）。
     pub fn input_modes(mut self, modes: Vec<impl Into<String>>) -> Self {
         self.default_input_modes = modes.into_iter().map(|m| m.into()).collect();
         self
     }
 
-    /// Set the default output modes (content types) supported by the agent.
+    /// 设置该 agent 支持的默认输出模式（内容类型）。
     pub fn output_modes(mut self, modes: Vec<impl Into<String>>) -> Self {
         self.default_output_modes = modes.into_iter().map(|m| m.into()).collect();
         self
     }
 
-    /// Set authentication configuration for the agent.
+    /// 设置该 agent 的认证配置。
     pub fn authentication(mut self, auth: AgentAuthentication) -> Self {
         self.authentication = Some(auth);
         self
     }
 
-    /// Enable streaming capability for the agent.
+    /// 为该 agent 启用流式能力。
     pub fn streaming(mut self) -> Self {
         self.capabilities.streaming = true;
         self
     }
 
-    /// Enable push notifications capability for the agent.
+    /// 为该 agent 启用推送通知能力。
     pub fn push_notifications(mut self) -> Self {
         self.capabilities.push_notifications = true;
         self
     }
 
-    /// Build the AgentCard with the configured fields.
+    /// 使用已配置的字段构建 AgentCard。
     pub fn build(self) -> AgentCard {
         AgentCard {
             name: self.name,
@@ -208,18 +221,18 @@ impl AgentCardBuilder {
     }
 }
 
-/// Agent provider information
+/// Agent 提供方信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProvider {
-    /// Organization/company name
+    /// 组织/公司名称
     pub organization: String,
-    /// Contact URL
+    /// 联系 URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
 
 impl AgentProvider {
-    /// Create a new AgentProvider with the given organization name.
+    /// 使用给定的组织名称创建一个新的 AgentProvider。
     pub fn new(organization: impl Into<String>) -> Self {
         Self {
             organization: organization.into(),
@@ -227,39 +240,39 @@ impl AgentProvider {
         }
     }
 
-    /// Set the URL for the agent provider.
+    /// 设置该 agent 提供方的 URL。
     pub fn with_url(mut self, url: impl Into<String>) -> Self {
         self.url = Some(url.into());
         self
     }
 }
 
-/// Agent skill description
+/// Agent 技能描述
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSkill {
-    /// Skill ID
+    /// 技能 ID
     pub id: String,
-    /// Skill name
+    /// 技能名称
     pub name: String,
-    /// Skill description
+    /// 技能描述
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Example inputs
+    /// 输入示例
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub examples: Vec<String>,
-    /// Supported input types
+    /// 支持的输入类型
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub input_modes: Vec<String>,
-    /// Supported output types
+    /// 支持的输出类型
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_modes: Vec<String>,
-    /// Custom tags
+    /// 自定义标签
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
 }
 
 impl AgentSkill {
-    /// Create a new AgentSkill with the given name and description.
+    /// 使用给定的名称与描述创建一个新的 AgentSkill。
     pub fn new(name: impl Into<String>, description: impl Into<String>) -> Self {
         let name_str: String = name.into();
         Self {
@@ -273,92 +286,94 @@ impl AgentSkill {
         }
     }
 
-    /// Add examples to the skill.
+    /// 为该技能添加示例。
     pub fn with_examples(mut self, examples: Vec<impl Into<String>>) -> Self {
         self.examples = examples.into_iter().map(|e| e.into()).collect();
         self
     }
 
-    /// Add tags to the skill.
+    /// 为该技能添加标签。
     pub fn with_tags(mut self, tags: Vec<impl Into<String>>) -> Self {
         self.tags = tags.into_iter().map(|t| t.into()).collect();
         self
     }
 }
 
-/// Agent authentication configuration
+/// Agent 认证配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentAuthentication {
-    /// Authentication scheme list
+    /// 认证方式列表
     pub schemes: Vec<AuthenticationScheme>,
 }
 
-/// Authentication scheme
+/// 认证方式
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthenticationScheme {
-    /// Scheme type: "apiKey", "bearer", "oauth2", etc.
+    /// 方式类型："apiKey"、"bearer"、"oauth2" 等。
     pub scheme: String,
-    /// Additional configuration
+    /// 附加配置
     #[serde(flatten)]
     pub config: HashMap<String, serde_json::Value>,
 }
 
-/// Agent capability flags
+/// Agent 能力标志
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
-    /// Whether streaming output is supported
+    /// 是否支持流式输出
     #[serde(default)]
     pub streaming: bool,
-    /// Whether push notifications are supported
+    /// 是否支持推送通知
     #[serde(default)]
     pub push_notifications: bool,
-    /// Whether session state is supported
+    /// 是否支持会话状态
     #[serde(default)]
     pub state_transition_history: bool,
 }
 
-// ── A2A Task state machine ───────────────────────────────────────────────────
+// ── A2A Task 状态机 ───────────────────────────────────────────────────
 //
 //  submitted → working → [input-required] → completed / failed
 //                       ↑___________________↓
 //
-//  Terminal states: completed, failed, canceled
+//  终态：completed、failed、canceled
 
-/// Task lifecycle state (A2A spec state machine)
-///
-/// ```text
-/// submitted → working → completed
-///                     → failed
-///                     → input-required ⇄ working
-///
-/// Any non-terminal state → canceled
-/// ```
+/**
+任务生命周期状态（A2A 规范状态机）
+
+```text
+submitted → working → completed
+                    → failed
+                    → input-required ⇄ working
+
+任意非终态 → canceled
+```
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TaskState {
-    /// Task submitted, awaiting processing
+    /// 任务已提交，等待处理
     Submitted,
-    /// Agent is executing
+    /// Agent 正在执行
     Working,
-    /// Agent needs more input to continue
+    /// Agent 需要更多输入才能继续
     InputRequired,
-    /// Task completed successfully
+    /// 任务成功完成
     Completed,
-    /// Task execution failed
+    /// 任务执行失败
     Failed,
-    /// Task was canceled
+    /// 任务已被取消
     Canceled,
 }
 
 impl TaskState {
-    /// Whether this is a terminal state (completed / failed / canceled)
+    /// 该状态是否为终态（completed / failed / canceled）
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
     }
 
-    /// Check whether a state transition is valid
+    /// 检查某次状态转换是否有效
     pub fn can_transition_to(self, next: Self) -> bool {
         if self.is_terminal() {
             return false;
@@ -377,6 +392,7 @@ impl TaskState {
     }
 }
 
+/// 将该状态格式化为 A2A 协议使用的 kebab-case 字符串。
 impl std::fmt::Display for TaskState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -390,69 +406,69 @@ impl std::fmt::Display for TaskState {
     }
 }
 
-// ── A2A Task types ───────────────────────────────────────────────────────────
+// ── A2A Task 类型 ───────────────────────────────────────────────────────────
 
-/// A2A task request
+/// A2A 任务请求
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATaskRequest {
-    /// JSON-RPC version
+    /// JSON-RPC 版本
     pub jsonrpc: String,
-    /// Request ID
+    /// 请求 ID
     pub id: String,
-    /// Method name
+    /// 方法名
     pub method: String,
-    /// Parameters
+    /// 参数
     pub params: A2ATaskParams,
 }
 
-/// A2A task parameters
+/// A2A 任务参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATaskParams {
-    /// Task ID (optional; omitted for new tasks)
+    /// 任务 ID（可选；新任务不携带该字段）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Session ID
+    /// 会话 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Message content
+    /// 消息内容
     pub message: A2AMessage,
 }
 
-/// A2A message
+/// A2A 消息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2AMessage {
-    /// Role: "user" or "agent"
+    /// 角色："user" 或 "agent"
     pub role: String,
-    /// Message parts list
+    /// 消息各部分（parts）的列表
     pub parts: Vec<A2APart>,
 }
 
-/// Message content part
+/// 消息内容的一个部分
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum A2APart {
-    /// Text content
+    /// 文本内容
     #[serde(rename = "text")]
     Text {
-        /// Text content
+        /// 文本内容
         text: String,
     },
-    /// File content
+    /// 文件内容
     #[serde(rename = "file")]
     File {
-        /// MIME type of the file.
+        /// 文件的 MIME 类型。
         #[serde(rename = "mimeType")]
         mime_type: String,
-        /// Base64-encoded file data.
+        /// Base64 编码的文件数据。
         data: String,
     },
 }
 
 impl A2AMessage {
-    /// Create a user text message
+    /// 创建一条用户文本消息
     pub fn user_text(text: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
@@ -460,7 +476,7 @@ impl A2AMessage {
         }
     }
 
-    /// Create an Agent text message
+    /// 创建一条 Agent 文本消息
     pub fn agent_text(text: impl Into<String>) -> Self {
         Self {
             role: "agent".to_string(),
@@ -468,7 +484,7 @@ impl A2AMessage {
         }
     }
 
-    /// Get all text content
+    /// 获取全部文本内容
     pub fn text_content(&self) -> String {
         self.parts
             .iter()
@@ -481,58 +497,58 @@ impl A2AMessage {
     }
 }
 
-/// A2A task response
+/// A2A 任务响应
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATaskResponse {
-    /// JSON-RPC version
+    /// JSON-RPC 版本
     pub jsonrpc: String,
-    /// Request ID (None when parsing failed)
+    /// 请求 ID（解析失败时为 None）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Task result
+    /// 任务结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<A2ATask>,
-    /// Error information
+    /// 错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<A2AError>,
 }
 
-/// A2A task
+/// A2A 任务
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATask {
-    /// Task ID
+    /// 任务 ID
     pub id: String,
-    /// Session ID
+    /// 会话 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// Task status
+    /// 任务状态
     pub status: A2ATaskStatus,
-    /// Message history
+    /// 消息历史
     #[serde(default)]
     pub history: Vec<A2AMessage>,
-    /// Agent-produced artifacts
+    /// Agent 产生的 artifact
     #[serde(default)]
     pub artifacts: Vec<A2AArtifact>,
 }
 
-/// Task status
+/// 任务状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2ATaskStatus {
-    /// State enum
+    /// 状态枚举
     pub state: TaskState,
-    /// Status message (may contain Agent reply or error description)
+    /// 状态消息（可能包含 Agent 的回复或错误描述）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<A2AMessage>,
-    /// Status change timestamp (ISO 8601)
+    /// 状态变化的时间戳（ISO 8601）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
 }
 
 impl A2ATaskStatus {
-    /// Create a new task status with the given state and current timestamp.
+    /// 使用给定状态与当前时间戳创建一个新的任务状态。
     pub fn new(state: TaskState) -> Self {
         Self {
             state,
@@ -541,7 +557,7 @@ impl A2ATaskStatus {
         }
     }
 
-    /// Create a new task status with the given state and message.
+    /// 使用给定状态与消息创建一个新的任务状态。
     pub fn with_message(state: TaskState, message: A2AMessage) -> Self {
         Self {
             state,
@@ -551,87 +567,87 @@ impl A2ATaskStatus {
     }
 }
 
-/// Agent artifact (output)
+/// Agent 产物（artifact，输出内容）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2AArtifact {
-    /// Artifact name
+    /// Artifact 名称
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Artifact index in the list (identifies the same artifact during streaming appends)
+    /// Artifact 在列表中的索引（在流式追加时用于标识同一个 artifact）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index: Option<usize>,
-    /// Artifact content parts
+    /// Artifact 的内容部分
     pub parts: Vec<A2APart>,
-    /// Whether to append to an existing artifact with the same index (streaming scenario)
+    /// 是否追加到具有相同索引的已有 artifact（流式场景）
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub append: bool,
 }
 
-/// A2A error
+/// A2A 错误
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct A2AError {
-    /// Error code
+    /// 错误码
     pub code: i32,
-    /// Error message
+    /// 错误信息
     pub message: String,
 }
 
-// ── A2A streaming event types ─────────────────────────────────────────────────
-//
-// Used for tasks/sendSubscribe SSE streaming responses.
-// Each event is one line of JSON, format: `data: <json>\n\n`
+// ── A2A 流式事件类型 ─────────────────────────────────────────────────
 
-/// Event type in streaming responses
+// 用于 tasks/sendSubscribe 的 SSE 流式响应。
+// 每个事件是一行 JSON，格式为：`data: <json>\n\n`
+
+/// 流式响应中的事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum A2AStreamEvent {
-    /// Task status change event
+    /// 任务状态变化事件
     #[serde(rename = "status")]
     StatusUpdate(TaskStatusUpdateEvent),
-    /// Artifact update event (streaming output)
+    /// Artifact 更新事件（流式输出）
     #[serde(rename = "artifact")]
     ArtifactUpdate(TaskArtifactUpdateEvent),
 }
 
-/// Task status change event
+/// 任务状态变化事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskStatusUpdateEvent {
-    /// Task ID
+    /// 任务 ID
     pub task_id: String,
-    /// New status
+    /// 新状态
     pub status: A2ATaskStatus,
-    /// Whether this is the final event for the task
+    /// 是否为该任务的最后一个事件
     #[serde(rename = "final", default)]
     pub is_final: bool,
 }
 
-/// Artifact update event (incremental output)
+/// Artifact 更新事件（增量输出）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
-    /// Task ID
+    /// 任务 ID
     pub task_id: String,
-    /// Updated artifact
+    /// 已更新的 artifact
     pub artifact: A2AArtifact,
-    /// Whether this is the final event for the task
+    /// 是否为该任务的最后一个事件
     #[serde(rename = "final", default)]
     pub is_final: bool,
 }
 
-/// Streaming JSON-RPC response wrapper (carrier for SSE `data:` lines)
+/// 流式 JSON-RPC 响应包装器（用于承载 SSE 的 `data:` 行）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct A2AStreamResponse {
-    /// JSON-RPC version
+    /// JSON-RPC 版本
     pub jsonrpc: String,
-    /// Request ID
+    /// 请求 ID
     pub id: String,
-    /// Event result
+    /// 事件结果
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<A2AStreamEvent>,
-    /// Error information
+    /// 错误信息
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<A2AError>,
 }
@@ -687,7 +703,7 @@ mod tests {
         assert_eq!(skill.examples.len(), 1);
     }
 
-    // ── TaskState state machine tests ─────────────────────────
+    // ── TaskState 状态机测试 ─────────────────────────
 
     #[test]
     fn test_task_state_terminal() {
@@ -711,12 +727,12 @@ mod tests {
         assert!(TaskState::Working.can_transition_to(TaskState::Canceled));
         assert!(!TaskState::Working.can_transition_to(TaskState::Submitted));
 
-        // input-required ⇄ working cycle
+        // input-required ⇄ working 循环
         assert!(TaskState::InputRequired.can_transition_to(TaskState::Working));
         assert!(TaskState::InputRequired.can_transition_to(TaskState::Canceled));
         assert!(!TaskState::InputRequired.can_transition_to(TaskState::Completed));
 
-        // terminal states cannot transition
+        // 终态不能再转换
         assert!(!TaskState::Completed.can_transition_to(TaskState::Working));
         assert!(!TaskState::Failed.can_transition_to(TaskState::Working));
         assert!(!TaskState::Canceled.can_transition_to(TaskState::Working));

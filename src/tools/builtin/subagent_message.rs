@@ -1,19 +1,19 @@
-//! In-tree Subagent communication tools.
-//!
-//! `subagent_message` sends one bounded message from a running Subagent to
-//! its parent (informational report or blocking clarification request) or to
-//! a sibling attempt (queue-only steer), through the uplink channel the
-//! dispatcher installed into the invocation's runtime context. Delivery is
-//! fire-and-forget: the sender never waits for a reply, so parent/child
-//! mutual waiting cannot deadlock a dispatch tree.
-//!
-//! `subagent_list` returns the bounded set of currently active attempts in
-//! the shared control plane so the model can discover sibling execution ids
-//! to address.
-//!
-//! Both tools are no-ops-with-explanation outside a dispatched Subagent
-//! invocation (no lineage / no uplink in the ToolContext) instead of failing
-//! hard, so a mis-registered agent still produces model-readable feedback.
+/*!
+内置于代码仓库中的 Subagent 通信工具。
+
+`subagent_message` 会从一个正在运行的 Subagent 向其父级发送一条长度受限的消息
+（信息性汇报，或阻塞式的澄清请求），或者向一个同级尝试发送消息
+（仅入队的引导提示），发送通道是调度器安装到本次调用运行时上下文中的
+上行（uplink）通道。投递是"发后即忘"的：发送方不会等待回复，
+因此父子之间互相等待不会导致调度树死锁。
+
+`subagent_list` 返回共享控制面中当前活跃尝试的有限集合，
+供模型发现可寻址的同级执行 id。
+
+这两个工具在脱离已调度的 Subagent 调用环境时（ToolContext 中没有
+lineage / uplink），不会直接报错，而是返回"无操作 + 说明"的结果，
+这样即便某个 agent 配置有误，也能产生模型可读的反馈。
+*/
 
 use crate::agent::subagent::registry::SubagentRegistry;
 use crate::tools::{Tool, ToolParameters, ToolResult};
@@ -23,18 +23,21 @@ use echo_core::tools::{
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 
-/// Upper bound for one message body, in Unicode scalar values.
+/// 单条消息正文的长度上限（以 Unicode 标量值计）。
 const MAX_MESSAGE_CHARS: usize = 8_000;
-/// Default (and upper) bound for `subagent_list` output size.
+/// `subagent_list` 输出条数的默认值（同时也是上限）。
 const DEFAULT_LIST_LIMIT: usize = 20;
 
+/// 将字符串截断到消息长度上限内
 fn bounded_text(value: &str) -> String {
     value.chars().take(MAX_MESSAGE_CHARS).collect()
 }
 
+/// 供 Subagent 向父级或同级发送消息的工具
 pub struct SubagentMessageTool;
 
 impl SubagentMessageTool {
+    /// 创建一个新的 SubagentMessageTool
     pub fn new() -> Self {
         Self
     }
@@ -47,10 +50,12 @@ impl Default for SubagentMessageTool {
 }
 
 impl Tool for SubagentMessageTool {
+    /// 返回工具名称 `subagent_message`
     fn name(&self) -> &str {
         "subagent_message"
     }
 
+    /// 返回展示给模型的工具描述文本
     fn description(&self) -> &str {
         "Send one message from this Subagent to its dispatching parent or to a \
          sibling attempt. Parent direction supports `report` (informational, \
@@ -61,6 +66,7 @@ impl Tool for SubagentMessageTool {
          evidence."
     }
 
+    /// 返回该工具的参数 JSON Schema
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -93,6 +99,7 @@ impl Tool for SubagentMessageTool {
         })
     }
 
+    /// 执行消息发送逻辑：校验参数、构建目标并通过 uplink 投递消息
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -204,27 +211,33 @@ impl Tool for SubagentMessageTool {
     }
 }
 
+/// 列出当前活跃 Subagent 尝试的工具
 pub struct SubagentListTool {
+    /// 用于查询共享控制面的 Subagent 注册表
     registry: std::sync::Arc<SubagentRegistry>,
 }
 
 impl SubagentListTool {
+    /// 创建一个新的 SubagentListTool，绑定到指定的 registry
     pub fn new(registry: std::sync::Arc<SubagentRegistry>) -> Self {
         Self { registry }
     }
 }
 
 impl Tool for SubagentListTool {
+    /// 返回工具名称 `subagent_list`
     fn name(&self) -> &str {
         "subagent_list"
     }
 
+    /// 返回展示给模型的工具描述文本
     fn description(&self) -> &str {
         "List the currently active Subagent attempts visible in the shared \
          control plane (bounded). Use the execution ids as `subagent_message` \
          sibling targets."
     }
 
+    /// 返回该工具的参数 JSON Schema
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -238,6 +251,7 @@ impl Tool for SubagentListTool {
         })
     }
 
+    /// 从共享控制面读取当前活跃尝试的快照并返回
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -290,3 +304,4 @@ mod tests {
         assert!(schema.get("required").is_none());
     }
 }
+</content>

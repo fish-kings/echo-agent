@@ -1,37 +1,43 @@
-//! Filesystem safety primitives shared by framework crates.
+//! 各框架 crate 共用的文件系统安全原语。
 
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
-/// Lifetime-held exclusive lease for one file-backed authority.
+/// 为一个文件承载的权威（authority）持有的、与其生命周期绑定的独占租约。
 #[derive(Debug)]
 pub struct ExclusiveFileLease {
+    /// 持有独占锁的底层文件句柄。
     file: std::fs::File,
+    /// 该租约对应的锁文件路径。
     path: PathBuf,
 }
 
 impl ExclusiveFileLease {
+    /// 返回该租约对应的锁文件路径。
     pub fn path(&self) -> &Path {
         &self.path
     }
 }
 
 impl Drop for ExclusiveFileLease {
+    /// 释放持有的文件锁。
     fn drop(&mut self) {
         let _ = self.file.unlock();
     }
 }
 
-/// Create a directory tree and durably publish every newly created ancestor.
-///
-/// Creation proceeds from the nearest existing ancestor toward `path`. Each
-/// directory and its parent are synced before the next child is created. A
-/// retry first syncs the nearest existing ancestor, which reconciles a prior
-/// failure that happened after `mkdir` but before its directory-entry barrier.
+/** 创建目录树，并持久化发布每一个新建的祖先目录。
+
+创建顺序从最近的已存在祖先目录开始，逐级向 `path` 推进。每创建一个目录，
+都会先同步该目录及其父目录后才创建下一个子目录。重试时会先同步最近的已存在
+祖先目录，用于修复上一次失败——失败发生在 `mkdir` 之后、目录项屏障（barrier）
+完成之前的情形。
+*/
 pub fn create_dir_all_durable(path: &Path) -> std::io::Result<()> {
     create_dir_all_durable_with(path, sync_parent_directory)
 }
 
+/// `create_dir_all_durable` 的可注入实现，允许测试替换目录同步回调。
 fn create_dir_all_durable_with(
     path: &Path,
     mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>,
@@ -97,12 +103,12 @@ fn create_dir_all_durable_with(
     Ok(())
 }
 
-/// Acquire a non-blocking exclusive sidecar lease for `authority_path`.
-///
-/// One process owns the lease for the authority lifetime. Additional handles
-/// in that process must share the same authority rather than acquiring another
-/// lease; a competing process fails closed with an error instead of silently
-/// racing writes.
+/** 为 `authority_path` 获取一个非阻塞的独占旁路（sidecar）租约。
+
+同一时刻仅有一个进程能在该权威（authority）的生命周期内持有该租约；同一进程
+内的其它句柄必须共享同一个权威，而不是再获取一个新租约。竞争的进程会直接
+失败并返回错误，而不是静默地产生写入竞争。
+*/
 pub fn try_exclusive_file_lease(authority_path: &Path) -> std::io::Result<ExclusiveFileLease> {
     use fs2::FileExt;
 
@@ -136,7 +142,7 @@ pub fn try_exclusive_file_lease(authority_path: &Path) -> std::io::Result<Exclus
     Ok(ExclusiveFileLease { file, path })
 }
 
-/// Validate an external identifier before using it as one filesystem segment.
+/// 在将外部标识符用作单个文件系统路径段之前对其进行校验。
 pub fn validate_path_segment(value: &str) -> std::io::Result<&str> {
     if value.is_empty()
         || Path::new(value).is_absolute()
@@ -155,12 +161,12 @@ pub fn validate_path_segment(value: &str) -> std::io::Result<&str> {
     Ok(value)
 }
 
-/// Encode exact UTF-8 bytes as a filesystem-collation-independent identity.
-///
-/// The output uses only lowercase hexadecimal ASCII, so case folding and
-/// Unicode normalization performed by a filesystem cannot alias distinct input
-/// strings. This function is total and does not validate whether `value` is an
-/// accepted external identifier.
+/** 将精确的 UTF-8 字节编码为一个与文件系统排序规则无关的身份标识。
+
+输出仅使用小写十六进制 ASCII 字符，因此文件系统执行的大小写折叠和 Unicode
+归一化都不会让不同的输入字符串产生别名冲突。该函数对任意输入都是全函数
+（total function），不会校验 `value` 是否是一个可接受的外部标识符。
+*/
 pub fn encode_utf8_path_identity(value: &str) -> String {
     let capacity = value.len().saturating_mul(2).saturating_add(3);
     let mut encoded = String::with_capacity(capacity);
@@ -172,13 +178,13 @@ pub fn encode_utf8_path_identity(value: &str) -> String {
     encoded
 }
 
-/// Validate an external identifier and encode its exact filesystem identity.
+/// 校验外部标识符并将其编码为精确的文件系统身份标识。
 pub fn encode_path_segment_identity(value: &str) -> std::io::Result<String> {
     validate_path_segment(value)?;
     Ok(encode_utf8_path_identity(value))
 }
 
-/// Join a validated external identifier beneath `root`.
+/// 将经过校验的外部标识符拼接到 `root` 之下。
 pub fn join_path_segment(root: &Path, value: &str) -> std::io::Result<PathBuf> {
     let joined = root.join(validate_path_segment(value)?);
     match std::fs::symlink_metadata(&joined) {
@@ -195,7 +201,7 @@ pub fn join_path_segment(root: &Path, value: &str) -> std::io::Result<PathBuf> {
     }
 }
 
-/// Atomically replace a file using a unique sibling temp file and durable rename.
+/// 借助一个唯一的同级临时文件和持久化重命名，原子性地替换一个文件。
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let parent = path
         .parent()
@@ -228,14 +234,16 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     sync_parent_directory(parent)
 }
 
-/// Remove one file and durably publish the directory-entry deletion.
-///
-/// `NotFound` is an idempotent success, but the parent is still synced so a
-/// retry reconciles a prior crash after unlink and before the directory barrier.
+/** 删除一个文件，并持久化发布该目录项删除操作。
+
+`NotFound` 视为幂等成功，但仍会同步父目录，以便重试时修复此前发生在
+`unlink` 之后、目录屏障之前的崩溃。
+*/
 pub fn remove_file_durable(path: &Path) -> std::io::Result<bool> {
     remove_file_durable_with(path, sync_parent_directory)
 }
 
+/// `remove_file_durable` 的可注入实现，允许测试替换父目录同步回调。
 fn remove_file_durable_with(
     path: &Path,
     sync_parent: impl Fn(&Path) -> std::io::Result<()>,
@@ -252,11 +260,13 @@ fn remove_file_durable_with(
     Ok(removed)
 }
 
+/// 将临时文件重命名替换为目标文件（非 Windows 平台）。
 #[cfg(not(windows))]
 fn replace_temp_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::rename(source, destination)
 }
 
+/// 将临时文件重命名替换为目标文件（Windows 平台，使用 `MoveFileExW`）。
 #[cfg(windows)]
 fn replace_temp_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
@@ -268,8 +278,8 @@ fn replace_temp_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     source_wide.push(0);
     let mut destination_wide = destination.as_os_str().encode_wide().collect::<Vec<_>>();
     destination_wide.push(0);
-    // SAFETY: both buffers are NUL-terminated, remain alive for the call, and
-    // MoveFileExW does not retain their pointers after returning.
+    // SAFETY: 两个缓冲区都以 NUL 结尾，在调用期间保持存活，并且 MoveFileExW
+    // 返回后不会保留对它们指针的引用。
     let replaced = unsafe {
         MoveFileExW(
             source_wide.as_ptr(),
@@ -284,12 +294,13 @@ fn replace_temp_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Atomically replace a file only when its locked current bytes satisfy a
-/// caller-provided revision predicate.
-///
-/// Cooperating writers serialize through a sibling sidecar lock. The
-/// predicate and replacement happen while that lock is held, closing the
-/// read/check/write gap used by revisioned editors and stores.
+/** 仅当文件当前（已加锁的）字节内容满足调用方提供的版本判定条件时，
+才原子性地替换该文件。
+
+协作的写入方通过一个同级旁路锁进行串行化。判定条件的检查和文件替换都在
+持有该锁期间完成，从而关闭了带版本号的编辑器/存储惯用的“读取/检查/写入”
+之间的竞争窗口。
+*/
 pub fn atomic_compare_and_swap<F>(
     path: &Path,
     bytes: &[u8],
@@ -331,65 +342,80 @@ where
     }
 }
 
-/// Durability requested after mutating an existing file.
+/// 修改一个已存在文件后所请求的持久化级别。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FileDurability {
-    /// Flush language-level buffers without requesting a disk barrier.
+    /// 仅刷新语言层缓冲区，不请求磁盘屏障。
     Flush,
-    /// Request that mutated file data reach durable storage.
+    /// 要求已修改的文件数据落盘到持久存储。
     SyncData,
 }
 
+/// 打开一个已存在文件时所使用的访问模式。
 #[derive(Clone, Copy)]
 enum ExistingFileAccess {
+    /// 只读打开。
     Read,
+    /// 以追加模式打开。
     Append,
+    /// 以写入模式打开。
     Write,
 }
 
+/// 用于判定文件在磁盘上身份是否发生变化的稳定标识（设备号+inode 或
+/// Windows 上的卷序列号+文件索引）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExistingFileIdentity {
+    /// Unix 上该文件所在的设备号。
     #[cfg(unix)]
     device: u64,
+    /// Unix 上该文件的 inode 号。
     #[cfg(unix)]
     inode: u64,
+    /// Windows 上该文件所在卷的序列号。
     #[cfg(windows)]
     volume_serial_number: u32,
+    /// Windows 上该文件的文件索引。
     #[cfg(windows)]
     file_index: u64,
 }
 
-/// Open descriptor that keeps one existing regular-file identity alive.
-///
-/// File-backed authorities retain this guard for their complete lifetime. A
-/// later no-follow path open can then distinguish the original file from a
-/// delete-and-recreate replacement, even if the replacement has the same
-/// length and the filesystem would otherwise reuse its identity.
+/** 保持一个已存在的普通文件身份存活的打开描述符。
+
+文件承载的权威（authority）会在其完整生命周期内持有该 guard。之后以
+no-follow 方式打开同一路径时，即可区分出原始文件与“删除后重建”的替换文件，
+即使替换文件长度相同、文件系统原本会复用其身份标识。
+*/
 #[derive(Debug)]
 pub struct ExistingRegularFileGuard {
+    /// 持有身份标识的底层文件句柄。
     file: std::fs::File,
+    /// 打开时记录下的文件身份标识，用于后续比对。
     identity: ExistingFileIdentity,
 }
 
-/// Open descriptor that keeps one existing directory identity alive.
+/// 保持一个已存在目录身份存活的打开描述符。
 #[derive(Debug)]
 pub struct ExistingDirectoryGuard {
+    /// 持有目录身份的底层目录句柄（不直接使用，仅用于保持句柄存活）。
     _directory: std::fs::File,
+    /// 打开时记录下的目录身份标识，用于后续比对。
     identity: ExistingFileIdentity,
 }
 
 impl ExistingRegularFileGuard {
-    /// Current length of the guarded file descriptor.
+    /// 返回被守护文件描述符的当前长度。
     pub fn len(&self) -> std::io::Result<u64> {
         self.file.metadata().map(|metadata| metadata.len())
     }
 
-    /// Whether the guarded file currently has no data.
+    /// 判断被守护文件当前是否没有数据。
     pub fn is_empty(&self) -> std::io::Result<bool> {
         self.len().map(|len| len == 0)
     }
 }
 
+/// 读取文件句柄的身份标识（Unix 上为设备号+inode，Windows 上为卷序列号+文件索引）。
 fn existing_file_identity(file: &std::fs::File) -> std::io::Result<ExistingFileIdentity> {
     #[cfg(unix)]
     {
@@ -409,9 +435,9 @@ fn existing_file_identity(file: &std::fs::File) -> std::io::Result<ExistingFileI
         };
 
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: the std File owns a valid handle for the complete call and
-        // `information` is writable, correctly aligned, and not retained by
-        // GetFileInformationByHandle after it returns.
+        // SAFETY: std 的 File 在整个调用期间持有一个有效句柄，且
+        // `information` 可写、对齐正确，GetFileInformationByHandle 返回后
+        // 不会保留对它的引用。
         let succeeded =
             unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) };
         if succeeded == 0 {
@@ -434,6 +460,7 @@ fn existing_file_identity(file: &std::fs::File) -> std::io::Result<ExistingFileI
     }
 }
 
+/// 以 no-follow 方式打开一个已存在的普通文件（拒绝跟随符号链接、拒绝目录）。
 fn open_existing_regular(
     path: &Path,
     access: ExistingFileAccess,
@@ -489,6 +516,7 @@ fn open_existing_regular(
     Ok(file)
 }
 
+/// 以 no-follow 方式打开一个已存在的目录（拒绝跟随符号链接）。
 fn open_existing_directory(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -539,6 +567,7 @@ fn open_existing_directory(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(directory)
 }
 
+/// 校验刚打开的文件句柄仍与 `guard` 记录的身份（及可选的期望长度）一致。
 fn verify_open_file_matches(
     path: &Path,
     file: &std::fs::File,
@@ -571,14 +600,14 @@ fn verify_open_file_matches(
     Ok(len)
 }
 
-/// Open an existing no-follow regular file and retain its stable identity.
+/// 以 no-follow 方式打开一个已存在的普通文件，并保留其稳定身份标识。
 pub fn open_existing_regular_guard(path: &Path) -> std::io::Result<ExistingRegularFileGuard> {
     let file = open_existing_regular(path, ExistingFileAccess::Read)?;
     let identity = existing_file_identity(&file)?;
     Ok(ExistingRegularFileGuard { file, identity })
 }
 
-/// Open an existing no-follow directory and retain its stable identity.
+/// 以 no-follow 方式打开一个已存在的目录，并保留其稳定身份标识。
 pub fn open_existing_directory_guard(path: &Path) -> std::io::Result<ExistingDirectoryGuard> {
     let directory = open_existing_directory(path)?;
     let identity = existing_file_identity(&directory)?;
@@ -588,7 +617,7 @@ pub fn open_existing_directory_guard(path: &Path) -> std::io::Result<ExistingDir
     })
 }
 
-/// Verify that `path` still names the guarded directory.
+/// 校验 `path` 是否仍指向被 guard 守护的那个目录。
 pub fn verify_existing_directory(
     path: &Path,
     guard: &ExistingDirectoryGuard,
@@ -607,8 +636,7 @@ pub fn verify_existing_directory(
     Ok(())
 }
 
-/// Sync the guarded directory through the same descriptor used for identity
-/// verification.
+/// 通过用于身份校验的同一个描述符，同步被 guard 守护的目录。
 pub fn sync_existing_directory_matching(
     path: &Path,
     guard: &ExistingDirectoryGuard,
@@ -627,20 +655,22 @@ pub fn sync_existing_directory_matching(
     sync_verified_directory_handle(&directory)
 }
 
+/// 同步已校验的目录句柄（Unix 平台）。
 #[cfg(unix)]
 fn sync_verified_directory_handle(directory: &std::fs::File) -> std::io::Result<()> {
     directory.sync_all()
 }
 
+/// 同步已校验的目录句柄（非 Unix 平台的占位实现）。
 #[cfg(not(unix))]
 fn sync_verified_directory_handle(_directory: &std::fs::File) -> std::io::Result<()> {
-    // Windows directory handles opened for stable identity do not reliably
-    // support FlushFileBuffers. Identity is still verified above; directory
-    // entry barriers remain a best-effort no-op on this platform.
+    // Windows 上为稳定身份而打开的目录句柄并不可靠地支持
+    // FlushFileBuffers。身份标识仍会在上面完成校验；在该平台上，
+    // 目录项屏障只能是尽力而为的空操作。
     Ok(())
 }
 
-/// Return the current length only when `path` still names `guard`'s file.
+/// 仅当 `path` 仍指向 `guard` 所守护的文件时，才返回其当前长度。
 pub fn matching_existing_regular_len(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -649,10 +679,10 @@ pub fn matching_existing_regular_len(
     verify_open_file_matches(path, &file, guard, None)
 }
 
-/// Append through one no-follow descriptor after verifying identity and size.
-///
-/// The check and mutation use the same descriptor, so a path replacement
-/// cannot race between them.
+/** 校验身份和大小之后，通过同一个 no-follow 描述符执行追加写入。
+
+检查与修改操作使用同一个描述符，因此路径替换无法在两者之间插入竞争。
+*/
 pub fn append_existing_matching(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -666,7 +696,7 @@ pub fn append_existing_matching(
     finish_existing_mutation(&mut file, durability)
 }
 
-/// Read the complete no-follow file only when it still names `guard`'s file.
+/// 仅当该文件仍是 `guard` 所守护的文件时，以 no-follow 方式读取其完整内容。
 pub fn read_existing_matching(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -678,7 +708,7 @@ pub fn read_existing_matching(
     Ok(bytes)
 }
 
-/// Read a suffix only when the path still names `guard`'s file.
+/// 仅当该路径仍指向 `guard` 所守护的文件时，才读取从指定偏移开始的后缀数据。
 pub fn read_existing_from_matching(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -701,7 +731,7 @@ pub fn read_existing_from_matching(
     Ok(bytes)
 }
 
-/// Read bounded complete records only when identity and total length match.
+/// 仅当身份标识和总长度都匹配时，读取数量受限的若干条完整记录。
 pub fn read_existing_lines_from_matching(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -741,8 +771,8 @@ pub fn read_existing_lines_from_matching(
     Ok(bytes)
 }
 
-/// Read bounded complete records from a no-follow regular file only when its
-/// total length exactly matches the caller's immutable metadata.
+/// 仅当 no-follow 普通文件的总长度与调用方持有的不可变元数据完全一致时，
+/// 才从中读取数量受限的若干条完整记录。
 pub fn read_existing_lines_from_exact_len(
     path: &Path,
     expected_len: u64,
@@ -790,7 +820,7 @@ pub fn read_existing_lines_from_exact_len(
     Ok(bytes)
 }
 
-/// Truncate through one no-follow descriptor after identity and size checks.
+/// 校验身份和大小之后，通过同一个 no-follow 描述符执行截断操作。
 pub fn truncate_existing_matching(
     path: &Path,
     guard: &ExistingRegularFileGuard,
@@ -804,6 +834,7 @@ pub fn truncate_existing_matching(
     finish_existing_mutation(&mut file, durability)
 }
 
+/// 依据请求的持久化级别，完成一次修改后的收尾（flush 或 sync_data）。
 fn finish_existing_mutation(
     file: &mut std::fs::File,
     durability: FileDurability,
@@ -814,10 +845,11 @@ fn finish_existing_mutation(
     }
 }
 
-/// Append to an existing regular file without following a final symlink.
-///
-/// Durable JSONL stores use this instead of a check-then-open sequence so a
-/// path replacement cannot redirect an append outside the store root.
+/** 在不跟随末端符号链接的前提下，向一个已存在的普通文件追加写入。
+
+持久化的 JSONL 存储使用此函数而非“检查后打开”的两步序列，从而使路径替换
+无法把追加写入重定向到存储根目录之外。
+*/
 pub fn append_existing(
     path: &Path,
     bytes: &[u8],
@@ -828,10 +860,11 @@ pub fn append_existing(
     finish_existing_mutation(&mut file, durability)
 }
 
-/// Read an existing regular file without following a final symlink.
-///
-/// The file is opened before its handle metadata is validated, avoiding a
-/// check-then-open race at the final path component.
+/** 在不跟随末端符号链接的前提下，读取一个已存在的普通文件。
+
+文件先被打开，然后再校验其句柄元数据，从而避免在最后一个路径分量上出现
+“检查后打开”的竞争。
+*/
 pub fn read_existing(path: &Path) -> std::io::Result<Vec<u8>> {
     let mut file = open_existing_regular(path, ExistingFileAccess::Read)?;
     let mut bytes = Vec::new();
@@ -839,11 +872,12 @@ pub fn read_existing(path: &Path) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Read an existing regular file starting at an exact byte offset without
-/// following a final symlink.
-///
-/// Checkpointed journals use this to decode only the event suffix after a
-/// validated sequence instead of re-reading the complete log on every replay.
+/** 在不跟随末端符号链接的前提下，从一个精确的字节偏移开始读取已存在的
+普通文件。
+
+带检查点的日志（journal）使用此函数，只解码经过校验的序列号之后的事件
+后缀部分，而不是每次回放都重新读取完整日志。
+*/
 pub fn read_existing_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> {
     let mut file = open_existing_regular(path, ExistingFileAccess::Read)?;
     let len = file.metadata()?.len();
@@ -862,10 +896,11 @@ pub fn read_existing_from(path: &Path, offset: u64) -> std::io::Result<Vec<u8>> 
     Ok(bytes)
 }
 
-/// Read at most `limit` complete newline-terminated records from `offset`.
-///
-/// Unlike [`read_existing_from`], this bounds materialized memory by the
-/// requested record count and stops once the final requested newline is seen.
+/** 从 `offset` 开始，最多读取 `limit` 条以换行符结尾的完整记录。
+
+与 [`read_existing_from`] 不同，本函数按请求的记录数量限制实际占用的内存，
+并在看到最后一条所需的换行符后立即停止。
+*/
 pub fn read_existing_lines_from(
     path: &Path,
     offset: u64,
@@ -893,21 +928,24 @@ pub fn read_existing_lines_from(
     Ok(bytes)
 }
 
-/// Truncate an existing regular file without following a final symlink.
-///
-/// Recovery code uses this after it has validated the last complete record;
-/// the function never creates a missing target.
+/** 在不跟随末端符号链接的前提下，截断一个已存在的普通文件。
+
+恢复（recovery）代码在校验完最后一条完整记录后使用此函数；本函数从不会
+创建一个不存在的目标文件。
+*/
 pub fn truncate_existing(path: &Path, len: u64, durability: FileDurability) -> std::io::Result<()> {
     let mut file = open_existing_regular(path, ExistingFileAccess::Write)?;
     file.set_len(len)?;
     finish_existing_mutation(&mut file, durability)
 }
 
+/// 同步父目录，以持久化发布目录项的创建/删除（Unix 平台）。
 #[cfg(unix)]
 fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
     std::fs::File::open(parent)?.sync_all()
 }
 
+/// 同步父目录的占位实现（非 Unix 平台上为空操作）。
 #[cfg(not(unix))]
 fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
     Ok(())

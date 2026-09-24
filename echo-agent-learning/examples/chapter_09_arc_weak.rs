@@ -2,6 +2,7 @@ use echo_agent_learning::errors::LearningError;
 use echo_agent_learning::smart_pointers::arc_weak::{AgentHandle, AgentRegistry};
 use std::sync::Arc;
 
+/// 演示 `Arc` 与 `Weak` 协作管理共享所有权，以及所有者释放后弱引用的表现。
 fn main() -> Result<(), LearningError> {
     let registry = AgentRegistry::default();
     let agent = Arc::new(AgentHandle {

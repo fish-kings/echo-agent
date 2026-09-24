@@ -41,8 +41,11 @@ use echo_core::error::{ReactError, Result};
 /// }
 /// ```
 pub struct WebhookHumanLoopProvider {
+    /// 底层 HTTP 客户端
     client: Arc<Client>,
+    /// Webhook 目标 URL
     url: String,
+    /// 单次请求的超时时长
     timeout: Duration,
 }
 
@@ -71,10 +74,14 @@ impl WebhookHumanLoopProvider {
 /// 发往 Webhook 的请求体（`kind` 字段告知对端场景类型）。
 #[derive(Serialize)]
 struct WebhookPayload<'a> {
+    /// 场景类型："approval" | "input" | "selection"
     kind: &'a str,
+    /// 展示给人工审批者/用户的提示文本
     prompt: &'a str,
+    /// approval 场景：待审批的工具名
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_name: Option<&'a str>,
+    /// approval 场景：工具调用参数
     #[serde(skip_serializing_if = "Option::is_none")]
     args: Option<&'a serde_json::Value>,
 }
@@ -86,6 +93,7 @@ struct WebhookResponse {
     decision: Option<String>,
     /// input 场景：用户输入的文本
     text: Option<String>,
+    /// 可选的说明信息（如拒绝原因）
     reason: Option<String>,
 }
 

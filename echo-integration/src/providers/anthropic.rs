@@ -1,7 +1,7 @@
-//! Anthropic Messages API provider
+//! Anthropic Messages API 提供方（provider）
 //!
-//! Implements [`LlmClient`] for Anthropic's `/v1/messages` endpoint.
-//! System messages are sent as a top-level `system` field (not in the messages array).
+//! 为 Anthropic 的 `/v1/messages` 接口实现 [`LlmClient`]。
+//! 系统消息会作为顶层的 `system` 字段发送（而不是放在 messages 数组里）。
 
 use echo_core::error::{LlmError, Result};
 use echo_core::llm::capabilities::resolve_thinking_profile;
@@ -27,17 +27,31 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{Instrument, info_span, warn};
 
+/// Anthropic Messages API 的客户端实现。
+///
+/// 负责把内部通用的 [`ChatRequest`]/[`ChatResponse`] 结构与 Anthropic 的线上协议
+/// 相互转换，并处理非流式与流式两种调用方式。
 pub struct AnthropicClient {
+    /// 共享的 HTTP 客户端。
     client: Arc<Client>,
+    /// Anthropic API Key，通过 `x-api-key` 请求头发送。
     api_key: String,
+    /// 目标模型名称。
     model: String,
+    /// Messages API 的完整请求地址。
     base_url: String,
+    /// 该模型支持的输入模态集合，用于请求前的校验。
     input_modalities: Vec<ModelInputModality>,
+    /// 该模型使用的扩展思考（thinking）协议方言。
     thinking_protocol: ThinkingProtocol,
+    /// 请求与流式响应的超时策略。
     timeouts: LlmTimeouts,
 }
 
 impl AnthropicClient {
+    /// 校验请求中是否包含当前尚未支持转换的特性（如 `tool_choice`、
+    /// `response_format`），如果有则直接报错，避免静默丢弃用户的设置。
+    /// 同时校验消息内容与模型支持的输入模态是否匹配。
     fn validate_request_features(&self, request: &ChatRequest) -> Result<()> {
         if request.tool_choice.is_some() {
             return Err(LlmError::InvalidResponse(
@@ -57,6 +71,8 @@ impl AnthropicClient {
         Ok(())
     }
 
+    /// 使用官方默认地址（`https://api.anthropic.com/v1/messages`）创建一个新的
+    /// `AnthropicClient`，并根据模型名称解析出对应的扩展思考协议。
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
         let model = model.into();
         let base_url = "https://api.anthropic.com/v1/messages".to_string();
@@ -78,6 +94,8 @@ impl AnthropicClient {
         }
     }
 
+    /// 使用自定义的接口地址创建 `AnthropicClient`（例如指向兼容 Anthropic
+    /// 协议的第三方端点），其余行为与 [`Self::new`] 相同。
     pub fn with_base_url(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
@@ -103,6 +121,7 @@ impl AnthropicClient {
         }
     }
 
+    /// 设置该模型支持的输入模态；传入空集合时回退为仅支持纯文本。
     pub fn with_input_modalities(mut self, input_modalities: Vec<ModelInputModality>) -> Self {
         self.input_modalities = if input_modalities.is_empty() {
             ModelInputModality::text_only()
@@ -112,16 +131,20 @@ impl AnthropicClient {
         self
     }
 
-    /// Set the request and streaming timeout policy.
+    /// 设置请求与流式响应的超时策略。
     pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
         self.timeouts = timeouts;
         self
     }
 
+    /// 构造底层使用的 `reqwest::Client`。
     fn build_http_client() -> Client {
         Client::new()
     }
 
+    /// 将内部通用的 [`ChatRequest`] 转换为 Anthropic Messages API 所需的请求体，
+    /// 包括系统消息合并、消息角色映射、工具/思考配置转换，以及提示词缓存
+    /// （prompt caching）断点的放置。
     fn convert_request(&self, request: &ChatRequest) -> AnthropicRequest {
         let mut system_parts: Vec<String> = Vec::new();
         let mut messages = Vec::new();
@@ -197,13 +220,13 @@ impl AnthropicClient {
                                     text: resource.model_text(),
                                     cache_control: None,
                                 },
-                                // File attachments: dispatch by inferred media type.
-                                //   - application/pdf → document content block (the only
-                                //     type Anthropic accepts as base64 document source)
-                                //   - text-class (txt/md/json/xml/...) → decode and inline
-                                //     as text so the model can read it directly
-                                //   - other binary → name-only placeholder (the API has
-                                //     no generic binary attachment block)
+                                /* 文件附件：根据推断出的媒体类型进行分发。
+                                 *   - application/pdf → document 内容块（Anthropic 唯一
+                                 *     接受的 base64 文档来源类型）
+                                 *   - 文本类（txt/md/json/xml/...） → 解码后内联为文本，
+                                 *     让模型可以直接阅读
+                                 *   - 其他二进制类型 → 仅保留文件名的占位符（该接口没有
+                                 *     通用的二进制附件内容块） */
                                 ContentPart::File { name, content } => {
                                     file_to_content_block(name, content)
                                 }
@@ -238,22 +261,22 @@ impl AnthropicClient {
             });
         }
 
-        // ── Cache breakpoint strategy (delegated to AnthropicCachePlan) ──
-        //
-        // Build a read-only layout view from the request messages + tools, then
-        // let `AnthropicCachePlan` decide which breakpoints to place. This
-        // consolidates the strategy in one place and makes it unit-testable.
-        //
-        // When `cache_hints` is present on the request, the agent layer has
-        // pre-computed the layout; we build a plan from those hints.
-        // Otherwise we build the layout here and apply the default plan.
+        /* ── 缓存断点策略（委托给 AnthropicCachePlan）──
+         *
+         * 先根据请求中的 messages + tools 构建一个只读的布局视图，再交由
+         * `AnthropicCachePlan` 决定放置哪些断点。这样把策略集中在一处，也便于
+         * 做单元测试。
+         *
+         * 当请求上带有 `cache_hints` 时，说明 agent 层已经预先计算好了布局，
+         * 这里直接基于这些 hints 构建 plan；否则就在这里自行构建布局并应用
+         * 默认策略。 */
 
         let tools_ref: &[echo_core::llm::types::ToolDefinition] =
             request.tools.as_deref().unwrap_or(&[]);
         let cache_plan = if let Some(ref hints) = request.cache_hints
             && !hints.breakpoints.is_empty()
         {
-            // Agent layer provided explicit breakpoints via CacheHints.
+            // agent 层已经通过 CacheHints 提供了明确的断点位置。
             use echo_core::llm::cache::BreakpointTarget as BT;
             AnthropicCachePlan {
                 breakpoints: hints.breakpoints.clone(),
@@ -267,15 +290,14 @@ impl AnthropicClient {
                     .any(|b| matches!(b, BT::ToolsLastTool)),
             }
         } else {
-            // No explicit breakpoints: either no `cache_hints` at all, or the
-            // main think path which sends `Some(CacheHints { breakpoints: vec![], .. })`
-            // — the agent layer computes the layout for the stable-prefix hash
-            // but leaves breakpoint derivation to the provider. Deriving here
-            // (rather than at the agent layer) keeps the layering clean: echo-agent
-            // must not depend on the Anthropic-specific `AnthropicCachePlan`.
-            // WITHOUT this fallback the main path would place ZERO cache_control
-            // (has_system/tool=false, history_breakpoint_count=0) and Anthropic
-            // would never cache the stable prefix on the highest-volume path.
+            // 没有明确的断点：要么请求上根本没有 `cache_hints`，要么是主 think
+            // 路径发送了 `Some(CacheHints { breakpoints: vec![], .. })`
+            // —— agent 层只为稳定前缀哈希计算了布局，但把断点推导留给了
+            // provider。之所以在这里推导（而不是在 agent 层），是为了保持分层
+            // 干净：echo-agent 不应依赖 Anthropic 专属的 `AnthropicCachePlan`。
+            // 如果没有这个回退逻辑，主路径会完全不放置 cache_control
+            // （has_system/tool=false，history_breakpoint_count=0），导致
+            // Anthropic 在流量最大的这条路径上永远无法缓存稳定前缀。
             let layout = echo_core::llm::cache::PromptCacheLayout::from_messages(
                 &request.messages,
                 tools_ref,
@@ -283,7 +305,7 @@ impl AnthropicClient {
             AnthropicCachePlan::from_layout(&layout)
         };
 
-        // Build tools with cache_control on the last tool.
+        // 构建工具列表，并在最后一个工具上放置 cache_control。
         let tools: Option<Vec<AnthropicToolDef>> = request.tools.as_ref().map(|tools| {
             let count = tools.len();
             tools
@@ -302,7 +324,7 @@ impl AnthropicClient {
                 .collect()
         });
 
-        // Convert system prompt to blocks format with cache_control.
+        // 将系统提示词转换为带 cache_control 的 blocks 格式。
         let system = (!system_parts.is_empty()).then(|| {
             let text = system_parts.join("\n\n");
             vec![SystemBlock {
@@ -316,7 +338,7 @@ impl AnthropicClient {
             }]
         });
 
-        // Place cache breakpoints on conversation messages.
+        // 在会话消息上放置缓存断点。
         if cache_plan.history_breakpoint_count() > 0 {
             let used_breakpoints = usize::from(cache_plan.has_system_breakpoint)
                 + usize::from(cache_plan.has_tool_breakpoint && tools.is_some());
@@ -324,10 +346,10 @@ impl AnthropicClient {
 
             if remaining_breakpoints > 0 {
                 if cache_plan.breakpoints.is_empty() {
-                    // Default fallback (no explicit history indices).
+                    // 默认回退方案（没有明确的历史索引）。
                     apply_conversation_cache_breakpoints(&mut messages, remaining_breakpoints);
                 } else {
-                    // Map BreakpointTarget to concrete message indices and apply.
+                    // 将 BreakpointTarget 映射为具体的消息索引并应用。
                     let mut msg_indices: Vec<usize> = cache_plan
                         .breakpoints
                         .iter()
@@ -350,9 +372,9 @@ impl AnthropicClient {
             }
         }
 
-        // Translate thinking config. Claude 3.7–4.5 accept the budget block;
-        // 4.6+/4.7+ use adaptive thinking and reject the older budget block.
-        // The configured model contract is authoritative for the wire dialect.
+        // 转换思考（thinking）配置。Claude 3.7–4.5 接受 budget 块；
+        // 4.6+/4.7+ 使用自适应思考，并会拒绝旧版的 budget 块。
+        // 以配置好的模型契约为准来决定线上协议的具体方言。
         let max_tokens = request.max_tokens.unwrap_or(4096);
         let (thinking, effort) = build_anthropic_thinking(
             &self.model,
@@ -377,6 +399,8 @@ impl AnthropicClient {
         }
     }
 
+    /// 将 Anthropic 的非流式响应转换为内部通用的 [`ChatResponse`]，
+    /// 拆分文本、思考（reasoning）内容与工具调用，并映射停止原因与用量统计。
     fn convert_response(&self, resp: AnthropicResponse) -> ChatResponse {
         let mut content_parts: Vec<String> = Vec::new();
         let mut reasoning_parts: Vec<String> = Vec::new();
@@ -438,7 +462,7 @@ impl AnthropicClient {
             reasoning_blocks: (!reasoning_blocks.is_empty()).then_some(reasoning_blocks),
         };
 
-        // Extract token usage from Anthropic response
+        // 从 Anthropic 响应中提取 token 用量
         let usage = resp.usage.map(|u| {
             let prompt = u.input_tokens;
             let completion = u.output_tokens;
@@ -469,6 +493,8 @@ impl AnthropicClient {
 }
 
 impl LlmClient for AnthropicClient {
+    /// 发起一次非流式的 chat 请求：校验请求特性、转换请求体、发送 HTTP 请求，
+    /// 并将 Anthropic 的响应转换回内部通用的 [`ChatResponse`]。
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
         let model = self.model.clone();
         Box::pin(
@@ -499,6 +525,9 @@ impl LlmClient for AnthropicClient {
         )
     }
 
+    /// 发起一次流式 chat 请求：解析 Anthropic 的 SSE 事件流，将其增量转换为
+    /// 内部通用的 [`ChatChunk`] 流，包括文本、思考内容、工具调用参数的累积拼接，
+    /// 以及流式用量统计的跟踪。
     fn chat_stream(
         &self,
         request: ChatRequest,
@@ -525,13 +554,13 @@ impl LlmClient for AnthropicClient {
                 timeouts,
                 cancel_token,
             ).await?;
-            // Track in-progress tool calls during streaming (index → accumulated args)
+            // 跟踪流式过程中尚未完成的工具调用（index → 累积中的参数）
             let mut tool_call_args: std::collections::HashMap<usize, (String, String, String)> =
                 std::collections::HashMap::new();
             let mut reasoning_blocks: std::collections::HashMap<usize, ReasoningBlock> =
                 std::collections::HashMap::new();
 
-            // Track cumulative usage across streaming events
+            // 跟踪流式事件间累计的用量统计
             let mut stream_input_tokens: u32 = 0;
             let mut stream_output_tokens: u32 = 0;
             let mut stream_cache_creation_input_tokens: Option<u32> = None;
@@ -568,7 +597,7 @@ impl LlmClient for AnthropicClient {
                     }
                                 match event {
                                     AnthropicStreamEvent::MessageStart { message } => {
-                                        // Capture initial usage (input_tokens) from message_start
+                                        // 从 message_start 中捕获初始用量（input_tokens）
                                         if let Some(u) = message.usage {
                                             stream_input_tokens = u.input_tokens;
                                             stream_cache_creation_input_tokens = u.cache_creation_input_tokens;
@@ -580,7 +609,7 @@ impl LlmClient for AnthropicClient {
                                         content_block:
                                             ContentBlockStartBody::ToolUse { id, name },
                                     } => {
-                                        // Start tracking a new tool_use block
+                                        // 开始跟踪一个新的 tool_use 块
                                         tool_call_args.insert(index, (id, name, String::new()));
                                     }
                                     AnthropicStreamEvent::ContentBlockStart {
@@ -596,7 +625,7 @@ impl LlmClient for AnthropicClient {
                                         reasoning_blocks.insert(index, ReasoningBlock::Redacted { data });
                                     }
                                     AnthropicStreamEvent::ContentBlockStart { .. } => {
-                                        // text block start — no action needed
+                                        // 文本块开始 —— 无需任何处理
                                     }
                                     AnthropicStreamEvent::ContentBlockDelta {
                                         index,
@@ -631,7 +660,7 @@ impl LlmClient for AnthropicClient {
                                                 value.push_str(&signature);
                                             }
                                         } else if let Some(partial) = delta.partial_json {
-                                            // Accumulate tool_use arguments
+                                            // 累积 tool_use 的参数
                                             if let Some(entry) = tool_call_args.get_mut(&index) {
                                                 entry.2.push_str(&partial);
                                             }
@@ -651,7 +680,7 @@ impl LlmClient for AnthropicClient {
                                                 usage: None,
                                             });
                                         }
-                                        // Finalize tool call and emit
+                                        // 完成工具调用并发出
                                         if let Some((id, name, args)) =
                                             tool_call_args.remove(&index)
                                         {
@@ -688,7 +717,7 @@ impl LlmClient for AnthropicClient {
                                         }
                                     }
                                     AnthropicStreamEvent::MessageDelta { delta, usage } => {
-                                        // Capture output_tokens from message_delta
+                                        // 从 message_delta 中捕获 output_tokens
                                         if let Some(u) = usage {
                                             stream_output_tokens = u.output_tokens;
                                         }
@@ -697,7 +726,7 @@ impl LlmClient for AnthropicClient {
                                             Some("tool_use") => Some("tool_calls".to_string()),
                                             other => other.map(String::from),
                                         };
-                                        // The delta is provisional until message_stop confirms completion.
+                                        // 该 delta 是临时的，需等待 message_stop 确认完成后才生效。
                                         let usage = if stream_input_tokens > 0 || stream_output_tokens > 0 {
                                             Some(Usage {
                                                 prompt_tokens: Some(stream_input_tokens),
@@ -759,21 +788,24 @@ impl LlmClient for AnthropicClient {
         )
     }
 
+    /// 返回该客户端配置的目标模型名称。
     fn model_name(&self) -> &str {
         &self.model
     }
 }
 
-// ── Anthropic API types ──────────────────────────────────────────────────────
+// ── Anthropic API 类型 ──────────────────────────────────────────────────────
 
-/// Cache control marker for Anthropic prompt caching
+/// Anthropic 提示词缓存（prompt caching）使用的缓存控制标记。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct CacheControl {
+    /// 缓存类型，目前恒为 `"ephemeral"`。
     #[serde(rename = "type")]
     cache_type: String,
 }
 
 impl CacheControl {
+    /// 构造一个短期（ephemeral）缓存控制标记。
     fn ephemeral() -> Self {
         Self {
             cache_type: "ephemeral".to_string(),
@@ -781,77 +813,91 @@ impl CacheControl {
     }
 }
 
-/// System prompt block that can carry cache_control
+/// 可以携带 cache_control 的系统提示词块。
 #[derive(Serialize)]
 struct SystemBlock {
+    /// 块类型，恒为 `"text"`。
     #[serde(rename = "type")]
     block_type: String,
+    /// 系统提示词文本内容。
     text: String,
+    /// 该块上的缓存控制标记（如果需要缓存断点）。
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }
 
+/// 发送给 Anthropic Messages API 的完整请求体。
 #[derive(Serialize)]
 struct AnthropicRequest {
+    /// 目标模型名称。
     model: String,
+    /// 最大生成 token 数。
     max_tokens: u32,
+    /// 系统提示词块列表（可携带缓存控制）。
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<Vec<SystemBlock>>,
+    /// 会话消息列表。
     messages: Vec<AnthropicMessage>,
+    /// 采样温度。
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    /// 可供模型调用的工具定义列表。
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDef>>,
+    /// 是否以流式（SSE）方式返回响应。
     #[serde(skip_serializing_if = "Option::is_none")]
     stream: Option<bool>,
-    /// Extended-thinking block.
+    /// 扩展思考（extended-thinking）块。
     ///
-    /// - Claude 3.7–4.5 (`AnthropicThinkingBudget`): `{type:"enabled", budget_tokens:N}`.
-    /// - Claude 4.6 (`AnthropicEffort`): `{type:"adaptive"}` (the model decides
-    ///   depth based on the `effort` field); budget_tokens is rejected here.
-    /// - Claude Opus 4.7+ (`AnthropicAdaptive`): the block is dropped entirely
-    ///   (sending it returns a 400).
+    /// - Claude 3.7–4.5（`AnthropicThinkingBudget`）：`{type:"enabled", budget_tokens:N}`。
+    /// - Claude 4.6（`AnthropicEffort`）：`{type:"adaptive"}`（模型根据 `effort`
+    ///   字段自行决定思考深度）；此时不会带上 budget_tokens。
+    /// - Claude Opus 4.7+（`AnthropicAdaptive`）：该字段整个省略
+    ///   （发送会返回 400）。
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<AnthropicThinking>,
-    /// Effort control (Claude 4.5+, primarily 4.6). One of
-    /// `low`/`medium`/`high`/`xhigh`/`max`. Replaces `budget_tokens` as the
-    /// recommended depth knob on newer models.
+    /// 思考强度控制（Claude 4.5+，主要用于 4.6）。取值为
+    /// `low`/`medium`/`high`/`xhigh`/`max` 之一。在较新模型上作为推荐的
+    /// 深度调节旋钮，取代了 `budget_tokens`。
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<String>,
-    /// `metadata:{user_id}` for prompt-cache (KVCache) isolation on the
-    /// DeepSeek/Anthropic endpoint. Filled from `ChatRequest.user_id` when set;
-    /// omitted entirely when `None` (stage4 P4.1: cache_user_id single-source).
+    /// `metadata:{user_id}`，用于在 DeepSeek/Anthropic 端点上做提示词缓存
+    /// （KVCache）隔离。当 `ChatRequest.user_id` 设置时填充；为 `None` 时
+    /// 整个字段省略（stage4 P4.1：cache_user_id 单一数据源）。
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<AnthropicMetadata>,
 }
 
-/// Anthropic endpoint metadata carrying `user_id` for prompt-cache isolation
-/// (DeepSeek requires this on its Anthropic-compatible endpoint).
+/// Anthropic 端点元数据，携带用于提示词缓存隔离的 `user_id`
+/// （DeepSeek 在其兼容 Anthropic 的端点上要求提供该字段）。
 #[derive(Serialize)]
 struct AnthropicMetadata {
+    /// 用户标识，用于按用户隔离提示词缓存。
     user_id: String,
 }
 
-/// Anthropic `thinking` block. For 3.7–4.5 this is
-/// `{type:"enabled", budget_tokens}`; for 4.6 it's `{type:"adaptive"}`.
+/// Anthropic 的 `thinking` 块。对 3.7–4.5 而言是
+/// `{type:"enabled", budget_tokens}`；对 4.6 而言是 `{type:"adaptive"}`。
 #[derive(Serialize)]
 struct AnthropicThinking {
+    /// 块类型：`"enabled"` 或 `"adaptive"`。
     #[serde(rename = "type")]
     block_type: &'static str,
+    /// 思考预算 token 数（仅 `"enabled"` 类型使用）。
     #[serde(skip_serializing_if = "Option::is_none")]
     budget_tokens: Option<u32>,
 }
 
-/// Resolve the Anthropic thinking fields for a request.
+/// 为一次请求解析出 Anthropic 的思考相关字段。
 ///
-/// Returns `(thinking_block, effort)`:
-/// - Claude 3.7–4.5 (`AnthropicThinkingBudget`): `{type:"enabled", budget_tokens:N}`
-///   + optional `effort` (4.5 accepts effort alongside budget).
-/// - Claude 4.6 (`AnthropicEffort`): `{type:"adaptive"}` + `effort`. budget_tokens
-///   is rejected on 4.6, so it is NOT emitted.
-/// - Claude Opus 4.7+ (`AnthropicAdaptive`): both fields dropped (legacy block
-///   returns a 400; the model decides its own depth).
-/// - Other protocols / `None`: no fields.
+/// 返回 `(thinking_block, effort)`：
+/// - Claude 3.7–4.5（`AnthropicThinkingBudget`）：`{type:"enabled", budget_tokens:N}`
+///   + 可选的 `effort`（4.5 允许 budget 与 effort 同时存在）。
+/// - Claude 4.6（`AnthropicEffort`）：`{type:"adaptive"}` + `effort`。4.6 会拒绝
+///   budget_tokens，所以这里不会带上它。
+/// - Claude Opus 4.7+（`AnthropicAdaptive`）：两个字段都省略（旧版块会返回
+///   400；模型自行决定思考深度）。
+/// - 其他协议 / `None`：不返回任何字段。
 fn build_anthropic_thinking(
     model: &str,
     thinking_protocol: ThinkingProtocol,
@@ -864,7 +910,7 @@ fn build_anthropic_thinking(
     };
     match thinking_protocol {
         T::AnthropicThinkingBudget => {
-            // 3.7–4.5: budget_tokens (effort is also accepted on 4.5).
+            // 3.7–4.5：budget_tokens（4.5 上 effort 也同样被接受）。
             let block = cfg
                 .to_anthropic_budget(max_tokens)
                 .map(|budget| AnthropicThinking {
@@ -874,7 +920,7 @@ fn build_anthropic_thinking(
             (block, None)
         }
         T::AnthropicEffort => {
-            // Claude 4.6: adaptive thinking block + effort. budget_tokens 400s.
+            // Claude 4.6：自适应思考块 + effort。带上 budget_tokens 会返回 400。
             let block = if matches!(cfg, echo_core::llm::ThinkingConfig::Disabled) {
                 None
             } else {
@@ -896,30 +942,41 @@ fn build_anthropic_thinking(
     }
 }
 
+/// Anthropic Messages API 中的一条会话消息。
 #[derive(Serialize)]
 struct AnthropicMessage {
+    /// 消息角色（`"user"` 或 `"assistant"`）。
     role: String,
+    /// 消息内容，可以是纯文本或内容块列表。
     content: AnthropicContent,
 }
 
 impl AnthropicMessage {
+    /// 在该消息内容上放置一个短期（ephemeral）缓存断点。
     fn add_cache_control_ephemeral(&mut self) {
         self.content.add_cache_control_ephemeral();
     }
 
+    /// 判断该消息是否属于易变的运行时上下文（例如包含
+    /// `[runtime_context:...]` 前缀的内容），这类消息不适合作为缓存断点。
     fn is_runtime_context(&self) -> bool {
         self.content.is_runtime_context()
     }
 }
 
+/// 消息内容：可以是简单的纯文本，也可以是结构化的内容块列表。
 #[derive(Serialize)]
 #[serde(untagged)]
 enum AnthropicContent {
+    /// 纯文本内容。
     Text(String),
+    /// 结构化内容块列表（文本、图片、工具调用等）。
     Blocks(Vec<ContentBlock>),
 }
 
 impl AnthropicContent {
+    /// 为该内容放置一个短期（ephemeral）缓存断点：纯文本会先转换为文本块，
+    /// 结构化内容则在最后一个可缓存的块上设置。
     fn add_cache_control_ephemeral(&mut self) {
         match self {
             AnthropicContent::Text(text) => {
@@ -937,6 +994,7 @@ impl AnthropicContent {
         }
     }
 
+    /// 判断该内容是否属于易变的运行时上下文，不应作为缓存断点。
     fn is_runtime_context(&self) -> bool {
         match self {
             AnthropicContent::Text(text) => is_runtime_context_text(text),
@@ -945,54 +1003,83 @@ impl AnthropicContent {
     }
 }
 
+/// Anthropic Messages API 中的单个内容块。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 enum ContentBlock {
+    /// 纯文本块。
     #[serde(rename = "text")]
     Text {
+        /// 文本内容。
         text: String,
+        /// 缓存控制标记。
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// 图片块。
     #[serde(rename = "image")]
     Image {
+        /// 图片来源（base64 数据或 URL）。
         source: ImageSource,
+        /// 缓存控制标记。
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
-    /// PDF document content block.
+    /// PDF 文档内容块。
     ///
-    /// Anthropic only accepts `application/pdf` for base64 document sources
-    /// (other mime types fail). Text-class files are inlined as Text blocks
-    /// instead — see the `ContentPart::File` handling below.
+    /// Anthropic 的 base64 文档来源只接受 `application/pdf`（其他 mime 类型会
+    /// 失败）。文本类文件改为内联为 Text 块 —— 参见下方
+    /// `ContentPart::File` 的处理逻辑。
     #[serde(rename = "document")]
     Document {
+        /// 文档来源（base64 数据或 URL）。
         source: ImageSource,
+        /// 缓存控制标记。
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// 模型发起的工具调用块。
     #[serde(rename = "tool_use")]
     ToolUse {
+        /// 工具调用的唯一标识。
         id: String,
+        /// 被调用的工具名称。
         name: String,
+        /// 调用参数（JSON 值）。
         input: serde_json::Value,
     },
+    /// 工具执行结果块，作为 user 消息回传给模型。
     #[serde(rename = "tool_result")]
     ToolResult {
+        /// 对应的工具调用 ID。
         tool_use_id: String,
+        /// 工具执行结果文本。
         content: String,
+        /// 缓存控制标记。
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// 带签名的思考（thinking）块。
     #[serde(rename = "thinking")]
-    Thinking { thinking: String, signature: String },
+    Thinking {
+        /// 思考过程文本。
+        thinking: String,
+        /// 思考内容的签名，用于后续回放校验。
+        signature: String,
+    },
+    /// 被脱敏（redacted）的思考块，原始内容不可见，仅保留不透明数据。
     #[serde(rename = "redacted_thinking")]
-    RedactedThinking { data: String },
+    RedactedThinking {
+        /// 不透明的脱敏数据。
+        data: String,
+    },
+    /// 未识别的其他块类型，作为兜底忽略处理。
     #[serde(other)]
     Other,
 }
 
 impl ContentBlock {
+    /// 判断该内容块是否允许放置缓存断点（文本、图片、工具结果）。
     fn is_cacheable(&self) -> bool {
         matches!(
             self,
@@ -1002,6 +1089,8 @@ impl ContentBlock {
         )
     }
 
+    /// 为该内容块设置缓存控制标记；对不支持缓存的块类型（工具调用、思考块等）
+    /// 不做任何处理。
     fn set_cache_control(&mut self, cache_control: CacheControl) {
         match self {
             ContentBlock::Text {
@@ -1027,6 +1116,8 @@ impl ContentBlock {
         }
     }
 
+    /// 判断该内容块是否属于易变的运行时上下文（文本或工具结果文本以
+    /// `[runtime_context:` 开头）。
     fn is_runtime_context(&self) -> bool {
         match self {
             ContentBlock::Text { text, .. } => is_runtime_context_text(text),
@@ -1036,6 +1127,8 @@ impl ContentBlock {
     }
 }
 
+/// 将助手消息携带的思考块（reasoning blocks）追加到目标内容块列表中，
+/// 用于在下一轮请求里回放模型此前的思考过程。
 fn append_reasoning_blocks(
     target: &mut Vec<ContentBlock>,
     reasoning_blocks: Option<&[ReasoningBlock]>,
@@ -1052,14 +1145,17 @@ fn append_reasoning_blocks(
             ReasoningBlock::Redacted { data } => {
                 ContentBlock::RedactedThinking { data: data.clone() }
             }
-            // Opaque state is owned by another provider and must not cross the
-            // protocol boundary when a conversation switches models.
+            // 不透明（Opaque）状态归属于另一个 provider，当会话切换模型时
+            // 不能跨协议边界传递，因此直接跳过。
             ReasoningBlock::Opaque { .. } => continue,
         };
         target.push(content);
     }
 }
 
+/// 在会话消息上应用默认的缓存断点放置策略：跳过尾部的易变运行时上下文，
+/// 并根据剩余可用断点数在稳定前缀的末尾（以及约 3/4 处，如果还有余量）
+/// 放置断点。
 fn apply_conversation_cache_breakpoints(
     messages: &mut [AnthropicMessage],
     remaining_breakpoints: usize,
@@ -1092,24 +1188,31 @@ fn apply_conversation_cache_breakpoints(
     }
 }
 
+/// 判断文本是否以 `[runtime_context:` 开头，即是否属于易变的运行时上下文。
 fn is_runtime_context_text(text: &str) -> bool {
     text.trim_start().starts_with("[runtime_context:")
 }
 
+/// 图片/文档内容的来源：既可以是 base64 编码的数据，也可以是 URL。
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ImageSource {
+    /// 以 base64 内联的二进制数据。
     Base64 {
+        /// MIME 媒体类型（如 `image/png`、`application/pdf`）。
         media_type: String,
+        /// base64 编码后的数据。
         data: String,
     },
+    /// 指向图片/文档的远程 URL。
     #[serde(rename = "url")]
     Url_ {
+        /// 远程资源地址。
         url: String,
     },
 }
 
-/// Parse a data URL into an Anthropic ImageSource
+/// 将 data URL 解析为 Anthropic 的 ImageSource。
 fn data_url_to_image_source(url: &str) -> ImageSource {
     if let Some(rest) = url.strip_prefix("data:")
         && let Some((media_type, b64_data)) = rest.split_once(';')
@@ -1125,18 +1228,17 @@ fn data_url_to_image_source(url: &str) -> ImageSource {
     }
 }
 
-/// Convert a `ContentPart::File` into the best-fit Anthropic content block.
+/// 将 `ContentPart::File` 转换为最合适的 Anthropic 内容块。
 ///
-/// Anthropic's Messages API only accepts `application/pdf` as a base64
-/// `document` source — other binary types have no generic attachment block.
-/// To make text-class attachments (txt/md/json/src/...) actually readable by
-/// the model, we decode and inline them as text. Binary non-PDF falls back to
-/// a name-only placeholder (the previous behaviour for all files).
+/// Anthropic 的 Messages API 只接受 `application/pdf` 作为 base64 `document`
+/// 来源 —— 其他二进制类型没有通用的附件块。为了让文本类附件
+/// （txt/md/json/src/...）真正可被模型阅读，这里会解码并内联为文本。
+/// 非 PDF 的二进制类型则回退为仅保留文件名的占位符（这是此前所有文件的
+/// 默认行为）。
 fn file_to_content_block(name: &str, content_base64: &str) -> ContentBlock {
     let ext = name.rsplit('.').next().map(|e| e.to_ascii_lowercase());
     match ext.as_deref() {
-        // PDF → document content block (the only base64 document type Anthropic
-        // accepts).
+        // PDF → document 内容块（Anthropic 唯一接受的 base64 文档类型）。
         Some("pdf") => ContentBlock::Document {
             source: ImageSource::Base64 {
                 media_type: "application/pdf".to_string(),
@@ -1144,8 +1246,7 @@ fn file_to_content_block(name: &str, content_base64: &str) -> ContentBlock {
             },
             cache_control: None,
         },
-        // Text-class files → decode base64 and inline as text so the model can
-        // read the contents directly.
+        // 文本类文件 → 解码 base64 并内联为文本，让模型可以直接阅读内容。
         Some(
             "txt" | "md" | "markdown" | "json" | "xml" | "yaml" | "yml" | "csv" | "tsv" | "rs"
             | "py" | "js" | "ts" | "tsx" | "jsx" | "go" | "java" | "c" | "cpp" | "h" | "sh"
@@ -1162,7 +1263,7 @@ fn file_to_content_block(name: &str, content_base64: &str) -> ContentBlock {
                 cache_control: None,
             }
         }
-        // Other binary → name-only placeholder (no generic attachment block).
+        // 其他二进制类型 → 仅保留文件名的占位符（没有通用的附件块）。
         _ => ContentBlock::Text {
             text: format!("\n[Attachment: {name}]"),
             cache_control: None,
@@ -1170,107 +1271,176 @@ fn file_to_content_block(name: &str, content_base64: &str) -> ContentBlock {
     }
 }
 
+/// 发送给 Anthropic 的工具定义。
 #[derive(Serialize)]
 struct AnthropicToolDef {
+    /// 工具名称。
     name: String,
+    /// 工具描述。
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
+    /// 工具入参的 JSON Schema。
     input_schema: serde_json::Value,
+    /// 缓存控制标记（放在最后一个工具上）。
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_control: Option<CacheControl>,
 }
 
+/// Anthropic Messages API 的非流式响应体。
 #[derive(Deserialize)]
 struct AnthropicResponse {
+    /// 响应内容块列表。
     content: Vec<ContentBlock>,
+    /// 停止原因（如 `end_turn`、`tool_use`、`max_tokens`）。
     stop_reason: Option<String>,
+    /// token 用量统计。
     #[serde(default)]
     usage: Option<AnthropicUsage>,
 }
 
+/// Anthropic 响应中的 token 用量统计。
 #[derive(Deserialize, Clone)]
 struct AnthropicUsage {
+    /// 输入 token 数。
     input_tokens: u32,
+    /// 输出 token 数。
     output_tokens: u32,
+    /// 因创建缓存而消耗的 token 数。
     #[serde(default)]
     cache_creation_input_tokens: Option<u32>,
+    /// 命中缓存而节省的 token 数。
     #[serde(default)]
     cache_read_input_tokens: Option<u32>,
 }
 
+/// `message_delta` 流式事件中携带的增量用量统计（仅有输出 token）。
 #[derive(Deserialize, Clone)]
 struct AnthropicDeltaUsage {
+    /// 截至目前的输出 token 数。
     output_tokens: u32,
 }
 
+/// Anthropic SSE 流中的单个事件。
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum AnthropicStreamEvent {
+    /// 流式响应开始，携带初始的消息信息（含用量）。
     #[serde(rename = "message_start")]
-    MessageStart { message: MessageStartBody },
+    MessageStart {
+        /// 消息起始时的元数据。
+        message: MessageStartBody,
+    },
+    /// 一个新的内容块开始。
     #[serde(rename = "content_block_start")]
     ContentBlockStart {
+        /// 该内容块在响应中的索引。
         index: usize,
+        /// 内容块起始时携带的信息。
         content_block: ContentBlockStartBody,
     },
+    /// 某个内容块的增量更新。
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { index: usize, delta: ContentDelta },
+    ContentBlockDelta {
+        /// 对应内容块的索引。
+        index: usize,
+        /// 增量内容。
+        delta: ContentDelta,
+    },
+    /// 某个内容块结束。
     #[serde(rename = "content_block_stop")]
-    ContentBlockStop { index: usize },
+    ContentBlockStop {
+        /// 对应内容块的索引。
+        index: usize,
+    },
+    /// 消息级别的增量更新（携带停止原因和用量）。
     #[serde(rename = "message_delta")]
     MessageDelta {
+        /// 消息增量内容（停止原因）。
         delta: MessageDeltaBody,
+        /// 截至目前的用量统计。
         #[serde(default)]
         usage: Option<AnthropicDeltaUsage>,
     },
+    /// 流式响应结束。
     #[serde(rename = "message_stop")]
     MessageStop,
+    /// 流中发生错误。
     #[serde(rename = "error")]
-    Error { error: AnthropicStreamError },
+    Error {
+        /// 错误详情。
+        error: AnthropicStreamError,
+    },
+    /// 未识别的其他事件类型，兜底忽略。
     #[serde(other)]
     Other,
 }
 
+/// Anthropic 流式错误事件的详情。
 #[derive(Deserialize)]
 struct AnthropicStreamError {
+    /// 错误信息文本。
     message: String,
 }
 
+/// `message_start` 事件携带的消息元数据。
 #[derive(Deserialize)]
 struct MessageStartBody {
+    /// 初始用量统计（主要是 input_tokens）。
     #[serde(default)]
     usage: Option<AnthropicUsage>,
 }
 
+/// `content_block_start` 事件中携带的内容块起始信息。
 #[derive(Deserialize)]
 #[serde(tag = "type")]
 enum ContentBlockStartBody {
+    /// 工具调用块开始。
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String },
+    ToolUse {
+        /// 工具调用 ID。
+        id: String,
+        /// 工具名称。
+        name: String,
+    },
+    /// 思考块开始。
     #[serde(rename = "thinking")]
     Thinking {
+        /// 初始的思考文本（通常为空，后续通过 delta 累积）。
         #[serde(default)]
         thinking: String,
+        /// 初始的签名（通常为空，后续通过 delta 累积）。
         #[serde(default)]
         signature: String,
     },
+    /// 脱敏思考块开始。
     #[serde(rename = "redacted_thinking")]
-    RedactedThinking { data: String },
+    RedactedThinking {
+        /// 不透明的脱敏数据。
+        data: String,
+    },
+    /// 未识别的其他内容块类型，兜底忽略。
     #[serde(other)]
     Other,
 }
 
+/// 内容块的增量更新，各字段互斥，按事件类型只有其中一个会被填充。
 #[derive(Deserialize)]
 struct ContentDelta {
+    /// 文本增量。
     text: Option<String>,
+    /// 思考文本增量。
     thinking: Option<String>,
+    /// 思考签名增量。
     signature: Option<String>,
+    /// 工具调用参数（JSON）的增量片段。
     #[serde(rename = "partial_json")]
     partial_json: Option<String>,
 }
 
+/// `message_delta` 事件携带的消息级增量信息。
 #[derive(Deserialize)]
 struct MessageDeltaBody {
+    /// 停止原因（如 `end_turn`、`tool_use`）。
     stop_reason: Option<String>,
 }
 
@@ -1321,10 +1491,10 @@ mod tests {
         );
     }
 
-    // ── stage4 P4.1: cache_user_id single-source ────────────────────────────
-    // DeepSeek/Anthropic endpoint uses metadata:{user_id} for KVCache isolation.
-    // Verify AnthropicClient.convert_request fills metadata when ChatRequest.user_id
-    // is set, and omits it entirely when None.
+    // ── stage4 P4.1：cache_user_id 单一数据源 ────────────────────────────
+    // DeepSeek/Anthropic 端点使用 metadata:{user_id} 做 KVCache 隔离。
+    // 验证 AnthropicClient.convert_request 在 ChatRequest.user_id 设置时
+    // 会填充 metadata，未设置（None）时则完全省略该字段。
 
     fn chat_request_with_user(user: Option<&str>) -> ChatRequest {
         ChatRequest {
@@ -1365,7 +1535,7 @@ mod tests {
     fn metadata_absent_when_user_id_none() -> std::result::Result<(), serde_json::Error> {
         let client = AnthropicClient::new("ds-xxx".to_string(), "deepseek-chat".to_string());
         let body = serde_json::to_value(client.convert_request(&chat_request_with_user(None)))?;
-        // metadata is skip_serializing_if Option::is_none → absent (not null).
+        // metadata 标注了 skip_serializing_if Option::is_none → 应缺省（不是 null）。
         assert!(
             body.get("metadata").is_none(),
             "metadata should be absent when user_id is None, got: {body}"

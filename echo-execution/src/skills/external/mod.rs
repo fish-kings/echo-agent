@@ -1,3 +1,5 @@
+//! 文件型（外部）skill 的发现、激活、校验与工具封装。
+
 pub mod activate_tool;
 pub mod loader;
 pub mod prompt_exec;

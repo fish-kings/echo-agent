@@ -1,11 +1,11 @@
-//! Deterministic JSON encoding for hashes and integrity contracts.
+//! 用于哈希与完整性契约的确定性 JSON 编码。
 
 use serde::Serialize;
 
-/// Serialize a value with object keys sorted recursively at every depth.
+/// 序列化一个值，并在每一层递归地对对象的键排序。
 ///
-/// The explicit sort keeps the wire bytes stable even if `serde_json` is
-/// compiled with an insertion-ordered map implementation in another consumer.
+/// 显式排序可以保证序列化字节的稳定性，即便另一个消费者所编译的
+/// `serde_json` 使用的是保留插入顺序的 map 实现也不受影响。
 pub fn canonical_json_bytes<T: Serialize + ?Sized>(
     value: &T,
 ) -> Result<Vec<u8>, serde_json::Error> {
@@ -14,6 +14,8 @@ pub fn canonical_json_bytes<T: Serialize + ?Sized>(
     serde_json::to_vec(&value)
 }
 
+/// 递归地对 JSON 值中所有对象的键按字典序原地排序；数组元素保持原顺序，
+/// 其余标量类型（null/bool/数字/字符串）原样保留。
 fn sort_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Array(items) => {
@@ -40,6 +42,7 @@ fn sort_value(value: &mut serde_json::Value) {
 mod tests {
     use super::*;
 
+    // 验证不同插入顺序的嵌套对象经过规范化后产生相同的字节序列
     #[test]
     fn recursively_sorts_nested_object_keys() -> Result<(), serde_json::Error> {
         let forward: serde_json::Value =

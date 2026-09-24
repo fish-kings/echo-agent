@@ -1,8 +1,8 @@
-//! Minimal source-built ACP Agent composed from the public echo-agent facade.
-//!
-//! This teaching example uses a deterministic Agent so it needs no model
-//! credentials. It is not the configurable `echo-agent-sdk-host` binary from
-//! the next SDK delivery stage.
+/*! 一个基于公共 echo-agent 门面（facade）组装出的、最小化的源码构建 ACP Agent。
+
+本教学示例使用确定性的 Agent，因此无需任何模型凭据。它不是下一个 SDK
+交付阶段中那个可配置的 `echo-agent-sdk-host` 二进制程序。
+*/
 
 use agent_client_protocol::Stdio;
 use echo_agent::acp::{AcpAgentAdapter, AcpSessionContext};
@@ -13,12 +13,16 @@ use futures::future::BoxFuture;
 use futures::stream::{self, BoxStream, StreamExt};
 use std::sync::Mutex;
 
+/// 一个用于演示的确定性会话 Agent：记录会话消息历史并原样回显。
 struct ExampleSessionAgent {
+    /// 所属会话的 ID。
     session_id: String,
+    /// 该会话中已接收到的历史消息。
     messages: Mutex<Vec<String>>,
 }
 
 impl ExampleSessionAgent {
+    /// 记录一条消息并返回携带回合序号的确定性回复流。
     fn chat_stream_owned<'a>(
         &'a self,
         message: String,
@@ -36,22 +40,27 @@ impl ExampleSessionAgent {
 }
 
 impl Agent for ExampleSessionAgent {
+    /// 返回该 agent 的固定名称。
     fn name(&self) -> &str {
         "example-acp-agent"
     }
 
+    /// 返回该 agent 所用的（确定性示例）模型名称。
     fn model_name(&self) -> &str {
         "deterministic-example"
     }
 
+    /// 返回该 agent 的系统提示词。
     fn system_prompt(&self) -> &str {
         "Echo ACP prompts for the learning example."
     }
 
+    /// 原样返回传入的任务文本作为执行结果。
     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move { Ok(task.to_string()) })
     }
 
+    /// 以流式事件的形式返回任务的最终答案（原样回显传入的任务文本）。
     fn execute_stream<'a>(
         &'a self,
         task: &'a str,
@@ -60,6 +69,7 @@ impl Agent for ExampleSessionAgent {
         Box::pin(async move { Ok(stream::iter(vec![Ok(AgentEvent::FinalAnswer(answer))]).boxed()) })
     }
 
+    /// 以流式事件的形式处理一条聊天消息。
     fn chat_stream<'a>(
         &'a self,
         message: &'a str,
@@ -67,6 +77,7 @@ impl Agent for ExampleSessionAgent {
         self.chat_stream_owned(message.to_string())
     }
 
+    /// 以流式事件的形式处理一条支持取消的结构化消息（本示例忽略取消令牌）。
     fn chat_stream_message_with_cancel<'a>(
         &'a self,
         message: Message,
@@ -76,6 +87,7 @@ impl Agent for ExampleSessionAgent {
     }
 }
 
+/// 启动一个基于标准输入输出（stdio）通信的 ACP agent 适配器。
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let adapter = AcpAgentAdapter::new(|context: AcpSessionContext| async move {

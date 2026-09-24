@@ -1,47 +1,58 @@
-//! LLM-as-Judge grader — uses an agent to score evaluation outputs.
-//!
-//! Inspired by `skill-creator/agents/grader.md`. The grader receives an assertion,
-//! a task description, and the agent's output, then determines whether the
-//! assertion passes and extracts supporting evidence.
+/*!
+LLM-as-Judge 评分器 —— 使用一个 agent 来给评测输出打分。
+
+灵感来自 `skill-creator/agents/grader.md`。评分器接收一条断言、任务描述
+以及 agent 的输出，然后判断该断言是否通过，并提取支撑证据。
+*/
 
 use crate::agent::Agent;
 use crate::agent::config::DEFAULT_TOKEN_LIMIT;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
-/// A single assertion to check against an agent's output.
+/// 针对 agent 输出要检查的单条断言。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assertion {
-    /// Unique identifier for this assertion.
+    /// 该断言的唯一标识符。
     pub id: String,
-    /// What to check (natural language, e.g. "The output contains a valid JSON object").
+    /// 要检查的内容（自然语言描述，例如"输出包含一个合法的 JSON 对象"）。
     pub check: String,
-    /// Expected outcome hint for the grader.
+    /// 给评分器的预期结果提示。
     pub expected: String,
 }
 
-/// Result of grading a single assertion.
+/// 对单条断言评分的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradeResult {
+    /// 对应断言的 ID
     pub assertion_id: String,
+    /// 该断言是否通过
     pub passed: bool,
+    /// 评分器给出的置信度（0.0-1.0）
     pub confidence: f64,
+    /// 支撑判断的证据文本
     pub evidence: String,
+    /// 评分器的推理说明
     pub reasoning: String,
 }
 
-/// Full grading output for one eval case.
+/// 针对一个评测用例的完整评分输出。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GradingReport {
+    /// 对应的评测用例 ID
     pub case_id: String,
+    /// 每条断言的评分结果列表
     pub results: Vec<GradeResult>,
+    /// 通过率（0.0-1.0）
     pub pass_rate: f64,
+    /// 总体评估摘要
     pub overall_assessment: String,
 }
 
-/// LLM-based grader for evaluating agent outputs.
+/// 基于 LLM 来评估 agent 输出的评分器。
 #[derive(Clone)]
 pub struct LlmGrader {
+    /// 评分器使用的系统提示词
     grader_prompt: String,
 }
 
@@ -52,6 +63,7 @@ impl Default for LlmGrader {
 }
 
 impl LlmGrader {
+    /// 创建一个使用默认评分提示词的 LlmGrader
     pub fn new() -> Self {
         Self {
             grader_prompt: concat!(
@@ -78,7 +90,7 @@ impl LlmGrader {
         }
     }
 
-    /// Grade an agent's output against a set of assertions.
+    /// 针对一组断言给 agent 的输出打分。
     pub async fn grade(
         &self,
         agent: &dyn Agent,
@@ -90,10 +102,12 @@ impl LlmGrader {
             .await
     }
 
-    /// Grade an agent's output with optional trajectory summary.
-    ///
-    /// The `trajectory_summary` can include tool calls made, files edited, etc.
-    /// to give the grader more context about the agent's execution path.
+    /**
+    携带可选的执行轨迹摘要给 agent 的输出打分。
+
+    `trajectory_summary` 可以包含已执行的工具调用、已编辑的文件等信息，
+    为评分器提供关于 agent 执行路径的更多上下文。
+    */
     pub async fn grade_with_trajectory(
         &self,
         agent: &dyn Agent,
@@ -134,9 +148,9 @@ impl LlmGrader {
         }
     }
 
-    /// Parse the grading response JSON, with graceful fallback.
+    /// 解析评分响应 JSON，并在解析失败时优雅降级。
     fn parse_grading_response(raw: &str, assertions: &[Assertion]) -> GradingReport {
-        // Try to parse structured response
+        // 尝试解析结构化响应
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw) {
             let Some(rows) = parsed.get("results").and_then(serde_json::Value::as_array) else {
                 return Self::failed_report(assertions, "grader response omitted results".into());
@@ -227,6 +241,7 @@ impl LlmGrader {
         }
     }
 
+    /// 构造一份统一失败的评分报告（所有断言均标记为未通过）
     fn failed_report(assertions: &[Assertion], reason: String) -> GradingReport {
         GradingReport {
             case_id: String::new(),
@@ -246,6 +261,7 @@ impl LlmGrader {
     }
 }
 
+/// 按字符数截断字符串
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -272,3 +288,4 @@ mod tests {
         assert!(report.results[0].passed);
     }
 }
+</content>

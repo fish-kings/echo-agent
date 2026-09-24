@@ -1,34 +1,35 @@
-//! # echo-macros
-//!
-//! Procedural macros for the [echo-agent](https://crates.io/crates/echo_agent) framework.
-//!
-//! ## Macros
-//!
-//! | Macro | Generates | Description |
-//! |-------|-----------|-------------|
-//! | [`#[tool]`](attr.tool.html) | `Tool` impl | Auto-generates params struct, JSON Schema, and `Tool` trait impl from an async fn |
-//! | [`#[callback]`](attr.callback.html) | `AgentCallback` impl | Generates lifecycle callbacks from an impl block |
-//! | [`#[guard]`](attr.guard.html) | `Guard` impl | Content filtering guard from an async fn |
-//! | [`#[handler]`](attr.handler.html) | `HumanLoopHandler` impl | Human-in-the-loop handler from an impl block |
-//! | [`#[compressor]`](attr.compressor.html) | `ContextCompressor` impl | Context compression strategy from an async fn |
-//! | [`#[permission_policy]`](attr.permission_policy.html) | `PermissionPolicy` impl | Tool permission policy from an async fn |
-//! | [`#[audit_logger]`](attr.audit_logger.html) | `AuditLogger` impl | Audit logging backend from an impl block |
-//! | [`#[derive(Tool)]`](derive.Tool.html) | `Tool` impl | Derive macro for structs — auto-generates params, JSON Schema, and `Tool` trait impl |
-//!
-//! ## Quick Example
-//!
-//! ```rust,ignore
-//! use echo_agent::tool;
-//!
-//! #[tool(name = "add", description = "Add two numbers")]
-//! async fn add(a: f64, b: f64) -> Result<ToolResult> {
-//!     Ok(ToolResult::success(format!("{}", a + b)))
-//! }
-//! ```
-//!
-//! Most users should import these macros via `echo_agent::prelude::*` or
-//! `use echo_agent::{tool, callback, guard, handler};` rather than depending
-//! on `echo_macros` directly.
+/*! # echo-macros
+
+[echo-agent](https://crates.io/crates/echo_agent) 框架的过程宏集合。
+
+## 宏列表
+
+| 宏 | 生成内容 | 说明 |
+|-------|-----------|-------------|
+| [`#[tool]`](attr.tool.html) | `Tool` 实现 | 从 async fn 自动生成参数结构体、JSON Schema 及 `Tool` trait 实现 |
+| [`#[callback]`](attr.callback.html) | `AgentCallback` 实现 | 从 impl 块生成生命周期回调 |
+| [`#[guard]`](attr.guard.html) | `Guard` 实现 | 从 async fn 生成内容过滤守卫 |
+| [`#[handler]`](attr.handler.html) | `HumanLoopHandler` 实现 | 从 impl 块生成人工介入（human-in-the-loop）处理器 |
+| [`#[compressor]`](attr.compressor.html) | `ContextCompressor` 实现 | 从 async fn 生成上下文压缩策略 |
+| [`#[permission_policy]`](attr.permission_policy.html) | `PermissionPolicy` 实现 | 从 async fn 生成工具权限策略 |
+| [`#[audit_logger]`](attr.audit_logger.html) | `AuditLogger` 实现 | 从 impl 块生成审计日志后端 |
+| [`#[derive(Tool)]`](derive.Tool.html) | `Tool` 实现 | 用于结构体的派生宏——自动生成参数结构体、JSON Schema 及 `Tool` trait 实现 |
+
+## 快速示例
+
+```rust,ignore
+use echo_agent::tool;
+
+#[tool(name = "add", description = "Add two numbers")]
+async fn add(a: f64, b: f64) -> Result<ToolResult> {
+    Ok(ToolResult::success(format!("{}", a + b)))
+}
+```
+
+大多数用户应通过 `echo_agent::prelude::*` 或
+`use echo_agent::{tool, callback, guard, handler};` 导入这些宏，
+而不必直接依赖 `echo_macros`。
+*/
 
 mod derive_tool;
 
@@ -40,12 +41,17 @@ use syn::{
     DeriveInput, FnArg, ImplItem, ItemFn, ItemImpl, LitStr, Pat, ReturnType, parse_macro_input,
 };
 
+/// 标识目标宏所属的 echo-agent 子 crate（用于解析对应的 crate 路径）。
 #[derive(Clone, Copy)]
 enum MacroCrate {
+    /// echo-core（或 facade crate `echo_agent`）。
     Core,
+    /// echo-orchestration（或 facade crate `echo_agent`）。
     Orchestration,
 }
 
+/// 解析 `target` 对应的 echo-agent crate 路径：优先返回拆分后的独立 crate 名，
+/// 若调用方就是该 crate 自身则返回 `crate`；两者都找不到时返回编译错误。
 fn resolve_echo_crate_path(target: MacroCrate) -> syn::Result<syn::Path> {
     const CORE_CANDIDATES: &[&str] = &["echo_core", "echo_agent"];
     const ORCHESTRATION_CANDIDATES: &[&str] = &["echo_orchestration", "echo_agent"];
@@ -70,6 +76,8 @@ fn resolve_echo_crate_path(target: MacroCrate) -> syn::Result<syn::Path> {
     ))
 }
 
+/// 拼出 `<echo_crate>::__macro_support::<crate_name>` 形式的字符串字面量，
+/// 用于生成代码中引用宏支持库（如 serde、schemars）的完整路径。
 fn macro_support_crate_path(echo_crate: &syn::Path, crate_name: &str) -> LitStr {
     let path = quote!(#echo_crate).to_string().replace(' ', "");
     LitStr::new(
@@ -79,44 +87,44 @@ fn macro_support_crate_path(echo_crate: &syn::Path, crate_name: &str) -> LitStr 
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[derive(Tool)] — Generate Tool impl from struct definition
+// #[derive(Tool)] — 从结构体定义生成 Tool 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Derive macro that generates a complete `Tool` trait implementation from a
-/// struct definition.
-///
-/// # Struct Attributes
-///
-/// - `#[tool(name = "...", description = "...")]` — required
-/// - `#[tool(risk_level = "ReadOnly|Standard|Dangerous")]` — optional
-/// - `#[tool(permissions = [Read, Write, ...])]` — optional
-///
-/// # Field Attributes
-///
-/// - `#[tool_param(skip)]` — internal state, not exposed to LLM
-/// - `#[tool_param(description = "...")]` — parameter description (also reads doc comments)
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use echo_agent::prelude::*;
-///
-/// #[derive(Tool)]
-/// #[tool(name = "read_file", description = "Read file contents")]
-/// struct ReadFileTool {
-///     #[tool_param(skip)]
-///     base_dir: PathBuf,
-///     #[tool_param(description = "File path")]
-///     path: String,
-/// }
-///
-/// impl ToolRunner<ReadFileToolParams> for ReadFileTool {
-///     async fn run(&self, params: ReadFileToolParams) -> Result<ToolResult> {
-///         let content = std::fs::read_to_string(&params.path)?;
-///         Ok(ToolResult::success(content))
-///     }
-/// }
-/// ```
+/** 从结构体定义生成完整 `Tool` trait 实现的派生宏。
+
+# 结构体属性
+
+- `#[tool(name = "...", description = "...")]` —— 必填
+- `#[tool(risk_level = "ReadOnly|Standard|Dangerous")]` —— 可选
+- `#[tool(permissions = [Read, Write, ...])]` —— 可选
+
+# 字段属性
+
+- `#[tool_param(skip)]` —— 内部状态字段，不暴露给 LLM
+- `#[tool_param(description = "...")]` —— 参数说明（也会读取字段上的文档注释）
+
+# 示例
+
+```rust,ignore
+use echo_agent::prelude::*;
+
+#[derive(Tool)]
+#[tool(name = "read_file", description = "Read file contents")]
+struct ReadFileTool {
+    #[tool_param(skip)]
+    base_dir: PathBuf,
+    #[tool_param(description = "File path")]
+    path: String,
+}
+
+impl ToolRunner<ReadFileToolParams> for ReadFileTool {
+    async fn run(&self, params: ReadFileToolParams) -> Result<ToolResult> {
+        let content = std::fs::read_to_string(&params.path)?;
+        Ok(ToolResult::success(content))
+    }
+}
+```
+*/
 #[proc_macro_derive(Tool, attributes(tool, tool_param))]
 pub fn derive_tool(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -127,16 +135,21 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[tool] — Generate Tool impl from async fn
+// #[tool] — 从 async fn 生成 Tool 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// `#[tool(...)]` 属性宏解析后的参数：工具名称、描述以及可选的权限列表。
 struct ToolAttrs {
+    /// 工具名称（对应 `name = "..."`）。
     name: String,
+    /// 工具描述（对应 `description = "..."`）。
     description: String,
+    /// 显式声明的权限列表（对应 `permissions = [...]`），可为空。
     permissions: Vec<syn::Ident>,
 }
 
 impl syn::parse::Parse for ToolAttrs {
+    /// 解析 `#[tool(name = "...", description = "...", permissions = [...])]` 的属性参数。
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name: Option<String> = None;
         let mut description: Option<String> = None;
@@ -194,29 +207,29 @@ impl syn::parse::Parse for ToolAttrs {
     }
 }
 
-/// Generate a `Tool` implementation from an async function, auto-creating the
-/// parameter struct and JSON Schema.
-///
-/// # Attributes
-///
-/// - `name` (required): Tool name
-/// - `description` (required): Tool description
-/// - `permissions` (optional): Permission list, e.g. `[Execute, Network]`
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[tool(name = "add", description = "Add two numbers")]
-/// async fn add(
-///     /// First number
-///     a: f64,
-///     /// Second number
-///     b: f64,
-/// ) -> Result<ToolResult> {
-///     Ok(ToolResult::success(format!("{}", a + b)))
-/// }
-/// // Generates: AddParams struct + AddTool unit struct + impl Tool
-/// ```
+/** 从一个 async 函数生成 `Tool` 实现，并自动创建参数结构体与 JSON Schema。
+
+# 属性
+
+- `name`（必填）：工具名称
+- `description`（必填）：工具描述
+- `permissions`（可选）：权限列表，例如 `[Execute, Network]`
+
+# 示例
+
+```rust,ignore
+#[tool(name = "add", description = "Add two numbers")]
+async fn add(
+    /// First number
+    a: f64,
+    /// Second number
+    b: f64,
+) -> Result<ToolResult> {
+    Ok(ToolResult::success(format!("{}", a + b)))
+}
+// 生成：AddParams 结构体 + AddTool 单元结构体 + impl Tool
+```
+*/
 #[proc_macro_attribute]
 pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = parse_macro_input!(attr as ToolAttrs);
@@ -228,6 +241,8 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[tool]` 的核心实现：校验函数签名、提取参数、生成参数结构体
+/// 以及对应的 `Tool` trait 实现代码。
 fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let serde_crate = macro_support_crate_path(&echo_agent, "serde");
@@ -307,13 +322,13 @@ fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
         }
 
         impl #struct_name {
-            /// Deserialize and validate tool parameters, returning a typed struct
-            /// or a [`ToolError::InvalidParameter`] with extracted field name.
+            /// 反序列化并校验工具参数，返回类型化的结构体；
+            /// 失败时返回携带出错字段名的 [`ToolError::InvalidParameter`]。
             fn deserialize_params(params: &#echo_agent::tools::ToolParameters) -> #echo_agent::error::Result<#params_name> {
                 let value = #echo_agent::__macro_support::serde_json::Value::Object(params.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
                 #echo_agent::__macro_support::serde_json::from_value(value).map_err(|e| {
                     let msg = e.to_string();
-                    // Extract field name from common serde error patterns:
+                    // 从常见的 serde 报错格式中提取字段名：
                     // "missing field `name`" -> "name"
                     // "invalid type: ... at `field`" -> "field"
                     let field = msg
@@ -336,27 +351,27 @@ fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[callback] — Generate AgentCallback impl from impl block
+// #[callback] — 从 impl 块生成 AgentCallback 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Generate an `AgentCallback` implementation from an impl block, overriding
-/// only the methods you define.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// struct LogCallback;
-///
-/// #[callback]
-/// impl LogCallback {
-///     async fn on_tool_start(&self, _agent: &str, tool: &str, _args: &Value) {
-///         println!("Tool started: {tool}");
-///     }
-///     async fn on_final_answer(&self, _agent: &str, answer: &str) {
-///         println!("Final answer: {answer}");
-///     }
-/// }
-/// ```
+/** 从一个 impl 块生成 `AgentCallback` 实现，仅覆盖你实际定义的方法。
+
+# 示例
+
+```rust,ignore
+struct LogCallback;
+
+#[callback]
+impl LogCallback {
+    async fn on_tool_start(&self, _agent: &str, tool: &str, _args: &Value) {
+        println!("Tool started: {tool}");
+    }
+    async fn on_final_answer(&self, _agent: &str, answer: &str) {
+        println!("Final answer: {answer}");
+    }
+}
+```
+*/
 #[proc_macro_attribute]
 pub fn callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
@@ -366,6 +381,8 @@ pub fn callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[callback]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+/// 包装为返回 `BoxFuture<'a, ()>` 的 `AgentCallback` trait 实现。
 fn callback_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     reject_generic_impl(&input, "#[callback]")?;
@@ -380,14 +397,17 @@ fn callback_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[guard] — Generate Guard impl from async fn
+// #[guard] — 从 async fn 生成 Guard 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// `#[guard(name = "...")]` 属性宏解析后的参数。
 struct NameAttr {
+    /// 守卫名称（对应 `name = "..."`）。
     name: String,
 }
 
 impl syn::parse::Parse for NameAttr {
+    /// 解析 `name = "..."` 形式的属性参数。
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name: Option<String> = None;
         while !input.is_empty() {
@@ -409,21 +429,22 @@ impl syn::parse::Parse for NameAttr {
     }
 }
 
-/// Generate a `Guard` implementation from an async function.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[guard(name = "length-limit")]
-/// async fn check_length(content: &str, direction: GuardDirection) -> Result<GuardResult> {
-///     if content.len() > 10000 {
-///         Ok(GuardResult::Block { reason: "Content too long".into() })
-///     } else {
-///         Ok(GuardResult::Pass)
-///     }
-/// }
-/// // Generates: LengthLimitGuard + impl Guard
-/// ```
+/** 从一个 async 函数生成 `Guard` 实现。
+
+# 示例
+
+```rust,ignore
+#[guard(name = "length-limit")]
+async fn check_length(content: &str, direction: GuardDirection) -> Result<GuardResult> {
+    if content.len() > 10000 {
+        Ok(GuardResult::Block { reason: "Content too long".into() })
+    } else {
+        Ok(GuardResult::Pass)
+    }
+}
+// 生成：LengthLimitGuard + impl Guard
+```
+*/
 #[proc_macro_attribute]
 pub fn guard(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attrs = parse_macro_input!(attr as NameAttr);
@@ -434,6 +455,7 @@ pub fn guard(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[guard]` 的核心实现：校验返回类型，并生成对应的 `Guard` trait 实现。
 fn guard_impl(attrs: NameAttr, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let guard_name = &attrs.name;
@@ -462,32 +484,33 @@ fn guard_impl(attrs: NameAttr, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[handler] — Generate HumanLoopHandler impl from impl block
+// #[handler] — 从 impl 块生成 HumanLoopHandler 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Generate a `HumanLoopHandler` implementation from an impl block.
-///
-/// # Overridable Methods
-///
-/// - `on_approval(&self, tool_name: &str, args: &Value, prompt: &str) -> ApprovalDecision`
-/// - `on_input(&self, prompt: &str) -> String`
-///
-/// # Example
-///
-/// ```rust,ignore
-/// struct AutoApproveHandler;
-///
-/// #[handler]
-/// impl AutoApproveHandler {
-///     async fn on_approval(&self, _tool: &str, _args: &Value, _prompt: &str) -> ApprovalDecision {
-///         ApprovalDecision::Approved
-///     }
-///     async fn on_input(&self, prompt: &str) -> String {
-///         println!("Agent asks: {prompt}");
-///         "default response".to_string()
-///     }
-/// }
-/// ```
+/** 从一个 impl 块生成 `HumanLoopHandler` 实现。
+
+# 可覆盖的方法
+
+- `on_approval(&self, tool_name: &str, args: &Value, prompt: &str) -> ApprovalDecision`
+- `on_input(&self, prompt: &str) -> String`
+
+# 示例
+
+```rust,ignore
+struct AutoApproveHandler;
+
+#[handler]
+impl AutoApproveHandler {
+    async fn on_approval(&self, _tool: &str, _args: &Value, _prompt: &str) -> ApprovalDecision {
+        ApprovalDecision::Approved
+    }
+    async fn on_input(&self, prompt: &str) -> String {
+        println!("Agent asks: {prompt}");
+        "default response".to_string()
+    }
+}
+```
+*/
 #[proc_macro_attribute]
 pub fn handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
@@ -497,6 +520,8 @@ pub fn handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[handler]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+/// 包装为保留各自返回类型的 `HumanLoopHandler` trait 实现。
 fn handler_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let orchestration = resolve_echo_crate_path(MacroCrate::Orchestration)?;
     let macro_support = resolve_echo_crate_path(MacroCrate::Core)?;
@@ -512,23 +537,24 @@ fn handler_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[compressor] — Generate ContextCompressor impl from async fn
+// #[compressor] — 从 async fn 生成 ContextCompressor 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Generate a `ContextCompressor` implementation from an async function.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[compressor]
-/// async fn keep_recent(input: CompressionInput) -> Result<CompressionOutput> {
-///     let keep = input.messages.len().min(20);
-///     let evicted = input.messages[..input.messages.len() - keep].to_vec();
-///     let messages = input.messages[input.messages.len() - keep..].to_vec();
-///     Ok(CompressionOutput { messages, evicted })
-/// }
-/// // Generates: KeepRecentCompressor + impl ContextCompressor
-/// ```
+/** 从一个 async 函数生成 `ContextCompressor` 实现。
+
+# 示例
+
+```rust,ignore
+#[compressor]
+async fn keep_recent(input: CompressionInput) -> Result<CompressionOutput> {
+    let keep = input.messages.len().min(20);
+    let evicted = input.messages[..input.messages.len() - keep].to_vec();
+    let messages = input.messages[input.messages.len() - keep..].to_vec();
+    Ok(CompressionOutput { messages, evicted })
+}
+// 生成：KeepRecentCompressor + impl ContextCompressor
+```
+*/
 #[proc_macro_attribute]
 pub fn compressor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
@@ -538,6 +564,8 @@ pub fn compressor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[compressor]` 的核心实现：校验返回类型，并生成对应的
+/// `ContextCompressor` trait 实现。
 fn compressor_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let fn_name = &func.sig.ident;
@@ -560,20 +588,21 @@ fn compressor_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[permission_policy] — Generate PermissionPolicy impl from async fn
+// #[permission_policy] — 从 async fn 生成 PermissionPolicy 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Generate a `PermissionPolicy` implementation from an async function.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// #[permission_policy]
-/// async fn allow_all(tool_name: &str, permissions: &[ToolPermission]) -> PermissionDecision {
-///     PermissionDecision::Allow
-/// }
-/// // Generates: AllowAllPolicy + impl PermissionPolicy
-/// ```
+/** 从一个 async 函数生成 `PermissionPolicy` 实现。
+
+# 示例
+
+```rust,ignore
+#[permission_policy]
+async fn allow_all(tool_name: &str, permissions: &[ToolPermission]) -> PermissionDecision {
+    PermissionDecision::Allow
+}
+// 生成：AllowAllPolicy + impl PermissionPolicy
+```
+*/
 #[proc_macro_attribute]
 pub fn permission_policy(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input_fn = parse_macro_input!(item as ItemFn);
@@ -583,6 +612,8 @@ pub fn permission_policy(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[permission_policy]` 的核心实现：校验返回类型，并生成对应的
+/// `PermissionPolicy` trait 实现。
 fn permission_policy_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let fn_name = &func.sig.ident;
@@ -606,32 +637,33 @@ fn permission_policy_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream>
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[audit_logger] — Generate AuditLogger impl from impl block
+// #[audit_logger] — 从 impl 块生成 AuditLogger 实现
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-/// Generate an `AuditLogger` implementation from an impl block.
-///
-/// # Overridable Methods
-///
-/// - `log(&self, event: AuditEvent) -> Result<()>`
-/// - `query(&self, filter: AuditFilter) -> Result<Vec<AuditEvent>>`
-///
-/// # Example
-///
-/// ```rust,ignore
-/// struct PrintLogger;
-///
-/// #[audit_logger]
-/// impl PrintLogger {
-///     async fn log(&self, event: AuditEvent) -> Result<()> {
-///         println!("[audit] {:?}", event.event_type);
-///         Ok(())
-///     }
-///     async fn query(&self, _filter: AuditFilter) -> Result<Vec<AuditEvent>> {
-///         Ok(vec![])
-///     }
-/// }
-/// ```
+/** 从一个 impl 块生成 `AuditLogger` 实现。
+
+# 可覆盖的方法
+
+- `log(&self, event: AuditEvent) -> Result<()>`
+- `query(&self, filter: AuditFilter) -> Result<Vec<AuditEvent>>`
+
+# 示例
+
+```rust,ignore
+struct PrintLogger;
+
+#[audit_logger]
+impl PrintLogger {
+    async fn log(&self, event: AuditEvent) -> Result<()> {
+        println!("[audit] {:?}", event.event_type);
+        Ok(())
+    }
+    async fn query(&self, _filter: AuditFilter) -> Result<Vec<AuditEvent>> {
+        Ok(vec![])
+    }
+}
+```
+*/
 #[proc_macro_attribute]
 pub fn audit_logger(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
@@ -641,6 +673,8 @@ pub fn audit_logger(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+/// `#[audit_logger]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+/// 包装为保留各自返回类型的 `AuditLogger` trait 实现。
 fn audit_logger_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     reject_generic_impl(&input, "#[audit_logger]")?;
@@ -655,9 +689,11 @@ fn audit_logger_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Shared helper functions
+// 共享辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 从函数签名中提取参数，返回生成参数结构体所需的字段定义
+/// （携带从文档注释转换来的 `#[schemars(description = ...)]`）以及字段名列表。
 fn extract_fn_params(
     func: &ItemFn,
 ) -> syn::Result<(Vec<proc_macro2::TokenStream>, Vec<syn::Ident>)> {
@@ -693,7 +729,7 @@ fn extract_fn_params(
     Ok((param_fields, param_names))
 }
 
-/// For callback-style traits: returns `BoxFuture<'a, ()>`.
+/// 用于回调风格的 trait：返回 `BoxFuture<'a, ()>`。
 fn impl_block_to_boxfuture_methods(
     echo_agent: &syn::Path,
     input: &ItemImpl,
@@ -717,7 +753,7 @@ fn impl_block_to_boxfuture_methods(
     Ok(methods)
 }
 
-/// For traits where user methods have explicit return types (HumanLoopHandler, AuditLogger).
+/// 用于用户方法带有显式返回类型的 trait（HumanLoopHandler、AuditLogger）。
 fn extract_boxfuture_methods_with_return(
     echo_agent: &syn::Path,
     input: &ItemImpl,
@@ -746,7 +782,7 @@ fn extract_boxfuture_methods_with_return(
     Ok(methods)
 }
 
-/// Rewrites each `FnArg` so `&self` → `&'a self` and `&T` → `&'a T`.
+/// 重写每个 `FnArg`，使 `&self` → `&'a self`、`&T` → `&'a T`。
 fn lifetimed_params(
     inputs: &syn::punctuated::Punctuated<FnArg, syn::token::Comma>,
 ) -> Vec<proc_macro2::TokenStream> {
@@ -763,15 +799,15 @@ fn lifetimed_params(
         .collect()
 }
 
-/// Adds `'a` to top-level references that lack an explicit lifetime.
-/// `&T` → `&'a T`, `&mut T` → `&'a mut T`.
-/// References that already have a named lifetime (e.g., `&'b T`) are left unchanged.
-/// Non-reference types pass through unchanged.
+/// 为缺少显式生命周期的顶层引用类型添加 `'a`。
+/// `&T` → `&'a T`，`&mut T` → `&'a mut T`。
+/// 已带具名生命周期的引用（如 `&'b T`）保持不变。
+/// 非引用类型原样透传。
 fn add_lifetime_a(ty: &syn::Type) -> proc_macro2::TokenStream {
     match ty {
         syn::Type::Reference(r) => {
             let elem = &r.elem;
-            // Preserve existing explicit lifetimes; only add 'a if none is present
+            // 保留已有的显式生命周期；仅在没有生命周期时才添加 'a
             let lifetime = r
                 .lifetime
                 .as_ref()
@@ -787,6 +823,7 @@ fn add_lifetime_a(ty: &syn::Type) -> proc_macro2::TokenStream {
     }
 }
 
+/// 校验函数必须显式声明返回类型，否则返回编译错误。
 fn require_return_type(func: &ItemFn) -> syn::Result<()> {
     if let ReturnType::Default = &func.sig.output {
         return Err(syn::Error::new_spanned(
@@ -797,6 +834,7 @@ fn require_return_type(func: &ItemFn) -> syn::Result<()> {
     Ok(())
 }
 
+/// 校验 impl 块不是泛型 impl，否则返回编译错误（这些属性宏不支持泛型 impl 块）。
 fn reject_generic_impl(input: &ItemImpl, macro_name: &str) -> syn::Result<()> {
     if input.generics.params.is_empty() && input.generics.where_clause.is_none() {
         Ok(())
@@ -810,6 +848,8 @@ fn reject_generic_impl(input: &ItemImpl, macro_name: &str) -> syn::Result<()> {
     }
 }
 
+/// 将字符串解析为合法的 Rust 标识符，用作生成类型的名称；
+/// 解析失败时返回带有来源说明的编译错误。
 fn generated_ident(value: &str, source: &str) -> syn::Result<syn::Ident> {
     syn::parse_str::<syn::Ident>(value).map_err(|_| {
         syn::Error::new(
@@ -819,6 +859,8 @@ fn generated_ident(value: &str, source: &str) -> syn::Result<syn::Ident> {
     })
 }
 
+/// 从一组属性中提取所有 `#[doc = "..."]`（即 `///` 文档注释）文本，
+/// 按顺序以空格拼接为一行；若没有任何文档注释则返回 `None`。
 pub(crate) fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
     let docs: Vec<String> = attrs
         .iter()
@@ -843,6 +885,8 @@ pub(crate) fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
     }
 }
 
+/// 将下划线分隔的字符串（如 `snake_case`）转换为帕斯卡命名（`PascalCase`），
+/// 用于从函数名或工具名派生生成类型的标识符。
 fn to_pascal_case(s: &str) -> String {
     s.split('_')
         .map(|word| {

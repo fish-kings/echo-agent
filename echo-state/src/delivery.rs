@@ -1,9 +1,8 @@
-//! Product-neutral durable delivery ledger primitives.
+//! 与具体产品无关的持久化投递账本（delivery ledger）原语。
 //!
-//! The ledger models an ordered delivery lifecycle without knowing what an
-//! application route, Agent, workspace, or payload means. Consumers provide
-//! their route and payload types, while the framework owns lifecycle identity,
-//! attempt ordering, terminal state, and a bounded replayable projection.
+//! 该账本对有序的投递生命周期建模，而不关心应用层的路由（route）、Agent、
+//! 工作区或负载（payload）具体代表什么。调用方提供自己的路由和负载类型，
+//! 框架则负责生命周期身份、尝试顺序、终态以及一个有界的可重放投影。
 
 use crate::journal::{
     ApplyBatchReceipt, ApplyReceipt, CheckpointStore, CheckpointedApplyError, CheckpointedReducer,
@@ -18,18 +17,17 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
-/// Version of the framework delivery event contract.
+/// 框架投递事件契约的版本号。
 pub const DELIVERY_LEDGER_SCHEMA_VERSION: u16 = 1;
 
-/// Route values accepted by a typed delivery ledger.
+/// 类型化投递账本所接受的路由值。
 ///
-/// The framework only needs a stable, serializable route with a small amount
-/// of validation. Product code can implement this contract for its own
-/// address type without converting that address into a framework-owned string.
+/// 框架只需要一个稳定、可序列化并带有少量校验能力的路由。产品代码可以为
+/// 自己的地址类型实现此契约，而无需把该地址转换成框架自有的字符串类型。
 pub trait DeliveryRoute:
     Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + fmt::Debug + 'static
 {
-    /// Reject an unusable route before it enters the durable ledger.
+    /// 在路由进入持久化账本之前，拒绝不可用的路由。
     fn validate(&self) -> Result<()>;
 }
 
@@ -42,7 +40,7 @@ impl DeliveryRoute for String {
     }
 }
 
-/// Payload values retained by a typed delivery ledger.
+/// 类型化投递账本所保留的负载值。
 pub trait DeliveryPayload:
     Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + fmt::Debug + 'static
 {
@@ -60,19 +58,24 @@ impl<T> DeliveryPayload for T where
 {
 }
 
-/// Terminal outcome of one delivery attempt or message.
+/// 一次投递尝试或一条消息的最终结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryOutcome {
+    /// 已成功完成。
     Completed,
+    /// 已失败。
     Failed,
+    /// 已被取消。
     Cancelled,
+    /// 已被丢弃。
     Dropped,
+    /// 结果未知。
     OutcomeUnknown,
 }
 
 impl DeliveryOutcome {
-    /// Stable snake-case spelling for logs and wire clients.
+    /// 用于日志和线上客户端的稳定 snake_case 拼写形式。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Completed => "completed",

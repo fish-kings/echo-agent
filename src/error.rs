@@ -1,12 +1,12 @@
-//! Unified error types for the echo-agent framework.
+//! echo-agent 框架的统一错误类型。
 //!
-//! All errors are collected under the `Error` enum with variants for LLM
-//! failures, tool errors, MCP issues, and more.
+//! 所有错误都归并在 `Error` 枚举下，其变体涵盖 LLM 调用失败、
+//! 工具错误、MCP 问题等情况。
 //!
-//! The `Result<T>` type alias is `std::result::Result<T, Error>`. Use
-//! `use echo_agent::prelude::*` to bring it into scope.
+//! `Result<T>` 类型别名为 `std::result::Result<T, Error>`。可通过
+//! `use echo_agent::prelude::*` 将其引入作用域。
 
-/// Direct re-exports from `echo_core::error`.
+/// 直接从 `echo_core::error` 重新导出。
 pub mod core {
     pub use echo_core::error::*;
 }

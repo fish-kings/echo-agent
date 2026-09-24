@@ -1,8 +1,8 @@
 //! # echo_channels
 //!
-//! IM channel plugin system — unified ChannelPlugin interface + concrete platform implementations.
+//! IM 渠道插件系统 —— 统一的 ChannelPlugin 接口 + 具体平台实现。
 //!
-//! ## Quick Start
+//! ## 快速开始
 //!
 //! ```rust,no_run
 //! use echo_integration::channels::prelude::*;
@@ -31,21 +31,21 @@
 //! # async fn example() -> Result<()> {
 //! let mut manager = ChannelManager::new();
 //!
-//! // Register QQ Bot
+//! // 注册 QQ 机器人
 //! let qq_config = QqConfig {
 //!     app_id: "your-app-id".into(),
 //!     client_secret: "your-secret".into(),
 //! };
 //! manager.register(Box::new(QqChannel::new(qq_config)?))?;
 //!
-//! // Register Feishu (long-poll mode, no public IP required)
+//! // 注册飞书（长轮询模式，无需公网 IP）
 //! let feishu_config = FeishuConfig::new_long_poll(
 //!     "your-feishu-app-id".into(),
 //!     "your-feishu-secret".into(),
 //! );
 //! manager.register(Box::new(FeishuChannel::new(feishu_config)?))?;
 //!
-//! // Start all channels
+//! // 启动所有渠道
 //! let handler_factory = |_channel_id: &str| -> Arc<dyn MessageHandler> {
 //!     Arc::new(DummyHandler)
 //! };

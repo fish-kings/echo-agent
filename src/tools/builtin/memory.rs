@@ -1,12 +1,13 @@
-//! Agent memory tools: remember / recall / forget
-//!
-//! Uses LangGraph-aligned [`Store`] API for persistent long-term memory.
-//!
-//! | Tool       | Store Operation                              |
-//! |------------|----------------------------------------------|
-//! | `remember` | `MemoryLayerManager::write_memory()` when layered memory is installed |
-//! | `recall`   | `store.search(namespace, query, limit)`      |
-//! | `forget`   | `store.delete(namespace, key)`              |
+/*! Agent 记忆工具：remember / recall / forget
+
+使用与 LangGraph 对齐的 [`Store`] API 实现持久化的长期记忆。
+
+| 工具        | Store 操作                                                          |
+|------------|----------------------------------------------------------------------|
+| `remember` | 当安装了分层记忆时使用 `MemoryLayerManager::write_memory()`           |
+| `recall`   | `store.search(namespace, query, limit)`                              |
+| `forget`   | `store.delete(namespace, key)`                                       |
+*/
 
 use futures::future::BoxFuture;
 
@@ -22,38 +23,44 @@ use tracing::debug;
 
 // ── LegacyStoreRememberTool ─────────────────────────────────────────────────
 
-/// Legacy store-backed remember tool.
-///
-/// New runtime paths should install [`LayeredRememberTool`] so explicit saves
-/// go through `MemoryLayerManager::write_memory`. This legacy variant remains
-/// only for agents that enable the old Store memory tools without a layer
-/// manager.
+/** 旧版基于 Store 的 remember 工具。
+
+新的运行时路径应安装 [`LayeredRememberTool`]，使显式保存都经过
+`MemoryLayerManager::write_memory`。这个旧版本仅为那些未安装分层管理器、
+仍启用旧版 Store 记忆工具的 agent 保留。
+*/
 pub struct LegacyStoreRememberTool {
+    /// 底层持久化存储。
     pub store: Arc<dyn Store>,
-    /// Storage namespace, e.g. `["alice", "memories"]`
+    /// 存储命名空间，例如 `["alice", "memories"]`
     pub namespace: Vec<String>,
 }
 
 impl LegacyStoreRememberTool {
+    /// 使用给定的存储与命名空间创建工具实例。
     pub fn new(store: Arc<dyn Store>, namespace: Vec<String>) -> Self {
         Self { store, namespace }
     }
 
+    /// 将命名空间转换为 `&str` 切片，供 Store API 使用。
     fn ns_refs(&self) -> Vec<&str> {
         self.namespace.iter().map(String::as_str).collect()
     }
 }
 
 impl Tool for LegacyStoreRememberTool {
+    /// 返回工具名称 `"remember"`。
     fn name(&self) -> &str {
         "remember"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Store information worth long-term retention into persistent memory (cross-session). \
          Suitable for recording user preferences, important conclusions, to-do items, key facts, etc."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -78,6 +85,7 @@ impl Tool for LegacyStoreRememberTool {
         })
     }
 
+    /// 解析参数，将内容写入 Store 并返回确认消息。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -134,31 +142,36 @@ impl Tool for LegacyStoreRememberTool {
 
 // ── LayeredRememberTool ────────────────────────────────────────────────────
 
-/// Store memory through the evolution layer manager.
-///
-/// This preserves the public `remember` tool contract while routing writes
-/// through typed memory, security checks, audit logging, promotion, and the
-/// shared review counter.
+/** 通过 evolution 分层管理器存储记忆。
+
+保持公开的 `remember` 工具契约不变，同时将写入路由经过类型化记忆、
+安全检查、审计日志、层级晋升以及共享的复核计数器。
+*/
 pub struct LayeredRememberTool {
+    /// 负责分层记忆读写、晋升与审计的管理器。
     pub layer_manager: Arc<MemoryLayerManager>,
 }
 
 impl LayeredRememberTool {
+    /// 使用给定的分层记忆管理器创建工具实例。
     pub fn new(layer_manager: Arc<MemoryLayerManager>) -> Self {
         Self { layer_manager }
     }
 }
 
 impl Tool for LayeredRememberTool {
+    /// 返回工具名称 `"remember"`。
     fn name(&self) -> &str {
         "remember"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Store information worth long-term retention into persistent typed memory. \
          Suitable for user preferences, project facts, decisions, debugging lessons, and durable workflow patterns."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -183,6 +196,7 @@ impl Tool for LayeredRememberTool {
         })
     }
 
+    /// 解析参数，推断记忆类型后经分层管理器写入类型化记忆。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -239,33 +253,41 @@ impl Tool for LayeredRememberTool {
 
 // ── RecallTool ───────────────────────────────────────────────────────────────
 
-/// Retrieve relevant historical memories from the persistent Store
-///
-/// Internally calls `store.search(namespace, query, limit)`
+/** 从持久化 Store 中检索相关的历史记忆
+
+内部调用 `store.search(namespace, query, limit)`
+*/
 pub struct RecallTool {
+    /// 底层持久化存储。
     pub store: Arc<dyn Store>,
+    /// 存储命名空间。
     pub namespace: Vec<String>,
 }
 
 impl RecallTool {
+    /// 使用给定的存储与命名空间创建工具实例。
     pub fn new(store: Arc<dyn Store>, namespace: Vec<String>) -> Self {
         Self { store, namespace }
     }
 
+    /// 将命名空间转换为 `&str` 切片，供 Store API 使用。
     fn ns_refs(&self) -> Vec<&str> {
         self.namespace.iter().map(String::as_str).collect()
     }
 }
 
 impl Tool for RecallTool {
+    /// 返回工具名称 `"recall"`。
     fn name(&self) -> &str {
         "recall"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Search persistent memory by keyword or natural-language fragment."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -285,6 +307,7 @@ impl Tool for RecallTool {
         })
     }
 
+    /// 解析参数，按关键词在 Store 中检索并格式化结果列表。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -330,33 +353,41 @@ impl Tool for RecallTool {
 
 // ── ForgetTool ───────────────────────────────────────────────────────────────
 
-/// Delete a memory entry by its ID (key), or clear all memories under a namespace
-///
-/// Internally calls `store.delete(namespace, key)`
+/** 按 ID（key）删除一条记忆，或清空某命名空间下的全部记忆
+
+内部调用 `store.delete(namespace, key)`
+*/
 pub struct ForgetTool {
+    /// 底层持久化存储。
     pub store: Arc<dyn Store>,
+    /// 存储命名空间。
     pub namespace: Vec<String>,
 }
 
 impl ForgetTool {
+    /// 使用给定的存储与命名空间创建工具实例。
     pub fn new(store: Arc<dyn Store>, namespace: Vec<String>) -> Self {
         Self { store, namespace }
     }
 
+    /// 将命名空间转换为 `&str` 切片，供 Store API 使用。
     fn ns_refs(&self) -> Vec<&str> {
         self.namespace.iter().map(String::as_str).collect()
     }
 }
 
 impl Tool for ForgetTool {
+    /// 返回工具名称 `"forget"`。
     fn name(&self) -> &str {
         "forget"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Delete a memory entry by its ID. The ID can be obtained from recall tool results (first 8 chars is sufficient)."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -370,6 +401,7 @@ impl Tool for ForgetTool {
         })
     }
 
+    /// 解析参数，按 ID 前缀或完整 key 在 Store 中删除对应记忆。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -382,14 +414,14 @@ impl Tool for ForgetTool {
 
             let ns: Vec<&str> = self.ns_refs();
 
-            // Try exact match first; if that fails, search by prefix across all keys
+            // 先尝试精确匹配；若失败，则在所有 key 中按前缀查找
             let full_key = self.store.get(&ns, id_prefix).await?.map(|item| item.key);
 
-            // Try direct delete (user may have passed the full key)
+            // 尝试直接删除（用户可能传入的是完整 key）
             let deleted = if let Some(key) = &full_key {
                 self.store.delete(&ns, key).await?
             } else {
-                // Assume the user passed the full key (UUID format)
+                // 假定用户传入的是完整 key（UUID 格式）
                 self.store.delete(&ns, id_prefix).await?
             };
 
@@ -410,37 +442,44 @@ impl Tool for ForgetTool {
 
 // ── SearchMemoryTool ─────────────────────────────────────────────────────────
 
-/// Perform hybrid search (keyword + embedding) in the persistent Store
-///
-/// Unlike `RecallTool` (keyword-only search), this tool prefers the
-/// [`Store::search_with`] `Hybrid` mode. When connected to a Store that
-/// supports embeddings, it leverages both vector similarity and keyword
-/// matching; when the underlying Store does not support hybrid search,
-/// it falls back to keyword search.
+/** 在持久化 Store 中执行混合检索（关键词 + 向量嵌入）
+
+与仅支持关键词检索的 `RecallTool` 不同，本工具优先使用
+[`Store::search_with`] 的 `Hybrid` 模式。当连接到支持 embedding 的 Store 时，
+会同时利用向量相似度与关键词匹配；当底层 Store 不支持混合检索时，
+会回退为关键词检索。
+*/
 pub struct SearchMemoryTool {
+    /// 底层持久化存储。
     pub store: Arc<dyn Store>,
+    /// 存储命名空间。
     pub namespace: Vec<String>,
 }
 
 impl SearchMemoryTool {
+    /// 使用给定的存储与命名空间创建工具实例。
     pub fn new(store: Arc<dyn Store>, namespace: Vec<String>) -> Self {
         Self { store, namespace }
     }
 
+    /// 将命名空间转换为 `&str` 切片，供 Store API 使用。
     fn ns_refs(&self) -> Vec<&str> {
         self.namespace.iter().map(String::as_str).collect()
     }
 }
 
 impl Tool for SearchMemoryTool {
+    /// 返回工具名称 `"search_memory"`。
     fn name(&self) -> &str {
         "search_memory"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Hybrid search persistent memory, with keyword fallback."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -464,6 +503,7 @@ impl Tool for SearchMemoryTool {
         })
     }
 
+    /// 解析参数，优先执行混合检索，必要时回退为关键词检索并分页返回。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -516,25 +556,31 @@ impl Tool for SearchMemoryTool {
 
 // ── LayeredRecallTool / LayeredSearchMemoryTool ────────────────────────────
 
+/// 跨热层（hot）与温层（warm）检索类型化长期记忆的工具。
 pub struct LayeredRecallTool {
+    /// 负责分层记忆读写与检索的管理器。
     pub layer_manager: Arc<MemoryLayerManager>,
 }
 
 impl LayeredRecallTool {
+    /// 使用给定的分层记忆管理器创建工具实例。
     pub fn new(layer_manager: Arc<MemoryLayerManager>) -> Self {
         Self { layer_manager }
     }
 }
 
 impl Tool for LayeredRecallTool {
+    /// 返回工具名称 `"recall"`。
     fn name(&self) -> &str {
         "recall"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Search typed long-term memory across hot and warm layers."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -554,6 +600,7 @@ impl Tool for LayeredRecallTool {
         })
     }
 
+    /// 解析参数，跨分层调用管理器检索并格式化结果列表。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -592,25 +639,31 @@ impl Tool for LayeredRecallTool {
     }
 }
 
+/// 跨热层与温层进行分页检索类型化长期记忆的工具。
 pub struct LayeredSearchMemoryTool {
+    /// 负责分层记忆读写与检索的管理器。
     pub layer_manager: Arc<MemoryLayerManager>,
 }
 
 impl LayeredSearchMemoryTool {
+    /// 使用给定的分层记忆管理器创建工具实例。
     pub fn new(layer_manager: Arc<MemoryLayerManager>) -> Self {
         Self { layer_manager }
     }
 }
 
 impl Tool for LayeredSearchMemoryTool {
+    /// 返回工具名称 `"search_memory"`。
     fn name(&self) -> &str {
         "search_memory"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Search typed long-term memory across hot and warm layers."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -634,6 +687,7 @@ impl Tool for LayeredSearchMemoryTool {
         })
     }
 
+    /// 解析参数，跨分层检索并分页返回类型化记忆。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -668,6 +722,7 @@ impl Tool for LayeredSearchMemoryTool {
     }
 }
 
+/// 将分页后的记忆记录格式化为工具结果，并附带分页信息。
 fn paginated_memory_result(
     request: &PageRequest,
     records: Vec<String>,
@@ -693,47 +748,49 @@ fn paginated_memory_result(
     Ok(result)
 }
 
+/// 截取记忆 key 的前 8 个字符，用于展示预览。
 fn memory_key_preview(key: &str) -> String {
     key.chars().take(8).collect()
 }
 
 // ── LayeredForgetTool ──────────────────────────────────────────────────────
 
-/// Delete a typed long-term memory via the evolution layer manager (C4 fix).
-///
-/// Routes through [`MemoryLayerManager::delete_memory`] so the unified
-/// namespace `["agent", "memories"]` is used — matching where
-/// [`LayeredRememberTool`] writes. This replaces the legacy `ForgetTool` when a
-/// layer manager is installed; without it, `forget` would delete from the
-/// per-agent namespace and never remove what `remember` stored.
-///
-/// Accepts either the full key (UUID) or an 8-char prefix as shown in recall
-/// results. If the prefix is ambiguous (multiple matches), no deletion happens
-/// and the matches are listed for disambiguation.
+/** 通过 evolution 分层管理器删除一条类型化长期记忆（C4 修复）。
+
+经由 [`MemoryLayerManager::delete_memory`] 路由，从而使用统一的命名空间
+`["agent", "memories"]`——与 [`LayeredRememberTool`] 的写入位置一致。
+当安装了分层管理器时，本工具替代旧版 `ForgetTool`；若不替代，`forget`
+会从按 agent 划分的命名空间删除，永远无法删除 `remember` 实际存入的内容。
+
+接受完整 key（UUID）或 recall 结果中展示的 8 字符前缀。如果前缀存在歧义
+（匹配到多条），则不会执行删除，而是列出所有匹配项供用户消歧。
+*/
 pub struct LayeredForgetTool {
+    /// 负责分层记忆读写与删除的管理器。
     pub layer_manager: Arc<MemoryLayerManager>,
 }
 
 impl LayeredForgetTool {
+    /// 使用给定的分层记忆管理器创建工具实例。
     pub fn new(layer_manager: Arc<MemoryLayerManager>) -> Self {
         Self { layer_manager }
     }
 }
 
-/// Resolve a user-supplied id (full key or short prefix) to at most one
-/// concrete memory key.
-///
-/// Returns `Ok(None)` when nothing matches; `Err(InvalidParameter)` when the
-/// prefix is ambiguous (caller asks the user to disambiguate).
+/** 将用户提供的 id（完整 key 或短前缀）解析为至多一个具体的记忆 key。
+
+未匹配到任何记忆时返回 `Ok(None)`；当前缀存在歧义（匹配多条）时返回
+`Err(InvalidParameter)`，交由调用方提示用户消歧。
+*/
 async fn resolve_forget_key(
     layer_manager: &Arc<MemoryLayerManager>,
     id: &str,
 ) -> crate::error::Result<Option<String>> {
-    // Fast path: exact match.
+    // 快速路径：精确匹配。
     if layer_manager.locate(id).await?.is_some() {
         return Ok(Some(id.to_string()));
     }
-    // Slow path: treat `id` as a prefix and scan both layers.
+    // 慢速路径：将 `id` 视为前缀，扫描热、温两层。
     let mut matches = Vec::new();
     for entry in layer_manager.list_hot()? {
         if entry.key.starts_with(id) {
@@ -770,15 +827,18 @@ async fn resolve_forget_key(
 }
 
 impl Tool for LayeredForgetTool {
+    /// 返回工具名称 `"forget"`。
     fn name(&self) -> &str {
         "forget"
     }
 
+    /// 返回展示给模型的工具描述。
     fn description(&self) -> &str {
         "Delete a typed long-term memory by its ID (full key or the 8-char prefix shown in recall results). \
          If the prefix matches multiple memories, no deletion happens and the matches are listed for disambiguation."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -792,6 +852,7 @@ impl Tool for LayeredForgetTool {
         })
     }
 
+    /// 解析参数，消解 ID 前缀为具体 key 后经分层管理器删除对应记忆。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -803,7 +864,7 @@ impl Tool for LayeredForgetTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("id".to_string()))?;
 
-            // Resolve full key (exact or unambiguous prefix).
+            // 解析出完整 key（精确匹配或无歧义的前缀匹配）。
             let key = match resolve_forget_key(&layer_manager, id).await? {
                 Some(k) => k,
                 None => {
@@ -829,8 +890,9 @@ impl Tool for LayeredForgetTool {
     }
 }
 
-// ── Helper functions ────────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────────────────
 
+/// 根据内容与标签中的关键词，粗略推断该记忆应归入的类型。
 fn classify_memory_type(content: &str, tags: &[String]) -> MemoryType {
     let lower = format!(
         "{} {}",
@@ -865,6 +927,7 @@ fn classify_memory_type(content: &str, tags: &[String]) -> MemoryType {
     }
 }
 
+/// 返回记忆类型对应的默认主题标签字符串。
 fn memory_type_topic(memory_type: MemoryType) -> &'static str {
     match memory_type {
         MemoryType::UserPreference => "user",
@@ -878,6 +941,7 @@ fn memory_type_topic(memory_type: MemoryType) -> &'static str {
     }
 }
 
+/// 将记忆层枚举格式化为展示用的字符串（hot/warm/cold）。
 fn format_memory_layer(layer: MemoryLayer) -> &'static str {
     match layer {
         MemoryLayer::Hot => "hot",
@@ -886,6 +950,7 @@ fn format_memory_layer(layer: MemoryLayer) -> &'static str {
     }
 }
 
+/// 将类型化记忆条目格式化为包含类型、置信度与主题的展示字符串。
 fn format_typed_memory(item: &echo_state::memory::typed_store::TypedMemoryEntry) -> String {
     format!(
         "{} (type: {:?}, confidence: {:.0}%, topic: {})",
@@ -896,6 +961,7 @@ fn format_typed_memory(item: &echo_state::memory::typed_store::TypedMemoryEntry)
     )
 }
 
+/// 将 Store 中的原始记忆条目格式化为包含内容、重要度与标签的展示字符串。
 fn format_store_item(item: &StoreItem) -> String {
     match &item.value {
         Value::Object(map) => {

@@ -1,6 +1,7 @@
 use echo_agent_learning::basics::{LearningTask, completed_titles, unicode_preview};
 use echo_agent_learning::errors::LearningError;
 
+/// 演示使用 struct/enum 建模学习任务，并安全处理中文与 Emoji 文本。
 fn main() -> Result<(), LearningError> {
     let pending = LearningTask::new("理解 struct 和 enum")?;
     let mut completed = LearningTask::new("安全处理中文与🦀")?;

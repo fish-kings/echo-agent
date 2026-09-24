@@ -1,29 +1,31 @@
-//! Headless mode — run a single prompt, print output, exit.
-//!
-//! Designed for CI/CD pipelines, scripting, and non-interactive automation.
-//! The agent runs a single prompt, collects the output, and returns a
-//! structured result that the caller can print and exit on.
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use echo_agent::headless::{HeadlessConfig, run_headless};
-//!
-//! # #[tokio::main]
-//! # async fn main() {
-//! let config = HeadlessConfig {
-//!     prompt: "List all Rust files in the project".into(),
-//!     exit_on_error: true,
-//!     output_format: "text".into(),
-//!     max_iterations: Some(10),
-//!     cancel_token: None,
-//! };
-//!
-//! let result = run_headless(config, |builder| builder).await;
-//! println!("{}", result.output);
-//! std::process::exit(result.exit_code());
-//! # }
-//! ```
+/*!
+Headless（无头）模式——运行单条 prompt、打印输出、然后退出。
+
+专为 CI/CD 流水线、脚本化调用与非交互式自动化场景设计。
+Agent 只运行一条 prompt，收集输出，并返回一个结构化结果，
+调用方可以打印它并据此决定退出码。
+
+# 示例
+
+```rust,no_run
+use echo_agent::headless::{HeadlessConfig, run_headless};
+
+# #[tokio::main]
+# async fn main() {
+let config = HeadlessConfig {
+    prompt: "List all Rust files in the project".into(),
+    exit_on_error: true,
+    output_format: "text".into(),
+    max_iterations: Some(10),
+    cancel_token: None,
+};
+
+let result = run_headless(config, |builder| builder).await;
+println!("{}", result.output);
+std::process::exit(result.exit_code());
+# }
+```
+*/
 
 use crate::agent::Agent;
 use crate::agent::react::builder::ReactAgentBuilder;
@@ -46,24 +48,26 @@ impl EventSink for HeadlessEventSink {
     }
 }
 
-/// Configuration for headless (non-interactive) agent execution.
+/// Headless（非交互式）Agent 执行的配置。
 pub struct HeadlessConfig {
-    /// The prompt to execute.
+    /// 要执行的 prompt。
     pub prompt: String,
 
-    /// Exit with error if the agent reports failure.
+    /// 若 Agent 报告失败，则以错误退出。
     pub exit_on_error: bool,
 
-    /// Output format: `"text"` (default) or `"json"`.
+    /// 输出格式：`"text"`（默认）或 `"json"`。
     pub output_format: String,
 
-    /// Max iterations before forcing stop (safety limit).
+    /// 强制停止前允许的最大迭代次数（安全限制）。
     pub max_iterations: Option<usize>,
 
-    /// Optional caller-owned cancellation token.
-    ///
-    /// Headless derives a child token for this run, so cancelling the run does
-    /// not cancel the caller's parent scope or sibling work.
+    /**
+    调用方持有的可选取消令牌。
+
+    Headless 会为本次运行派生一个子令牌，因此取消本次运行不会
+    取消调用方的父级作用域或其兄弟任务。
+    */
     pub cancel_token: Option<CancellationToken>,
 }
 
@@ -79,34 +83,41 @@ impl Default for HeadlessConfig {
     }
 }
 
-/// Result of a headless execution.
+/// 一次 headless 执行的结果。
 #[derive(Debug, Clone)]
 pub struct HeadlessResult {
-    /// The agent's final output text.
+    /// Agent 的最终输出文本。
     pub output: String,
 
-    /// Whether the execution succeeded.
+    /// 本次执行是否成功。
     pub success: bool,
 
-    /// Model name used.
+    /// 使用的模型名称。
     pub model: String,
 
-    /// Output format requested.
+    /// 请求的输出格式。
     pub format: String,
 
-    /// Whether a failed run should produce a non-zero process exit code.
+    /// 失败的运行是否应产生非零的进程退出码。
     pub exit_on_error: bool,
 }
 
+/// 一次 headless 运行的共享状态：结果槽位、取消令牌与关闭所有权。
 struct HeadlessRunState {
+    /// 结果一旦发布即固定在此处。
     result: std::sync::Mutex<Option<HeadlessResult>>,
+    /// 用于通知等待者“结果已就绪”。
     result_ready: tokio::sync::Notify,
+    /// 本次运行的取消令牌。
     cancel: CancellationToken,
+    /// 保证 Agent 关闭只被真正执行一次的门闩。
     close_gate: tokio::sync::Mutex<()>,
+    /// 当前持有的、待关闭的 Agent（关闭成功后被清空）。
     close_owner: std::sync::Mutex<Option<Arc<dyn Agent>>>,
 }
 
 impl HeadlessRunState {
+    /// 创建一个新的共享运行状态。
     fn new(cancel: CancellationToken, agent: Option<Arc<dyn Agent>>) -> Self {
         Self {
             result: std::sync::Mutex::new(None),
@@ -117,6 +128,7 @@ impl HeadlessRunState {
         }
     }
 
+    /// 发布结果（只有第一次调用生效），并唤醒所有等待者。
     fn publish(&self, result: HeadlessResult) {
         let mut slot = self
             .result
@@ -129,6 +141,7 @@ impl HeadlessRunState {
         }
     }
 
+    /// 若结果已发布，则返回其克隆。
     fn result(&self) -> Option<HeadlessResult> {
         self.result
             .lock()
@@ -136,6 +149,7 @@ impl HeadlessRunState {
             .clone()
     }
 
+    /// 关闭持有的 Agent（若尚未关闭）；重复调用是安全的。
     async fn close_once(&self) -> crate::error::Result<()> {
         let _gate = self.close_gate.lock().await;
         let agent = self
@@ -161,29 +175,33 @@ impl HeadlessRunState {
     }
 }
 
-/// Retained owner and result receipt for one Headless execution.
-///
-/// `wait` may be cancelled without cancelling the owned cleanup task. Use
-/// [`Self::cancel`] to request Turn cancellation, and [`Self::retry_close`] if
-/// the first resource-close attempt is reported as failed.
+/**
+一次 Headless 执行所保留的持有者与结果回执。
+
+`wait` 可以被取消，而不会取消其所拥有的清理任务。使用
+[`Self::cancel`] 请求取消 Turn；若首次资源关闭尝试被报告为失败，
+则使用 [`Self::retry_close`] 重试。
+*/
 #[derive(Clone)]
 pub struct HeadlessRunHandle {
+    /// 共享的运行状态。
     state: Arc<HeadlessRunState>,
 }
 
 impl HeadlessRunHandle {
+    /// 构造一个已经携带结果的、立即完成的句柄。
     fn completed(result: HeadlessResult) -> Self {
         let state = Arc::new(HeadlessRunState::new(CancellationToken::new(), None));
         state.publish(result);
         Self { state }
     }
 
-    /// Request cancellation of the owned Turn.
+    /// 请求取消其拥有的 Turn。
     pub fn cancel(&self) {
         self.state.cancel.cancel();
     }
 
-    /// Wait for execution and the first Agent close attempt to settle.
+    /// 等待执行完成、且首次 Agent 关闭尝试结算完毕。
     pub async fn wait(&self) -> HeadlessResult {
         loop {
             let notified = self.state.result_ready.notified();
@@ -194,10 +212,12 @@ impl HeadlessRunHandle {
         }
     }
 
-    /// Retry the same Agent owner after a reported close failure.
-    ///
-    /// Returns an error until [`Self::wait`] has observed the run receipt.
-    /// After close succeeds, repeated calls are idempotent.
+    /**
+    在一次关闭失败被报告之后，重试关闭同一个 Agent 持有者。
+
+    在 [`Self::wait`] 观察到运行回执之前，本方法都会返回错误。
+    关闭成功之后，重复调用是幂等的。
+    */
     pub async fn retry_close(&self) -> crate::error::Result<()> {
         if self.state.result().is_none() {
             return Err(crate::error::ReactError::Other(
@@ -208,12 +228,19 @@ impl HeadlessRunHandle {
     }
 }
 
+/**
+驱动任务对共享状态的持有者；若任务在发布结果前被丢弃，
+会通过 `fallback` 兜底发布一个失败结果。
+*/
 struct HeadlessTaskOwner {
+    /// 共享的运行状态。
     state: Arc<HeadlessRunState>,
+    /// 尚未真正结算时使用的兜底失败结果。
     fallback: Option<HeadlessResult>,
 }
 
 impl HeadlessTaskOwner {
+    /// 发布最终结果，并清除兜底结果（不再需要）。
     fn publish(&mut self, result: HeadlessResult) {
         self.state.publish(result);
         self.fallback.take();
@@ -228,12 +255,19 @@ impl Drop for HeadlessTaskOwner {
     }
 }
 
+/**
+在 `wait` 提前返回（被取消）时，兜底触发取消信号的守卫；
+正常完成时应调用 [`Self::disarm`] 解除该行为。
+*/
 struct HeadlessWaitCancellationGuard {
+    /// 需要在守卫触发时取消的令牌。
     cancel: CancellationToken,
+    /// 该守卫当前是否仍处于“激活”状态。
     active: bool,
 }
 
 impl HeadlessWaitCancellationGuard {
+    /// 解除该守卫，使其在丢弃时不再触发取消。
     fn disarm(&mut self) {
         self.active = false;
     }
@@ -248,7 +282,7 @@ impl Drop for HeadlessWaitCancellationGuard {
 }
 
 impl HeadlessResult {
-    /// Compute the process exit code: 0 on success, 1 on failure.
+    /// 计算进程退出码：成功为 0，失败为 1。
     pub fn exit_code(&self) -> i32 {
         if self.success || !self.exit_on_error {
             0
@@ -257,7 +291,7 @@ impl HeadlessResult {
         }
     }
 
-    /// Format the result for stdout according to the requested output format.
+    /// 按请求的输出格式，将结果格式化为待打印到 stdout 的文本。
     pub fn format_output(&self) -> String {
         match self.format.as_str() {
             "json" => {
@@ -273,19 +307,21 @@ impl HeadlessResult {
     }
 }
 
-/// Run the agent in headless mode.
-///
-/// The `configure` closure receives a [`ReactAgentBuilder`] so the caller can
-/// set model, system prompt, tools, etc. before the agent is built and run.
-///
-/// # Arguments
-///
-/// * `config` — headless execution parameters (prompt, format, limits)
-/// * `configure` — closure to customize the agent builder
-///
-/// # Returns
-///
-/// A [`HeadlessResult`] with the agent output, success flag, and metadata.
+/**
+以 headless 模式运行 Agent。
+
+`configure` 闭包会收到一个 [`ReactAgentBuilder`]，调用方可以借此在
+Agent 被构建并运行之前设置模型、系统 prompt、工具等。
+
+# 参数
+
+* `config` — headless 执行参数（prompt、格式、限制）
+* `configure` — 用于定制 agent builder 的闭包
+
+# 返回值
+
+一个携带 Agent 输出、成功标志与元数据的 [`HeadlessResult`]。
+*/
 pub async fn run_headless<F>(config: HeadlessConfig, configure: F) -> HeadlessResult
 where
     F: FnOnce(ReactAgentBuilder) -> ReactAgentBuilder,
@@ -294,6 +330,7 @@ where
     wait_headless_handle(handle).await
 }
 
+/// 等待一个 headless 句柄的结果；若本次等待自身被取消，则取消该运行。
 async fn wait_headless_handle(handle: HeadlessRunHandle) -> HeadlessResult {
     let mut cancellation_guard = HeadlessWaitCancellationGuard {
         cancel: handle.state.cancel.clone(),
@@ -304,10 +341,12 @@ async fn wait_headless_handle(handle: HeadlessRunHandle) -> HeadlessResult {
     result
 }
 
-/// Start Headless execution and synchronously return its retained owner.
-///
-/// This is the cancellation-safe entry point for callers that may stop waiting
-/// and later observe the same result or retry a failed Agent close.
+/**
+启动 Headless 执行，并同步返回它所保留的持有者。
+
+这是一个对取消安全的入口：调用方可以先停止等待，之后再观察同一个
+结果，或者在 Agent 关闭失败时重试。
+*/
 pub fn start_headless<F>(config: HeadlessConfig, configure: F) -> HeadlessRunHandle
 where
     F: FnOnce(ReactAgentBuilder) -> ReactAgentBuilder,
@@ -323,11 +362,11 @@ where
         });
     }
 
-    // Build the agent
+    // 构建 agent
     let builder = ReactAgentBuilder::new();
     let builder = configure(builder);
 
-    // Apply max_iterations if set
+    // 若设置了 max_iterations，则应用该配置
     let builder = if let Some(max) = config.max_iterations {
         builder.max_iterations(max)
     } else {
@@ -350,9 +389,10 @@ where
     start_headless_agent(config, Arc::new(agent))
 }
 
+/// 使用给定配置与已构建好的 Agent 启动 headless 执行任务。
 fn start_headless_agent(config: HeadlessConfig, agent: Arc<dyn Agent>) -> HeadlessRunHandle {
-    // The caller owns the configured token. Headless cancellation must remain
-    // inside this run and must not cancel sibling work in the caller's scope.
+    /* 调用方拥有所配置的令牌。Headless 的取消必须局限在本次运行之内，
+    绝不能取消调用方作用域中的兄弟任务。 */
     let cancel = config
         .cancel_token
         .as_ref()
@@ -375,8 +415,8 @@ fn start_headless_agent(config: HeadlessConfig, agent: Arc<dyn Agent>) -> Headle
             return handle;
         }
     };
-    // Construct the owner before spawn so dropping an unpolled task still
-    // publishes a failure receipt and retains the Agent for close retry.
+    /* 在 spawn 之前构造持有者，这样即使任务从未被轮询就被丢弃，
+    也仍然会发布一个失败回执，并保留该 Agent 以便重试关闭。 */
     let task_owner = HeadlessTaskOwner {
         state: Arc::clone(&state),
         fallback: Some(HeadlessResult {
@@ -403,9 +443,9 @@ fn start_headless_agent(config: HeadlessConfig, agent: Arc<dyn Agent>) -> Headle
         }
         task_owner.publish(result);
     });
-    // The task retains the shared state and Agent until the first close
-    // attempt, and publishes a result receipt even if a waiter is cancelled.
-    // Dropping only the JoinHandle does not abandon that logical owner.
+    /* 该任务会持有共享状态和 Agent，直到第一次 close 尝试为止，
+    即使等待者被取消也会发布结果回执。
+    仅仅丢弃 JoinHandle 并不会放弃这个逻辑上的持有者。 */
     std::mem::drop(task);
     handle
 }

@@ -1,21 +1,22 @@
-//! Curator — skill lifecycle management.
-//!
-//! Manages the full skill lifecycle: `Candidate → Draft → Active → Stale → Deprecated → Archived`.
-//! Only operates on agent-created skills (never bundled/external).
-//! Never auto-deletes, only archives.
-//!
-//! # Lifecycle States
-//!
-//! | State | Meaning | Auto-transition |
-//! |-------|---------|-----------------|
-//! | `Candidate` | Pattern discovered from memory, not yet formalized | → Draft (after review) |
-//! | `Draft` | SKILL.md created but not activated | → Active (after review/usage) |
-//! | `Active` | In use, appears in skill catalog | → Stale (after inactivity) |
-//! | `Stale` | Not used recently, may be outdated | → Deprecated (after longer inactivity) |
-//! | `Deprecated` | Replaced or known outdated, still accessible | → Archived (after even longer inactivity) |
-//! | `Archived` | Removed from all paths, kept for reference | Terminal |
-//!
-//! Inspired by Hermes Agent's curator system.
+/*! Curator —— 技能生命周期管理。
+
+管理技能的完整生命周期：`Candidate → Draft → Active → Stale → Deprecated → Archived`。
+仅对 agent 创建的技能生效（从不处理内置/外部技能）。
+从不自动删除，只会归档。
+
+# 生命周期状态
+
+| 状态 | 含义 | 自动转换 |
+|-------|---------|-----------------|
+| `Candidate` | 从记忆中发现的模式，尚未正式化 | → Draft（经过审查后）|
+| `Draft` | 已创建 SKILL.md 但尚未激活 | → Active（经过审查/使用后）|
+| `Active` | 正在使用中，出现在技能目录中 | → Stale（经过一段不活跃期后）|
+| `Stale` | 近期未使用，可能已过时 | → Deprecated（经过更长不活跃期后）|
+| `Deprecated` | 已被替代或已知过时，仍可访问 | → Archived（经过更长不活跃期后）|
+| `Archived` | 已从所有路径中移除，仅供参考 | 终态 |
+
+灵感来自 Hermes Agent 的 curator 系统。
+*/
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -32,63 +33,63 @@ fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
 
 // ── SkillLifecycle ─────────────────────────────────────────────────
 
-/// Lifecycle state of a skill.
+/// 技能的生命周期状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkillLifecycle {
-    /// Pattern discovered from memory, not yet formalized. No SKILL.md file yet.
+    /// 从记忆中发现的模式，尚未正式化。还没有 SKILL.md 文件。
     Candidate,
-    /// SKILL.md created with minimal content, not yet injected into catalog.
+    /// 已创建内容极简的 SKILL.md，尚未注入技能目录。
     Draft,
-    /// Actively used and relevant. Appears in skill catalog.
+    /// 正在被积极使用且相关。出现在技能目录中。
     Active,
-    /// Not used recently, may be outdated.
+    /// 近期未被使用，可能已过时。
     Stale,
-    /// Replaced by another skill or known to be outdated. Still accessible but not in catalog.
+    /// 已被其他技能替代或已知过时。仍可访问但不在目录中。
     Deprecated,
-    /// No longer relevant, kept for reference only.
+    /// 已不再相关，仅保留作参考。
     Archived,
 }
 
 // ── SkillMeta ──────────────────────────────────────────────────────
 
-/// Metadata tracked by the curator for each skill.
+/// curator 为每个技能追踪的元数据。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SkillMeta {
-    /// Skill name.
+    /// 技能名称。
     pub name: String,
-    /// Concrete `SKILL.md` path used as the runtime loading identity.
+    /// 具体的 `SKILL.md` 路径，作为运行时加载身份标识。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathBuf>,
-    /// Current lifecycle state.
+    /// 当前生命周期状态。
     pub lifecycle: SkillLifecycle,
-    /// When the skill was first created.
+    /// 技能首次创建的时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// When the skill was last used/referenced.
+    /// 技能最后一次被使用/引用的时间。
     pub last_used_at: chrono::DateTime<chrono::Utc>,
-    /// When the skill was last modified.
+    /// 技能最后一次被修改的时间。
     pub last_modified_at: chrono::DateTime<chrono::Utc>,
-    /// Whether this skill is pinned (exempt from auto-transitions).
+    /// 该技能是否被固定（豁免自动转换）。
     pub pinned: bool,
-    /// Whether this skill is agent-created (vs bundled/external).
+    /// 该技能是否为 agent 创建（相对于内置/外部技能）。
     pub agent_created: bool,
-    /// If deprecated/archived, which skill supersedes this one.
+    /// 若已弃用/归档，指明由哪个技能取代了它。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<String>,
 }
 
 // ── CuratorConfig ──────────────────────────────────────────────────
 
-/// Configuration for the curator.
+/// curator 的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CuratorConfig {
-    /// Days of inactivity before a skill becomes stale.
+    /// 技能变为 stale 之前的不活跃天数。
     pub stale_days: u64,
-    /// Days of inactivity before a skill becomes deprecated.
+    /// 技能变为 deprecated 之前的不活跃天数。
     pub deprecate_days: u64,
-    /// Days of inactivity before a skill is archived.
+    /// 技能被归档之前的不活跃天数。
     pub archive_days: u64,
-    /// Whether the curator is enabled.
+    /// curator 是否启用。
     pub enabled: bool,
 }
 
@@ -105,25 +106,24 @@ impl Default for CuratorConfig {
 
 // ── CuratorState ───────────────────────────────────────────────────
 
-/// Persisted state of the curator.
+/// curator 的持久化状态。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CuratorState {
-    /// Metadata for each tracked skill.
+    /// 每个被追踪技能的元数据。
     pub skills: HashMap<String, SkillMeta>,
-    /// When the curator last ran.
+    /// curator 上一次运行的时间。
     pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl CuratorState {
-    /// Load state from a JSON file.
-    ///
-    /// - Missing file → returns default (fresh start). This is the only case
-    ///   treated as "empty".
-    /// - Present but unparseable / unreadable → also returns default, but logs
-    ///   a `warn!` so silent corruption does not get overwritten by the next
-    ///   save (which would destroy potentially-recoverable data). The caller
-    ///   (a curator method) will proceed and rewrite, but at least the loss is
-    ///   observable in logs.
+    /** 从 JSON 文件加载状态。
+
+    - 文件不存在 → 返回默认值（全新开始）。这是唯一被视为"空"的情况。
+    - 文件存在但无法解析/读取 → 同样返回默认值，但会记录一条 `warn!`，
+      避免静默的数据损坏在下一次保存时被覆盖（那样会摧毁本可恢复的数据）。
+      调用方（某个 curator 方法）会继续执行并重写文件，但至少这次丢失
+      在日志中是可观察的。
+    */
     pub fn try_load(path: &PathBuf) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(data) => serde_json::from_str(&data).map_err(Into::into),
@@ -132,12 +132,13 @@ impl CuratorState {
         }
     }
 
-    /// Save state to a JSON file atomically.
-    ///
-    /// Writes to a temp sibling then `rename`s over the target. `rename` is
-    /// atomic on POSIX, so a crash mid-write never leaves a truncated or
-    /// partially-written state file — readers either see the old or the new
-    /// file in full, never a torn mix.
+    /** 原子化地将状态保存到 JSON 文件。
+
+    先写入一个临时的同级文件，再 `rename` 覆盖目标文件。`rename` 在 POSIX
+    系统上是原子操作，因此写入过程中崩溃永远不会留下截断或部分写入的状态
+    文件——读者要么看到旧文件，要么看到完整的新文件，绝不会看到一个
+    交错混合的版本。
+    */
     pub(crate) fn save(&self, path: &PathBuf) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -148,8 +149,7 @@ impl CuratorState {
             let mut file = std::fs::File::create(&tmp_path)?;
             use std::io::Write;
             file.write_all(data.as_bytes())?;
-            // fsync the data before rename so a crash after rename cannot
-            // expose an empty file.
+            // 在 rename 之前先 fsync 数据，避免 rename 之后崩溃时暴露出一个空文件。
             file.sync_all()?;
         }
         std::fs::rename(&tmp_path, path)?;
@@ -183,20 +183,21 @@ impl CandidateAuthorityState {
 
 // ── Curator ────────────────────────────────────────────────────────
 
-/// Skill lifecycle manager.
-///
-/// Manages the transition of skills through lifecycle states:
-/// - Candidate → Draft (manual promotion)
-/// - Draft → Active (manual promotion or after N successful uses)
-/// - Active → Stale (after `stale_days` of inactivity)
-/// - Stale → Deprecated (after `deprecate_days` of inactivity)
-/// - Deprecated → Archived (after `archive_days` of inactivity)
-///
-/// Only operates on agent-created skills. Pinned skills are exempt.
-/// Skill lifecycle curator backed by a JSON state file.
-///
-/// Read-modify-write operations are serialized with an advisory file lock shared
-/// by all `Curator` instances that use the same state path.
+/** 技能生命周期管理器。
+
+管理技能在各生命周期状态之间的转换：
+- Candidate → Draft（手动提升）
+- Draft → Active（手动提升，或在成功使用 N 次后）
+- Active → Stale（经过 `stale_days` 不活跃后）
+- Stale → Deprecated（经过 `deprecate_days` 不活跃后）
+- Deprecated → Archived（经过 `archive_days` 不活跃后）
+
+仅对 agent 创建的技能生效。被固定的技能豁免。
+由一个 JSON 状态文件支撑的技能生命周期 curator。
+
+读取-修改-写入操作通过一个共享的 advisory 文件锁串行化，
+所有使用同一状态路径的 `Curator` 实例都共享这把锁。
+*/
 pub struct Curator {
     config: CuratorConfig,
     state_path: PathBuf,
@@ -214,7 +215,7 @@ impl Clone for Curator {
 }
 
 impl Curator {
-    /// Create a new curator with the given config and state file path.
+    /// 使用给定的配置和状态文件路径创建一个新的 curator。
     pub fn new(config: CuratorConfig, state_path: impl Into<PathBuf>) -> Self {
         Self {
             config,
@@ -222,18 +223,24 @@ impl Curator {
         }
     }
 
-    /// Private recovery journal used by candidate payload mutation.
-    ///
-    /// The path follows the consumer-supplied lifecycle state identity without
-    /// making candidate recovery part of the public Curator contract.
+    /** 候选项负载变更所使用的私有恢复日志。
+
+    该路径遵循调用方提供的生命周期状态身份标识，而不会让候选项恢复
+    成为公开 Curator 契约的一部分。
+    */
     pub(crate) fn candidate_operation_journal_path(&self) -> PathBuf {
         append_path_suffix(&self.state_path, ".candidate-operations.jsonl")
     }
 
+    /// 技能操作日志（journal）的路径。
     pub(crate) fn skill_operation_journal_path(&self) -> PathBuf {
         append_path_suffix(&self.state_path, ".skill-operations.jsonl")
     }
 
+    /** 仅当给定技能条目仍与 `expected` 快照一致时，才用 `replacement`
+    中的值原子化替换它们；若某个条目已被并发修改为既非 `expected`
+    也非 `replacement` 的第三种状态，则整体失败并放弃写入。
+    */
     pub(crate) fn replace_skill_entries_if_current(
         &self,
         expected: &CuratorState,
@@ -276,45 +283,45 @@ impl Curator {
         append_path_suffix(&self.state_path, ".lock")
     }
 
-    /// Load the current state under an advisory file lock.
-    ///
-    /// Holds an exclusive `flock` on the sidecar lock file for the duration of
-    /// the read only. For read-modify-write that must be atomic, use
-    /// `with_locked_state` instead — that holds the lock across load, mutate,
-    /// and save in a single critical section.
-    ///
-    /// The lock is an OS advisory lock (`fs2::FileExt::try_lock_exclusive`) on a
-    /// sidecar file. It is **kill-safe**: if this process dies (kill -9, panic,
-    /// power loss), the OS closes the fd and the lock is released automatically.
-    /// This is the critical difference from the previous `create_new` sidecar
-    /// design, whose lock file survived a crash and deadlocked every future
-    /// locker forever (P0 — Curator TOCTOU).
+    /** 在一个 advisory 文件锁下加载当前状态。
+
+    仅在读取期间对旁路锁文件持有独占的 `flock`。如果需要原子化的
+    读取-修改-写入，请改用 `with_locked_state`——它会在加载、修改、
+    保存这一整个临界区内持续持有锁。
+
+    该锁是操作系统层面的 advisory 锁（`fs2::FileExt::try_lock_exclusive`），
+    作用于一个旁路文件。它是**kill 安全**的：如果本进程死亡（kill -9、
+    panic、断电），操作系统会关闭 fd 并自动释放锁。这正是它与此前
+    `create_new` 旁路文件设计的关键区别——旧设计的锁文件在崩溃后仍然
+    存在，会让此后所有加锁者永久死锁（P0 —— Curator TOCTOU）。
+    */
     pub fn load_state(&self) -> Result<CuratorState> {
         let _guard = self.acquire_lock()?;
         CuratorState::try_load(&self.state_path)
     }
 
-    /// Save the state under an advisory file lock.
-    ///
-    /// Holds an exclusive lock for the duration of the write only. Callers that
-    /// need load-mutate-save atomicity must use `with_locked_state`.
+    /** 在一个 advisory 文件锁下保存状态。
+
+    仅在写入期间持有独占锁。需要加载-修改-保存原子性的调用方必须改用
+    `with_locked_state`。
+    */
     #[cfg(test)]
     pub(crate) fn save_state(&self, state: &CuratorState) -> Result<()> {
         let _guard = self.acquire_lock()?;
         state.save(&self.state_path)
     }
 
-    /// Atomically read-modify-write the curator state under a single held lock.
-    ///
-    /// The closure receives the freshly-loaded state and may mutate it. On
-    /// success, the state is saved back while the lock is still held; on
-    /// error, the in-memory change is discarded and the on-disk file is left
-    /// untouched. This closes the TOCTOU window where two `Curator` instances
-    /// interleaved load → mutate → save and clobbered each other.
-    ///
-    /// The closure returns `(T, bool)`: the value to return to the caller,
-    /// plus a `dirty` flag. When `dirty` is false the save is skipped
-    /// (read-only path) — this avoids a needless rewrite on every call.
+    /** 在持有单个锁的情况下，原子化地对 curator 状态执行读取-修改-写入。
+
+    闭包接收刚加载出的状态并可以对其进行修改。成功时，状态会在锁仍被
+    持有的情况下写回磁盘；出错时，内存中的修改会被丢弃，磁盘文件保持
+    不变。这样就消除了两个 `Curator` 实例交错执行"加载 → 修改 → 保存"
+    而互相覆盖对方结果的 TOCTOU 窗口。
+
+    闭包返回 `(T, bool)`：T 是要返回给调用方的值，`dirty` 标志表示
+    是否需要保存。当 `dirty` 为 false 时会跳过保存（只读路径）——
+    这样可以避免每次调用都进行不必要的重写。
+    */
     fn with_locked_state<T, F>(&self, f: F) -> Result<T>
     where
         F: FnOnce(&mut CuratorState) -> Result<(T, bool)>,
@@ -328,21 +335,21 @@ impl Curator {
         Ok(result)
     }
 
-    /// Acquire an exclusive advisory lock on a sidecar `.lock` file.
-    ///
-    /// Retries non-blockingly for a bounded period. Returns a guard whose `Drop`
-    /// releases the lock. The sidecar file is intentionally persistent: deleting
-    /// it after unlock could let another process create a different inode and
-    /// bypass an existing lock.
+    /** 在旁路 `.lock` 文件上获取一个独占的 advisory 锁。
+
+    在有限的时间内以非阻塞方式重试。返回一个 guard，其 `Drop` 会释放锁。
+    旁路文件被有意设计为持久存在：解锁后删除它可能让另一个进程创建出
+    不同的 inode，从而绕过已有的锁。
+    */
     fn acquire_lock(&self) -> Result<CuratorLockGuard> {
         let lock_path = self.lock_path();
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        // Ensure the sidecar file exists (does not fail if already present).
-        // `truncate(false)` keeps any existing content (irrelevant for flock,
-        // but avoids clobbering a file another process just created).
+        // 确保旁路文件存在（若已存在则不会失败）。
+        // `truncate(false)` 会保留任何既有内容（对 flock 而言无所谓，
+        // 但可以避免破坏另一个进程刚创建的文件）。
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -376,13 +383,13 @@ impl Curator {
         )))
     }
 
-    /// Register a new skill or update an existing one's last-used timestamp.
+    /// 注册一个新技能，或更新已存在技能的最后使用时间。
     #[cfg(test)]
     pub(crate) fn touch_skill(&self, name: &str, agent_created: bool) -> Result<()> {
         self.touch_skill_at(name, None, agent_created)
     }
 
-    /// Register or touch a skill while binding its concrete `SKILL.md` path.
+    /// 注册或触碰（touch）一个技能，同时绑定其具体的 `SKILL.md` 路径。
     #[cfg(test)]
     pub(crate) fn touch_skill_at(
         &self,
@@ -419,13 +426,13 @@ impl Curator {
         })
     }
 
-    /// Register a new skill candidate (discovered from memory patterns).
+    /// 注册一个新的技能候选项（从记忆模式中发现）。
     #[cfg(test)]
     pub(crate) fn register_candidate(&self, name: &str) -> Result<()> {
         self.register_candidate_at(name, None)
     }
 
-    /// Register a candidate and optionally bind a future draft path.
+    /// 注册一个候选项，并可选地绑定未来的 draft 路径。
     #[cfg(test)]
     pub(crate) fn register_candidate_at(
         &self,
@@ -461,6 +468,8 @@ impl Curator {
         })
     }
 
+    /// 使用一个生命周期权限（authority）标识注册技能候选项，防止不同权限
+    /// 主体争用同一个候选名；若名称已存在，仅当权限标识匹配时才视为成功。
     pub(crate) fn register_candidate_with_authority(
         &self,
         name: &str,
@@ -516,6 +525,7 @@ impl Curator {
         state.save(&self.state_path)
     }
 
+    /// 读取某技能候选项当前绑定的权限（authority）标识。
     #[cfg(test)]
     pub(crate) fn candidate_authority(&self, name: &str) -> Result<Option<String>> {
         let _guard = self.acquire_lock()?;
@@ -527,6 +537,7 @@ impl Curator {
         )
     }
 
+    /// 读取指定技能的完整元数据。
     #[cfg(test)]
     pub(crate) fn skill(&self, name: &str) -> Result<Option<SkillMeta>> {
         let _guard = self.acquire_lock()?;
@@ -536,13 +547,13 @@ impl Curator {
             .cloned())
     }
 
-    /// Promote a Candidate skill to Draft.
+    /// 将 Candidate 状态的技能提升为 Draft。
     #[cfg(test)]
     pub(crate) fn promote_to_draft(&self, name: &str) -> Result<bool> {
         self.promote_to_draft_at(name, None)
     }
 
-    /// Promote a Candidate to Draft and bind the generated draft path.
+    /// 将 Candidate 提升为 Draft，并绑定生成的 draft 路径。
     #[cfg(test)]
     pub(crate) fn promote_to_draft_at(
         &self,
@@ -566,13 +577,13 @@ impl Curator {
         })
     }
 
-    /// Promote a Draft skill to Active.
+    /// 将 Draft 状态的技能提升为 Active。
     #[cfg(test)]
     pub(crate) fn promote_to_active(&self, name: &str) -> Result<bool> {
         self.promote_to_active_at(name, None)
     }
 
-    /// Promote a Draft to Active and bind the authoritative runtime path.
+    /// 将 Draft 提升为 Active，并绑定权威的运行时路径。
     #[cfg(test)]
     pub(crate) fn promote_to_active_at(
         &self,
@@ -596,7 +607,7 @@ impl Curator {
         })
     }
 
-    /// Return lifecycle metadata for one concrete `SKILL.md` path.
+    /// 返回某个具体 `SKILL.md` 路径对应的生命周期元数据。
     pub fn skill_for_path(&self, path: &std::path::Path) -> Result<Option<SkillMeta>> {
         let normalized = normalize_skill_path(path);
         Ok(self
@@ -606,7 +617,7 @@ impl Curator {
             .find(|meta| meta.path.as_ref() == Some(&normalized)))
     }
 
-    /// Deprecate a skill, optionally specifying which skill supersedes it.
+    /// 弃用一个技能，可选地指定由哪个技能取代它。
     #[cfg(test)]
     pub(crate) fn deprecate_skill(&self, name: &str, superseded_by: Option<&str>) -> Result<bool> {
         self.with_locked_state(|state| {
@@ -626,7 +637,7 @@ impl Curator {
         })
     }
 
-    /// Pin a skill (exempt from auto-transitions).
+    /// 固定（pin）一个技能（豁免自动状态转换）。
     #[cfg(test)]
     pub(crate) fn pin_skill(&self, name: &str) -> Result<()> {
         self.with_locked_state(|state| {
@@ -638,7 +649,7 @@ impl Curator {
         })
     }
 
-    /// Unpin a skill.
+    /// 取消固定一个技能。
     #[cfg(test)]
     pub(crate) fn unpin_skill(&self, name: &str) -> Result<()> {
         self.with_locked_state(|state| {
@@ -650,9 +661,10 @@ impl Curator {
         })
     }
 
-    /// Apply automatic lifecycle transitions based on inactivity.
-    ///
-    /// Returns a list of transitions that were applied.
+    /** 根据不活跃时长应用自动生命周期转换。
+
+    返回已应用的转换列表。
+    */
     #[cfg(test)]
     pub(crate) fn apply_transitions(
         &self,
@@ -666,12 +678,12 @@ impl Curator {
             let mut transitions = Vec::new();
 
             for meta in state.skills.values_mut() {
-                // Skip pinned and non-agent-created skills.
+                // 跳过被固定的和非 agent 创建的技能。
                 if meta.pinned || !meta.agent_created {
                     continue;
                 }
 
-                // Candidates and Drafts don't auto-transition based on inactivity.
+                // Candidate 和 Draft 状态不会因不活跃而自动转换。
                 if matches!(
                     meta.lifecycle,
                     SkillLifecycle::Candidate | SkillLifecycle::Draft
@@ -679,11 +691,10 @@ impl Curator {
                     continue;
                 }
 
-                // `num_days()` is i64 and can be negative under clock skew
-                // (last_used_at later than now). `.max(0)` prevents the `as u64`
-                // cast from wrapping a negative into a huge value, which would
-                // instantly satisfy every idle threshold and wrongly archive
-                // freshly-used skills (N9).
+                // `num_days()` 返回 i64，在时钟偏差下可能为负
+                // （last_used_at 晚于 now）。`.max(0)` 可以防止 `as u64`
+                // 转换把负数环绕成一个巨大的值，那样会让所有不活跃阈值
+                // 瞬间被满足，从而错误地归档刚被使用过的技能（N9）。
                 let idle_days = (now - meta.last_used_at).num_days().max(0) as u64;
 
                 let new_lifecycle = match meta.lifecycle {
@@ -710,7 +721,7 @@ impl Curator {
         })
     }
 
-    /// Get a summary of the curator state.
+    /// 获取 curator 状态的摘要信息。
     pub fn status(&self) -> Result<CuratorStatus> {
         let state = self.load_state()?;
         let mut candidate = 0;
@@ -749,46 +760,55 @@ impl Curator {
     }
 }
 
-/// Summary of curator state.
+/// curator 状态的摘要信息。
 #[derive(Debug, Clone)]
 pub struct CuratorStatus {
+    /// 已追踪技能总数。
     pub total: usize,
+    /// 处于 Candidate 状态的技能数量。
     pub candidate: usize,
+    /// 处于 Draft 状态的技能数量。
     pub draft: usize,
+    /// 处于 Active 状态的技能数量。
     pub active: usize,
+    /// 处于 Stale 状态的技能数量。
     pub stale: usize,
+    /// 处于 Deprecated 状态的技能数量。
     pub deprecated: usize,
+    /// 处于 Archived 状态的技能数量。
     pub archived: usize,
+    /// 被固定（pinned）的技能数量。
     pub pinned: usize,
+    /// curator 上一次运行的时间。
     pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// RAII guard that holds an exclusive advisory lock on the sidecar file.
-///
-/// Created by `Curator::acquire_lock()`. On drop, the lock is explicitly
-/// released (`unlock`) and the fd closed — which also releases the OS advisory
-/// lock as a safety net. The sidecar file remains in place so every process
-/// locks the same inode.
-///
-/// Kill-safety relies on the OS releasing the flock when the fd is closed
-/// (including on process death), NOT on the Drop running. So even if a process
-/// is killed with SIGKILL mid-critical-section, no other curator is left
-/// blocked.
+/** RAII guard，持有旁路文件上的独占 advisory 锁。
+
+由 `Curator::acquire_lock()` 创建。drop 时会显式释放锁（`unlock`）
+并关闭 fd——这同时也会作为安全网释放操作系统层面的 advisory 锁。
+旁路文件本身会保留在原地，以便所有进程都锁定同一个 inode。
+
+kill 安全性依赖于操作系统在 fd 关闭时释放 flock（包括进程死亡的情况），
+而不依赖于 Drop 是否真正执行。因此即使进程在临界区中途被 SIGKILL
+杀死，也不会有其他 curator 被卡住。
+*/
 struct CuratorLockGuard {
+    /// 持有锁的底层文件句柄；drop 前为 `Some`。
     file: Option<std::fs::File>,
 }
 
 impl Drop for CuratorLockGuard {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
-            // Explicit unlock first (best effort); closing the fd below also
-            // releases the OS advisory lock.
+            // 先尽力显式解锁；下面关闭 fd 同样会释放操作系统层面的 advisory 锁。
             let _ = file.unlock();
             drop(file);
         }
     }
 }
 
+/// 尽量规范化技能路径（做 canonicalize），失败时原样返回。
 fn normalize_skill_path(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -911,7 +931,7 @@ mod tests {
         let curator = temp_curator();
         curator.touch_skill("bundled-skill", false)?;
 
-        // Manually set last_used_at to old date
+        // 手动将 last_used_at 设置为很久之前的日期
         let mut state = curator.load_state()?;
         state
             .skills
@@ -921,7 +941,7 @@ mod tests {
         curator.save_state(&state)?;
 
         let transitions = curator.apply_transitions()?;
-        // Should not transition non-agent-created skills
+        // 不应转换非 agent 创建的技能
         assert!(transitions.is_empty());
         Ok(())
     }
@@ -931,7 +951,7 @@ mod tests {
         let curator = temp_curator();
         curator.touch_skill("old-skill", true)?;
 
-        // Manually set last_used_at to 31 days ago
+        // 手动将 last_used_at 设置为 31 天前
         let mut state = curator.load_state()?;
         state
             .skills
@@ -956,7 +976,7 @@ mod tests {
         curator.touch_skill("pinned-skill", true)?;
         curator.pin_skill("pinned-skill")?;
 
-        // Manually set last_used_at to 100 days ago
+        // 手动将 last_used_at 设置为 100 天前
         let mut state = curator.load_state()?;
         state
             .skills
@@ -978,7 +998,7 @@ mod tests {
     fn test_candidate_to_draft_to_active() -> Result<()> {
         let curator = temp_curator();
 
-        // Register as candidate
+        // 注册为 candidate
         curator.register_candidate("my-skill")?;
         let state = curator.load_state()?;
         assert_eq!(
@@ -986,7 +1006,7 @@ mod tests {
             Some(SkillLifecycle::Candidate)
         );
 
-        // Promote to draft
+        // 提升为 draft
         let promoted = curator.promote_to_draft("my-skill")?;
         assert!(promoted);
         let state = curator.load_state()?;
@@ -995,7 +1015,7 @@ mod tests {
             Some(SkillLifecycle::Draft)
         );
 
-        // Promote to active
+        // 提升为 active
         let promoted = curator.promote_to_active("my-skill")?;
         assert!(promoted);
         let state = curator.load_state()?;
@@ -1033,12 +1053,12 @@ mod tests {
     fn test_full_lifecycle() -> Result<()> {
         let curator = temp_curator();
 
-        // Candidate -> Draft -> Active
+        // Candidate -> Draft -> Active（依次提升）
         curator.register_candidate("lifecycle-skill")?;
         curator.promote_to_draft("lifecycle-skill")?;
         curator.promote_to_active("lifecycle-skill")?;
 
-        // Set last_used_at to make it stale
+        // 设置 last_used_at 使其变为 stale
         let mut state = curator.load_state()?;
         state
             .skills
@@ -1051,7 +1071,7 @@ mod tests {
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].2, SkillLifecycle::Stale);
 
-        // Set last_used_at to make it deprecated
+        // 设置 last_used_at 使其变为 deprecated
         let mut state = curator.load_state()?;
         state
             .skills
@@ -1064,7 +1084,7 @@ mod tests {
         assert_eq!(transitions.len(), 1);
         assert_eq!(transitions[0].2, SkillLifecycle::Deprecated);
 
-        // Set last_used_at to make it archived
+        // 设置 last_used_at 使其变为 archived
         let mut state = curator.load_state()?;
         state
             .skills
@@ -1084,7 +1104,7 @@ mod tests {
         let curator = temp_curator();
         curator.register_candidate("cand-skill")?;
 
-        // Set last_used_at to very old
+        // 将 last_used_at 设置为很久以前
         let mut state = curator.load_state()?;
         state
             .skills
@@ -1093,7 +1113,7 @@ mod tests {
             .last_used_at = chrono::Utc::now() - chrono::Duration::days(200);
         curator.save_state(&state)?;
 
-        // Candidates should NOT auto-transition
+        // Candidate 不应自动转换
         let transitions = curator.apply_transitions()?;
         assert!(transitions.is_empty());
 
@@ -1116,20 +1136,20 @@ mod tests {
         Ok(())
     }
 
-    /// Regression for P0-1 (Curator TOCTOU): two `Curator` instances over the
-    /// same state path, each registering a *different* skill, must both land.
-    /// Under the pre-fix design (separate load/save locks), the second writer
-    /// clobbered the first and one skill silently disappeared.
+    /** P0-1（Curator TOCTOU）的回归测试：两个使用同一状态路径的 `Curator`
+    实例，各自注册一个*不同*的技能，必须都能成功落盘。在修复前的设计中
+    （分离的 load/save 锁），后写入者会覆盖前者，导致其中一个技能悄无声息地消失。
+    */
     #[test]
     fn test_concurrent_curators_do_not_lose_updates() -> Result<()> {
-        // Shared state path (simulates two modules calling default_path()).
+        // 共享状态路径（模拟两个模块调用 default_path()）。
         let dir = std::env::temp_dir().join(format!("echo_curator_conc_{}", uuid::Uuid::new_v4()));
         let path = dir.join("curator_state.json");
 
         let a = Curator::new(CuratorConfig::default(), path.clone());
         let b = Curator::new(CuratorConfig::default(), path.clone());
 
-        // Interleave the two instances as a race would.
+        // 交错执行两个实例，模拟真实的竞态场景。
         a.register_candidate("skill-a")?;
         b.register_candidate("skill-b")?;
 
@@ -1145,31 +1165,32 @@ mod tests {
         Ok(())
     }
 
-    /// Regression for the kill-9 deadlock (R1): acquiring the lock, dropping
-    /// the guard without running normal cleanup (simulating a process that
-    /// died but whose fd was closed by the OS), must NOT wedge the next
-    /// locker. This holds because flock auto-releases on fd close; the stale
-    /// sidecar file is not an obstacle since we never require `create_new`.
+    /** kill -9 死锁问题（R1）的回归测试：获取锁后，在不执行正常清理的情况下
+    丢弃 guard（模拟进程死亡但 fd 被操作系统关闭的场景），不应该卡住
+    下一个加锁者。这是成立的，因为 flock 会在 fd 关闭时自动释放；
+    残留的旁路文件不构成障碍，因为我们从不要求 `create_new`。
+    */
     #[test]
     fn test_lock_survives_abandoned_sidecar() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo_curator_stale_{}", uuid::Uuid::new_v4()));
         let path = dir.join("curator_state.json");
 
-        // Pre-create a stale sidecar lock file (as if a prior process crashed).
+        // 预先创建一个残留的旁路锁文件（模拟此前进程崩溃的情形）。
         let lock_path = append_path_suffix(&path, ".lock");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(&lock_path, b"")?;
         assert!(lock_path.exists(), "precondition: stale sidecar exists");
 
-        // A new curator must still succeed — the stale file is not a barrier.
+        // 新的 curator 仍必须成功——残留文件不构成阻碍。
         let curator = Curator::new(CuratorConfig::default(), path.clone());
         curator.register_candidate("after-stale")?;
         assert!(curator.load_state()?.skills.contains_key("after-stale"));
         Ok(())
     }
 
-    /// `with_locked_state` must not persist when the closure errors — the
-    /// on-disk file stays at its pre-call state.
+    /** `with_locked_state` 在闭包出错时不得持久化——磁盘上的文件应保持
+    调用前的状态。
+    */
     #[test]
     fn test_with_locked_state_rollback_on_error() -> Result<()> {
         let curator = temp_curator();
@@ -1177,7 +1198,7 @@ mod tests {
 
         use crate::error::ReactError;
         let result: Result<()> = curator.with_locked_state(|state| {
-            // Mutate in memory, then fail.
+            // 先在内存中修改，然后返回失败。
             state.skills.insert(
                 "should-not-persist".to_string(),
                 SkillMeta {

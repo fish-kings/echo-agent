@@ -1,43 +1,43 @@
-//! RunSkillScriptTool -- execute scripts bundled with skills (Tier 3).
+//! RunSkillScriptTool —— 执行技能随附的脚本（第三层）。
 //!
-//! Many real-world skills contain Python/Node/Shell scripts in their `scripts/`
-//! directory. This tool lets the LLM execute them directly within the correct
-//! working directory (the skill's root), with proper interpreter detection.
+//! 许多实际技能都在其 `scripts/` 目录中包含 Python/Node/Shell 脚本。
+//! 该工具让 LLM 能够在正确的工作目录（即技能根目录）下直接执行这些脚本，
+//! 并具备恰当的解释器自动检测能力。
 //!
-//! ## Sandbox integration
+//! ## 沙箱集成
 //!
-//! All script execution goes through [`SandboxManager`], which automatically
-//! selects the best isolation level based on security policy:
+//! 所有脚本执行都会经过 [`SandboxManager`]，它会根据安全策略自动选择
+//! 最合适的隔离级别：
 //!
-//! | Command type | Typical isolation |
+//! | 命令类型 | 典型隔离级别 |
 //! |-------------|-------------------|
-//! | `ls`, `cat`, `echo` | None (trusted) |
-//! | `python3 script.py` | OS sandbox |
-//! | Unknown / dangerous | Docker container |
+//! | `ls`、`cat`、`echo` | 无隔离（受信） |
+//! | `python3 script.py` | OS 沙箱 |
+//! | 未知 / 危险命令 | Docker 容器 |
 //!
-//! If no `SandboxManager` is configured, falls back to bare process spawning
-//! with a minimal environment whitelist (`env_clear()` + PATH / SKILL_DIR / SESSION_ID)
-//! and best-effort timeout termination (`kill_on_drop(true)`).
+//! 若未配置 `SandboxManager`，则回退为裸进程启动方式，
+//! 使用最小化的环境变量白名单（`env_clear()` + PATH / SKILL_DIR / SESSION_ID），
+//! 并尽力实现超时终止（`kill_on_drop(true)`）。
 //!
-//! ## Cross-platform interpreter detection
+//! ## 跨平台解释器检测
 //!
-//! | Extension | Unix | Windows |
+//! | 扩展名 | Unix | Windows |
 //! |-----------|------|---------|
 //! | `.py` | `python3 script.py` | `python script.py` |
 //! | `.js` | `node script.js` | `node script.js` |
-//! | `.ts` | `bun` / `deno` / `npx tsx` | same detection |
-//! | `.sh` | `bash script.sh` | Git Bash -> PowerShell fallback |
+//! | `.ts` | `bun` / `deno` / `npx tsx` | 检测逻辑相同 |
+//! | `.sh` | `bash script.sh` | Git Bash -> PowerShell 回退 |
 //! | `.ps1` | `pwsh script.ps1` | `powershell script.ps1` |
 //! | `.rb` | `ruby script.rb` | `ruby script.rb` |
 //!
-//! ## Security model
+//! ## 安全模型
 //!
-//! - Only scripts from **activated** skills can be run
-//! - Script paths must be relative and must canonicalize under the activated skill directory
-//! - Interpreter is invoked directly (no shell wrapping)
-//! - Configurable timeout (default 30 seconds)
-//! - Full sandbox integration with policy-based routing
-//! - Malformed `args` strings are rejected instead of being silently reinterpreted
+//! - 只有**已激活**技能中的脚本才能被执行
+//! - 脚本路径必须是相对路径，且规范化后必须位于已激活技能目录之下
+//! - 直接调用解释器（不经过 shell 包装）
+//! - 可配置超时时间（默认 30 秒）
+//! - 与沙箱系统完全集成，基于策略进行路由
+//! - 格式错误的 `args` 字符串会被拒绝，而不是被静默地重新解释
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

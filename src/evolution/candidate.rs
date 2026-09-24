@@ -1,20 +1,22 @@
-//! Skill candidate detection — discovers reusable patterns in typed memory.
-//!
-//! Scans `TypedMemoryStore` for `WorkflowPattern` and `DebuggingLesson` entries
-//! and proposes [`SkillCandidate`]s when enough observations accumulate. This is
-//! the first step in the skill creation pipeline:
-//!
-//! ```text
-//! observations → SkillCandidateDetector → SkillCandidate → SkillDraftGenerator → SKILL.md
-//! ```
-//!
-//! # Detection logic
-//!
-//! - Group `WorkflowPattern` / `DebuggingLesson` memories by `(topic, memory_type)`.
-//! - When a group has ≥ `min_observations` entries (default 3), propose a candidate.
-//! - Existing candidates in `["agent", "skill_candidates"]` are checked to avoid
-//!   duplicates; reinforced candidates get their sample count updated.
-//! - Each new candidate is registered with the `Curator` lifecycle system.
+/*!
+ * 技能候选检测 —— 从类型化记忆中发现可复用的模式。
+ *
+ * 扫描 `TypedMemoryStore` 中的 `WorkflowPattern`(工作流模式)与
+ * `DebuggingLesson`(调试经验)条目,当观测数量足够多时提出 [`SkillCandidate`]
+ * (技能候选)。这是技能创建流水线的第一步:
+ *
+ * ```text
+ * observations → SkillCandidateDetector → SkillCandidate → SkillDraftGenerator → SKILL.md
+ * ```
+ *
+ * # 检测逻辑
+ *
+ * - 按 `(topic, memory_type)` 对 `WorkflowPattern` / `DebuggingLesson` 记忆分组。
+ * - 当一个分组的条目数 ≥ `min_observations`(默认 3)时,提出一个候选。
+ * - 会检查 `["agent", "skill_candidates"]` 中已有的候选以避免重复;被强化的
+ *   候选会更新其样本数量。
+ * - 每个新候选都会向 `Curator` 生命周期系统注册。
+ */
 
 use chrono::{DateTime, Utc};
 use echo_core::error::ReactError;
@@ -34,43 +36,65 @@ use super::curator::Curator;
 use super::layer::EvolutionObserver;
 use crate::error::Result;
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── 常量 ──────────────────────────────────────────────────────────
 
-/// Namespace for skill candidate proposals in the Store.
+/// Store 中技能候选提案所使用的命名空间。
 pub const CANDIDATE_NAMESPACE: &[&str] = &["agent", "skill_candidates"];
+/// Store 中候选权属绑定标记所使用的命名空间。
 const CANDIDATE_AUTHORITY_NAMESPACE: &[&str] = &["agent", "skill_candidate_authority"];
+/// 候选权属绑定标记在 Store 中的键名。
 const CANDIDATE_AUTHORITY_KEY: &str = "binding";
+/// 候选权属绑定标记在 ChangeLog 审计流水中的键名。
 const CANDIDATE_AUTHORITY_AUDIT_KEY: &str = "__skill_candidate_authority_binding__";
 
+/// 一次候选写入操作的完整描述,用于恢复日志中的"准备-结算"两阶段记录。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct CandidateOperation {
+    /// 本次操作的唯一标识。
     id: String,
+    /// 本次操作所属的权属(authority)标识。
     authority_id: String,
+    /// 候选在 Store 中的键。
     key: String,
+    /// 变更前的值(创建操作为 `None`)。
     before: Option<serde_json::Value>,
+    /// 变更后的值。
     after: serde_json::Value,
+    /// 是否需要向 Curator 注册该候选。
     register_candidate: bool,
+    /// 关联的审计变更条目。
     audit: super::audit::ChangeEntry,
 }
 
+/// 候选恢复日志中记录的事件类型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum CandidateOperationEvent {
+    /// 日志被绑定到某个权属标识(仅允许发生一次)。
     Bound { authority_id: String },
+    /// 一次操作已准备就绪,尚未结算。
     Prepared(Box<CandidateOperation>),
+    /// 指定 id 的操作已结算完成。
     Settled { id: String },
 }
 
+/// 候选操作的持久化恢复日志,用于在崩溃后重放未结算的写入。
 struct CandidateOperationJournal {
+    /// 底层的文件事件日志。
     journal: Arc<FileEventJournal<CandidateOperationEvent>>,
+    /// 同一日志路径下所有实例共享的串行化锁,保证并发调用互斥。
     serial: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// 从日志重放得到的历史状态:权属绑定与操作列表(含是否已结算)。
 struct CandidateJournalHistory {
+    /// 日志当前绑定的权属标识(尚未绑定时为 `None`)。
     authority_id: Option<String>,
+    /// 按重放顺序排列的操作及其结算状态。
     operations: Vec<(CandidateOperation, bool)>,
 }
 
 impl CandidateOperationJournal {
+    /// 打开(或创建)指定路径下的候选操作日志,并绑定该路径对应的串行化锁。
     fn open(path: &Path) -> Result<Self> {
         let journal = Arc::new(FileEventJournal::open(path, FileDurability::SyncData)?);
         static SERIALS: OnceLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
@@ -94,10 +118,12 @@ impl CandidateOperationJournal {
         Ok(Self { journal, serial })
     }
 
+    /// 返回该日志路径关联的串行化锁的克隆句柄。
     fn serial(&self) -> Arc<tokio::sync::Mutex<()>> {
         Arc::clone(&self.serial)
     }
 
+    /// 追加一条事件并要求其被确认落盘,否则返回错误。
     fn append_confirmed(&self, event: CandidateOperationEvent) -> Result<()> {
         let batch = PreparedJournalBatch::new(vec![event])
             .map_err(|error| ReactError::Other(error.to_string()))?;
@@ -114,11 +140,16 @@ impl CandidateOperationJournal {
         }
     }
 
+    /// 校验并记录一次"准备"事件,标志该操作即将被投影到 Store。
     fn prepare(&self, operation: CandidateOperation) -> Result<()> {
         Self::validate_operation(&operation)?;
         self.append_confirmed(CandidateOperationEvent::Prepared(Box::new(operation)))
     }
 
+    /**
+     * 将日志绑定到指定的权属标识;若日志为空则完成首次绑定,
+     * 若已绑定到相同标识则视为幂等成功,绑定到不同标识则报错。
+     */
     fn bind(&self, authority_id: &str) -> Result<()> {
         if authority_id.is_empty() {
             return Err(ReactError::Other(
@@ -142,6 +173,10 @@ impl CandidateOperationJournal {
         }
     }
 
+    /**
+     * 校验一次候选操作的审计身份与变更形状是否自洽(创建操作必须无
+     * `before` 且类型为 `Create`,更新操作必须有 `before` 且类型为 `Update`)。
+     */
     fn validate_operation(operation: &CandidateOperation) -> Result<()> {
         let shape_is_valid = matches!(
             (
@@ -167,10 +202,12 @@ impl CandidateOperationJournal {
         Ok(())
     }
 
+    /// 记录一条"结算"事件,标志指定 id 的操作已经完成投影。
     fn settle(&self, id: &str) -> Result<()> {
         self.append_confirmed(CandidateOperationEvent::Settled { id: id.to_owned() })
     }
 
+    /// 重放整条日志,重建权属绑定与所有操作(含是否已结算)的历史视图。
     fn history(&self) -> Result<CandidateJournalHistory> {
         self.journal.sync_data()?;
         let mut authority_id = None;
@@ -239,43 +276,43 @@ impl CandidateOperationJournal {
 
 // ── SkillCandidate ─────────────────────────────────────────────────────
 
-/// A proposed skill candidate, derived from repeated memory observations.
+/// 一个提出的技能候选,由重复出现的记忆观测推导而来。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillCandidate {
-    /// Auto-generated skill name (sanitized topic).
+    /// 自动生成的技能名称(经过清洗的主题)。
     pub name: String,
-    /// Human-readable description of the pattern.
+    /// 该模式的可读描述。
     pub description: String,
-    /// Keywords that should trigger this skill.
+    /// 应当触发该技能的关键词。
     pub trigger_patterns: Vec<String>,
-    /// Tools commonly used in this pattern.
+    /// 该模式中常用的工具。
     pub tool_sequence: Vec<String>,
-    /// Number of memory observations that led to this candidate.
+    /// 促成该候选的记忆观测数量。
     pub sample_count: usize,
-    /// Confidence derived from observation quality (0.0–1.0).
+    /// 由观测质量推导出的置信度(0.0–1.0)。
     pub confidence: f32,
-    /// The shared topic of the source memories.
+    /// 源记忆共享的主题。
     pub topic: String,
-    /// The memory type of the source observations.
+    /// 源观测的记忆类型。
     pub source_type: MemoryType,
-    /// When this candidate was created.
+    /// 该候选的创建时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub created_at: DateTime<Utc>,
 }
 
 impl SkillCandidate {
-    /// Build a candidate from a group of memory entries sharing the same topic.
+    /// 从一组共享同一主题的记忆条目构建候选。
     fn from_group(topic: &str, source_type: MemoryType, entries: &[TypedMemoryEntry]) -> Self {
         let name = sanitize_name(topic);
         let sample_count = entries.len();
 
-        // Confidence: average of all entry confidences, with a bonus for more observations.
+        // 置信度:所有条目置信度的平均值,并根据观测数量给予加成。
         let avg_confidence =
             entries.iter().map(|e| e.meta.confidence).sum::<f32>() / sample_count.max(1) as f32;
         let observation_bonus = (sample_count as f32 / 10.0).min(0.15);
         let confidence = (avg_confidence + observation_bonus).min(1.0);
 
-        // Description: synthesize from the first entry's content.
+        // 描述:根据来源类型和主题合成简要说明。
         let description = format!(
             "Auto-detected {} pattern for '{}'. Based on {} observations.",
             match source_type {
@@ -287,9 +324,9 @@ impl SkillCandidate {
             sample_count
         );
 
-        // Trigger patterns: topic words + content keywords.
+        // 触发模式:主题词 + 内容关键词。
         let mut trigger_patterns = vec![topic.to_string()];
-        // Extract short keywords from content (first 3 unique words > 3 chars).
+        // 从内容中提取简短关键词(前 3 个长度 > 3 字符的唯一单词)。
         let mut seen = std::collections::HashSet::new();
         for entry in entries {
             for word in entry.content.split_whitespace() {
@@ -300,7 +337,7 @@ impl SkillCandidate {
             }
         }
 
-        // Tool sequence: extract tool names from content patterns like "tool 'X'".
+        // 工具序列:从内容中形如 "tool 'X'" 的模式提取工具名称。
         let tool_sequence = extract_tool_names(entries);
 
         Self {
@@ -319,35 +356,38 @@ impl SkillCandidate {
 
 // ── CandidateReport ────────────────────────────────────────────────────
 
-/// Result of a candidate detection pass.
+/// 一次候选检测过程的结果。
 #[derive(Debug, Clone, Default)]
 pub struct CandidateReport {
-    /// New candidates proposed in this pass.
+    /// 本次过程新提出的候选。
     pub new_candidates: Vec<SkillCandidate>,
-    /// Existing candidates that were reinforced (more observations).
+    /// 被强化(观测数增加)的已有候选。
     pub reinforced: Vec<String>,
-    /// Total groups examined.
+    /// 本次检查的分组总数。
     pub groups_scanned: usize,
 }
 
 // ── SkillCandidateDetector ─────────────────────────────────────────────
 
-/// Detects reusable skill candidates from accumulated memory observations.
-///
-/// Non-LLM, pure pattern matching — fast and free. The detected candidates
-/// are stored in `["agent", "skill_candidates"]` and registered with the
-/// [`Curator`] lifecycle system.
+/**
+ * 从累积的记忆观测中检测可复用的技能候选。
+ *
+ * 不依赖 LLM,纯模式匹配 —— 快速且零成本。检测到的候选会存入
+ * `["agent", "skill_candidates"]`,并向 [`Curator`] 生命周期系统注册。
+ */
 pub struct SkillCandidateDetector {
-    /// Minimum observations to propose a candidate. Default: 3.
+    /// 提出候选所需的最少观测数量。默认: 3。
     pub min_observations: usize,
-    /// Maximum candidates to propose per scan. Default: 5.
+    /// 每次扫描最多提出的候选数量。默认: 5。
     pub max_candidates_per_scan: usize,
+    /// 负责技能生命周期持久化的 Curator。
     curator: Curator,
+    /// 可选的演化事件观察者,用于对外发布检测事件。
     observer: Option<Arc<dyn EvolutionObserver>>,
 }
 
 impl SkillCandidateDetector {
-    /// Create a detector with explicit lifecycle persistence.
+    /// 创建一个带有显式生命周期持久化的检测器。
     pub fn new(curator: Curator) -> Self {
         Self {
             min_observations: 3,
@@ -357,7 +397,7 @@ impl SkillCandidateDetector {
         }
     }
 
-    /// Create a detector with custom thresholds.
+    /// 创建一个使用自定义阈值的检测器。
     pub fn with_thresholds(
         curator: Curator,
         min_observations: usize,
@@ -371,27 +411,27 @@ impl SkillCandidateDetector {
         }
     }
 
-    /// Use a consumer-supplied curator state file.
+    /// 使用调用方提供的 curator 状态文件。
     pub fn with_curator(mut self, curator: Curator) -> Self {
         self.curator = curator;
         self
     }
 
-    /// Publish newly persisted candidates to the evolution event observer.
+    /// 将新持久化的候选发布给演化事件观察者。
     pub fn with_evolution_observer(mut self, observer: Arc<dyn EvolutionObserver>) -> Self {
         self.observer = Some(observer);
         self
     }
 
-    /// Run a detection pass against the typed memory store.
-    ///
-    /// Scans for `WorkflowPattern` and `DebuggingLesson` entries, groups by
-    /// `(topic, memory_type)`, and proposes candidates for groups exceeding
-    /// the observation threshold.
-    ///
-    /// New candidates are persisted to the Store and registered with the
-    /// `Curator`. Existing candidates are updated if their observation count
-    /// has increased.
+    /**
+     * 对类型化记忆存储执行一次检测过程。
+     *
+     * 扫描 `WorkflowPattern` 与 `DebuggingLesson` 条目,按 `(topic,
+     * memory_type)` 分组,并为超过观测阈值的分组提出候选。
+     *
+     * 新候选会被持久化到 Store 并向 `Curator` 注册;已有候选若观测数增加,
+     * 则会被更新。
+     */
     pub async fn detect(
         &self,
         typed_store: &TypedMemoryStore,
@@ -408,7 +448,7 @@ impl SkillCandidateDetector {
             .await?;
         let mut report = CandidateReport::default();
 
-        // 1. Query for WorkflowPattern entries.
+        // 1. 查询 WorkflowPattern 条目。
         let wf_filter = MemoryFilter::new()
             .with_type(MemoryType::WorkflowPattern)
             .with_source(MemorySource::RepeatedWorkflow);
@@ -416,13 +456,13 @@ impl SkillCandidateDetector {
             .list_typed(crate::evolution::layer::WARM_NAMESPACE, &wf_filter)
             .await?;
 
-        // 2. Query for DebuggingLesson entries (any source).
+        // 2. 查询 DebuggingLesson 条目(不限来源)。
         let dl_filter = MemoryFilter::new().with_type(MemoryType::DebuggingLesson);
         let debugging_entries = typed_store
             .list_typed(crate::evolution::layer::WARM_NAMESPACE, &dl_filter)
             .await?;
 
-        // 3. Group by (topic, memory_type).
+        // 3. 按 (topic, memory_type) 分组。
         let mut groups: HashMap<(String, MemoryType), Vec<TypedMemoryEntry>> = HashMap::new();
         for entry in &workflow_entries {
             groups
@@ -438,7 +478,7 @@ impl SkillCandidateDetector {
         }
         report.groups_scanned = groups.len();
 
-        // 4. Load existing candidates to check for duplicates.
+        // 4. 加载已有候选以检查重复。
         let existing_filter = MemoryFilter::new();
         let existing_candidates = typed_store
             .list_typed(CANDIDATE_NAMESPACE, &existing_filter)
@@ -446,7 +486,7 @@ impl SkillCandidateDetector {
         let existing_names: std::collections::HashSet<String> =
             existing_candidates.iter().map(|e| e.key.clone()).collect();
 
-        // 5. For each group above threshold, propose or reinforce.
+        // 5. 对每个超过阈值的分组,提出新候选或强化已有候选。
         let mut ordered_groups: Vec<_> = groups.iter().collect();
         ordered_groups.sort_by(|((topic_a, type_a), _), ((topic_b, type_b), _)| {
             topic_a
@@ -466,7 +506,7 @@ impl SkillCandidateDetector {
             let key = candidate.name.clone();
 
             if existing_names.contains(&key) {
-                // Reinforce existing candidate — update sample count.
+                // 强化已有候选 —— 更新样本数量。
                 if let Some(existing) = typed_store.get_typed(CANDIDATE_NAMESPACE, &key).await? {
                     let previous = parse_candidate(&existing)?;
                     let old_count = previous.sample_count;
@@ -479,7 +519,7 @@ impl SkillCandidateDetector {
                                 &mut authority_id,
                             )
                             .await?;
-                        // Update with new sample count and confidence.
+                        // 使用新的样本数量与置信度更新。
                         let updated = SkillCandidate {
                             created_at: previous.created_at,
                             ..candidate.clone()
@@ -529,7 +569,7 @@ impl SkillCandidateDetector {
                         &mut authority_id,
                     )
                     .await?;
-                // New candidate — persist, register, and audit through one owner.
+                // 新候选 —— 通过同一权属所有者完成持久化、注册与审计。
                 let content = serde_json::to_string(&candidate)?;
                 let after = TypedMemoryValue::new(&content, default_candidate_meta()).to_value()?;
                 let id = uuid::Uuid::new_v4().to_string();
@@ -568,6 +608,8 @@ impl SkillCandidateDetector {
         Ok(report)
     }
 
+    /// 校验日志、Store 与 ChangeLog 三者记录的权属标识是否一致,
+    /// 返回当前已确立的权属标识(若尚未确立则为 `None`)。
     async fn validate_candidate_authorities(
         &self,
         typed_store: &TypedMemoryStore,
@@ -599,6 +641,10 @@ impl SkillCandidateDetector {
         }
     }
 
+    /**
+     * 确保权属标识已经建立:若已存在则直接绑定日志并返回;否则生成新的
+     * 标识,依次在 Store、ChangeLog、日志上完成绑定,并回写到 `authority_id`。
+     */
     async fn ensure_candidate_authority(
         &self,
         typed_store: &TypedMemoryStore,
@@ -653,6 +699,7 @@ impl SkillCandidateDetector {
         Ok(created)
     }
 
+    /// 读取 Store 中记录的权属标识。
     async fn store_authority_id(&self, typed_store: &TypedMemoryStore) -> Result<Option<String>> {
         let marker = typed_store
             .get_typed(CANDIDATE_AUTHORITY_NAMESPACE, CANDIDATE_AUTHORITY_KEY)
@@ -670,6 +717,7 @@ impl SkillCandidateDetector {
             .transpose()
     }
 
+    /// 读取 ChangeLog 中记录的权属标识。
     fn audit_authority_id(change_log: &dyn ChangeLog) -> Result<Option<String>> {
         let markers = change_log
             .query(&ChangeFilter::new().with_key_prefix(CANDIDATE_AUTHORITY_AUDIT_KEY))?
@@ -698,6 +746,10 @@ impl SkillCandidateDetector {
         }
     }
 
+    /**
+     * 提交一次候选操作的完整流程:比对当前值、写入日志、投影到 Store、
+     * 视需要向 Curator 注册、写审计日志,最后标记日志结算。
+     */
     async fn commit_candidate_operation(
         &self,
         typed_store: &TypedMemoryStore,
@@ -727,6 +779,10 @@ impl SkillCandidateDetector {
         journal.settle(&operation.id)
     }
 
+    /**
+     * 在每次检测开始前对恢复日志做一致性重放:对每个键取最新一次操作重新
+     * 投影,并补齐尚未结算的 Curator 注册与审计记录,使崩溃恢复具备幂等性。
+     */
     async fn reconcile_candidate_operations(
         &self,
         typed_store: &TypedMemoryStore,
@@ -763,6 +819,11 @@ impl SkillCandidateDetector {
         Ok(())
     }
 
+    /**
+     * 将一次候选操作的结果原子地投影到 Store。若当前值已等于目标值则跳过;
+     * 若当前值与历史中已知的某次操作前/后值都不匹配,说明发生了外部并发
+     * 修改,返回错误以保证写入闭环("fail closed")。
+     */
     async fn project_candidate_operation(
         &self,
         typed_store: &TypedMemoryStore,
@@ -812,19 +873,21 @@ impl SkillCandidateDetector {
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────────────
 
-/// Sanitize a topic string into a valid skill name.
-///
-/// Lowercase, replace non-alphanumeric chars with `-`, collapse runs of `-`,
-/// strip leading/trailing `-`, truncate to 64 chars.
+/**
+ * 将主题字符串清洗为合法的技能名称。
+ *
+ * 转小写、将非字母数字字符替换为 `-`、折叠连续的 `-`、去除首尾的 `-`,
+ * 并截断到 64 字符。
+ */
 fn sanitize_name(topic: &str) -> String {
     let mut name: String = topic
         .to_lowercase()
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    // Collapse runs of `-`.
+    // 折叠连续的 `-`。
     let mut prev_dash = false;
     name = name
         .chars()
@@ -842,28 +905,30 @@ fn sanitize_name(topic: &str) -> String {
             }
         })
         .collect();
-    // Strip leading/trailing `-`.
+    // 去除首尾的 `-`。
     let name = name.trim_matches('-');
-    // Fallback: if sanitization produced an empty string, use a stable hash-based name.
+    // 兜底:若清洗后结果为空,使用基于稳定哈希的名称。
     if name.is_empty() {
         let hash = echo_core::utils::hash::fnv1a_64(topic.as_bytes());
         return format!("candidate-{:x}", hash);
     }
-    // Truncate.
+    // 截断长度。
     name.chars().take(64).collect()
 }
 
-/// Extract tool names from memory content.
-///
-/// Looks for patterns like `tool 'name'` (with space-quote), `tool:name`,
-/// `Tool:name`, or `tool "name"` in the content.
+/**
+ * 从记忆内容中提取工具名称。
+ *
+ * 在内容中查找形如 `tool 'name'`(空格+引号)、`tool:name`、`Tool:name`
+ * 或 `tool "name"` 的模式。
+ */
 fn extract_tool_names(entries: &[TypedMemoryEntry]) -> Vec<String> {
     let mut tools: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for entry in entries {
         let content = &entry.content;
         let lower = content.to_lowercase();
-        // Scan for "tool" mentions and extract the following name.
+        // 扫描所有 "tool" 出现的位置,提取紧随其后的名称。
         for (idx, _) in lower.match_indices("tool") {
             let after = lower.get(idx.saturating_add(4)..).unwrap_or_default();
             let name = extract_tool_name_after_keyword(after);
@@ -875,14 +940,16 @@ fn extract_tool_names(entries: &[TypedMemoryEntry]) -> Vec<String> {
     tools
 }
 
-/// Given the text immediately after "tool", extract the tool name.
-///
-/// Handles: `:cargo`, `: 'cargo'`, ` 'cargo'`, ` "cargo"`, `: cargo`, etc.
+/**
+ * 给定紧跟在 "tool" 之后的文本,提取其中的工具名称。
+ *
+ * 处理以下形式: `:cargo`、`: 'cargo'`、` 'cargo'`、` "cargo"`、`: cargo` 等。
+ */
 fn extract_tool_name_after_keyword(after: &str) -> String {
     let s = after.trim_start();
-    // Strip leading colon and optional whitespace: "tool: cargo" or "tool:cargo"
+    // 去除开头的冒号及可选空白: "tool: cargo" 或 "tool:cargo"
     let s = s.strip_prefix(':').unwrap_or(s).trim_start();
-    // Strip surrounding quotes: "tool 'cargo'" or "tool \"cargo\""
+    // 去除两侧引号: "tool 'cargo'" 或 "tool \"cargo\""
     if let Some(rest) = s.strip_prefix('\'')
         && let Some(end) = rest.find('\'')
     {
@@ -893,17 +960,19 @@ fn extract_tool_name_after_keyword(after: &str) -> String {
     {
         return rest.get(..end).unwrap_or_default().to_string();
     }
-    // Unquoted: take the first word (alphanumeric + dashes/underscores).
+    // 无引号形式:取第一个单词(字母数字加连字符/下划线)。
     s.split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
         .next()
         .unwrap_or("")
         .to_string()
 }
 
-/// Extract the sample_count from an existing candidate entry.
-///
-/// The content is stored as a JSON-serialized string of the candidate object,
-/// so we use `from_str` to deserialize it directly.
+/**
+ * 从已有候选条目中解析出 SkillCandidate。
+ *
+ * 内容以候选对象的 JSON 序列化字符串形式存储,因此直接用 `from_str`
+ * 反序列化。
+ */
 fn parse_candidate(entry: &TypedMemoryEntry) -> Result<SkillCandidate> {
     serde_json::from_str::<SkillCandidate>(&entry.content).map_err(|error| {
         ReactError::Other(format!(
@@ -913,7 +982,7 @@ fn parse_candidate(entry: &TypedMemoryEntry) -> Result<SkillCandidate> {
     })
 }
 
-/// Create a default MemoryMeta for a skill candidate.
+/// 为技能候选创建默认的 MemoryMeta。
 fn default_candidate_meta() -> echo_core::memory::types::MemoryMeta {
     echo_core::memory::types::MemoryMeta::new(
         MemoryType::SkillCandidate,
@@ -924,7 +993,7 @@ fn default_candidate_meta() -> echo_core::memory::types::MemoryMeta {
     .with_stability(0.60)
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -940,6 +1009,7 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// 用于测试的观察者:记录所有被检测到的候选技能名称。
     struct CandidateObserver {
         names: Arc<Mutex<Vec<String>>>,
     }
@@ -955,7 +1025,7 @@ mod tests {
         }
     }
 
-    /// Lightweight in-memory ChangeLog for candidate unit tests.
+    /// 用于候选单元测试的轻量级内存 ChangeLog。
     #[derive(Default)]
     struct NullChangeLog {
         entries: Mutex<Vec<super::super::audit::ChangeEntry>>,
@@ -1023,6 +1093,7 @@ mod tests {
         }
     }
 
+    /// 会在指定变更类型的第一次记录时注入失败的 ChangeLog,用于测试崩溃恢复。
     struct FailChangeTypeLog {
         inner: JsonlChangeLog,
         change_type: ChangeType,
@@ -1080,6 +1151,7 @@ mod tests {
         }
     }
 
+    /// 允许在 `compare_and_put` 之前注入一次外部写入的 Store,用于模拟并发竞争。
     struct InterleavingStore {
         inner: Arc<InMemoryStore>,
         injected: Mutex<Option<Value>>,
@@ -1093,6 +1165,7 @@ mod tests {
             }
         }
 
+        /// 在下一次 `compare_and_put` 调用前,先向底层 Store 写入指定的外部值。
         fn inject_before_next_compare(&self, value: Value) {
             *self
                 .injected
@@ -1170,6 +1243,7 @@ mod tests {
         }
     }
 
+    /// 不支持原子 `compare_and_put` 的 Store,用于测试该能力缺失时的拒绝行为。
     struct UnsupportedCasStore {
         inner: Arc<InMemoryStore>,
     }
@@ -1221,6 +1295,7 @@ mod tests {
         }
     }
 
+    /// 构造一个用于测试的类型化记忆条目。
     fn make_entry(
         key: &str,
         content: &str,
@@ -1239,6 +1314,7 @@ mod tests {
         }
     }
 
+    /// 构造一条 WorkflowPattern 类型的测试元数据。
     fn wf_meta(topic: &str) -> echo_core::memory::types::MemoryMeta {
         echo_core::memory::types::MemoryMeta::new(
             MemoryType::WorkflowPattern,
@@ -1248,6 +1324,7 @@ mod tests {
         .with_confidence(0.75)
     }
 
+    /// 构造一条 DebuggingLesson 类型的测试元数据。
     fn dl_meta(topic: &str) -> echo_core::memory::types::MemoryMeta {
         echo_core::memory::types::MemoryMeta::new(
             MemoryType::DebuggingLesson,
@@ -1257,6 +1334,7 @@ mod tests {
         .with_confidence(0.80)
     }
 
+    /// 构造一个使用临时状态文件的测试用检测器。
     fn test_detector() -> SkillCandidateDetector {
         let path = std::env::temp_dir().join(format!(
             "echo-agent-candidate-{}.json",
@@ -1265,6 +1343,7 @@ mod tests {
         SkillCandidateDetector::new(Curator::new(CuratorConfig::default(), path))
     }
 
+    /// 向 typed store 批量写入 `[start, end)` 范围内编号的构建模式观测。
     async fn put_workflow_observations(
         typed: &TypedMemoryStore,
         start: usize,
@@ -1289,7 +1368,7 @@ mod tests {
         let typed = TypedMemoryStore::new(store);
         let log = NullChangeLog::default();
 
-        // Insert 3 WorkflowPattern entries with same topic.
+        // 插入 3 条主题相同的 WorkflowPattern 条目。
         for i in 0..3 {
             typed
                 .put_typed(
@@ -1332,7 +1411,7 @@ mod tests {
         let typed = TypedMemoryStore::new(store);
         let log = NullChangeLog::default();
 
-        // Insert only 2 entries — below threshold.
+        // 仅插入 2 条条目 —— 低于阈值。
         for i in 0..2 {
             typed
                 .put_typed(
@@ -1357,7 +1436,7 @@ mod tests {
         let typed = TypedMemoryStore::new(store);
         let log = NullChangeLog::default();
 
-        // Insert 3 entries.
+        // 插入 3 条条目。
         for i in 0..3 {
             typed
                 .put_typed(
@@ -1371,11 +1450,11 @@ mod tests {
         }
 
         let detector = test_detector();
-        // First detection: should create candidate.
+        // 第一次检测:应当创建候选。
         let report1 = detector.detect(&typed, &log).await.unwrap();
         assert_eq!(report1.new_candidates.len(), 1);
 
-        // Second detection: should NOT create duplicate.
+        // 第二次检测:不应产生重复候选。
         let report2 = detector.detect(&typed, &log).await.unwrap();
         assert!(report2.new_candidates.is_empty());
     }
@@ -1887,7 +1966,7 @@ mod tests {
         let typed = TypedMemoryStore::new(store);
         let log = NullChangeLog::default();
 
-        // Insert 3 DebuggingLesson entries.
+        // 插入 3 条 DebuggingLesson 条目。
         for i in 0..3 {
             typed
                 .put_typed(

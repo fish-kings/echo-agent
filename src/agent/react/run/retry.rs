@@ -1,4 +1,4 @@
-//! LLM retry logic + concurrent tool timeout calculation
+//! LLM 重试逻辑 + 并发工具超时时间计算
 
 use crate::error::{AgentError, ReactError, Result};
 use echo_core::retry::RetryPolicy;
@@ -7,9 +7,11 @@ use tracing::{info, warn};
 
 use super::super::is_retryable_llm_error;
 
-/// Unified LLM retry logic: exponential backoff + jitter + circuit breaker update
-///
-/// Shared by `think` and `create_llm_stream` to avoid code duplication.
+/**
+统一的 LLM 重试逻辑：指数退避 + 抖动 + 熔断器状态更新。
+
+由 `think` 和 `create_llm_stream` 共用，避免代码重复。
+*/
 #[tracing::instrument(skip(agent_name, max_retries, retry_delay_ms, circuit_breaker, cancel, call_fn), fields(agent = %agent_name))]
 pub(crate) async fn retry_llm_call<F, Fut, T>(
     agent_name: &str,
@@ -36,8 +38,8 @@ where
         Duration::from_millis(retry_delay_ms),
     )
     .max_delay(Duration::from_secs(30))
-    // Cancellation tests and callers depend on a real safe point between
-    // attempts; provider-level jitter must not collapse that delay to zero.
+    /* 取消相关的测试和调用方依赖于两次尝试之间存在一个真实的安全点；
+    provider 层面的抖动不能把这个延迟压缩到零。 */
     .jitter(false);
     let mut result: Result<T> = Err(ReactError::Agent(Box::new(AgentError::NoResponse {
         model: "unknown".to_string(),
@@ -102,6 +104,7 @@ where
     result
 }
 
+/// 根据工具数量、并发限制以及单个工具的超时/重试配置，估算一批并发工具调用的整体超时时间
 pub(crate) fn compute_concurrent_tool_batch_timeout(
     config: &crate::tools::ToolExecutionConfig,
     tool_count: usize,
@@ -247,3 +250,4 @@ mod tests {
         Ok(())
     }
 }
+</content>

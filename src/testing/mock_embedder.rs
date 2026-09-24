@@ -1,19 +1,19 @@
-//! MockEmbedder for testing
+//! 用于测试的 MockEmbedder
 //!
-//! Generates deterministic normalized vectors based on text hashing, requires
-//! no real API, suitable for unit tests and integration tests.
+//! 基于文本哈希生成确定性的归一化向量，无需真实 API，
+//! 适用于单元测试与集成测试。
 
 use crate::error::Result;
 use crate::memory::embedder::Embedder;
 use futures::future::BoxFuture;
 
-/// Test embedder that generates deterministic pseudo-embedding vectors based on byte hashing
+/// 基于字节哈希生成确定性伪嵌入向量的测试用 Embedder
 ///
-/// - Same text always produces the same vector (deterministic)
-/// - More similar text yields closer cosine distance (limited semantic awareness, but sufficient for testing flows)
-/// - Zero network requests, suitable for CI environments
+/// - 相同文本总是产生相同的向量（确定性）
+/// - 越相似的文本得到的余弦距离越接近（语义感知能力有限，但足以用于测试流程）
+/// - 零网络请求，适合 CI 环境
 ///
-/// # Example
+/// # 示例
 ///
 /// ```rust
 /// use echo_agent::testing::MockEmbedder;
@@ -24,17 +24,18 @@ use futures::future::BoxFuture;
 /// let embedder = MockEmbedder::new(8).unwrap();
 /// let vec = embedder.embed("hello world").await.unwrap();
 /// assert_eq!(vec.len(), 8);
-/// // Normalized vector, magnitude approximately 1.0
+/// // 归一化向量，模长约等于 1.0
 /// let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
 /// assert!((norm - 1.0).abs() < 1e-5);
 /// # }
 /// ```
 pub struct MockEmbedder {
+    /// 生成向量的维度。
     dimension: usize,
 }
 
 impl MockEmbedder {
-    /// Create a MockEmbedder with the specified dimension (recommended 4~64, sufficient for testing similarity logic)
+    /// 创建一个指定维度的 MockEmbedder（建议 4~64，足以测试相似度逻辑）
     pub fn new(dimension: usize) -> Result<Self> {
         if dimension == 0 {
             return Err(crate::error::ReactError::Other(
@@ -49,11 +50,11 @@ impl Embedder for MockEmbedder {
     fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>>> {
         Box::pin(async move {
             let mut vec = vec![0.0f32; self.dimension];
-            // Accumulate byte values into each dimension (deterministic)
+            // 将各字节值累加到对应维度上（确定性）
             for (i, b) in text.bytes().enumerate() {
                 vec[i % self.dimension] += b as f32;
             }
-            // L2 normalization so cosine similarity is meaningful
+            // 做 L2 归一化，使余弦相似度有意义
             let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
             if norm > 0.0 {
                 for v in &mut vec {

@@ -1,28 +1,28 @@
-//! Tool risk classification — per-category risk assessment for safety notices.
+//! 工具风险分类 —— 按类别评估风险，用于生成安全提示。
 
 use echo_core::tools::ToolParameters;
 
-/// Risk category for a tool based on its type and parameters.
+/// 工具风险类别，依据工具类型和参数判定。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolRiskCategory {
-    /// Read-only operations — no risk.
+    /// 只读操作 —— 无风险。
     ReadOnly,
-    /// File write operations — risk: data loss or corruption.
+    /// 文件写入操作 —— 风险：数据丢失或损坏。
     FileWrite,
-    /// Shell/command execution — risk: arbitrary code execution.
+    /// Shell/命令执行 —— 风险：任意代码执行。
     ShellExec,
-    /// Git write operations — risk: repository damage.
+    /// Git 写入操作 —— 风险：仓库损坏。
     GitWrite,
-    /// Database write operations — risk: data corruption.
+    /// 数据库写入操作 —— 风险：数据损坏。
     DatabaseWrite,
-    /// Network calls — risk: data exfiltration.
+    /// 网络调用 —— 风险：数据外泄。
     NetworkCall,
-    /// Destructive operations — risk: irreversible data loss.
+    /// 破坏性操作 —— 风险：不可逆的数据丢失。
     Destructive,
 }
 
 impl ToolRiskCategory {
-    /// Human-readable risk description.
+    /// 返回可读的风险描述文本。
     pub fn description(&self) -> &str {
         match self {
             Self::ReadOnly => "Read-only — no risk",
@@ -35,7 +35,7 @@ impl ToolRiskCategory {
         }
     }
 
-    /// Risk level: 0 = none, 1 = low, 2 = medium, 3 = high.
+    /// 风险等级：0 = 无，1 = 低，2 = 中，3 = 高。
     pub fn level(&self) -> u8 {
         match self {
             Self::ReadOnly => 0,
@@ -48,7 +48,7 @@ impl ToolRiskCategory {
         }
     }
 
-    /// Permission label for display.
+    /// 用于展示的权限标签。
     pub fn permission_label(&self) -> &str {
         match self {
             Self::ReadOnly => "Read",
@@ -62,37 +62,37 @@ impl ToolRiskCategory {
     }
 }
 
-/// Classifies tools by risk category based on tool name and parameters.
+/// 根据工具名称和参数对工具进行风险分类。
 pub struct ToolRiskClassifier;
 
 impl ToolRiskClassifier {
-    /// Classify a tool by name.
+    /// 根据工具名称判定其风险类别。
     pub fn classify(tool_name: &str) -> ToolRiskCategory {
         match tool_name {
-            // Read-only
+            // 只读
             "read_file" | "search" | "grep" | "list_files" | "git_log" | "git_status"
             | "git_diff" | "git_blame" | "git_branch" => ToolRiskCategory::ReadOnly,
-            // File write
+            // 文件写入
             "apply_patch" | "write_file" | "append_file" | "create_file" | "update_file"
             | "move_file" => ToolRiskCategory::FileWrite,
             // Shell
             "shell" | "execute" => ToolRiskCategory::ShellExec,
-            // Git write
+            // Git 写入
             "git_commit" | "git_add" | "git_push" | "git_tag" => ToolRiskCategory::GitWrite,
-            // Database
+            // 数据库
             "db_query" | "db_execute" | "sql" => ToolRiskCategory::DatabaseWrite,
-            // Network
+            // 网络
             "web_fetch" | "web_search" | "http_request" | "api_call" => {
                 ToolRiskCategory::NetworkCall
             }
-            // Destructive
+            // 破坏性操作
             "delete_file" | "rm" | "drop_table" | "truncate" => ToolRiskCategory::Destructive,
-            // Default: ReadOnly for unknown tools
+            // 默认：未知工具按只读处理
             _ => ToolRiskCategory::ReadOnly,
         }
     }
 
-    /// Generate a human-readable safety notice for a tool call.
+    /// 为一次工具调用生成可读的安全提示文本。
     pub fn safety_notice(tool_name: &str, params: &ToolParameters) -> String {
         let category = Self::classify(tool_name);
         let path = params

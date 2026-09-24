@@ -1,41 +1,41 @@
-//! Memory layer manager — two-tier memory organization (hot/warm).
-//!
-//! (stage4) The cold layer was removed: staleness is now a recall-decay
-//! weight, not a separate namespace. Archived memories (`MemoryStatus::Archived`)
-//! stay in the warm/unified namespace and remain recallable (with decay).
-//!
-//! # Layers
-//!
-//! | Layer | Storage | Namespace | Purpose |
-//! |-------|---------|-----------|---------|
-//! | **Hot** | `.echo-agent/MEMORY.md` (YAML frontmatter + markdown body) | File | Always loaded into context, max ~2000 tokens |
-//! | **Warm** | Store KV | `["agent", "memories"]` | Available on-demand via search; Archived entries stay here (stage4: cold removed) |
-//!
-//! # Hot layer MEMORY.md format
-//!
-//! ```markdown
-//! ---
-//! entries:
-//!   - key: build_java8
-//!     memory_type: debugging_lesson
-//!     confidence: 0.90
-//!     stability: 0.80
-//!     source: error_resolution
-//!     topic: build
-//!     risk: low
-//!     last_promoted: "2026-06-15T10:30:00Z"
-//! ---
-//!
-//! - **[build/java8]** Maven compile requires JAVA_HOME pointing to JDK 8.
-//! - **[style/concise]** User prefers concise code comments.
-//! ```
-//!
-//! # Promotion/Demotion
-//!
-//! Memories are promoted from warm→hot when they meet eligibility criteria
-//! (`MemoryMeta::is_hot_eligible()`) and the hot layer has capacity.
-//! When the hot layer exceeds its token budget, the lowest-priority entries
-//! are demoted back to warm based on a demotion score.
+/*! 内存分层管理器 —— 双层（热/温）内存组织结构。
+ *
+ * （stage4）冷层已被移除：陈旧度现在体现为一种召回衰减权重，
+ * 而不是一个独立的命名空间。已归档的记忆（`MemoryStatus::Archived`）
+ * 仍留在温/统一命名空间中，并保持可被召回（伴随衰减）。
+ *
+ * # 分层
+ *
+ * | 层级 | 存储 | 命名空间 | 用途 |
+ * |-------|---------|-----------|---------|
+ * | **热层（Hot）** | `.echo-agent/MEMORY.md`（YAML frontmatter + markdown 正文） | 文件 | 始终加载进上下文，最多约 2000 tokens |
+ * | **温层（Warm）** | Store KV | `["agent", "memories"]` | 按需通过搜索获取；已归档条目也留在这里（stage4：冷层已移除） |
+ *
+ * # 热层 MEMORY.md 格式
+ *
+ * ```markdown
+ * ---
+ * entries:
+ *   - key: build_java8
+ *     memory_type: debugging_lesson
+ *     confidence: 0.90
+ *     stability: 0.80
+ *     source: error_resolution
+ *     topic: build
+ *     risk: low
+ *     last_promoted: "2026-06-15T10:30:00Z"
+ * ---
+ *
+ * - **[build/java8]** Maven compile requires JAVA_HOME pointing to JDK 8.
+ * - **[style/concise]** User prefers concise code comments.
+ * ```
+ *
+ * # 晋升/降级
+ *
+ * 当记忆满足晋升资格条件（`MemoryMeta::is_hot_eligible()`）且热层仍有容量时，
+ * 会从温层晋升到热层。当热层超出其 token 预算时，
+ * 优先级最低的条目会依据降级分数被降回温层。
+ */
 
 use echo_core::memory::store::Store;
 use echo_core::memory::types::{
@@ -62,20 +62,22 @@ use super::review::{
 use super::security::{EvolutionSecurityGuard, InputTrustLevel};
 use echo_core::error::{ConfigError, ReactError};
 
-/// Alias for layer operation results.
+/// 分层操作结果的别名。
 type Result<T> = std::result::Result<T, ReactError>;
 
+/// 构造一个合并计划相关的配置错误。
 fn merge_plan_error(message: impl Into<String>) -> ReactError {
     ReactError::Config(Box::new(ConfigError::ConfigFileError(message.into())))
 }
 
+/// 构造一个"审阅过的提案已过期"错误。
 fn stale_merge_plan_error(message: impl Into<String>) -> ReactError {
     ReactError::Memory(Box::new(echo_core::error::MemoryError::StaleProposal(
         message.into(),
     )))
 }
 
-/// Return whether an error means a reviewed memory proposal is no longer current.
+/// 判断某个错误是否意味着一个已审阅的记忆提案已不再是最新状态。
 pub fn is_stale_memory_proposal_error(error: &ReactError) -> bool {
     matches!(
         error,
@@ -87,40 +89,45 @@ pub fn is_stale_memory_proposal_error(error: &ReactError) -> bool {
     )
 }
 
-// ── Constants ──────────────────────────────────────────────────────────
+// ── 常量 ──────────────────────────────────────────────────────────
 
-/// Namespace for the unified typed-memory store (stage4: warm+cold+L3 all
-/// merged here; Archived status replaces the former cold namespace).
+/**
+ * 统一类型化记忆存储所使用的命名空间（stage4：温层+冷层+L3 均已合并到这里；
+ * Archived 状态取代了原先的冷层命名空间）。
+ */
 pub const WARM_NAMESPACE: &[&str] = &["agent", "memories"];
 
-/// Optional namespace for a separate cold/archival tier (retained as pub API
-/// for consumers aligned with Letta/MemGPT archival memory — recall-on-demand,
-/// not proactively loaded into context). The default product path uses
-/// `WARM_NAMESPACE` + `MemoryStatus::Archived` instead; this constant exists
-/// so consumers who need a distinct cold store can opt in.
+/**
+ * 独立冷层/归档层的可选命名空间（作为 pub API 保留，供对齐 Letta/MemGPT
+ * 归档记忆理念——按需召回、不主动加载进上下文——的消费者使用）。
+ * 默认产品路径改用 `WARM_NAMESPACE` + `MemoryStatus::Archived`；
+ * 保留此常量是为了让需要独立冷存储的消费者可以选择接入。
+ */
 pub const COLD_NAMESPACE: &[&str] = &["agent", "cold_memories"];
 
-/// Maximum token budget for the hot layer (MEMORY.md body).
+/// 热层的最大 token 预算（MEMORY.md 正文）。
 const HOT_TOKEN_BUDGET: usize = 2000;
 
 // ── MemoryLayer ────────────────────────────────────────────────────────
 
-/// A memory layer.
+/// 一个内存层级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryLayer {
-    /// Always loaded into context (MEMORY.md). Max ~2000 tokens.
+    /// 始终加载进上下文（MEMORY.md）。最多约 2000 tokens。
     Hot,
-    /// Available on-demand via Store KV search. Archived memories
-    /// (`MemoryStatus::Archived`) also live here in the unified namespace —
-    /// stage4 removed the separate Cold layer; staleness is a recall-decay
-    /// weight, not a layer move.
+    /**
+     * 通过 Store KV 搜索按需获取。已归档的记忆（`MemoryStatus::Archived`）
+     * 同样存放在这个统一命名空间中——stage4 移除了独立的 Cold 层，
+     * 陈旧度是一种召回衰减权重，而不是层级迁移。
+     */
     Warm,
-    /// Optional third tier for long-term archival (rarely loaded, low
-    /// confidence/stale). stage4 collapsed cold into `Warm`+`Archived`, but
-    /// this variant + [`COLD_NAMESPACE`] are retained as pub API so consumers
-    /// who need a separate cold tier (aligned with Letta/MemGPT archival) can
-    /// opt in. The default product path does not use it.
+    /**
+     * 用于长期归档的可选第三层（很少被加载，置信度低/已陈旧）。
+     * stage4 已将冷层折叠进 `Warm`+`Archived`，但此变体以及
+     * [`COLD_NAMESPACE`] 作为 pub API 被保留下来，供需要独立冷层
+     * （对齐 Letta/MemGPT 归档记忆理念）的消费者使用。默认产品路径不使用它。
+     */
     Cold,
 }
 
@@ -136,53 +143,56 @@ impl std::fmt::Display for MemoryLayer {
 
 // ── HotEntryMeta ───────────────────────────────────────────────────────
 
-/// Metadata for a single entry within the MEMORY.md hot layer.
-///
-/// Stored in YAML frontmatter alongside the markdown body.
+/**
+ * MEMORY.md 热层中单条记忆条目的元数据。
+ *
+ * 与 markdown 正文一起存储在 YAML frontmatter 中。
+ */
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HotEntryMeta {
-    /// Key identifier for this memory.
+    /// 该记忆的键标识符。
     pub key: String,
-    /// Memory type classification.
+    /// 记忆类型分类。
     pub memory_type: MemoryType,
-    /// Confidence score (0.0-1.0).
+    /// 置信度分数（0.0-1.0）。
     pub confidence: f32,
-    /// Stability score (0.0-1.0).
+    /// 稳定性分数（0.0-1.0）。
     pub stability: f32,
-    /// Recall importance used by warm-layer ranking.
+    /// 温层排序所使用的召回重要性。
     #[serde(default = "default_hot_recall_weight")]
     pub recall_weight: f32,
-    /// Source of this memory.
+    /// 该记忆的来源。
     pub source: MemorySource,
-    /// Topic category.
+    /// 主题分类。
     pub topic: String,
-    /// Risk level.
+    /// 风险等级。
     #[serde(default)]
     pub risk: MemoryRisk,
-    /// Number of semantic revisions accumulated before promotion.
+    /// 晋升前累积的语义修订次数。
     #[serde(default)]
     pub revision_count: u32,
-    /// Number of successful recalls accumulated before promotion.
+    /// 晋升前累积的成功召回次数。
     #[serde(default)]
     pub recall_count: u32,
-    /// Last successful recall timestamp.
+    /// 最近一次成功召回的时间戳。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_recalled_at: Option<u64>,
-    /// Nontrivial content is stored as a JSON string in its body bullet so
-    /// whitespace and newlines survive a MEMORY.md roundtrip. Legacy bullets
-    /// without this flag remain plain text.
+    /** 非平凡内容会以 JSON 字符串形式存储在其正文的列表项中，使空白与换行
+     * 在 MEMORY.md 往返读写中得以保留。没有该标记的旧列表项仍按纯文本处理。
+     */
     #[serde(default, skip_serializing_if = "is_false")]
     pub content_json: bool,
-    /// When this entry was promoted to hot (ISO 8601).
+    /// 该条目被晋升到热层的时间（ISO 8601）。
     pub last_promoted: String,
 }
 
+/// 判断布尔值是否为 `false`（用于 serde 的 `skip_serializing_if`）。
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
 impl HotEntryMeta {
-    /// Convert to a MemoryMeta for reconstruction.
+    /// 转换为 MemoryMeta 以便重建。
     fn to_memory_meta(&self) -> MemoryMeta {
         let mut meta = MemoryMeta::new(self.memory_type, self.source, &self.topic)
             .with_confidence(self.confidence)
@@ -196,143 +206,172 @@ impl HotEntryMeta {
     }
 }
 
+/// 默认的热层召回权重。
 fn default_hot_recall_weight() -> f32 {
     0.5
 }
 
 // ── MemoryFile ─────────────────────────────────────────────────────────
 
-/// Parsed structure of MEMORY.md.
+/// MEMORY.md 的解析结构。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemoryFile {
-    /// Entries from YAML frontmatter.
+    /// 来自 YAML frontmatter 的条目。
     pub entries: Vec<HotEntryMeta>,
-    /// The markdown body (human-readable, loaded into context).
+    /// markdown 正文（人类可读，会被加载进上下文）。
     pub body: String,
 }
 
 // ── LayerChangeResult ──────────────────────────────────────────────────
 
-/// Result of a promotion or demotion operation.
+/// 一次晋升或降级操作的结果。
 #[derive(Debug, Clone)]
 pub struct LayerChangeResult {
-    /// The key that was moved.
+    /// 被移动的键。
     pub key: String,
-    /// Direction of the move (from).
+    /// 移动的方向（来源层）。
     pub from_layer: MemoryLayer,
-    /// Direction of the move (to).
+    /// 移动的方向（目标层）。
     pub to_layer: MemoryLayer,
-    /// Reason for the change.
+    /// 本次变更的原因。
     pub reason: String,
 }
 
-/// A typed, stable target for a later memory rollback.
+/// 一个类型化、稳定的目标，用于描述之后的一次记忆回滚。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemoryRollbackTarget {
-    /// Roll back the durable batch containing this ChangeLog entry.
+    /// 回滚包含该 ChangeLog 条目的那个持久化批次。
     ChangeId(String),
-    /// Roll back a complete durable journal batch.
+    /// 回滚一个完整的持久化日志批次。
     BatchId(String),
 }
 
 impl MemoryRollbackTarget {
+    /// 以某个 ChangeLog 条目 ID 构造一个回滚目标。
     pub fn change_id(value: impl Into<String>) -> Self {
         Self::ChangeId(value.into())
     }
 
+    /// 以某个日志批次 ID 构造一个回滚目标。
     pub fn batch_id(value: impl Into<String>) -> Self {
         Self::BatchId(value.into())
     }
 }
 
-/// A stable explanation for a rollback target that cannot safely be applied.
+/// 对一个无法安全应用的回滚目标给出的稳定说明。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRollbackConflict {
+    /// 冲突所指向的目标批次 ID（若可确定）。
     pub target_batch_id: Option<String>,
+    /// 受此次冲突影响的记忆键列表。
     pub affected_keys: Vec<String>,
+    /// 冲突原因说明。
     pub reason: String,
 }
 
-/// A stable explanation for unavailable or expired journal history.
+/// 对不可用或已过期的日志历史给出的稳定说明。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRollbackHistoryUnavailable {
+    /// 本次查询所请求的回滚目标。
     pub target: MemoryRollbackTarget,
+    /// 历史不可用的原因说明。
     pub reason: String,
 }
 
-/// Preview of a later rollback before it creates an inverse batch.
+/// 在创建逆向批次之前，对之后的一次回滚给出的预览。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRollbackPreview {
+    /// 将被回滚的目标批次 ID。
     pub target_batch_id: String,
+    /// 目标批次所处的日志世代号。
     pub target_generation: u64,
+    /// 受此次回滚影响的记忆键列表。
     pub affected_keys: Vec<String>,
 }
 
+/// 回滚预览的结果：就绪、存在冲突，或历史不可用。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemoryRollbackPreviewOutcome {
+    /// 可以安全执行回滚。
     Ready(MemoryRollbackPreview),
+    /// 目标与当前状态冲突，无法安全回滚。
     Conflict(MemoryRollbackConflict),
+    /// 目标所需的历史记录不可用。
     HistoryUnavailable(MemoryRollbackHistoryUnavailable),
 }
 
-/// Durable receipt for a committed inverse batch.
+/// 一次已提交的逆向批次的持久化回执。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MemoryRollbackReceipt {
+    /// 发起本次回滚请求的幂等请求 ID。
     pub request_id: String,
+    /// 被回滚的目标批次 ID。
     pub target_batch_id: String,
+    /// 本次回滚生成的逆向批次 ID。
     pub inverse_batch_id: String,
+    /// 目标批次所处的日志世代号。
     pub target_generation: u64,
+    /// 受此次回滚影响的记忆键列表。
     pub affected_keys: Vec<String>,
 }
 
+/// 一次记忆回滚请求的最终结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemoryRollbackOutcome {
+    /// 本次回滚已成功应用。
     Applied(MemoryRollbackReceipt),
+    /// 相同的请求 ID 此前已经应用过，直接返回原回执。
     AlreadyApplied(MemoryRollbackReceipt),
+    /// 请求的目标与当前状态冲突，回滚未执行。
     Conflict(MemoryRollbackConflict),
+    /// 目标所需的历史记录不可用，回滚未执行。
     HistoryUnavailable(MemoryRollbackHistoryUnavailable),
 }
 
 // ── MemoryLayerManager ─────────────────────────────────────────────────
 
-/// Manages the two-tier memory layer system (stage4: cold removed).
-///
-/// - **Hot layer**: `.echo-agent/MEMORY.md` (YAML frontmatter + markdown body).
-///   Always loaded into context. Max ~2000 tokens.
-/// - **Warm layer**: Store KV under [`WARM_NAMESPACE`] = `["agent", "memories"]`.
-///   Available on-demand via search; Archived entries stay here (recallable
-///   with decay). See module-level docs for why cold is gone.
+/**
+ * 管理双层内存层级系统（stage4：冷层已移除）。
+ *
+ * - **热层**：`.echo-agent/MEMORY.md`（YAML frontmatter + markdown 正文）。
+ *   始终加载进上下文，最多约 2000 tokens。
+ * - **温层**：[`WARM_NAMESPACE`] = `["agent", "memories"]` 下的 Store KV。
+ *   按需通过搜索获取；已归档条目也留在这里（可被召回，伴随衰减）。
+ *   关于冷层为何消失，参见模块级文档。
+ */
 pub struct MemoryLayerManager {
-    /// Path to the MEMORY.md file.
+    /// MEMORY.md 文件的路径。
     hot_path: PathBuf,
-    /// In-process lock serializing all MEMORY.md read-modify-write so two
-    /// calls on the same `MemoryLayerManager` cannot interleave and lose
-    /// updates (P0-3). Cross-process safety is provided by the fs2 advisory
-    /// lock in `with_locked_hot_file`.
+    /**
+     * 进程内锁，序列化所有对 MEMORY.md 的读-改-写操作，使同一个
+     * `MemoryLayerManager` 上的两次调用不会交错执行、丢失更新（P0-3）。
+     * 跨进程安全性由 `with_locked_hot_file` 中的 fs2 建议锁提供。
+     */
     hot_lock: Mutex<()>,
-    /// Typed store for warm/cold layers.
+    /// 温/冷层所使用的类型化存储。
     typed_store: TypedMemoryStore,
-    /// Change log for audit trail.
+    /// 用于审计追踪的变更日志。
     change_log: Box<dyn ChangeLog>,
-    /// A failed journal open remains a hard mutation error, even though this
-    /// legacy constructor cannot return Result.
+    /// 打开日志失败仍然是一个硬性的变更错误，尽管这个旧式构造函数无法返回 Result。
     operation_journal: std::result::Result<MemoryOperationJournal, String>,
+    /// 序列化所有操作日志读写的进程内锁。
     operation_lock: Arc<Mutex<()>>,
+    /// 标记是否已完成一次待处理操作的对账。
     reconciled: AtomicBool,
-    /// Security guard for write-time checks (secret scan, injection, rate limit).
+    /// 用于写入时检查（密钥扫描、注入检测、限流）的安全守卫。
     security_guard: EvolutionSecurityGuard,
-    /// Optional observer called after persisted evolution changes.
+    /// 在持久化演化变更后被调用的可选观察者。
     evolution_observer: Option<Arc<dyn EvolutionObserver>>,
 }
 
-/// Observer for durable memory and skill-evolution events.
+/// 用于持久化记忆与技能演化事件的观察者。
 pub trait EvolutionObserver: Send + Sync {
-    /// Called after a memory has reached the layered store.
+    /// 在一条记忆到达分层存储之后被调用。
     fn on_memory_write<'a>(&'a self, _key: &'a str, _source: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 
-    /// Called after a memory layer transition is fully persisted.
+    /// 在一次内存层级迁移被完全持久化之后被调用。
     fn on_memory_layer_change<'a>(
         &'a self,
         _key: &'a str,
@@ -342,55 +381,59 @@ pub trait EvolutionObserver: Send + Sync {
         Box::pin(async {})
     }
 
-    /// Called after a new skill candidate is persisted.
+    /// 在一个新的技能候选被持久化之后被调用。
     fn on_skill_candidate_detected<'a>(&'a self, _skill_name: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 
-    /// Called after a skill health report is computed.
+    /// 在一次技能健康检查报告被计算出来之后被调用。
     fn on_skill_health_check<'a>(&'a self, _skill_name: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 }
 
-/// Guard holding an exclusive lock on the MEMORY.md hot layer plus the
-/// freshly-loaded `MemoryFile`.
-///
-/// Created by [`MemoryLayerManager::lock_hot_file`]. Hold it across async
-/// work, then call [`commit`](Self::commit) to persist or drop to discard. The
-/// in-process Mutex and the cross-process flock are released on drop (the
-/// flock also auto-releases if the process dies, so a kill -9 cannot wedge a
-/// peer).
+/**
+ * 持有 MEMORY.md 热层排他锁以及刚加载出的 `MemoryFile` 的守卫。
+ *
+ * 由 [`MemoryLayerManager::lock_hot_file`] 创建。在异步操作期间持有它，
+ * 然后调用 [`commit`](Self::commit) 持久化，或者直接丢弃以放弃变更。
+ * 进程内 Mutex 与跨进程 flock 都会在丢弃时释放（flock 在进程被
+ * kill -9 杀死时也会由操作系统自动释放，因此不会卡死其他进程）。
+ */
 struct HotFileGuard<'a> {
     #[cfg(test)]
     manager: &'a MemoryLayerManager,
+    /// 已加载、可能会被修改的 MEMORY.md 结构。
     file: MemoryFile,
-    /// In-process Mutex guard (`tokio::sync::MutexGuard`, which is `Send`, so
-    /// the guard can be held across `.await`s). Keeps other tasks on the same
-    /// manager out of the critical section until this guard drops.
+    /**
+     * 进程内 Mutex 守卫（`tokio::sync::MutexGuard`，它是 `Send` 的，
+     * 因此该守卫可以跨越 `.await` 点持有）。在该守卫释放之前，
+     * 阻止同一管理器上的其他任务进入临界区。
+     */
     _inproc: tokio::sync::MutexGuard<'a, ()>,
-    /// Holds the cross-process advisory lock; dropped to release. The flock is
-    /// also released by the OS on fd close (kill-safe).
+    /// 持有跨进程建议锁；丢弃时释放。该 flock 在文件描述符关闭时
+    /// 也会由操作系统释放（对 kill 是安全的）。
     _lock_file: std::fs::File,
 }
 
 impl<'a> HotFileGuard<'a> {
-    /// Persist the (possibly mutated) `MemoryFile` back to disk, still under
-    /// the held locks.
+    /// 在仍持有锁的情况下，将（可能已被修改的）`MemoryFile` 持久化回磁盘。
     #[cfg(test)]
     fn commit(self) -> std::io::Result<()> {
         self.manager.write_memory_file(&self.file)
-        // self drops here: inproc guard + lock file fd dropped → both released.
+        // self 在此处被丢弃：进程内守卫与锁文件的 fd 均被释放 → 两把锁都被释放。
     }
 }
 
 impl MemoryLayerManager {
-    /// Create a new layer manager.
-    ///
-    /// # Arguments
-    /// * `echo_agent_dir` — Path to the `.echo-agent/` directory (hot layer MEMORY.md will be inside).
-    /// * `store` — The underlying Store implementation for warm/cold layers.
-    /// * `change_log` — Audit log for recording all mutations.
+    /**
+     * 创建一个新的分层管理器。
+     *
+     * # 参数
+     * * `echo_agent_dir` — `.echo-agent/` 目录的路径（热层 MEMORY.md 将位于其中）。
+     * * `store` — 温/冷层所使用的底层 Store 实现。
+     * * `change_log` — 用于记录所有变更的审计日志。
+     */
     pub fn new(
         echo_agent_dir: PathBuf,
         store: Arc<dyn Store>,
@@ -416,8 +459,10 @@ impl MemoryLayerManager {
         }
     }
 
-    /// Construct a manager that rejects a missing or corrupt recovery journal.
-    /// Call [`Self::reconcile_pending`] before handing its Store to readers.
+    /**
+     * 构造一个在恢复日志缺失或损坏时会直接拒绝的管理器。
+     * 在把 Store 交给读取方之前，请先调用 [`Self::reconcile_pending`]。
+     */
     pub fn try_new(
         echo_agent_dir: PathBuf,
         store: Arc<dyn Store>,
@@ -428,18 +473,20 @@ impl MemoryLayerManager {
         Ok(manager)
     }
 
-    /// Configure an observer invoked after successful durable evolution events.
+    /// 配置一个在持久化演化事件成功后被调用的观察者。
     pub fn with_evolution_observer(mut self, observer: Arc<dyn EvolutionObserver>) -> Self {
         self.evolution_observer = Some(observer);
         self
     }
 
+    /// 获取操作日志的引用；日志不可用时返回错误。
     fn operation_journal(&self) -> Result<&MemoryOperationJournal> {
         self.operation_journal.as_ref().map_err(|error| {
             ReactError::Other(format!("memory operation journal unavailable: {error}"))
         })
     }
 
+    /// 将内容与元数据序列化为一份类型化记忆投影值。
     fn typed_value(content: &str, meta: MemoryMeta) -> Result<serde_json::Value> {
         TypedMemoryValue::new(content, meta)
             .to_value()
@@ -448,6 +495,7 @@ impl MemoryLayerManager {
             })
     }
 
+    /// 在已解析的热层文件中查找指定键的当前值。
     fn hot_value(file: &MemoryFile, key: &str) -> Option<HotValue> {
         file.entries
             .iter()
@@ -458,6 +506,7 @@ impl MemoryLayerManager {
             })
     }
 
+    /// 在热层文件中写入、替换或删除（`value` 为 `None` 时）指定键的条目。
     fn set_hot_value(file: &mut MemoryFile, key: &str, value: Option<&HotValue>) -> Result<()> {
         file.entries.retain(|entry| entry.key != key);
         let pattern = format!("- **[{key}]**");
@@ -484,6 +533,7 @@ impl MemoryLayerManager {
         Ok(())
     }
 
+    /// 归一化一份温层投影，剔除召回遥测字段以便做语义比较。
     fn semantic_warm(value: &serde_json::Value) -> serde_json::Value {
         let mut normalized = value.clone();
         if let Some(meta) = normalized
@@ -496,6 +546,7 @@ impl MemoryLayerManager {
         normalized
     }
 
+    /// 判断两份温层投影在剔除召回遥测字段后是否语义相等。
     fn warm_matches(
         current: Option<&serde_json::Value>,
         expected: Option<&serde_json::Value>,
@@ -509,6 +560,7 @@ impl MemoryLayerManager {
         }
     }
 
+    /// 将当前投影中的召回遥测字段（取较大值）合并进目标投影，避免被覆盖丢失。
     fn preserve_recall_telemetry(
         current: Option<&serde_json::Value>,
         desired: &serde_json::Value,
@@ -533,11 +585,13 @@ impl MemoryLayerManager {
         result
     }
 
+    /// 应用单个记忆操作（以其自身作为唯一的历史记录）。
     async fn apply_operation(&self, operation: &MemoryOperation) -> Result<()> {
         self.apply_operation_with_history(operation, std::slice::from_ref(operation))
             .await
     }
 
+    /// 在给定操作历史的校验下，将一个记忆操作应用到热层与温层。
     async fn apply_operation_with_history(
         &self,
         operation: &MemoryOperation,
@@ -570,8 +624,8 @@ impl MemoryLayerManager {
             )));
         }
 
-        // Destination-first on layer moves. Every intermediate state is
-        // repairable from the durable intent, including a cancelled future.
+        /* 层级迁移时优先写入目标端。每一个中间状态都可以从持久化的意图中
+         * 修复回来，包括一个被取消的 future。 */
         if operation.hot_after.is_some() && current_hot != operation.hot_after {
             Self::set_hot_value(&mut hot.file, &operation.key, operation.hot_after.as_ref())?;
             self.write_memory_file(&hot.file)
@@ -604,6 +658,7 @@ impl MemoryLayerManager {
         Ok(())
     }
 
+    /// 结算一个操作批次：应用每个操作、幂等记录审计日志，并将批次标记为已结算。
     async fn settle_batch(&self, batch: &MemoryOperationBatch) -> Result<()> {
         for operation in &batch.operations {
             self.apply_operation(operation).await?;
@@ -612,6 +667,7 @@ impl MemoryLayerManager {
         self.operation_journal()?.settle(&batch.id)
     }
 
+    /// 在已持有序列化锁的前提下，对账所有待处理的记忆操作。
     async fn reconcile_pending_locked(&self) -> Result<()> {
         let history = self.operation_journal()?.history()?;
         let mut by_key = BTreeMap::<String, Vec<MemoryOperation>>::new();
@@ -642,13 +698,16 @@ impl MemoryLayerManager {
         Ok(())
     }
 
-    /// Finish prepared memory operations after restart or an uncertain failure.
-    /// Repeated calls replay the same identity and never append duplicate audit.
+    /**
+     * 在重启或发生不确定失败后，完成已准备但尚未结算的记忆操作。
+     * 重复调用会以相同的身份重放，绝不会追加重复的审计记录。
+     */
     pub async fn reconcile_pending(&self) -> Result<()> {
         let _serial = self.operation_lock.lock().await;
         self.reconcile_pending_locked().await
     }
 
+    /// 解析一个回滚目标当前对应的日志批次 ID。
     fn rollback_target_batch_id(
         &self,
         target: &MemoryRollbackTarget,
@@ -681,6 +740,7 @@ impl MemoryLayerManager {
         }
     }
 
+    /// 解析一个回滚目标：返回可回滚的历史条目，或说明为何无法回滚的结果。
     fn rollback_resolution<'a>(
         &self,
         target: &MemoryRollbackTarget,
@@ -743,7 +803,7 @@ impl MemoryLayerManager {
         Ok(Ok(item))
     }
 
-    /// Preview a later rollback without creating an inverse batch.
+    /// 预览之后的一次回滚，但不会创建逆向批次。
     pub async fn preview_rollback(
         &self,
         target: &MemoryRollbackTarget,
@@ -766,7 +826,7 @@ impl MemoryLayerManager {
         }
     }
 
-    /// Alias for callers that use the shorter rollback vocabulary.
+    /// 为偏好使用更短回滚词汇的调用方提供的别名。
     pub async fn preview(
         &self,
         target: &MemoryRollbackTarget,
@@ -774,6 +834,7 @@ impl MemoryLayerManager {
         self.preview_rollback(target).await
     }
 
+    /// 构造一份回滚回执。
     fn rollback_receipt(
         request_id: &str,
         target_batch_id: &str,
@@ -794,6 +855,7 @@ impl MemoryLayerManager {
         }
     }
 
+    /// 计算与给定变更类型相对应的逆向变更类型。
     fn inverse_change_type(change_type: ChangeType) -> ChangeType {
         match change_type {
             ChangeType::Create => ChangeType::Delete,
@@ -804,6 +866,7 @@ impl MemoryLayerManager {
         }
     }
 
+    /// 构造一份可机读的回滚前/后投影摘要，用于审计记录。
     fn rollback_projection_summary(
         warm: &Option<serde_json::Value>,
         hot: &Option<HotValue>,
@@ -828,12 +891,13 @@ impl MemoryLayerManager {
         })
     }
 
-    /// Create and settle one durable inverse batch for a settled memory batch.
-    ///
-    /// The request ID is persisted in the inverse batch lineage. Replaying the
-    /// same request returns `AlreadyApplied`; reusing it for another target
-    /// fails closed. Each inverse is a new batch, so rollback-of-rollback is
-    /// ordinary later rollback with a fresh request ID.
+    /**
+     * 为一个已结算的记忆批次创建并结算一个持久化的逆向批次。
+     *
+     * 请求 ID 会被持久化在逆向批次的血统信息中。重放同一个请求会返回
+     * `AlreadyApplied`；将其复用于另一个目标则会直接失败拒绝。每一次逆向
+     * 都是一个新批次，因此"回滚的回滚"只是一次使用新请求 ID 的普通回滚。
+     */
     pub async fn rollback_memory(
         &self,
         request_id: &str,
@@ -964,7 +1028,7 @@ impl MemoryLayerManager {
         )))
     }
 
-    /// Alias for callers that use the shorter rollback vocabulary.
+    /// 为偏好使用更短回滚词汇的调用方提供的别名。
     pub async fn rollback(
         &self,
         request_id: &str,
@@ -973,6 +1037,7 @@ impl MemoryLayerManager {
         self.rollback_memory(request_id, target).await
     }
 
+    /// 在校验期望的当前状态后，对一个记忆键执行一次层级/内容迁移。
     async fn transition(
         &self,
         key: &str,
@@ -1051,24 +1116,25 @@ impl MemoryLayerManager {
         .await
     }
 
-    // ── Reading ─────────────────────────────────────────────────────
+    // ── 读取 ─────────────────────────────────────────────────────
 
-    /// Read the hot layer content (MEMORY.md body, frontmatter stripped).
+    /// 读取热层内容（MEMORY.md 正文，去除 frontmatter）。
     ///
-    /// Returns an error while an operation awaits reconciliation.
+    /// 若仍有操作在等待对账，会返回错误。
     pub fn read_hot_content(&self) -> Result<String> {
         let _serial = self.clean_read_guard()?;
         Ok(self.parse_memory_file().body)
     }
 
-    /// Read the hot layer metadata (MEMORY.md YAML frontmatter entries).
+    /// 读取热层元数据（MEMORY.md 的 YAML frontmatter 条目）。
     ///
-    /// Returns an error while an operation awaits reconciliation.
+    /// 若仍有操作在等待对账，会返回错误。
     pub fn read_hot_meta(&self) -> Result<Vec<HotEntryMeta>> {
         let _serial = self.clean_read_guard()?;
         Ok(self.parse_memory_file().entries)
     }
 
+    /// 获取一个"读取安全"守卫：要求没有未结算的操作，且已完成过对账。
     fn clean_read_guard(&self) -> Result<tokio::sync::MutexGuard<'_, ()>> {
         let guard = self.operation_lock.try_lock().map_err(|_| {
             ReactError::Other("memory mutation in progress; read after settlement".into())
@@ -1084,21 +1150,23 @@ impl MemoryLayerManager {
         Ok(guard)
     }
 
-    /// Determine which layer a memory key currently resides in.
-    ///
-    /// Checks hot (MEMORY.md), then warm (Store). Stage4 removed the cold
-    /// layer — Archived memories live on in the warm/unified namespace.
-    /// Returns `None` if the key is not found in any layer.
+    /**
+     * 判断一个记忆键当前所处的层级。
+     *
+     * 依次检查热层（MEMORY.md）与温层（Store）。stage4 移除了冷层——
+     * 已归档的记忆继续存活在温/统一命名空间中。
+     * 若该键在任何层都未找到，返回 `None`。
+     */
     pub async fn locate(&self, key: &str) -> Result<Option<(MemoryLayer, TypedMemoryEntry)>> {
         let _serial = self.operation_lock.lock().await;
         self.reconcile_pending_locked().await?;
-        // Check hot layer
+        // 检查热层
         let file = self.parse_memory_file();
         if let Some(entry) = self.find_in_hot(&file, key) {
             return Ok(Some((MemoryLayer::Hot, entry)));
         }
 
-        // Check warm layer (unified namespace; includes Archived entries)
+        // 检查温层（统一命名空间；包含已归档条目）
         if let Some(entry) = self.typed_store.get_typed(WARM_NAMESPACE, key).await? {
             return Ok(Some((MemoryLayer::Warm, entry)));
         }
@@ -1106,7 +1174,7 @@ impl MemoryLayerManager {
         Ok(None)
     }
 
-    /// Get all hot entries as TypedMemoryEntries (reconstructed from MEMORY.md).
+    /// 获取全部热层条目，重建为 TypedMemoryEntries（来自 MEMORY.md）。
     pub fn list_hot(&self) -> Result<Vec<TypedMemoryEntry>> {
         let _serial = self.clean_read_guard()?;
         let file = self.parse_memory_file();
@@ -1117,30 +1185,32 @@ impl MemoryLayerManager {
             .collect())
     }
 
-    /// Get all warm entries matching a filter.
+    /// 获取所有匹配给定过滤条件的温层条目。
     pub async fn list_warm(&self, filter: &MemoryFilter) -> Result<Vec<TypedMemoryEntry>> {
         let _serial = self.operation_lock.lock().await;
         self.reconcile_pending_locked().await?;
         self.typed_store.list_typed(WARM_NAMESPACE, filter).await
     }
 
-    // ── Promotion / Demotion ────────────────────────────────────────
-    // (stage4 B1) `promote` (the cold→warm dispatcher) was removed — zero
-    // callers, and the cold layer no longer exists. Warm→hot promotion still
-    // happens via `consider_promotion` → `promote_warm_to_hot`.
+    // ── 晋升 / 降级 ────────────────────────────────────────
+    /* （stage4 B1）`promote`（冷层→温层的调度函数）已被移除——它没有任何
+     * 调用方，且冷层已不复存在。温层→热层的晋升仍然通过
+     * `consider_promotion` → `promote_warm_to_hot` 进行。 */
 
-    /// Demote a memory: hot→warm, or warm→Archived (in place).
-    /// Promote a memory up one tier: cold→warm, or warm→hot.
-    ///
-    /// This is the inverse of [`demote`](Self::demote). stage4 collapsed the
-    /// separate cold tier into `Warm`+`Archived`, so:
-    /// - `Warm → Hot`: delegates to [`consider_promotion`](Self::consider_promotion).
-    /// - `Cold → Warm`: only meaningful for consumers maintaining a separate
-    ///   cold store under [`COLD_NAMESPACE`]; default path returns `Ok(None)`.
-    /// - `Hot`: already at top, returns `Ok(None)`.
-    ///
-    /// Retained as pub API (aligned with Letta/MemGPT promotion + OpenClaw
-    /// Dreaming) so consumers with a three-tier layout can hook in.
+    /**
+     * 降级一条记忆：热层→温层，或温层→已归档（原地标记）。
+     * 将一条记忆向上晋升一层：冷层→温层，或温层→热层。
+     *
+     * 这是 [`demote`](Self::demote) 的逆操作。stage4 已将独立的冷层
+     * 折叠进 `Warm`+`Archived`，因此：
+     * - `Warm → Hot`：委托给 [`consider_promotion`](Self::consider_promotion)。
+     * - `Cold → Warm`：仅对维护独立冷存储的消费者（在
+     *   [`COLD_NAMESPACE`] 下）有意义；默认路径返回 `Ok(None)`。
+     * - `Hot`：已经处于顶层，返回 `Ok(None)`。
+     *
+     * 作为 pub API 保留下来（对齐 Letta/MemGPT 的晋升理念以及
+     * OpenClaw Dreaming），供采用三层结构的消费者接入。
+     */
     pub async fn promote(&self, key: &str) -> Result<Option<LayerChangeResult>> {
         let Some((layer, _entry)) = self.locate(key).await? else {
             return Ok(None);
@@ -1158,12 +1228,13 @@ impl MemoryLayerManager {
         }
     }
 
-    ///
-    /// (stage4 B1) Warm demotion no longer moves the entry to a cold namespace;
-    /// it marks `status = Archived` in place so the memory stays recallable
-    /// (with decay) in the unified namespace. Revival Archived→Active is
-    /// handled by Dreaming (stage 2). `update_meta` takes a full `MemoryMeta`
-    /// (not a closure), hence get-modify-put.
+    /**
+     * （stage4 B1）温层降级不再把条目搬到一个冷命名空间；
+     * 而是原地把 `status` 标记为 `Archived`，使该记忆在统一命名空间中
+     * 继续保持可召回（伴随衰减）。从 Archived 复活为 Active 由
+     * Dreaming（stage 2）负责处理。`update_meta` 接收的是完整的
+     * `MemoryMeta`（而不是闭包），因此这里采用先读后写（get-modify-put）。
+     */
     pub async fn demote(&self, key: &str, reason: &str) -> Result<LayerChangeResult> {
         let Some((layer, entry)) = self.locate(key).await? else {
             return Err(ReactError::Config(Box::new(ConfigError::ConfigFileError(
@@ -1208,12 +1279,14 @@ impl MemoryLayerManager {
         }
     }
 
-    /// Revive an Archived warm memory back to Active in place (stage4 F1 Dreaming, G2).
-    ///
-    /// `MemoryMeta::is_hot_eligible()` requires `status == Active`, so Archived
-    /// memories must be revived before `consider_promotion` can promote them to
-    /// hot. Get-modify-put (`update_meta` takes a full `MemoryMeta`, not a
-    /// closure). Returns `true` only if the entry was Archived and is now Active.
+    /**
+     * 原地将一条已归档的温层记忆复活为 Active（stage4 F1 Dreaming, G2）。
+     *
+     * `MemoryMeta::is_hot_eligible()` 要求 `status == Active`，因此已归档
+     * 的记忆必须先被复活，`consider_promotion` 才能将其晋升到热层。
+     * 采用先读后写（`update_meta` 接收的是完整的 `MemoryMeta`，而不是
+     * 闭包）。仅当条目此前为 Archived 且现在变为 Active 时才返回 `true`。
+     */
     pub async fn revive_archived(&self, key: &str) -> Result<bool> {
         if let Some(entry) = self.typed_store.get_typed(WARM_NAMESPACE, key).await?
             && entry.meta.status == MemoryStatus::Archived
@@ -1242,18 +1315,20 @@ impl MemoryLayerManager {
         Ok(false)
     }
 
-    /// Permanently delete a memory from whichever layer holds it (C4 fix).
-    ///
-    /// Looks up `key` via [`locate`](Self::locate): hot entries are removed from
-    /// MEMORY.md (frontmatter + body); warm entries are deleted from the typed
-    /// store via `delete_typed`. Returns `true` if a memory was found and
-    /// removed, `false` if the key does not exist in any layer.
-    ///
-    /// This closes the namespace gap where the product `forget` tool (legacy
-    /// `ForgetTool`) deleted from the per-agent namespace `[agent_name,
-    /// "memories"]` while `remember` writes the unified `["agent", "memories"]`
-    /// — so `forget` could never delete what `remember` stored. The layered
-    /// variant (`LayeredForgetTool`) routes here.
+    /**
+     * 从任何持有该记忆的层级中永久删除它（C4 修复）。
+     *
+     * 通过 [`locate`](Self::locate) 查找 `key`：热层条目从 MEMORY.md
+     * 中移除（frontmatter + 正文）；温层条目通过 `delete_typed` 从类型化
+     * 存储中删除。如果找到并删除了记忆则返回 `true`，若该键在任何
+     * 层都不存在则返回 `false`。
+     *
+     * 这修复了一个命名空间缺口：产品的 `forget` 工具（旧版
+     * `ForgetTool`）曾从按 agent 划分的命名空间 `[agent_name,
+     * "memories"]` 删除，而 `remember` 写入的却是统一的
+     * `["agent", "memories"]`——导致 `forget` 永远删不掉 `remember`
+     * 存下的内容。分层版本（`LayeredForgetTool`）改为走这里。
+     */
     pub async fn delete_memory(&self, key: &str) -> Result<bool> {
         let Some((layer, entry)) = self.locate(key).await? else {
             return Ok(false);
@@ -1294,19 +1369,22 @@ impl MemoryLayerManager {
         Ok(true)
     }
 
-    /// List all warm-layer typed memories matching `filter` (stage4 F1 Dreaming).
-    ///
-    /// Dreaming scans the unified `["agent","memories"]` namespace to find
-    /// high-recall memories worth promoting and stale low-recall ones to demote.
+    /**
+     * 列出所有匹配 `filter` 的温层类型化记忆（stage4 F1 Dreaming）。
+     *
+     * Dreaming 会扫描统一的 `["agent","memories"]` 命名空间，找出
+     * 值得晋升的高召回记忆，以及应当降级的陈旧低召回记忆。
+     */
     pub async fn list_warm_memories(&self, filter: &MemoryFilter) -> Result<Vec<TypedMemoryEntry>> {
         self.list_warm(filter).await
     }
 
-    /// Apply a previously reviewed semantic-conflict proposal.
-    ///
-    /// The current warm-layer conflict must still exactly match the proposal;
-    /// stale proposals fail before any mutation. The returned snapshots are the
-    /// authoritative undo payload for the caller's review log.
+    /**
+     * 应用一个此前已审阅过的语义冲突提案。
+     *
+     * 当前温层的冲突状态必须与提案精确匹配；过期的提案会在任何
+     * 变更发生之前失败。返回的快照是调用方审阅日志中权威的撤销负载。
+     */
     pub async fn apply_merge_proposal(
         &self,
         proposal: &MemoryConflictProposal,
@@ -1392,6 +1470,7 @@ impl MemoryLayerManager {
         })
     }
 
+    /// 提交一个合并组：主条目保留，其余成员被标记为 Superseded。
     pub(super) async fn commit_merge_group(&self, group: &ConflictGroup) -> Result<MergeResult> {
         let ordered = ordered_conflict_entries(group);
         let Some(primary) = ordered.first() else {
@@ -1485,12 +1564,13 @@ impl MemoryLayerManager {
         })
     }
 
-    /// Legacy merge undo entry point.
-    ///
-    /// Snapshot-only restoration cannot prove a journal tip and is therefore
-    /// retired. Call [`Self::rollback_memory`] with the `batch_id` returned by
-    /// [`Self::apply_merge_proposal`] so the complete merge group is reverted
-    /// through the canonical journal authority.
+    /**
+     * 旧版合并撤销入口。
+     *
+     * 仅基于快照的恢复无法证明日志尖端（journal tip），因此已被淘汰。
+     * 请改用 [`Self::rollback_memory`]，配合 [`Self::apply_merge_proposal`]
+     * 返回的 `batch_id`，通过权威的日志机制还原完整的合并组。
+     */
     #[deprecated(note = "use rollback_memory with AppliedMemoryMerge::batch_id")]
     pub async fn restore_merge_snapshots(&self, _snapshots: &[MemoryMergeSnapshot]) -> Result<()> {
         Err(merge_plan_error(
@@ -1498,9 +1578,9 @@ impl MemoryLayerManager {
         ))
     }
 
-    /// Consider promoting a warm entry to hot if eligible and space exists.
+    /// 若温层条目满足晋升资格且热层仍有容量，则考虑将其晋升到热层。
     ///
-    /// Called after every new memory write.
+    /// 在每次新的记忆写入之后被调用。
     pub async fn consider_promotion(&self, key: &str) -> Result<Option<LayerChangeResult>> {
         let Some((layer, entry)) = self.locate(key).await? else {
             return Ok(None);
@@ -1510,12 +1590,12 @@ impl MemoryLayerManager {
             return Ok(None);
         }
 
-        // Check eligibility
+        // 检查是否满足晋升资格
         if !entry.meta.is_hot_eligible() {
             return Ok(None);
         }
 
-        // Check trust level — untrusted content cannot auto-promote to hot
+        // 检查信任级别 —— 不可信内容不能自动晋升到热层
         use super::security::InputTrustLevel;
         if !InputTrustLevel::from_source(entry.meta.source).can_auto_promote() {
             return Ok(None);
@@ -1524,9 +1604,9 @@ impl MemoryLayerManager {
         self.promote_warm_to_hot(key, entry).await
     }
 
-    /// Enforce the hot layer token budget by demoting lowest-priority entries.
+    /// 通过降级优先级最低的条目来控制热层的 token 预算。
     ///
-    /// Called after every hot-layer write. Returns a list of demotion results.
+    /// 在每次热层写入之后被调用。返回降级结果列表。
     pub async fn enforce_hot_budget(&self) -> Result<Vec<LayerChangeResult>> {
         let mut results = Vec::new();
         loop {
@@ -1553,18 +1633,17 @@ impl MemoryLayerManager {
         Ok(results)
     }
 
-    /// Compute a demotion priority score for a hot entry.
-    ///
-    /// Higher score = more likely to be demoted.
+    /* 计算一个热层条目的降级优先级分数。
+     * 分数越高，越容易被降级。 */
     fn demotion_score(meta: &HotEntryMeta) -> f32 {
         let confidence_factor = 1.0 - meta.confidence;
         let stability_factor = 1.0 - meta.stability;
 
-        // Staleness from time since last promotion (simplified — no access tracking in MEMORY.md)
-        // Use a fixed moderate staleness since we can't track access without the Store
+        /* 自上次晋升以来的陈旧度（简化处理——MEMORY.md 中没有访问追踪）。
+         * 由于脱离 Store 就无法追踪访问情况，这里使用一个固定的中等陈旧度。 */
         let staleness_factor = 0.3;
 
-        // Recency — we don't have last_accessed, so use stability as proxy
+        // 新近度 —— 没有 last_accessed 字段，用 stability 作为替代指标
         let recency_factor = 1.0 - meta.stability;
 
         confidence_factor * 0.35
@@ -1573,18 +1652,18 @@ impl MemoryLayerManager {
             + recency_factor * 0.20
     }
 
-    // ── Write to warm layer ─────────────────────────────────────────
+    // ── 写入温层 ─────────────────────────────────────────
 
-    /// Write a new typed memory to the warm layer and consider promotion.
+    /// 向温层写入一条新的类型化记忆，并考虑是否晋升。
     ///
-    /// Returns `Ok(Some(result))` if the memory was promoted to hot.
+    /// 若该记忆被晋升到热层，返回 `Ok(Some(result))`。
     pub async fn write_memory(
         &self,
         key: &str,
         content: &str,
         meta: MemoryMeta,
     ) -> Result<Option<LayerChangeResult>> {
-        // Security check: scan secrets, detect injection, rate limit, trust assignment.
+        // 安全检查：扫描密钥、检测注入、限流、判定信任级别。
         let trust = InputTrustLevel::from_source(meta.source);
         let verdict = self.security_guard.check_memory_write(content, trust);
 
@@ -1599,7 +1678,7 @@ impl MemoryLayerManager {
             ))));
         }
 
-        // Use sanitized content if secrets were redacted, otherwise original.
+        // 若密钥已被脱敏，则使用脱敏后的内容，否则使用原始内容。
         let safe_content = verdict
             .sanitized_content
             .unwrap_or_else(|| content.to_string());
@@ -1623,15 +1702,15 @@ impl MemoryLayerManager {
         self.notify_memory_write(key, meta.source.as_str().unwrap_or("unknown"))
             .await;
 
-        // Consider promotion
+        // 考虑是否晋升
         self.consider_promotion(key).await
     }
 
-    // ── Search ──────────────────────────────────────────────────────
+    // ── 搜索 ──────────────────────────────────────────────────────
 
-    /// Search across hot and warm layers.
+    /// 跨热层与温层搜索。
     ///
-    /// Hot results come first (higher priority), then warm results.
+    /// 热层结果排在前面（优先级更高），随后是温层结果。
     pub async fn search_layered(
         &self,
         query: &str,
@@ -1641,14 +1720,14 @@ impl MemoryLayerManager {
         self.reconcile_pending_locked().await?;
         let mut results = Vec::new();
 
-        // Search hot layer (keyword match on body)
+        // 搜索热层（对正文做关键词匹配）
         let file = self.parse_memory_file();
         let query_lower = query.to_lowercase();
         for meta in &file.entries {
             if results.len() >= limit {
                 break;
             }
-            // Simple keyword match: check if key or topic contains the query
+            // 简单的关键词匹配：检查键或主题是否包含查询词
             if (meta.key.to_lowercase().contains(&query_lower)
                 || meta.topic.to_lowercase().contains(&query_lower))
                 && let Some(entry) = self.hot_meta_to_entry(meta, &file.body)
@@ -1657,8 +1736,8 @@ impl MemoryLayerManager {
             }
         }
 
-        // (stage4 D1) Warm layer via the unified composite-score recall entry —
-        // same ranking / Superseded filter / recall_count as the auto path.
+        /* （stage4 D1）温层通过统一的复合分数召回入口获取——排序方式、
+         * Superseded 过滤、recall_count 均与自动路径保持一致。 */
         let remaining = limit.saturating_sub(results.len());
         if remaining > 0 {
             let reca =
@@ -1674,15 +1753,16 @@ impl MemoryLayerManager {
         Ok(results)
     }
 
-    // ── Hot layer file I/O ──────────────────────────────────────────
+    // ── 热层文件 I/O ──────────────────────────────────────────
 
-    /// Parse MEMORY.md into structured form.
-    ///
-    /// Returns a default (empty) MemoryFile if the file doesn't exist or can't
-    /// be parsed.
-    ///
-    /// Note: this performs an unlocked read. For any read-modify-write that
-    /// must be atomic, use [`with_locked_hot_file`] instead.
+    /**
+     * 将 MEMORY.md 解析为结构化形式。
+     *
+     * 若文件不存在或无法解析，返回一个默认（空）的 MemoryFile。
+     *
+     * 注意：这是一次不加锁的读取。任何需要原子性的读-改-写操作，
+     * 请改用 [`with_locked_hot_file`]。
+     */
     fn parse_memory_file(&self) -> MemoryFile {
         let raw = match std::fs::read_to_string(&self.hot_path) {
             Ok(content) => content,
@@ -1701,25 +1781,25 @@ impl MemoryLayerManager {
         parse_memory_md(&raw)
     }
 
-    /// Write the MemoryFile back to disk.
+    /// 将 MemoryFile 持久化写回磁盘。
     ///
-    /// Atomic (temp + rename) and `fsync`-ed so a crash cannot leave a torn
-    /// or empty MEMORY.md.
+    /// 采用原子写入（临时文件 + rename）并执行 `fsync`，因此崩溃不会
+    /// 导致 MEMORY.md 出现半写或被清空的情况。
     fn write_memory_file(&self, file: &MemoryFile) -> std::io::Result<()> {
-        // Ensure parent directory exists
+        // 确保父目录存在
         if let Some(parent) = self.hot_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
         let content = format_memory_md(file);
-        // Atomic write: write to temp file, fsync, then rename.
+        // 原子写入：先写入临时文件，fsync，再 rename。
         let tmp_path = self.hot_path.with_extension("md.tmp");
         {
             use std::io::Write;
             let mut tmp = std::fs::File::create(&tmp_path)?;
             tmp.write_all(content.as_bytes())?;
-            // fsync before rename so a crash after rename cannot expose an
-            // empty file (the prior version had no fsync).
+            /* rename 之前先 fsync，这样 rename 之后发生崩溃也不会
+             * 暴露出一个空文件（旧版本没有做 fsync）。 */
             tmp.sync_all()?;
         }
         std::fs::rename(&tmp_path, &self.hot_path)?;
@@ -1730,33 +1810,31 @@ impl MemoryLayerManager {
         Ok(())
     }
 
-    /// Run a synchronous closure with exclusive access to the MEMORY.md hot
-    /// layer. Holds both the in-process Mutex and a cross-process flock for
-    /// the full load → mutate → save.
-    ///
-    /// For async callers that need to `.await` between mutate and save (e.g.
-    /// `enforce_hot_budget`, which writes to the warm Store mid-critical
-    /// section), use [`lock_hot_file`] to get a guard and hold it across the
-    /// awaits instead.
-    /// Acquire both the in-process Mutex and a cross-process flock on the
-    /// MEMORY.md file, returning a guard holding the freshly-loaded
-    /// `MemoryFile`.
-    ///
-    /// The guard can be held across `.await` points (it contains only
-    /// `tokio::sync::MutexGuard` + a `File`, both `Send`), which lets
-    /// `enforce_hot_budget`-style functions do async Store writes inside the
-    /// critical section. Call [`HotFileGuard::commit`] to persist, or drop to
-    /// discard.
-    ///
-    /// Note: the flock acquisition below blocks the calling thread. This is
-    /// acceptable because curator/memory writes are infrequent and
-    /// low-contention; the bounded retry loop prevents indefinite wedging.
+    /**
+     * 以独占方式访问 MEMORY.md 热层来运行一个同步闭包。在完整的
+     * 加载 → 修改 → 保存 过程中，同时持有进程内 Mutex 与跨进程 flock。
+     *
+     * 对于需要在修改与保存之间 `.await`（例如 `enforce_hot_budget`，
+     * 它会在临界区中途向温层 Store 写入）的异步调用方，请改用
+     * [`lock_hot_file`] 获取一个守卫，并让它跨越这些 await 点持有。
+     * 同时获取 MEMORY.md 文件的进程内 Mutex 与跨进程 flock，
+     * 返回一个持有刚加载出的 `MemoryFile` 的守卫。
+     *
+     * 该守卫可以跨越 `.await` 点持有（它只包含 `tokio::sync::MutexGuard`
+     * 和一个 `File`，两者都是 `Send`），这使得类似 `enforce_hot_budget`
+     * 这样的函数可以在临界区内部执行异步的 Store 写入。调用
+     * [`HotFileGuard::commit`] 持久化，或直接丢弃以放弃变更。
+     *
+     * 注意：下面的 flock 获取会阻塞调用线程。这是可以接受的，
+     * 因为 curator/记忆写入并不频繁、竞争程度低；有界重试循环
+     * 可以防止一个卡死的对端把我们永远挂起。
+     */
     async fn lock_hot_file(&self) -> std::io::Result<HotFileGuard<'_>> {
-        // In-process serialization first. tokio::sync::Mutex so the guard is
-        // `Send` and can cross `.await`s.
+        /* 先做进程内序列化。使用 tokio::sync::Mutex 使守卫是
+         * `Send` 的，可以跨越 `.await`。 */
         let inproc = self.hot_lock.lock().await;
 
-        // Cross-process advisory lock on a sidecar file.
+        // 基于旁路文件的跨进程建议锁。
         let lock_path = self.hot_path.with_extension("md.lock");
         let lock_file = std::fs::OpenOptions::new()
             .read(true)
@@ -1768,8 +1846,8 @@ impl MemoryLayerManager {
                 tracing::warn!(error = %e, "hot-file lock sidecar open failed; continuing lockless");
                 e
             })?;
-        // Bounded flock attempt. flock blocks per call; cap total attempts so
-        // a wedged peer cannot hang us forever.
+        /* 有界的 flock 尝试。flock 每次调用都会阻塞；限制总尝试次数，
+         * 以免一个卡死的对端把我们永远挂起。 */
         use fs2::FileExt;
         const MAX_ATTEMPTS: u32 = 600;
         const BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
@@ -1803,7 +1881,7 @@ impl MemoryLayerManager {
         })
     }
 
-    /// Add an entry to the MEMORY.md hot layer.
+    /// 向 MEMORY.md 热层添加一条条目。
     #[cfg(test)]
     async fn add_to_hot(&self, entry: &TypedMemoryEntry) -> std::io::Result<()> {
         let mut guard = self.lock_hot_file().await?;
@@ -1817,13 +1895,13 @@ impl MemoryLayerManager {
         guard.commit()
     }
 
-    /// Find a hot entry by key in the parsed file.
+    /// 在已解析的文件中按键查找一条热层条目。
     fn find_in_hot(&self, file: &MemoryFile, key: &str) -> Option<TypedMemoryEntry> {
         let meta = file.entries.iter().find(|e| e.key == key)?;
         self.hot_meta_to_entry(meta, &file.body)
     }
 
-    /// Reconstruct a TypedMemoryEntry from a HotEntryMeta and the file body.
+    /// 从 HotEntryMeta 与文件正文重建出一个 TypedMemoryEntry。
     fn hot_meta_to_entry(&self, meta: &HotEntryMeta, body: &str) -> Option<TypedMemoryEntry> {
         let content = extract_hot_value_content(body, meta);
         Some(TypedMemoryEntry {
@@ -1838,8 +1916,9 @@ impl MemoryLayerManager {
         })
     }
 
-    // ── Internal promotion/demotion methods ─────────────────────────
+    // ── 内部晋升/降级方法 ─────────────────────────
 
+    /// 将一条温层条目晋升到热层。
     async fn promote_warm_to_hot(
         &self,
         key: &str,
@@ -1867,8 +1946,8 @@ impl MemoryLayerManager {
 
         self.notify_memory_layer_change(key, "warm", "hot").await;
 
-        // Enforce budget after publishing the promotion. Any resulting
-        // hot-to-warm events then retain their real chronological order.
+        /* 在发布这次晋升之后再执行预算控制。这样一来，由此产生的
+         * 任何"热层→温层"事件都能保留真实的时间先后顺序。 */
         self.enforce_hot_budget().await?;
 
         Ok(Some(LayerChangeResult {
@@ -1879,6 +1958,7 @@ impl MemoryLayerManager {
         }))
     }
 
+    /// 将一条热层条目降级到温层。
     async fn demote_hot_to_warm(
         &self,
         key: &str,
@@ -1911,6 +1991,7 @@ impl MemoryLayerManager {
         })
     }
 
+    /// 从一条 TypedMemoryEntry 构造对应的热层元数据。
     fn hot_meta(entry: &TypedMemoryEntry) -> HotEntryMeta {
         HotEntryMeta {
             key: entry.key.clone(),
@@ -1931,6 +2012,7 @@ impl MemoryLayerManager {
         }
     }
 
+    /// 构造一个已填充来源层/目标层/原因/触发方式的变更条目构建器。
     fn change_builder(
         key: &str,
         change_type: ChangeType,
@@ -1953,12 +2035,14 @@ impl MemoryLayerManager {
         builder.reason(reason).trigger(trigger)
     }
 
+    /// 若配置了观察者，通知一次记忆写入事件。
     async fn notify_memory_write(&self, key: &str, source: &str) {
         if let Some(observer) = &self.evolution_observer {
             observer.on_memory_write(key, source).await;
         }
     }
 
+    /// 若配置了观察者，通知一次内存层级变更事件。
     async fn notify_memory_layer_change(&self, key: &str, from_layer: &str, to_layer: &str) {
         if let Some(observer) = &self.evolution_observer {
             observer
@@ -1968,39 +2052,38 @@ impl MemoryLayerManager {
     }
 }
 
-// ── Parsing functions ──────────────────────────────────────────────────
+// ── 解析函数 ──────────────────────────────────────────────────────
 
-/// Parse a MEMORY.md file into structured form.
-///
-/// The file is expected to have YAML frontmatter between `---` markers,
-/// followed by a markdown body with bullet entries.
+/* 将一份 MEMORY.md 文件解析为结构化形式。
+ * 该文件预期在 `---` 标记之间有 YAML frontmatter，
+ * 随后是包含列表条目的 markdown 正文。 */
 fn parse_memory_md(raw: &str) -> MemoryFile {
     let trimmed = raw.trim_start();
 
-    // Check for YAML frontmatter
+    // 检查是否存在 YAML frontmatter
     if !trimmed.starts_with("---") {
-        // No frontmatter — treat entire content as body
+        // 没有 frontmatter —— 将全部内容当作正文处理
         return MemoryFile {
             entries: Vec::new(),
             body: raw.to_string(),
         };
     }
 
-    // Find the closing ---
-    let rest = &trimmed[3..]; // skip opening ---
+    // 查找结束的 ---
+    let rest = &trimmed[3..]; // 跳过开头的 ---
     let end_marker = rest.find("\n---").or_else(|| rest.find("\r\n---"));
 
     let (frontmatter_str, body_str) = match end_marker {
         Some(pos) => {
             let fm = &rest[..pos];
-            let after_marker = &rest[pos + 4..]; // skip \n---
+            let after_marker = &rest[pos + 4..]; // 跳过 \n---
             let body = after_marker
                 .trim_start_matches('\n')
                 .trim_start_matches('\r');
             (fm, body)
         }
         None => {
-            // No closing marker — treat as body only
+            // 没有结束标记 —— 全部当作正文处理
             return MemoryFile {
                 entries: Vec::new(),
                 body: raw.to_string(),
@@ -2010,7 +2093,7 @@ fn parse_memory_md(raw: &str) -> MemoryFile {
 
     let entries = match serde_yaml_ng::from_str::<MemoryFileFrontmatter>(frontmatter_str) {
         Ok(fm) => fm.entries.unwrap_or_default(),
-        Err(_) => Vec::new(), // Malformed frontmatter — graceful fallback
+        Err(_) => Vec::new(), // frontmatter 格式有误 —— 优雅降级
     };
 
     MemoryFile {
@@ -2019,7 +2102,7 @@ fn parse_memory_md(raw: &str) -> MemoryFile {
     }
 }
 
-/// Format a MemoryFile back to the MEMORY.md format.
+/// 将一个 MemoryFile 格式化回 MEMORY.md 格式。
 fn format_memory_md(file: &MemoryFile) -> String {
     let mut out = String::new();
 
@@ -2030,12 +2113,12 @@ fn format_memory_md(file: &MemoryFile) -> String {
         };
         match serde_yaml_ng::to_string(&fm) {
             Ok(yaml) => {
-                // serde_yaml adds "---\n" prefix, strip it
+                // serde_yaml 会添加 "---\n" 前缀，这里将其剥离
                 let yaml = yaml.trim_start_matches("---\n");
                 out.push_str(yaml);
             }
             Err(_) => {
-                // Fallback: empty frontmatter
+                // 兜底：使用空 frontmatter
                 out.push_str("entries: []\n");
             }
         }
@@ -2047,14 +2130,14 @@ fn format_memory_md(file: &MemoryFile) -> String {
     out
 }
 
-/// Helper struct for YAML frontmatter deserialization.
+/// 用于 YAML frontmatter 反序列化的辅助结构体。
 #[derive(Debug, Serialize, Deserialize)]
 struct MemoryFileFrontmatter {
     #[serde(default)]
     entries: Option<Vec<HotEntryMeta>>,
 }
 
-/// Extract the content of a specific hot entry from the body by key.
+/// 按键从正文中提取某条热层条目的内容。
 fn extract_hot_entry_content(body: &str, key: &str) -> String {
     let pattern = format!("- **[{key}]** ");
     body.lines()
@@ -2071,21 +2154,21 @@ fn extract_hot_value_content(body: &str, meta: &HotEntryMeta) -> String {
     }
 }
 
-/// Estimate the token count of a string.
-///
-/// Uses a conservative heuristic: ~4 chars per token for Latin,
-/// ~1.5 chars per token for CJK. We use 3 chars/token as a middle ground.
+/* 估算一个字符串的 token 数量。
+ * 采用一种保守的启发式方法：拉丁字符约每 4 个字符 1 个 token，
+ * 中日韩字符约每 1.5 个字符 1 个 token。我们取 3 字符/token 作为折中。 */
 fn estimate_tokens(text: &str) -> usize {
     let latin_chars = text.chars().filter(|c| c.is_ascii()).count();
     let cjk_chars = text.chars().filter(|c| !c.is_ascii()).count();
-    // Latin: ~4 chars/token, CJK: ~1.5 chars/token
+    // 拉丁字符：约 4 字符/token，中日韩字符：约 1.5 字符/token
     let latin_tokens = latin_chars / 4;
     let cjk_tokens = (cjk_chars as f32 / 1.5).ceil() as usize;
     latin_tokens + cjk_tokens
 }
 
-/// Extension for MemorySource to provide as_str.
+/// 为 MemorySource 提供 as_str 的扩展 trait。
 trait MemorySourceExt {
+    /// 返回该来源对应的字符串表示。
     fn as_str(&self) -> Option<&'static str>;
 }
 
@@ -2102,13 +2185,13 @@ impl MemorySourceExt for MemorySource {
     }
 }
 
-/// Extension for InputTrustLevel to derive from MemorySource.
+/// 为 InputTrustLevel 提供从 MemorySource 推导的扩展。
 mod security_ext {
     use super::super::security::InputTrustLevel;
     use echo_core::memory::types::MemorySource;
 
     impl InputTrustLevel {
-        /// Derive the trust level from the memory source.
+        /// 根据记忆来源推导出信任级别。
         pub fn from_source(source: MemorySource) -> Self {
             match source {
                 MemorySource::ExplicitSave | MemorySource::UserCorrection => {
@@ -2134,7 +2217,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// A no-op ChangeLog for testing.
+    /// 用于测试的一个空操作（no-op）ChangeLog。
     struct NullChangeLog;
     impl ChangeLog for NullChangeLog {
         fn record(&self, _entry: ChangeEntry) -> Result<()> {
@@ -3135,7 +3218,7 @@ entries:
             last_promoted: "2026-06-15T10:00:00Z".to_string(),
         };
 
-        // Higher confidence/stability → lower demotion score
+        // 置信度/稳定性越高 → 降级分数越低
         assert!(
             MemoryLayerManager::demotion_score(&high_quality)
                 < MemoryLayerManager::demotion_score(&low_quality)
@@ -3155,11 +3238,11 @@ entries:
 
     #[test]
     fn test_estimate_tokens() {
-        // Pure Latin
+        // 纯拉丁字符
         let latin = "a".repeat(100);
         assert!(estimate_tokens(&latin) <= 30);
 
-        // Mixed
+        // 混合字符
         let mixed = format!("Hello 世界 {}", "x".repeat(50));
         let tokens = estimate_tokens(&mixed);
         assert!(tokens > 0);
@@ -3169,7 +3252,7 @@ entries:
     async fn test_write_memory_and_consider_promotion() -> Result<()> {
         let manager = make_manager();
 
-        // High confidence, high stability → should be eligible for hot
+        // 高置信度、高稳定性 → 应当符合晋升热层的资格
         let meta = MemoryMeta::new(
             MemoryType::UserPreference,
             MemorySource::ExplicitSave,
@@ -3183,13 +3266,13 @@ entries:
             .await
             .expect("write_memory");
 
-        // ExplicitSave with high confidence/stability → should auto-promote
+        // ExplicitSave 且高置信度/高稳定性 → 应当自动晋升
         assert!(result.is_some());
         let change = result.unwrap();
         assert_eq!(change.from_layer, MemoryLayer::Warm);
         assert_eq!(change.to_layer, MemoryLayer::Hot);
 
-        // Verify it's in hot
+        // 验证它确实位于热层
         let content = manager.read_hot_content()?;
         assert!(content.contains("**[test_pref]**"));
         Ok(())
@@ -3398,7 +3481,7 @@ entries:
     async fn test_write_memory_not_eligible_for_hot() -> Result<()> {
         let manager = make_manager();
 
-        // Low confidence → should NOT be promoted to hot
+        // 低置信度 → 不应被晋升到热层
         let meta = MemoryMeta::new(
             MemoryType::ProjectFact,
             MemorySource::AutoExtracted,
@@ -3412,7 +3495,7 @@ entries:
             .await
             .expect("write_memory");
 
-        // Not eligible → should stay in warm
+        // 不符合资格 → 应保留在温层
         assert!(result.is_none());
         assert!(manager.read_hot_content()?.is_empty());
         Ok(())
@@ -4051,10 +4134,10 @@ entries:
         assert_eq!(result.from_layer, MemoryLayer::Hot);
         assert_eq!(result.to_layer, MemoryLayer::Warm);
 
-        // Should no longer be in hot
+        // 不应再位于热层
         assert!(!manager.read_hot_content()?.contains("**[demote_test]**"));
 
-        // Should be in warm
+        // 应位于温层
         let location = manager.locate("demote_test").await?;
         assert!(location.is_some());
         let (layer, _) = location.unwrap();
@@ -4066,7 +4149,7 @@ entries:
     async fn test_search_layered_returns_hot_first() {
         let manager = make_manager();
 
-        // Add to hot
+        // 添加到热层
         let hot_entry = TypedMemoryEntry {
             key: "hot_build".to_string(),
             content: "Hot build memory".to_string(),
@@ -4085,7 +4168,7 @@ entries:
         };
         manager.add_to_hot(&hot_entry).await.expect("add to hot");
 
-        // Add to warm
+        // 添加到温层
         let warm_meta = MemoryMeta::new(
             MemoryType::ProjectFact,
             MemorySource::AutoExtracted,
@@ -4102,7 +4185,7 @@ entries:
             .await
             .expect("search_layered");
 
-        // Hot should come first
+        // 热层结果应排在前面
         if results.len() >= 2 {
             assert_eq!(results[0].0, MemoryLayer::Hot);
         }
@@ -4115,10 +4198,10 @@ entries:
         assert_eq!(MemoryLayer::Warm.to_string(), "warm");
     }
 
-    /// Regression for P0-3 (MEMORY.md no lock): two concurrent `add_to_hot`
-    /// calls on the same `MemoryLayerManager` must both land. Before locking,
-    /// each read the file, pushed its entry, and renamed — the second rename
-    /// silently dropped the first writer's entry.
+    /* P0-3（MEMORY.md 无锁）的回归测试：在同一个 `MemoryLayerManager` 上
+     * 并发调用两次 `add_to_hot`，两次写入都必须生效。在加锁之前，
+     * 每次调用都会读取文件、追加自己的条目、再写回——第二次写回会
+     * 悄无声息地丢弃第一个写入者的条目。 */
     #[tokio::test]
     async fn test_concurrent_add_to_hot_does_not_lose_entries() -> Result<()> {
         use std::sync::Arc;
@@ -4146,7 +4229,7 @@ entries:
             ),
         };
 
-        // Fire both adds concurrently.
+        // 同时触发两次添加。
         let m1 = manager.clone();
         let m2 = manager.clone();
         let e1 = mk_entry("concurrent-a");

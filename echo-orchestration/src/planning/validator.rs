@@ -1,15 +1,18 @@
-//! Structural validation for the canonical revisioned task graph.
+//! 面向规范化可修订任务图的结构校验。
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::tasks::{Task, TaskSpec};
 
-/// Product-neutral bounds enforced for every committed task graph.
+/// 对每个已提交任务图强制执行的、与具体业务无关的通用约束边界。
 #[derive(Debug, Clone)]
 pub struct PlanValidator {
+    /// 允许的最大任务数量
     pub max_tasks: usize,
+    /// 允许的最大依赖深度
     pub max_depth: usize,
+    /// 允许的单任务最大重试次数
     pub max_retries: u32,
 }
 
@@ -24,11 +27,12 @@ impl Default for PlanValidator {
 }
 
 impl PlanValidator {
+    /// 使用默认约束创建一个新的校验器
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Validate one coherent revisioned runtime snapshot.
+    /// 校验一个内部一致的可修订运行时快照。
     pub fn validate_task_snapshot(&self, tasks: &[Task]) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         for task in tasks {
@@ -60,7 +64,7 @@ impl PlanValidator {
         }
     }
 
-    /// Validate immutable task identities, dependency topology, and retry bounds.
+    /// 校验不可变的任务标识、依赖拓扑结构以及重试次数边界。
     pub fn validate_task_specs(&self, tasks: &[TaskSpec]) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if tasks.is_empty() {
@@ -136,6 +140,7 @@ impl PlanValidator {
     }
 }
 
+/// 计算任务依赖图的拓扑顺序，返回已访问的任务数量以及每个任务的依赖深度。
 fn task_topology(tasks: &[TaskSpec], known_ids: &HashSet<&str>) -> (usize, HashMap<String, usize>) {
     let mut indegree: HashMap<String, usize> =
         tasks.iter().map(|task| (task.id.clone(), 0)).collect();
@@ -189,6 +194,7 @@ mod tests {
     use super::*;
     use crate::tasks::{TaskExecution, TaskStatus};
 
+    /// 构造一个用于测试的 TaskSpec
     fn spec(id: &str, depends_on: &[&str]) -> TaskSpec {
         TaskSpec {
             id: id.to_string(),

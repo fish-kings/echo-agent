@@ -1,28 +1,30 @@
-//! Intent Router — lightweight intent classification before ReAct loop entry.
-//!
-//! Provides a decision point at the start of every user turn:
-//!
-//! | Intent variant      | Action                                        |
-//! |---------------------|-----------------------------------------------|
-//! | `DirectAnswer`      | Skip ReAct, call LLM directly                 |
-//! | `SkillRequired`     | Activate skill, then run ReAct                |
-//! | `Fallback`          | Proceed with normal ReAct loop                |
-//!
-//! # Quick Start
-//!
-//! ```rust,ignore
-//! use echo_agent::prelude::*;
-//! use echo_agent::intent::{IntentRouter, Intent};
-//!
-//! let router = IntentRouter::new(
-//!     Box::new(MyClassifier::default()),
-//!     IntentRouterConfig::default(),
-//! );
-//!
-//! let agent = ReactAgentBuilder::new()
-//!     .intent_router(router)
-//!     .build()?;
-//! ```
+/*!
+意图路由器（Intent Router）—— 在进入 ReAct 循环之前进行轻量级意图分类。
+
+在每一轮用户输入开始时提供一个决策点：
+
+| 意图取值             | 行为                                           |
+|---------------------|-----------------------------------------------|
+| `DirectAnswer`      | 跳过 ReAct，直接调用 LLM                       |
+| `SkillRequired`     | 先激活技能，再运行 ReAct                        |
+| `Fallback`          | 按正常的 ReAct 循环继续执行                     |
+
+# 快速开始
+
+```rust,ignore
+use echo_agent::prelude::*;
+use echo_agent::intent::{IntentRouter, Intent};
+
+let router = IntentRouter::new(
+    Box::new(MyClassifier::default()),
+    IntentRouterConfig::default(),
+);
+
+let agent = ReactAgentBuilder::new()
+    .intent_router(router)
+    .build()?;
+```
+*/
 
 use crate::llm::types::Message;
 use futures::future::BoxFuture;
@@ -33,19 +35,27 @@ use tokio_util::sync::CancellationToken;
 
 // ── Intent ───────────────────────────────────────────────────────────
 
-/// Classification result produced by an [`IntentClassifier`].
+/// [`IntentClassifier`] 产生的分类结果。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Intent {
-    /// Simple question — answer directly without entering the ReAct loop.
-    DirectAnswer { confidence: f32 },
-    /// Activate a skill by name before entering the ReAct loop.
-    SkillRequired { skill_name: String, confidence: f32 },
-    /// Confidence too low — fall back to the normal ReAct loop.
+    /// 简单问题 —— 不进入 ReAct 循环，直接回答。
+    DirectAnswer {
+        /// 分类结果的置信度。
+        confidence: f32,
+    },
+    /// 在进入 ReAct 循环之前，先按名称激活某个技能。
+    SkillRequired {
+        /// 需要激活的技能名称。
+        skill_name: String,
+        /// 分类结果的置信度。
+        confidence: f32,
+    },
+    /// 置信度过低 —— 回退到正常的 ReAct 循环。
     Fallback,
 }
 
 impl Intent {
-    /// Return the confidence level, if any.
+    /// 返回置信度（如果有的话）。
     pub fn confidence(&self) -> Option<f32> {
         match self {
             Intent::DirectAnswer { confidence } => Some(*confidence),
@@ -54,7 +64,7 @@ impl Intent {
         }
     }
 
-    /// Return the skill name, if this is a `SkillRequired` intent.
+    /// 如果是 `SkillRequired` 意图，返回其技能名称。
     pub fn skill_name(&self) -> Option<&str> {
         match self {
             Intent::SkillRequired { skill_name, .. } => Some(skill_name.as_str()),
@@ -65,33 +75,36 @@ impl Intent {
 
 // ── IntentClassifier ───────────────────────────────────────────────────
 
-/// Trait for pluggable intent classification strategies.
-///
-/// Implementations may use keyword matching, LLM-based classification,
-/// embedding similarity, or any combination thereof.
+/**
+可插拔意图分类策略的 trait。
+
+具体实现可以使用关键词匹配、基于 LLM 的分类、embedding 相似度，
+或者以上几种方式的任意组合。
+*/
 pub trait IntentClassifier: Send + Sync {
-    /// Classify the user's input given optional conversation context.
+    /// 结合可选的会话上下文，对用户输入进行分类。
     fn classify<'a>(&'a self, user_input: &'a str, context: &'a [Message])
     -> BoxFuture<'a, Intent>;
 }
 
 // ── IntentRouterConfig ────────────────────────────────────────────────
 
-/// Configuration for the [`IntentRouter`].
+/// [`IntentRouter`] 的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentRouterConfig {
-    /// Minimum confidence to trust a classification result.
-    /// Values below this threshold are treated as [`Intent::Fallback`].
+    /// 信任一次分类结果所需的最低置信度。
+    /// 低于该阈值的结果会被当作 [`Intent::Fallback`] 处理。
     pub confidence_threshold: f32,
-    /// Whether the `DirectAnswer` shortcut is enabled.
+    /// 是否启用 `DirectAnswer` 快捷路径。
     pub enable_direct_answer: bool,
-    /// Whether the `SkillRequired` shortcut is enabled.
+    /// 是否启用 `SkillRequired` 快捷路径。
     pub enable_skill_routing: bool,
-    /// Maximum time spent in pre-routing classification.
+    /// 路由前分类阶段允许消耗的最长时间。
     #[serde(default = "default_classification_timeout_ms")]
     pub classification_timeout_ms: u64,
 }
 
+/// `classification_timeout_ms` 的默认值（毫秒）。
 fn default_classification_timeout_ms() -> u64 {
     5_000
 }
@@ -109,22 +122,26 @@ impl Default for IntentRouterConfig {
 
 // ── IntentRouter ──────────────────────────────────────────────────────
 
-/// Central routing component placed at the ReAct loop entry.
-///
-/// When attached to a [`ReactAgent`](crate::agent::ReactAgent), every user
-/// message is first classified by the configured [`IntentClassifier`];
-/// depending on the returned [`Intent`], the agent either shortcuts to a
-/// direct answer, activates a skill, or proceeds with the
-/// standard ReAct loop.
+/**
+位于 ReAct 循环入口处的核心路由组件。
+
+当挂载到 [`ReactAgent`](crate::agent::ReactAgent) 上时，每条用户
+消息都会先经过配置好的 [`IntentClassifier`] 进行分类；根据返回的
+[`Intent`]，Agent 会选择直接给出答案、激活某个技能，或者
+按标准 ReAct 循环继续执行。
+*/
 #[derive(Clone)]
 pub struct IntentRouter {
+    /// 用于对用户输入进行分类的分类器实现。
     classifier: std::sync::Arc<dyn IntentClassifier>,
+    /// 路由器的行为配置。
     config: IntentRouterConfig,
+    /// 允许被激活的技能名称集合；为 `None` 时不做限制。
     available_skills: Option<std::sync::Arc<HashSet<String>>>,
 }
 
 impl IntentRouter {
-    /// Create a new router from a classifier and configuration.
+    /// 基于分类器与配置创建一个新的路由器。
     pub fn new(classifier: Box<dyn IntentClassifier>, config: IntentRouterConfig) -> Self {
         Self {
             classifier: std::sync::Arc::from(classifier),
@@ -133,19 +150,19 @@ impl IntentRouter {
         }
     }
 
-    /// Fence executable skill decisions to the catalog used by the caller.
+    /// 将可执行的技能决策限制在调用方所使用的技能目录范围内。
     pub fn with_available_skills(mut self, skills: impl IntoIterator<Item = String>) -> Self {
         self.available_skills = Some(std::sync::Arc::new(skills.into_iter().collect()));
         self
     }
 
-    /// Classify user input and return the routing decision.
+    /// 对用户输入进行分类，并返回路由决策。
     pub async fn classify(&self, user_input: &str, context: &[Message]) -> Intent {
         self.classify_with_cancel(user_input, context, CancellationToken::new())
             .await
     }
 
-    /// Classify within the invocation cancellation domain and configured deadline.
+    /// 在调用方的取消域与配置的截止时间内进行分类。
     pub async fn classify_with_cancel(
         &self,
         user_input: &str,
@@ -196,7 +213,7 @@ impl IntentRouter {
     }
 }
 
-// ── Re-export convenience types ────────────────────────────────────────
+// ── 重新导出便捷类型 ────────────────────────────────────────
 
 pub use self::classifier::{
     ChainedClassifier, KeywordClassifier, KeywordClassifierConfig, LlmIntentClassifier,

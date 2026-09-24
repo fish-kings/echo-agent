@@ -1,9 +1,11 @@
-//! OpenAI Responses API adapter.
-//!
-//! The adapter keeps the framework's provider-neutral `LlmClient` contract and
-//! translates full local conversation history into Responses input items. embedding application
-//! therefore remains file/local-history authoritative and does not depend on
-//! `previous_response_id`, hosted conversations, or server-side storage.
+/*!
+OpenAI Responses API 适配器。
+
+该适配器保持框架中与厂商无关的 `LlmClient` 契约，将完整的本地会话历史转换为
+Responses API 的输入项（input items）。因此接入方应用依然以文件/本地历史记录
+为权威数据源，不依赖 `previous_response_id`、托管会话（hosted conversations）
+或服务端存储。
+*/
 
 use echo_core::error::{LlmError, Result};
 use echo_core::llm::types::{
@@ -29,15 +31,18 @@ use super::config::LlmConfig;
 use super::openai::assemble_req_header;
 use super::thinking_translate::translate_thinking_openai_compat;
 
-/// Client for the OpenAI Responses API.
+/// OpenAI Responses API 的客户端。
 pub struct ResponsesClient {
+    /// 共享的底层 HTTP 客户端。
     client: Arc<Client>,
+    /// 该 Provider 的连接配置（模型、base_url、超时时间等）。
     config: LlmConfig,
+    /// 每次请求都会携带的预先组装好的请求头。
     header_map: HeaderMap,
 }
 
 impl ResponsesClient {
-    /// Create a Responses client from an injected provider configuration.
+    /// 根据传入的 Provider 配置创建一个 Responses 客户端。
     pub fn new(config: LlmConfig) -> Result<Self> {
         let header_map = assemble_req_header(&config)?;
         Ok(Self {
@@ -47,7 +52,7 @@ impl ResponsesClient {
         })
     }
 
-    /// Create a Responses client with a shared HTTP client.
+    /// 使用外部共享的 HTTP 客户端创建 Responses 客户端。
     pub fn with_client(client: Arc<Client>, config: LlmConfig) -> Result<Self> {
         let header_map = assemble_req_header(&config)?;
         Ok(Self {
@@ -57,11 +62,13 @@ impl ResponsesClient {
         })
     }
 
-    /// Send a complete Responses request body without narrowing its schema.
-    ///
-    /// This is the low-level path for hosted tools, background responses,
-    /// conversations, metadata, service tiers, and future Responses fields
-    /// that are intentionally outside the provider-neutral [`ChatRequest`].
+    /** 发送一个完整的 Responses 请求体，不对其 schema 做任何收窄处理。
+
+    这是面向托管工具（hosted tools）、后台响应（background responses）、
+    会话（conversations）、元数据、服务层级（service tiers）以及未来
+    Responses 字段的底层通路——这些字段有意被排除在与厂商无关的
+    [`ChatRequest`] 之外。
+    */
     pub async fn create_raw(&self, request: Value) -> Result<Value> {
         post_json(
             self.client.clone(),
@@ -74,7 +81,7 @@ impl ResponsesClient {
         .await
     }
 
-    /// Stream complete semantic Responses events without narrowing the event schema.
+    /// 以流式方式发送请求并返回完整的语义化 Responses 事件，不对事件 schema 做收窄处理。
     pub async fn create_raw_stream(
         &self,
         request: Value,
@@ -104,10 +111,12 @@ impl ResponsesClient {
         Ok(Box::pin(stream))
     }
 
+    /// 构造默认配置的底层 HTTP 客户端。
     fn build_http_client() -> Client {
         Client::new()
     }
 
+    /// 将框架内统一的 `ChatRequest` 转换为 Responses API 所需的 JSON 请求体。
     fn request_body(&self, request: &ChatRequest, stream: bool) -> Value {
         let thinking = translate_thinking_openai_compat(
             &self.config.model,
@@ -153,6 +162,7 @@ impl ResponsesClient {
 }
 
 impl LlmClient for ResponsesClient {
+    /// 发送一次非流式的对话请求，并将 Responses API 的返回结果转换为统一的 `ChatResponse`。
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
         let model = self.config.model.clone();
         Box::pin(
@@ -177,6 +187,7 @@ impl LlmClient for ResponsesClient {
         )
     }
 
+    /// 发送一次流式对话请求，并将 Responses API 的 SSE 事件流转换为统一的 `ChatChunk` 流。
     fn chat_stream(
         &self,
         request: ChatRequest,
@@ -202,11 +213,14 @@ impl LlmClient for ResponsesClient {
         )
     }
 
+    /// 返回该客户端配置中使用的模型名称。
     fn model_name(&self) -> &str {
         &self.config.model
     }
 }
 
+/// 将底层的原始 SSE 事件流适配为统一的 `ChatChunk` 流：维护一个流式适配器状态机，
+/// 在流正常结束（`[DONE]` 或 EOF）前必须先观测到 `response.completed`，否则返回错误。
 fn adapt_responses_stream<S>(raw_stream: S) -> BoxStream<'static, Result<ChatChunk>>
 where
     S: futures::Stream<Item = Result<JsonSseEvent>> + Send + 'static,
@@ -232,6 +246,7 @@ where
     Box::pin(stream)
 }
 
+/// 若 `value` 存在则将其序列化后插入到 JSON 对象中，`None` 时不写入任何字段。
 fn insert_option<T: serde::Serialize>(
     object: &mut serde_json::Map<String, Value>,
     key: &str,
@@ -245,6 +260,9 @@ fn insert_option<T: serde::Serialize>(
     }
 }
 
+/// 将框架内的消息列表转换为 Responses API 的 `input` 数组：助手消息前会附带其
+/// 不透明的推理块，工具结果消息映射为 `function_call_output`，普通消息映射为
+/// `message`，助手的工具调用则映射为 `function_call` 条目。
 fn messages_to_input(messages: &[Message]) -> Value {
     let mut input = Vec::new();
     for message in messages {
@@ -283,6 +301,8 @@ fn messages_to_input(messages: &[Message]) -> Value {
     Value::Array(input)
 }
 
+/// 将属于 `openai_responses` 提供方的不透明推理块追加为 Responses 的 `reasoning` 输入项；
+/// 其他提供方的推理块或非不透明变体会被跳过，因为它们无法被本 Provider 重放。
 fn append_opaque_reasoning(target: &mut Vec<Value>, blocks: Option<&[ReasoningBlock]>) {
     for block in blocks.unwrap_or_default() {
         let ReasoningBlock::Opaque {

@@ -11,21 +11,25 @@ use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// 计算两个数之和的工具函数。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 计算两个数之差的工具函数。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 计算两个数之积的工具函数。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 程序入口：依次运行日志回调、指标回调、多回调组合 + 流式执行三个演示。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -60,11 +64,14 @@ async fn main() -> Result<()> {
 
 // ── 简单日志回调 ──────────────────────────────────────────────────────────────
 
+/// 简单的日志回调：在 Agent 执行的各个阶段打印带标签的日志。
 struct LogCallback {
+    /// 用于区分不同回调实例输出的日志标签。
     label: String,
 }
 
 impl LogCallback {
+    /// 创建一个带指定标签的 `LogCallback`。
     fn new(label: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -73,6 +80,7 @@ impl LogCallback {
 }
 
 impl AgentCallback for LogCallback {
+    /// 每次迭代开始时打印当前迭代序号与 Agent 名称。
     fn on_iteration<'a>(
         &'a self,
         agent: &'a str,
@@ -88,6 +96,7 @@ impl AgentCallback for LogCallback {
         })
     }
 
+    /// 工具调用开始时打印工具名与参数。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -104,6 +113,7 @@ impl AgentCallback for LogCallback {
         })
     }
 
+    /// 工具调用成功结束时打印截断后的结果。
     fn on_tool_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -120,6 +130,7 @@ impl AgentCallback for LogCallback {
         })
     }
 
+    /// 工具调用出错时打印错误信息。
     fn on_tool_error<'a>(
         &'a self,
         _agent: &'a str,
@@ -131,6 +142,7 @@ impl AgentCallback for LogCallback {
         })
     }
 
+    /// Agent 得出最终答案时打印截断后的结果。
     fn on_final_answer<'a>(
         &'a self,
         _agent: &'a str,
@@ -148,6 +160,7 @@ impl AgentCallback for LogCallback {
 
 // ── Part 1: 简单日志回调 Demo ──────────────────────────────────────────────────
 
+/// Part 1 演示：展示简单日志回调如何跟踪 Agent 执行过程。
 async fn demo_log_callback() -> echo_agent::error::Result<()> {
     // 使用 AgentBuilder 创建 Agent
     let mut agent = ReactAgentBuilder::new()
@@ -178,13 +191,18 @@ async fn demo_log_callback() -> echo_agent::error::Result<()> {
 
 // ── Part 2: 统计指标回调 Demo ──────────────────────────────────────────────────
 
+/// 使用原子计数器统计 Agent 执行过程中的迭代次数、工具调用次数与工具错误次数的回调。
 struct MetricsCallback {
+    /// 累计迭代次数。
     iterations: AtomicUsize,
+    /// 累计工具调用次数。
     tool_calls: AtomicUsize,
+    /// 累计工具调用出错次数。
     tool_errors: AtomicUsize,
 }
 
 impl MetricsCallback {
+    /// 创建一个所有计数器都初始化为 0 的 `MetricsCallback`。
     fn new() -> Arc<Self> {
         Arc::new(Self {
             iterations: AtomicUsize::new(0),
@@ -193,6 +211,7 @@ impl MetricsCallback {
         })
     }
 
+    /// 打印统计报告表格。
     fn print_report(&self) {
         println!("  ┌─────────────────────────────────────────┐");
         println!("  │           Metrics Report                │");
@@ -214,6 +233,7 @@ impl MetricsCallback {
 }
 
 impl AgentCallback for MetricsCallback {
+    /// 记录当前迭代序号（存储为 `iteration + 1`）。
     fn on_iteration<'a>(
         &'a self,
         _agent: &'a str,
@@ -223,6 +243,7 @@ impl AgentCallback for MetricsCallback {
         Box::pin(async {})
     }
 
+    /// 每次工具调用开始时将调用计数加一。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -233,6 +254,7 @@ impl AgentCallback for MetricsCallback {
         Box::pin(async {})
     }
 
+    /// 每次工具调用出错时将错误计数加一。
     fn on_tool_error<'a>(
         &'a self,
         _agent: &'a str,
@@ -244,6 +266,7 @@ impl AgentCallback for MetricsCallback {
     }
 }
 
+/// Part 2 演示：展示统计指标回调如何统计迭代次数、工具调用次数与错误次数。
 async fn demo_metrics_callback() -> echo_agent::error::Result<()> {
     let metrics = MetricsCallback::new();
 
@@ -283,6 +306,7 @@ async fn demo_metrics_callback() -> echo_agent::error::Result<()> {
 
 // ── Part 3: 多回调组合 + 流式执行 Demo ─────────────────────────────────────────
 
+/// Part 3 演示：展示同时组合多个回调，并结合流式执行接收事件。
 async fn demo_multi_callback_stream() -> echo_agent::error::Result<()> {
     let metrics = MetricsCallback::new();
 
@@ -353,6 +377,7 @@ async fn demo_multi_callback_stream() -> echo_agent::error::Result<()> {
 
 // ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
+/// 按字符数截断字符串，超出部分用省略号 `…` 表示。
 fn truncate(s: &str, max: usize) -> String {
     let mut chars = s.chars();
     let out: String = chars.by_ref().take(max).collect();
@@ -363,6 +388,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// 将 JSON 参数对象格式化为紧凑的 `key=value, ...` 字符串，便于日志打印。
 fn compact_args(args: &Value) -> String {
     match args {
         Value::Object(map) => map
@@ -382,6 +408,7 @@ fn compact_args(args: &Value) -> String {
     }
 }
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("{}", "═".repeat(64));
     println!("      Echo Agent × 事件回调系统综合演示 (demo11)");

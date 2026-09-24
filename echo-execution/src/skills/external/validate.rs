@@ -1,20 +1,18 @@
-//! Skill catalog validation — echo-agent's equivalent of `skills-ref validate`.
+//! 技能目录校验 —— echo-agent 中对应 `skills-ref validate` 的实现。
 //!
-//! The [agentskills.io specification](https://agentskills.io/specification)
-//! ships a reference validator (`skills-ref validate`). This module provides
-//! the same gate as an in-process API so embedding applications and CI can
-//! enforce spec compliance without an external tool:
+//! [agentskills.io 规范](https://agentskills.io/specification)
+//! 自带一个参考校验器（`skills-ref validate`）。本模块以进程内 API 的形式
+//! 提供同样的校验能力，使得嵌入方应用和 CI 无需依赖外部工具即可强制执行规范：
 //!
-//! - frontmatter uses only official top-level fields;
-//! - `allowed-tools` is a space-separated string (not a YAML sequence);
-//! - `name` follows the spec pattern and matches the skill directory;
-//! - `description` is present and within the 1024-character limit;
-//! - `metadata` maps string keys to string values;
-//! - Skill files contain only the official format; Hooks are
-//!   application/runtime configuration rather than part of the Agent Skills
-//!   file format.
+//! - frontmatter 只能使用官方顶层字段；
+//! - `allowed-tools` 必须是空格分隔的字符串（而非 YAML 序列）；
+//! - `name` 需符合规范定义的模式，并且与技能目录名一致；
+//! - `description` 必须存在，且不超过 1024 个字符的限制；
+//! - `metadata` 必须是字符串键到字符串值的映射；
+//! - 技能文件只能包含官方格式；Hooks 属于应用/运行时配置，
+//!   而不是 Agent Skills 文件格式的一部分。
 //!
-//! Violations are hard failures for a catalog gate; warnings are advisory.
+//! 违规项（violations）会导致目录校验硬性失败；警告项（warnings）仅作提示，不会阻断校验。
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +20,7 @@ use serde_yaml_ng::Value;
 
 use super::types::SkillDocument;
 
-/// Official agentskills.io top-level frontmatter fields.
+/// agentskills.io 官方规定的顶层 frontmatter 字段。
 pub const OFFICIAL_FRONTMATTER_FIELDS: &[&str] = &[
     "name",
     "description",
@@ -32,42 +30,44 @@ pub const OFFICIAL_FRONTMATTER_FIELDS: &[&str] = &[
     "allowed-tools",
 ];
 
-/// Maximum `description` length in Unicode scalar values (spec: 1024).
+/// `description` 字段允许的最大长度（以 Unicode 标量值计数，规范规定为 1024）。
 const MAX_DESCRIPTION_CHARS: usize = 1024;
 
-/// Recommended `SKILL.md` body length (spec guidance, not a hard limit).
+/// 建议的 `SKILL.md` 正文行数上限（规范建议值，并非硬性限制）。
 const RECOMMENDED_MAX_BODY_LINES: usize = 500;
 
-/// Result of validating one skill.
+/// 单个技能的校验结果。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SkillValidationReport {
-    /// The skill directory (or file) that was validated.
+    /// 被校验的技能目录（或文件）路径。
     pub path: PathBuf,
-    /// Spec violations — a catalog gate fails when any is present.
+    /// 规范违规项 —— 只要存在任意一项，目录校验就判定为失败。
     pub violations: Vec<String>,
-    /// Advisory findings that do not block the gate.
+    /// 仅作提示、不会阻断校验的发现项。
     pub warnings: Vec<String>,
 }
 
 impl SkillValidationReport {
-    /// Whether the skill passes the spec gate.
+    /// 判断该技能是否通过了规范校验。
     pub fn is_valid(&self) -> bool {
         self.violations.is_empty()
     }
 
+    /// 追加一条违规记录。
     fn violation(&mut self, message: impl Into<String>) {
         self.violations.push(message.into());
     }
 
+    /// 追加一条警告记录。
     fn warning(&mut self, message: impl Into<String>) {
         self.warnings.push(message.into());
     }
 }
 
-/// Validate one `SKILL.md` document against the official spec.
+/// 依据官方规范校验一份 `SKILL.md` 文档。
 ///
-/// `dir_name` is the parent directory name the spec requires `name` to match;
-/// pass an empty string to skip that check for in-memory documents.
+/// `dir_name` 是规范要求 `name` 字段必须匹配的父目录名；
+/// 若是内存中的文档、无需做该项检查，可传入空字符串跳过。
 pub fn validate_skill_markdown(content: &str, dir_name: &str) -> SkillValidationReport {
     let mut report = SkillValidationReport::default();
 
@@ -79,8 +79,8 @@ pub fn validate_skill_markdown(content: &str, dir_name: &str) -> SkillValidation
         }
     };
 
-    // Full typed parse: enforces required fields, empty description, string
-    // metadata, and unknown top-level fields (deny_unknown_fields).
+    // 完整的类型化解析：强制校验必填字段、description 非空、metadata 为字符串类型，
+    // 以及未知顶层字段（deny_unknown_fields）
     let parsed = SkillDocument::parse(content);
     if let Err(error) = &parsed {
         report.violation(format!("SKILL.md does not parse: {error}"));
@@ -167,7 +167,7 @@ pub fn validate_skill_markdown(content: &str, dir_name: &str) -> SkillValidation
     report
 }
 
-/// Validate one skill directory and its required `SKILL.md` file.
+/// 校验一个技能目录及其必需的 `SKILL.md` 文件。
 pub fn validate_skill_dir(dir: &Path) -> SkillValidationReport {
     let mut report = SkillValidationReport {
         path: dir.to_path_buf(),
@@ -200,12 +200,11 @@ pub fn validate_skill_dir(dir: &Path) -> SkillValidationReport {
     report
 }
 
-/// Field-level format checks that need the raw YAML value.
+/// 需要原始 YAML 值才能完成的字段级格式检查。
 fn validate_field_value(report: &mut SkillValidationReport, field: &str, value: &Value) {
     match field {
         "allowed-tools" => {
-            // Official format is a space-separated string. A YAML sequence is
-            // the legacy layout and must be migrated.
+            // 官方格式是空格分隔的字符串。YAML 序列是旧式布局，必须迁移。
             if value.is_sequence() {
                 report.violation(
                     "allowed-tools must be a space-separated string, not a list \
@@ -238,7 +237,7 @@ fn validate_field_value(report: &mut SkillValidationReport, field: &str, value: 
     }
 }
 
-/// Extract the raw YAML text between the frontmatter delimiters.
+/// 提取 frontmatter 分隔符之间的原始 YAML 文本。
 fn extract_frontmatter_yaml(content: &str) -> Result<&str, String> {
     if !content.starts_with("---") {
         return Err("SKILL.md must begin with YAML frontmatter (---)".to_string());
@@ -259,16 +258,19 @@ fn extract_frontmatter_yaml(content: &str) -> Result<&str, String> {
 mod tests {
     use super::*;
 
+    /// 构造一份符合官方规范布局的合法 SKILL.md 文本，供测试使用。
     fn valid_skill() -> String {
         "---\nname: demo-skill\ndescription: Demonstrates the official layout.\nmetadata:\n  category: demo\nallowed-tools: shell read_file\n---\n# Demo\n\nBody.\n".to_string()
     }
 
+    /// 验证符合官方布局规范的 SKILL.md 能够通过校验。
     #[test]
     fn official_layout_passes() {
         let report = validate_skill_markdown(&valid_skill(), "demo-skill");
         assert!(report.is_valid(), "violations: {:?}", report.violations);
     }
 
+    /// 验证使用旧式顶层字段（如 `triggers`）会校验失败，并给出迁移提示。
     #[test]
     fn legacy_top_level_fields_fail_with_migration_hint() {
         let content = "---\nname: demo-skill\ndescription: Legacy.\ntriggers:\n  - demo\n---\nBody";
@@ -282,6 +284,7 @@ mod tests {
         );
     }
 
+    /// 验证 `allowed-tools` 若写成 YAML 列表形式会校验失败。
     #[test]
     fn list_shaped_allowed_tools_fails() {
         let content = "---\nname: demo-skill\ndescription: Legacy tools.\nallowed-tools: [shell, read_file]\n---\nBody";
@@ -294,6 +297,7 @@ mod tests {
         );
     }
 
+    /// 验证 `name` 字段与所在目录名不一致时会校验失败。
     #[test]
     fn name_directory_mismatch_fails() {
         let report = validate_skill_markdown(&valid_skill(), "other-dir");
@@ -305,6 +309,7 @@ mod tests {
         );
     }
 
+    /// 验证 `description` 超过 1024 字符限制时会校验失败。
     #[test]
     fn overlong_description_fails() {
         let long: String = "x".repeat(1025);
@@ -318,6 +323,7 @@ mod tests {
         );
     }
 
+    /// 验证 frontmatter 中包含 `hooks` 块时会校验失败（Hooks 不属于官方文件格式）。
     #[test]
     fn frontmatter_hooks_block_fails() {
         let content = "---\nname: demo-skill\ndescription: Hooked.\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: echo done\n---\nBody";
@@ -325,6 +331,7 @@ mod tests {
         assert!(!report.is_valid());
     }
 
+    /// 验证 `metadata` 中出现厂商命名空间式的嵌套结构（值非字符串）时会校验失败。
     #[test]
     fn vendor_namespace_in_metadata_fails() {
         let content = "---\nname: demo-skill\ndescription: Namespaced.\nmetadata:\n  echo-agent:\n    triggers: [demo]\n---\nBody";
@@ -337,6 +344,7 @@ mod tests {
         );
     }
 
+    /// 验证 `metadata` 中出现非标量（嵌套对象）值时会校验失败。
     #[test]
     fn non_scalar_foreign_metadata_fails() {
         let content = "---\nname: demo-skill\ndescription: Nested.\nmetadata:\n  vendor:\n    nested: true\n---\nBody";
@@ -349,6 +357,8 @@ mod tests {
         );
     }
 
+    /// 验证 `validate_skill_dir` 能正确处理合法技能目录、存在非官方
+    /// `hooks.json` 文件，以及缺失 `SKILL.md` 文件这几种场景。
     #[test]
     fn skill_dir_validates_required_skill_file() -> std::result::Result<(), String> {
         let root = std::env::temp_dir().join(format!(
@@ -358,8 +368,10 @@ mod tests {
         ));
         let dir = root.join("demo-skill");
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+        /// 测试结束时自动清理临时目录的守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }

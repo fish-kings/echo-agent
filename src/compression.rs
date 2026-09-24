@@ -1,16 +1,16 @@
-//! Context compression strategies to manage token budget.
+//! 用于管理 token 预算的上下文压缩策略。
 //!
-//! When conversations grow beyond the model's context window, compressors reduce
-//! history while preserving the most relevant information.
+//! 当会话增长超出模型上下文窗口时，压缩器会在保留最相关信息的
+//! 同时缩减历史记录。
 //!
-//! # Strategies
+//! # 策略
 //!
-//! | Compressor | Strategy | Best For |
+//! | 压缩器 | 策略 | 适用场景 |
 //! |------------|----------|----------|
-//! | `SlidingWindowCompressor` | Keeps the N most recent messages | Simple, fast |
-//! | `SummaryCompressor` | Uses an LLM to summarize older messages | High quality (default) |
+//! | `SlidingWindowCompressor` | 保留最近 N 条消息 | 简单、快速 |
+//! | `SummaryCompressor` | 使用 LLM 对较早的消息做摘要 | 高质量（默认） |
 //!
-//! # Quick Start
+//! # 快速开始
 //!
 //! ```rust,ignore
 //! use echo_agent::prelude::*;
@@ -24,7 +24,7 @@
 //! # }
 //! ```
 
-/// Direct re-exports from `echo_state::compression`.
+/// 直接从 `echo_state::compression` 重新导出。
 pub mod state {
     pub use echo_state::compression::*;
 }

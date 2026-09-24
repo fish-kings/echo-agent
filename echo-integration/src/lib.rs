@@ -1,17 +1,17 @@
 //! # echo_integration
 //!
-//! Integration layer for the [echo-agent](https://crates.io/crates/echo_agent) framework.
+//! [echo-agent](https://crates.io/crates/echo_agent) 框架的集成层。
 //!
-//! ## Modules
+//! ## 模块
 //!
-//! | Module | Description | Feature |
+//! | 模块 | 说明 | 特性开关 |
 //! |--------|-------------|---------|
-//! | [`providers`] | Protocol clients and explicit `LlmConfig` construction | default |
-//! | [`mcp`] | MCP protocol: stdio, SSE, HTTP transports; `McpManager`, `McpServerConfig` | `mcp` |
-//! | [`channels`] | IM integrations: QQ Bot (WebSocket) and Feishu (Webhook) | `channels` |
+//! | [`providers`] | 协议客户端与显式的 `LlmConfig` 构造 | 默认 |
+//! | [`mcp`] | MCP 协议：stdio、SSE、HTTP 传输；`McpManager`、`McpServerConfig` | `mcp` |
+//! | [`channels`] | IM 集成：QQ 机器人（WebSocket）与飞书（Webhook） | `channels` |
 //!
-//! Most users should depend on `echo_agent` (the facade crate) instead of
-//! depending on `echo_integration` directly.
+//! 大多数用户应当依赖 `echo_agent`（门面 crate），而不是直接依赖
+//! `echo_integration`。
 
 #[cfg(any(feature = "mcp", feature = "channels"))]
 pub(crate) mod redaction;

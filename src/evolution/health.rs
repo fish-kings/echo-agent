@@ -1,8 +1,10 @@
-//! Skill health monitoring and scoring.
-//!
-//! Monitors the health of active skills by analyzing telemetry data including
-//! success rates, usage patterns, and failure modes. Provides health scores
-//! that can drive skill lifecycle decisions (e.g., deprecation).
+/*!
+ * Skill 健康监控与评分。
+ *
+ * 通过分析遥测数据（包括成功率、使用模式和失败模式）来监控
+ * 活跃 Skill 的健康状况。提供可用于驱动 Skill 生命周期决策
+ * （例如废弃）的健康评分。
+ */
 
 use chrono::{DateTime, Utc};
 use std::sync::Arc;
@@ -15,23 +17,23 @@ use super::audit::{ChangeEntryBuilder, ChangeLog, ChangeType, EntityType};
 use super::layer::EvolutionObserver;
 use crate::error::Result;
 
-// Re-export SkillDescriptor for use in this module.
+// 重导出 SkillDescriptor 以便在本模块中使用。
 pub use echo_execution::skills::external::SkillDescriptor;
 
-/// Health status classification for a skill.
+/// Skill 的健康状态分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HealthStatus {
-    /// Skill is healthy (score >= 0.7).
+    /// 健康（评分 >= 0.7）。
     Healthy,
-    /// Skill needs attention (score 0.4-0.7).
+    /// 需要关注（评分 0.4-0.7）。
     NeedsAttention,
-    /// Skill is unhealthy (score < 0.4).
+    /// 不健康（评分 < 0.4）。
     Unhealthy,
 }
 
 impl HealthStatus {
-    /// Convert a health score (0.0-1.0) to a health status.
+    /// 将健康评分（0.0-1.0）转换为健康状态。
     pub fn from_score(score: f64) -> Self {
         if score >= 0.7 {
             Self::Healthy
@@ -42,7 +44,7 @@ impl HealthStatus {
         }
     }
 
-    /// Returns a human-readable description of the health status.
+    /// 返回健康状态的可读描述。
     pub fn description(&self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
@@ -52,27 +54,29 @@ impl HealthStatus {
     }
 }
 
-/// Detailed breakdown of health score components.
+/// 健康评分各组成部分的详细拆解。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthBreakdown {
-    /// Overall success rate (0.0-1.0).
+    /// 总体成功率（0.0-1.0）。
     pub success_rate: f64,
-    /// Recent success rate from last 20 executions (0.0-1.0).
+    /// 最近 20 次执行的成功率（0.0-1.0）。
     pub recent_success_rate: f64,
-    /// Usage frequency normalized to 0.0-1.0 range.
+    /// 归一化到 0.0-1.0 范围的使用频率。
     pub usage_frequency: f64,
-    /// Freshness based on days since last use (0.0-1.0, 1.0 = very recent).
+    /// 基于距上次使用天数计算的新鲜度（0.0-1.0，1.0 表示非常近期）。
     pub freshness: f64,
-    /// User approval inferred from low failure rate (0.0-1.0).
+    /// 根据低失败率推断出的用户认可度（0.0-1.0）。
     pub user_approval: f64,
-    /// Command validity - absence of critical failures (0.0-1.0).
+    /// 命令有效性 —— 不存在严重失败（0.0-1.0）。
     pub command_validity: f64,
 }
 
 impl HealthBreakdown {
-    /// Compute overall health score using weighted formula:
-    /// health = success_rate * 0.3 + recent_success_rate * 0.2 + usage_frequency * 0.1
-    ///        + freshness * 0.15 + user_approval * 0.15 + command_validity * 0.1
+    /**
+     * 使用加权公式计算总体健康评分：
+     * health = success_rate * 0.3 + recent_success_rate * 0.2 + usage_frequency * 0.1
+     *        + freshness * 0.15 + user_approval * 0.15 + command_validity * 0.1
+     */
     pub fn overall_score(&self) -> f64 {
         self.success_rate * 0.3
             + self.recent_success_rate * 0.2
@@ -83,32 +87,34 @@ impl HealthBreakdown {
     }
 }
 
-/// Health report for a single skill.
+/// 单个 Skill 的健康报告。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillHealthReport {
-    /// Skill name.
+    /// Skill 名称。
     pub skill_name: String,
-    /// Overall health score (0.0-1.0).
+    /// 总体健康评分（0.0-1.0）。
     pub health_score: f64,
-    /// Health status classification.
+    /// 健康状态分类。
     pub status: HealthStatus,
-    /// Detailed breakdown of score components.
+    /// 评分各组成部分的详细拆解。
     pub breakdown: HealthBreakdown,
-    /// Human-readable recommendations based on health analysis.
+    /// 根据健康分析得出的可读建议。
     pub recommendations: Vec<String>,
-    /// When this report was generated.
+    /// 本报告的生成时间。
     #[serde(with = "crate::utils::time::local_rfc3339")]
     pub analyzed_at: DateTime<Utc>,
 }
 
-/// Monitors skill health by analyzing telemetry data.
+/// 通过分析遥测数据来监控 Skill 健康状况。
 pub struct SkillHealthMonitor {
+    /// 遥测数据存储
     telemetry_store: SkillTelemetryStore,
+    /// 可选的 evolution 事件观察者
     observer: Option<Arc<dyn EvolutionObserver>>,
 }
 
 impl SkillHealthMonitor {
-    /// Create a new health monitor.
+    /// 创建一个新的健康监控器。
     pub fn new(store: Arc<dyn Store>) -> Self {
         let telemetry_store = SkillTelemetryStore::new(store);
         Self {
@@ -117,13 +123,13 @@ impl SkillHealthMonitor {
         }
     }
 
-    /// Publish completed health reports to the evolution event observer.
+    /// 将完成的健康报告发布给 evolution 事件观察者。
     pub fn with_evolution_observer(mut self, observer: Arc<dyn EvolutionObserver>) -> Self {
         self.observer = Some(observer);
         self
     }
 
-    /// Analyze health for a single skill.
+    /// 分析单个 Skill 的健康状况。
     pub async fn analyze_skill(&self, skill_name: &str) -> Result<Option<SkillHealthReport>> {
         let telemetry = match self.telemetry_store.get_telemetry(skill_name).await? {
             Some(t) => t,
@@ -149,7 +155,7 @@ impl SkillHealthMonitor {
         Ok(Some(report))
     }
 
-    /// Analyze health for all skills and return a summary.
+    /// 分析所有 Skill 的健康状况并返回汇总结果。
     pub async fn analyze_all_skills(&self) -> Result<Vec<SkillHealthReport>> {
         let all_telemetry = self.telemetry_store.list_all().await?;
         let mut reports = Vec::new();
@@ -177,7 +183,7 @@ impl SkillHealthMonitor {
         Ok(reports)
     }
 
-    /// Record a health check in the change log.
+    /// 将一次健康检查记录到变更日志中。
     pub fn record_health_check(
         &self,
         report: &SkillHealthReport,
@@ -196,7 +202,7 @@ impl SkillHealthMonitor {
         Ok(())
     }
 
-    /// Compute health breakdown from telemetry data.
+    /// 根据遥测数据计算健康评分拆解。
     fn compute_breakdown(&self, telemetry: &SkillTelemetry) -> HealthBreakdown {
         let success_rate = if telemetry.activation_count > 0 {
             telemetry.success_count as f64 / telemetry.activation_count as f64
@@ -206,10 +212,10 @@ impl SkillHealthMonitor {
 
         let recent_success_rate = telemetry.recent_success_rate();
 
-        // Normalize usage frequency: assume max 1000 activations = 1.0
+        // 归一化使用频率：假设最多 1000 次激活对应 1.0
         let usage_frequency = (telemetry.activation_count as f64 / 1000.0).min(1.0);
 
-        // Freshness: days since last use, capped at 90 days
+        // 新鲜度：距上次使用的天数，上限为 90 天
         let now = Utc::now().timestamp_millis() as u64;
         let days_since_last_use = if telemetry.last_used > 0 {
             (now.saturating_sub(telemetry.last_used)) / (24 * 60 * 60 * 1000)
@@ -218,15 +224,15 @@ impl SkillHealthMonitor {
         };
         let freshness = 1.0 - (days_since_last_use as f64 / 90.0).min(1.0);
 
-        // User approval: inverse of failure rate
+        // 用户认可度：失败率的反面
         let user_approval = if telemetry.activation_count > 0 {
             1.0 - (telemetry.failure_count as f64 / telemetry.activation_count as f64)
         } else {
             0.0
         };
 
-        // Command validity: absence of critical failures
-        // If there are any failures with "critical" or "fatal" keywords, reduce score
+        // 命令有效性：不存在严重失败
+        // 若存在包含 "critical" 或 "fatal" 关键词的失败，则降低评分
         let has_critical_failures = telemetry.common_failures.iter().any(|f| {
             let snippet_lower = f.error_snippet.to_lowercase();
             snippet_lower.contains("critical") || snippet_lower.contains("fatal")
@@ -243,7 +249,7 @@ impl SkillHealthMonitor {
         }
     }
 
-    /// Generate recommendations based on health analysis.
+    /// 根据健康分析生成建议。
     fn generate_recommendations(
         &self,
         telemetry: &SkillTelemetry,
@@ -254,7 +260,7 @@ impl SkillHealthMonitor {
 
         match status {
             HealthStatus::Healthy => {
-                // No recommendations needed for healthy skills
+                // 健康的 Skill 不需要任何建议
             }
             HealthStatus::NeedsAttention => {
                 if breakdown.success_rate < 0.7 {
@@ -357,7 +363,7 @@ mod tests {
             },
         ));
 
-        // Record 10 successful executions
+        // 记录 10 次成功执行
         for _ in 0..10 {
             let telemetry_store = SkillTelemetryStore::new(store.clone());
             telemetry_store
@@ -383,7 +389,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new()) as Arc<dyn Store>;
         let monitor = SkillHealthMonitor::new(store.clone());
 
-        // Record 8 failures out of 10 executions
+        // 记录 10 次执行中的 8 次失败
         let telemetry_store = SkillTelemetryStore::new(store.clone());
         for _ in 0..2 {
             telemetry_store
@@ -409,7 +415,7 @@ mod tests {
         let store = Arc::new(InMemoryStore::new()) as Arc<dyn Store>;
         let monitor = SkillHealthMonitor::new(store.clone());
 
-        // Record 5 successes and 5 failures (50% success rate)
+        // 记录 5 次成功与 5 次失败（成功率 50%）
         let telemetry_store = SkillTelemetryStore::new(store.clone());
         for _ in 0..5 {
             telemetry_store

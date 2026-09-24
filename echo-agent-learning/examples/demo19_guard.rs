@@ -6,10 +6,11 @@
 //! RUST_LOG=info cargo run --features content-guard --example demo19_guard
 //! ```
 
-// This example requires the `content-guard` feature. When the feature is
-// not enabled, provide a stub main so the file still compiles as an example.
+/* 本示例需要 `content-guard` feature。当该 feature 未启用时，
+提供一个桩实现的 main 函数，以保证该文件仍可作为 example 编译通过。 */
 #![cfg_attr(not(feature = "content-guard"), allow(dead_code))]
 
+/// 演示如何使用 `RuleGuard` 对用户输入和 LLM 输出进行安全过滤，并查看审计记录。
 #[cfg(feature = "content-guard")]
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
@@ -84,6 +85,7 @@ async fn main() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// `content-guard` feature 未启用时的桩实现，仅打印提示信息。
 #[cfg(not(feature = "content-guard"))]
 fn main() {
     eprintln!("This example requires the 'content-guard' feature.");

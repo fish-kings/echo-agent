@@ -21,26 +21,26 @@ use std::path::{Component, Path, PathBuf};
 #[cfg(feature = "files")]
 use echo_core::error::{Result, ToolError};
 
-/// Resolve a user-supplied relative/absolute path into a safe absolute path.
+/// 将用户提供的相对/绝对路径解析为一个安全的绝对路径。
 ///
-/// Path base priority for relative paths:
-/// 1. `base_dir` (construction-time confinement, e.g. `with_base_dir`)
-/// 2. `working_dir` (runtime per-call dir, e.g. a session-bound worktree)
-/// 3. process `current_dir` (fallback)
+/// 相对路径解析所使用的基准目录，按以下优先级选取：
+/// 1. `base_dir`（构造时设定的限制范围，例如 `with_base_dir`）
+/// 2. `working_dir`（运行时按调用传入的目录，例如某个会话绑定的工作树）
+/// 3. 进程的 `current_dir`（兜底方案）
 ///
-/// When `base_dir` is set, resolution is confined within it (absolute paths
-/// must stay inside; relative paths are joined under it; symlinks are
-/// canonicalized defensively). When only `working_dir` is set, relative paths
-/// are joined under it but there is no confinement check (it acts as a CWD
-/// override). When neither is set, behavior is unchanged from before
-/// (raw path + best-effort canonicalize).
+/// 当设置了 `base_dir` 时，解析结果会被限制在该目录内（绝对路径必须
+/// 落在其中；相对路径会拼接到该目录下；并会对符号链接做防御性的
+/// canonicalize 校验）。当只设置了 `working_dir` 时，相对路径会拼接到
+/// 该目录下，但不会做限制范围校验（它仅作为 CWD 的覆盖值）。当两者
+/// 都未设置时，行为与之前保持一致（直接使用原始路径 + 尽力而为的
+/// canonicalize）。
 ///
-/// - Absolute path: normalize then (if base_dir set) verify it stays within base_dir
-/// - Relative path: expand relative to the chosen base then verify
+/// - 绝对路径：先归一化，然后（若设置了 base_dir）校验其仍落在 base_dir 内
+/// - 相对路径：基于选定的基准目录展开，然后校验
 ///
-/// After textual normalization, `std::fs::canonicalize()` is used to resolve symlinks
-/// and verify the real path stays within the allowed directory. For write operations
-/// where the target file doesn't exist yet, the parent directory is canonicalized instead.
+/// 完成文本层面的归一化之后，会使用 `std::fs::canonicalize()` 解析符号链接，
+/// 并校验解析后的真实路径仍落在允许的目录范围内。对于目标文件尚不存在的
+/// 写入操作，则改为对其父目录做 canonicalize 校验。
 #[cfg(feature = "files")]
 fn resolve_path(
     tool: &str,
@@ -50,8 +50,8 @@ fn resolve_path(
 ) -> Result<PathBuf> {
     let requested = Path::new(path_str);
 
-    // Effective base: construction-time base_dir takes priority (confinement);
-    // otherwise fall back to the runtime working_dir (CWD override, no confinement).
+    // 有效基准目录：构造时设定的 base_dir 优先（限制范围）；
+    // 否则回退到运行时的 working_dir（仅作为 CWD 覆盖，不做限制范围校验）。
     let effective_base: Option<PathBuf> = base_dir
         .clone()
         .or_else(|| working_dir.map(|p| p.to_path_buf()));
@@ -59,7 +59,7 @@ fn resolve_path(
     let resolved = if let Some(ref base) = effective_base {
         let normalized_base = normalize_path(base);
 
-        // Relative path: expand with base_dir as root; absolute path: normalize directly
+        // 相对路径：以 base_dir 为根目录展开；绝对路径：直接归一化
         let normalized = if requested.is_absolute() {
             normalize_path(requested)
         } else {
@@ -79,8 +79,8 @@ fn resolve_path(
             .into());
         }
 
-        // Defense against symlink bypass: canonicalize to resolve symlinks and
-        // verify the real (resolved) path stays within the base directory.
+        // 防御符号链接绕过：canonicalize 解析符号链接，
+        // 并校验解析后的真实路径仍落在基准目录内。
         match std::fs::canonicalize(&normalized) {
             Ok(canonical) => {
                 let canonical_base = std::fs::canonicalize(&normalized_base).map_err(|e| {
@@ -102,7 +102,7 @@ fn resolve_path(
                 canonical
             }
             Err(_) => {
-                // File doesn't exist yet (write operation) — canonicalize parent directory
+                // 文件尚不存在（写入操作）—— 改为对父目录做 canonicalize
                 if let Some(parent) = normalized.parent()
                     && parent != Path::new("")
                     && let Ok(canonical_parent) = std::fs::canonicalize(parent)
@@ -122,26 +122,26 @@ fn resolve_path(
                     let filename = normalized.file_name().unwrap_or_default();
                     return Ok(canonical_parent.join(filename));
                 }
-                // Fallback: return textually normalized path if parent doesn't exist
+                // 兜底方案：父目录也不存在时，返回文本层面归一化后的路径
                 normalized
             }
         }
     } else {
         let normalized = normalize_path(requested);
-        // normalize_path strips "." to an empty path — use CWD as fallback
+        // normalize_path 会把 "." 归一化为空路径 —— 此时回退使用 CWD
         let normalized = if normalized.as_os_str().is_empty() {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         } else {
             normalized
         };
-        // Best-effort canonicalization when no base_dir constraint
+        // 未设置 base_dir 限制时，尽力而为地做 canonicalize
         std::fs::canonicalize(&normalized).unwrap_or(normalized)
     };
 
     Ok(resolved)
 }
 
-/// Filesystem-independent path normalization (resolves `.` and `..`)
+/// 不依赖文件系统的路径归一化（解析 `.` 与 `..`）
 #[cfg(feature = "files")]
 fn normalize_path(path: &Path) -> PathBuf {
     let mut components = Vec::new();

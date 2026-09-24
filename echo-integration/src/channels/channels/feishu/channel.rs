@@ -1,4 +1,4 @@
-//! Feishu Channel Implementation
+//! 飞书渠道实现
 //!
 //! 支持两种模式：
 //! - Long Poll（WebSocket 长连接）：无需公网 IP，纯 Rust 实现
@@ -34,8 +34,11 @@ use tracing::{debug, info, warn};
 pub enum FeishuMode {
     /// Webhook 模式：需要公网 IP
     Webhook {
+        /// HTTP 服务监听地址（如 `"0.0.0.0:8080"`）。
         bind: String,
+        /// Webhook 事件接收路径（如 `"/events"`）。
         path: String,
+        /// 飞书事件订阅的校验 token，用于验证请求来源。
         verification_token: Option<String>,
         /// 签名密钥（用于 HMAC 签名验证，防止伪造请求）
         signing_key: Option<String>,
@@ -168,17 +171,24 @@ impl FeishuConfig {
 
 /// 飞书 IM 通道实现
 pub struct FeishuChannel {
+    /// 渠道配置。
     config: FeishuConfig,
+    /// access_token 管理器，渠道启动后才会创建。
     token_manager: Option<Arc<TokenManager>>,
+    /// 共享的 HTTP 客户端。
     http: reqwest::Client,
+    /// 出站消息投递队列的发送端，渠道启动后才会创建。
     send_tx: Option<DeliverySender>,
+    /// 后台消息发送任务的句柄。
     send_handle: Option<JoinHandle<()>>,
+    /// 消息接收任务（长连接或 Webhook 服务）的句柄。
     task_handle: Option<JoinHandle<()>>,
     /// 消息 ID -> (卡片消息 ID, 创建时间)（用于更新运行中的卡片，带 TTL 防泄漏）
     running_cards: Arc<dashmap::DashMap<String, (String, std::time::Instant)>>,
 }
 
 impl FeishuChannel {
+    /// 使用给定配置创建一个新的飞书渠道实例；`app_id`/`app_secret` 缺失时返回错误。
     pub fn new(config: FeishuConfig) -> Result<Self> {
         if config.app_id.is_empty() || config.app_secret.is_empty() {
             return Err(ReactError::Channel(Box::new(ChannelError::InvalidConfig(
@@ -217,14 +227,17 @@ impl FeishuChannel {
 
 #[async_trait]
 impl ChannelPlugin for FeishuChannel {
+    /// 返回渠道唯一标识 `"feishu"`。
     fn id(&self) -> &str {
         "feishu"
     }
 
+    /// 返回渠道的展示名称 `"Feishu"`。
     fn label(&self) -> &str {
         "Feishu"
     }
 
+    /// 返回该渠道支持的能力（会话类型、媒体、话题等）。
     fn capabilities(&self) -> &ChannelCapabilities {
         static CAPS: std::sync::OnceLock<ChannelCapabilities> = std::sync::OnceLock::new();
         CAPS.get_or_init(|| ChannelCapabilities {
@@ -234,6 +247,8 @@ impl ChannelPlugin for FeishuChannel {
         })
     }
 
+    /// 启动飞书渠道：初始化 token 管理器、启动发送任务，并根据配置的模式
+    /// （长连接或 Webhook）启动对应的消息接收服务。
     async fn start(&mut self, handler: Arc<dyn MessageHandler>) -> Result<()> {
         if self.task_handle.is_some() || self.send_handle.is_some() {
             return Err(ReactError::Channel(Box::new(ChannelError::Other(
@@ -352,6 +367,7 @@ impl ChannelPlugin for FeishuChannel {
         Ok(())
     }
 
+    /// 停止飞书渠道：终止消息接收任务与发送任务，并清空运行时状态。
     async fn stop(&mut self) -> Result<()> {
         info!("Stopping Feishu channel...");
 
@@ -370,6 +386,7 @@ impl ChannelPlugin for FeishuChannel {
         Ok(())
     }
 
+    /// 直接发送一条出站消息（不经过后台发送队列）。
     async fn send(&self, msg: OutboundMessage) -> Result<()> {
         let _delivery_permit = msg.begin_delivery()?;
         let token_manager = self.token_manager.as_ref().ok_or_else(|| {
@@ -388,6 +405,7 @@ impl ChannelPlugin for FeishuChannel {
         .await
     }
 
+    /// 健康检查：确认消息接收任务仍在运行，并尝试获取一次 access_token。
     async fn health_check(&self) -> Result<()> {
         if self.task_handle.as_ref().is_some_and(|h| h.is_finished()) {
             return Err(ReactError::Channel(Box::new(
@@ -460,15 +478,21 @@ async fn send_feishu_message_internal(
 
 /// Wrapper Handler：处理消息并自动发送回复
 struct FeishuMessageHandler {
+    /// 被包装的内部消息处理器。
     inner: Arc<dyn MessageHandler>,
+    /// 用于投递出站消息的发送端。
     send_tx: DeliverySender,
+    /// 共享的 HTTP 客户端。
     http: reqwest::Client,
+    /// API 基础地址。
     api_domain: String,
+    /// access_token 管理器。
     token_manager: Arc<TokenManager>,
 }
 
 #[async_trait]
 impl MessageHandler for FeishuMessageHandler {
+    /// 为收到的消息添加 “OK” 表情反应，再将 inner handler 的流式分段逐 chunk 投递出去。
     async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
         // 先添加 OK 表情反应
         let token = self.token_manager.get_token().await?;
@@ -486,6 +510,7 @@ impl MessageHandler for FeishuMessageHandler {
         super::super::dispatch_stream_to_send_tx(&self.inner, &self.send_tx, msg).await
     }
 
+    /// 对空 text 视为流式占位不做发送，非空 text 则正常经 send_tx 投递。
     async fn reply(&self, msg: OutboundMessage) -> Result<()> {
         super::super::reply_with_empty_guard(&self.send_tx, msg).await
     }

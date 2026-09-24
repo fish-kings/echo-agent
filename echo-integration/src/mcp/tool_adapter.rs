@@ -24,6 +24,7 @@ pub struct McpToolAdapter {
 }
 
 impl McpToolAdapter {
+    /// 创建一个不带服务端名称前缀的适配器，暴露名称直接使用工具原名。
     pub fn new(client: Arc<McpClient>, tool: McpTool) -> Self {
         let exposed_name = tool.name.clone();
         Self {
@@ -35,6 +36,7 @@ impl McpToolAdapter {
         }
     }
 
+    /// 创建一个适配器，暴露名称带有服务端名称前缀（`mcp__<server>__<tool>`）。
     pub fn with_server_name(
         client: Arc<McpClient>,
         tool: McpTool,
@@ -51,9 +53,9 @@ impl McpToolAdapter {
         }
     }
 
-    /// Adapt a tool with its canonical owner-qualified server identity.
-    /// Direct servers retain the historical projection; plugin servers use a
-    /// stable namespace so equal local names from different plugins coexist.
+    /// 使用带有规范化所有者信息的服务端标识来适配工具。
+    /// 直连服务端沿用历史命名投影；插件服务端则使用稳定的命名空间，
+    /// 使不同插件下相同的本地名称也能共存。
     pub fn with_server_identity(
         client: Arc<McpClient>,
         tool: McpTool,
@@ -74,6 +76,7 @@ impl McpToolAdapter {
         }
     }
 
+    /// 根据服务端标识与工具名，计算出该工具应对外暴露的名称。
     pub fn exposed_name_for_identity(server_id: &McpServerId, tool_name: &str) -> String {
         match &server_id.owner {
             McpServerOwner::Direct => Self::exposed_name_for(&server_id.local_name, tool_name),
@@ -83,19 +86,17 @@ impl McpToolAdapter {
         }
     }
 
-    /// Override the conservative MCP capability classification with a decision
-    /// owned by the embedding application.
+    /// 用宿主应用自行做出的判断，覆盖保守的 MCP 能力分类。
     ///
-    /// MCP server annotations are advisory protocol metadata and must not be
-    /// converted directly into this value. Applications may downgrade a tool
-    /// to read-only only after establishing that fact from local configuration
-    /// or another trusted policy source.
+    /// MCP 服务端的 annotations 只是建议性的协议元数据，不能直接转换为该值。
+    /// 应用只有在通过本地配置或其他可信策略源确认某工具确为只读之后，
+    /// 才能将其能力降级为只读。
     pub fn with_local_capabilities(mut self, capabilities: ToolCapabilities) -> Self {
         self.local_capabilities = capabilities;
         self
     }
 
-    /// Stable tool name used when a server's tools are registered on an agent.
+    /// 服务端工具注册到 agent 时使用的稳定工具名称。
     pub fn exposed_name_for(server_name: &str, tool_name: &str) -> String {
         format!(
             "mcp__{}__{}",
@@ -104,6 +105,7 @@ impl McpToolAdapter {
         )
     }
 
+    /// 为工具结果附加来源、工具名、结果类型及服务端名称等元数据。
     fn attach_result_metadata(&self, result: &mut ToolResult, result_type: &str) {
         result
             .metadata
@@ -121,10 +123,12 @@ impl McpToolAdapter {
         }
     }
 
+    /// 默认的保守能力分类：视为具有写权限的中等风险变更操作。
     fn conservative_capabilities() -> ToolCapabilities {
         ToolCapabilities::mutating(ToolRiskLevel::Standard, vec![ToolPermission::Write])
     }
 
+    /// 根据本地能力分类构造一次工具失败的默认描述（是否可能有副作用等）。
     fn reported_failure(&self) -> ToolFailure {
         if self.local_capabilities.is_read_only() {
             ToolFailure::new(ToolFailureCategory::Permanent)
@@ -135,6 +139,8 @@ impl McpToolAdapter {
     }
 }
 
+/// 清理工具名称片段：仅保留 ASCII 字母数字及 `_`/`-`，其余字符替换为 `_`；
+/// 若结果为空则返回 `"unnamed"`。
 fn sanitize_tool_name_part(value: &str) -> String {
     let sanitized: String = value
         .chars()
@@ -153,6 +159,7 @@ fn sanitize_tool_name_part(value: &str) -> String {
     }
 }
 
+/// 根据 MCP 工具调用结果的内容，推断其结果类型（json/image/audio/resource/text）。
 fn mcp_result_type(result: &McpToolCallResult) -> &'static str {
     if result.structured_content.is_some() {
         return "json";
@@ -182,30 +189,37 @@ fn mcp_result_type(result: &McpToolCallResult) -> &'static str {
 }
 
 impl Tool for McpToolAdapter {
+    /// 返回该工具对外暴露的名称。
     fn name(&self) -> &str {
         &self.exposed_name
     }
 
+    /// 返回该工具的描述文本；若 MCP 服务端未提供则为空字符串。
     fn description(&self) -> &str {
         self.tool.description.as_deref().unwrap_or("")
     }
 
+    /// 返回该工具的输入参数 JSON Schema。
     fn parameters(&self) -> serde_json::Value {
         self.tool.input_schema.clone()
     }
 
+    /// 返回该工具所需的权限列表。
     fn permissions(&self) -> Vec<ToolPermission> {
         self.local_capabilities.permissions.clone()
     }
 
+    /// 返回该工具的风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         self.local_capabilities.risk
     }
 
+    /// 返回该工具的能力分类。
     fn capabilities(&self) -> ToolCapabilities {
         self.local_capabilities.clone()
     }
 
+    /// 调用远端 MCP 工具，并将其结果转换为框架的 `ToolResult`。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let args = serde_json::Value::Object(parameters.into_iter().collect());
@@ -223,10 +237,9 @@ impl Tool for McpToolAdapter {
 
             let text = McpClient::content_to_text(&result.content);
 
-            // Preserve the MCP spec's `structuredContent` as structured `data`
-            // (callers can render it directly instead of re-parsing the text),
-            // and map `isError` to the structured-error kind. The text view
-            // remains a human-readable concatenation for the LLM.
+            // 将 MCP 规范中的 `structuredContent` 保留为结构化的 `data`
+            // （调用方可直接渲染而无需重新解析文本），并将 `isError`
+            // 映射为结构化错误类型。文本视图仍保留为供 LLM 阅读的可读拼接结果。
             if result.is_error {
                 let failure = self.reported_failure();
                 let mut tr = ToolResult::failure(failure.category, text).with_failure(failure);
@@ -241,7 +254,7 @@ impl Tool for McpToolAdapter {
             }
 
             let mut tr = if let Some(structured) = result.structured_content {
-                // success_json sets kind = Json and data; keep the text view too.
+                // success_json 会设置 kind = Json 以及 data；同时也保留文本视图。
                 let mut t = ToolResult::success_json(structured);
                 t.output = text;
                 t
@@ -249,8 +262,8 @@ impl Tool for McpToolAdapter {
                 ToolResult::success(text)
             };
 
-            // Surface non-standard extension fields in the text view so no
-            // MCP server extra data is silently dropped.
+            // 将非标准扩展字段体现在文本视图中，避免 MCP 服务端的
+            // 额外数据被静默丢弃。
             if !result.extra.is_empty() {
                 let extra_str = serde_json::to_string_pretty(&result.extra).unwrap_or_default();
                 tr.output.push_str(&format!("\n\n附加字段:\n{extra_str}"));

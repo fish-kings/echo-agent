@@ -30,6 +30,8 @@ use echo_agent::tools::web::providers::duckduckgo::DuckDuckGoProvider;
 use echo_agent::tools::web::providers::tavily::TavilyProvider;
 use echo_agent::tools::web::{WebFetchTool, WebSearchTool};
 
+/// demo41 主入口：依次演示 Provider 状态总览、三个搜索引擎、自动选择策略、
+/// 网页获取以及 Agent 集成 Web 工具的完整流程。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -67,6 +69,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: Provider 状态总览 ──────────────────────────────────────────────────
 
+/// 打印各搜索引擎 Provider（DuckDuckGo / Brave / Tavily）的可用状态与说明。
 fn demo_provider_overview() {
     println!("{}", "─".repeat(55));
     println!("Part 1: 搜索引擎 Provider 状态总览\n");
@@ -98,6 +101,7 @@ fn demo_provider_overview() {
 
 // ── Part 2: DuckDuckGo 搜索 ───────────────────────────────────────────────────
 
+/// 使用 DuckDuckGo（免费、无需 API Key）执行搜索并打印结果。
 async fn demo_duckduckgo_search() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 2: DuckDuckGo 搜索（免费，无需 API Key）\n");
@@ -115,6 +119,7 @@ async fn demo_duckduckgo_search() -> echo_agent::error::Result<()> {
 
 // ── Part 3: Brave Search ──────────────────────────────────────────────────────
 
+/// 使用 Brave Search 执行搜索；若未配置 `BRAVE_SEARCH_API_KEY` 则返回错误。
 async fn demo_brave_search() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 3: Brave Search 搜索\n");
@@ -137,6 +142,7 @@ async fn demo_brave_search() -> echo_agent::error::Result<()> {
 
 // ── Part 4: Tavily 搜索 ──────────────────────────────────────────────────────
 
+/// 使用 Tavily（AI 优化搜索）执行搜索；若未配置 `TAVILY_API_KEY` 则返回错误。
 async fn demo_tavily_search() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 4: Tavily 搜索（AI 优化）\n");
@@ -159,6 +165,7 @@ async fn demo_tavily_search() -> echo_agent::error::Result<()> {
 
 // ── Part 5: 自动选择策略 ─────────────────────────────────────────────────────
 
+/// 演示 `WebSearchTool::auto()` 的自动选择策略（优先级 Tavily > Brave > DuckDuckGo）。
 async fn demo_auto_search() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 5: 自动选择策略（Tavily > Brave > DuckDuckGo）\n");
@@ -188,6 +195,7 @@ async fn demo_auto_search() -> echo_agent::error::Result<()> {
 
 // ── Part 6: WebFetch 页面获取 ────────────────────────────────────────────────
 
+/// 演示 `WebFetchTool` 获取网页内容并转换为限定长度的可读文本。
 async fn demo_web_fetch() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 6: WebFetch 页面获取\n");
@@ -220,6 +228,7 @@ async fn demo_web_fetch() -> echo_agent::error::Result<()> {
 
 // ── Part 7: Agent 集成 ───────────────────────────────────────────────────────
 
+/// 演示将 Web 搜索与网页获取工具注册给 Agent，由 LLM 自主决定何时调用完成任务。
 async fn demo_agent_web_task() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 7: Agent 集成 Web 工具\n");
@@ -257,6 +266,7 @@ async fn demo_agent_web_task() -> echo_agent::error::Result<()> {
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
+/// 打印搜索结果列表（标题、URL、摘要片段）；结果为空时打印提示。
 fn print_results(results: &[echo_agent::tools::web::providers::SearchResult]) {
     if results.is_empty() {
         println!("  （无结果）\n");
@@ -273,6 +283,7 @@ fn print_results(results: &[echo_agent::tools::web::providers::SearchResult]) {
     }
 }
 
+/// 校验搜索结果非空，为空时返回带 Provider 名称的验收失败错误。
 fn ensure_search_results(
     provider: &str,
     results: &[echo_agent::tools::web::providers::SearchResult],

@@ -1,24 +1,25 @@
-//! Trajectory replay — offline analysis of past agent runs.
+//! 轨迹回放（Trajectory replay）—— 对历史 Agent 运行记录的离线分析。
 //!
-//! Given a [`Run`] loaded from a [`RunStore`](crate::trace::RunStore),
-//! the replay system extracts patterns, detects policy violations, and
-//! generates eval metrics without re-running the agent.
+//! 给定一个从 [`RunStore`](crate::trace::RunStore) 加载出来的 [`Run`]，
+//! 回放系统会提取模式、检测策略违规，并在不重新运行 Agent 的情况下
+//! 生成评测指标。
 
 use crate::eval::{EvalConstraints, EvalMetric, EvalResult};
 use crate::trace::{Run, RunEvent};
 
-/// Replay analyzer for a completed run.
+/// 针对一次已完成的运行的回放分析器。
 pub struct TrajectoryReplay {
+    /// 被分析的运行记录。
     pub run: Run,
 }
 
 impl TrajectoryReplay {
-    /// Create a replay from a loaded run.
+    /// 根据一次已加载的运行记录创建回放实例。
     pub fn new(run: Run) -> Self {
         Self { run }
     }
 
-    /// Count tool calls by type.
+    /// 按类型统计工具调用次数。
     pub fn tool_call_counts(&self) -> Vec<(&str, usize)> {
         let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let skipped = self.skipped_tool_call_ids();
@@ -34,7 +35,7 @@ impl TrajectoryReplay {
         result
     }
 
-    /// Count total tool calls.
+    /// 统计工具调用总数。
     pub fn total_tool_calls(&self) -> usize {
         let skipped = self.skipped_tool_call_ids();
         self.run
@@ -46,7 +47,7 @@ impl TrajectoryReplay {
             .count()
     }
 
-    /// Whether execution actually began for the named tool.
+    /// 指定名称的工具是否确实开始过执行。
     pub fn tool_was_used(&self, tool_name: &str) -> bool {
         let skipped = self.skipped_tool_call_ids();
         self.run.events.iter().any(|event| {
@@ -58,7 +59,7 @@ impl TrajectoryReplay {
         crate::trace::skipped_tool_call_ids(&self.run.events)
     }
 
-    /// Count errors (tool errors + run errors).
+    /// 统计错误数量（工具错误 + 运行错误）。
     pub fn error_count(&self) -> usize {
         self.tool_error_count().saturating_add(
             self.run
@@ -69,7 +70,7 @@ impl TrajectoryReplay {
         )
     }
 
-    /// Count failures from tools that actually entered execution.
+    /// 统计确实进入过执行的工具的失败次数。
     pub fn tool_error_count(&self) -> usize {
         let skipped = self.skipped_tool_call_ids();
         self.run
@@ -81,7 +82,7 @@ impl TrajectoryReplay {
             .count()
     }
 
-    /// Validate model-independent lifecycle invariants in the recorded run.
+    /// 校验记录下来的运行中，与模型无关的生命周期不变式。
     pub fn contract_violations(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut pending = std::collections::HashMap::<String, String>::new();
@@ -177,7 +178,7 @@ impl TrajectoryReplay {
         violations
     }
 
-    /// Normalize a path for comparison (resolve ../, ./, //).
+    /// 将路径归一化以便比较（解析 ../、./、//）。
     fn normalize_path(path: &str) -> String {
         let p = path.replace('\\', "/").replace("//", "/");
         let parts: Vec<&str> = p.split('/').collect();
@@ -194,7 +195,7 @@ impl TrajectoryReplay {
         out.join("/")
     }
 
-    /// Extract distinct paths with a confirmed file-edit effect.
+    /// 提取所有具有确认过的文件编辑效果的不重复路径。
     pub fn written_files(&self) -> Vec<String> {
         let mut files = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -209,8 +210,8 @@ impl TrajectoryReplay {
         files
     }
 
-    /// Check confirmed file edits against preceding successful file reads.
-    /// Paths are normalized lexically for comparison; this does not resolve symlinks.
+    /// 将已确认的文件编辑与之前成功的文件读取进行核对。
+    /// 路径按字面进行归一化比较；不会解析符号链接。
     pub fn detect_write_without_read(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut read_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -232,11 +233,11 @@ impl TrajectoryReplay {
         violations
     }
 
-    /// Evaluate constraints against this run.
+    /// 针对该运行评估约束条件。
     pub fn evaluate_constraints(&self, constraints: &EvalConstraints) -> Vec<String> {
         let mut violations = self.contract_violations();
 
-        // Check max tool calls
+        // 检查最大工具调用次数
         if let Some(max) = constraints.max_tool_calls {
             let total = self.total_tool_calls();
             if total > max {
@@ -244,7 +245,7 @@ impl TrajectoryReplay {
             }
         }
 
-        // Check required read-before-edit
+        // 检查“编辑前必须先读取”的约束
         if constraints.required_read_before_edit {
             let rbe_violations = self.detect_write_without_read();
             violations.extend(rbe_violations);
@@ -253,7 +254,7 @@ impl TrajectoryReplay {
         violations
     }
 
-    /// Generate eval metrics from this trajectory.
+    /// 根据该轨迹生成评测指标。
     pub fn to_metrics(&self, constraints: &EvalConstraints) -> Vec<EvalMetric> {
         let total_calls = self.total_tool_calls();
         let errors = self.error_count();
@@ -289,7 +290,7 @@ impl TrajectoryReplay {
         ]
     }
 
-    /// Evaluate this run against constraints and produce an EvalResult.
+    /// 对照约束条件评估该运行，并生成一个 EvalResult。
     pub fn evaluate(&self, case_id: &str, constraints: &EvalConstraints) -> EvalResult {
         let violations = self.evaluate_constraints(constraints);
         let metrics = self.to_metrics(constraints);

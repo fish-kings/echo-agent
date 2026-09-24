@@ -1,24 +1,23 @@
 //! # echo-state
 //!
-//! State management layer for the [echo-agent](https://crates.io/crates/echo_agent) framework.
+//! [echo-agent](https://crates.io/crates/echo_agent) 框架的状态管理层。
 //!
-//! ## Modules
+//! ## 模块
 //!
-//! | Module | Description |
+//! | 模块 | 说明 |
 //! |--------|-------------|
-//! | [`memory`] | Long-term KV memory (`Store`) + user-visible transcript projection (`ConversationStore`) |
-//! | [`compression`] | Context compression: SlidingWindow, LLM Summary, and Hybrid strategies |
-//! | [`audit`] | Structured audit logging with pluggable backends (in-memory, file) |
-//! | [`journal`] | Sequenced event journal with checkpoint-compounded reduction |
-//! | [`skill_telemetry`] | Skill execution telemetry: activation tracking, success/failure metrics |
-//! | [`profiles`] | Agent capability profile + User preference profile with prompt injection |
+//! | [`memory`] | 长期 KV 记忆（`Store`）+ 面向用户的对话记录投影（`ConversationStore`） |
+//! | [`compression`] | 上下文压缩：滑动窗口、LLM 摘要、混合策略 |
+//! | [`audit`] | 可插拔后端（内存、文件）的结构化审计日志 |
+//! | [`journal`] | 带检查点复合归约的顺序事件日志 |
+//! | [`skill_telemetry`] | 技能执行遥测：激活跟踪、成功/失败指标 |
+//! | [`profiles`] | Agent 能力画像 + 用户偏好画像，支持提示词注入 |
 //!
-//! ## Feature Flags
+//! ## Feature 开关
 //!
-//! - `sqlite` — Enable `SqliteStore` for disk-backed persistent memory
+//! - `sqlite` — 启用 `SqliteStore`，提供基于磁盘持久化的记忆存储
 //!
-//! Most users should depend on `echo_agent` (the facade crate) instead of
-//! depending on `echo_state` directly.
+//! 大多数用户应依赖门面 crate `echo_agent`，而不是直接依赖 `echo_state`。
 
 pub mod audit;
 pub mod compression;

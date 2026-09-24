@@ -7,16 +7,16 @@ use echo_core::llm::types::Message;
 use futures::future::BoxFuture;
 use std::time::Instant;
 
-/// Multi-stage pipeline compressor.
+/// 多阶段流水线压缩器。
 ///
-/// Chains multiple [`ContextCompressor`] implementations as an ordered pipeline.
-/// Each stage's output feeds into the next stage's input.
+/// 将多个 [`ContextCompressor`] 实现按顺序串联成一条流水线。
+/// 每一阶段的输出会作为下一阶段的输入。
 ///
-/// **Short-circuit**: When enabled (default), the pipeline skips remaining stages
-/// once the estimated token count drops to or below `token_limit`. This avoids
-/// unnecessary LLM calls in later stages when earlier stages already suffice.
+/// **短路机制**：启用时（默认启用），一旦估算的 token 数已降到 `token_limit`
+/// 以下，流水线会跳过剩余阶段。这样可以避免在前面的阶段已经足够时，
+/// 后续阶段仍发起不必要的 LLM 调用。
 ///
-/// # Example
+/// # 示例
 ///
 /// ```rust,no_run
 /// use echo_core::llm::LlmClient;
@@ -33,16 +33,19 @@ use std::time::Instant;
 /// # }
 /// ```
 pub struct HybridCompressor {
+    /// 按顺序执行的压缩阶段列表。
     stages: Vec<Box<dyn ContextCompressor>>,
-    /// When true, skip remaining stages if tokens are already at or below the limit.
+    /// 为 true 时，若 token 数已经处于或低于限制，则跳过剩余阶段。
     short_circuit: bool,
 }
 
 impl ContextCompressor for HybridCompressor {
+    /// 返回该压缩器的名称。
     fn name(&self) -> &str {
         "Hybrid"
     }
 
+    /// 依次执行各压缩阶段，必要时应用短路优化，并汇总生成最终检查点。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {
         Box::pin(async move {
             let start = Instant::now();
@@ -62,7 +65,7 @@ impl ContextCompressor for HybridCompressor {
                 .sum();
 
             for (i, stage) in self.stages.iter().enumerate() {
-                // Short-circuit: if tokens are already at or below the limit, skip remaining stages
+                // 短路：如果 token 数已经处于或低于限制，跳过剩余阶段
                 if self.short_circuit && i > 0 {
                     let current_tokens: usize = messages
                         .iter()
@@ -91,7 +94,7 @@ impl ContextCompressor for HybridCompressor {
                         tokenizer: Some(tokenizer.clone()),
                     })
                     .await?;
-                // Collect stage info from checkpoint if available
+                // 如果检查点可用，收集该阶段的信息
                 if let Some(ref cp) = output.checkpoint {
                     let checkpoint_preview: String = cp.checkpoint_id.chars().take(8).collect();
                     let stage_info = format!("{}(id={checkpoint_preview})", cp.strategy);
@@ -132,35 +135,38 @@ impl ContextCompressor for HybridCompressor {
 }
 
 impl HybridCompressor {
+    /// 创建一个用于构建 [`HybridCompressor`] 的构建器。
     pub fn builder() -> HybridCompressorBuilder {
         HybridCompressorBuilder::default()
     }
 }
 
-/// Builder for [`HybridCompressor`]
+/// [`HybridCompressor`] 的构建器
 #[derive(Default)]
 pub struct HybridCompressorBuilder {
+    /// 已添加的压缩阶段，按添加顺序执行。
     stages: Vec<Box<dyn ContextCompressor>>,
+    /// 是否启用短路优化；`None` 表示使用默认值（启用）。
     short_circuit: Option<bool>,
 }
 
 impl HybridCompressorBuilder {
-    /// Append a compression stage (executed in order).
+    /// 追加一个压缩阶段（按添加顺序执行）。
     pub fn stage(mut self, compressor: impl ContextCompressor + 'static) -> Self {
         self.stages.push(Box::new(compressor));
         self
     }
 
-    /// Enable or disable short-circuit optimization.
+    /// 启用或禁用短路优化。
     ///
-    /// When enabled (default), the pipeline skips remaining stages once the
-    /// estimated token count drops to or below `token_limit`. Set to `false`
-    /// to always run all stages regardless.
+    /// 启用时（默认），一旦估算的 token 数降到或低于 `token_limit`，流水线
+    /// 会跳过剩余阶段。设为 `false` 则始终执行全部阶段。
     pub fn short_circuit(mut self, enabled: bool) -> Self {
         self.short_circuit = Some(enabled);
         self
     }
 
+    /// 消耗构建器，生成最终的 [`HybridCompressor`]。
     pub fn build(self) -> HybridCompressor {
         HybridCompressor {
             stages: self.stages,
@@ -170,17 +176,15 @@ impl HybridCompressorBuilder {
 }
 
 impl HybridCompressor {
-    /// Convenience constructor aligned with LangChain `ConversationSummaryBufferMemory`:
-    /// a 2-stage pipeline that keeps a sliding window of recent messages verbatim
-    /// and summarizes older messages via LLM.
+    /// 对齐 LangChain `ConversationSummaryBufferMemory` 的便捷构造函数：
+    /// 一个两阶段流水线，先对较早的消息做摘要，再对最近的消息保留原文滑动窗口。
     ///
-    /// Stage order is `[SummaryCompressor, SlidingWindowCompressor]` — summarize
-    /// old messages first (lossy), then keep the most recent `window` verbatim
-    /// (lossless). Short-circuit is enabled: if the summary already brings tokens
-    /// under the limit, the sliding window stage is skipped.
+    /// 阶段顺序为 `[SummaryCompressor, SlidingWindowCompressor]`——先对旧消息
+    /// 做摘要（有损），再原样保留最近的 `window` 条消息（无损）。启用了短路：
+    /// 如果摘要阶段已经把 token 数降到限制以下，滑动窗口阶段会被跳过。
     ///
-    /// This is the industry-mainstream "hybrid" (summarized context + sliding
-    /// window), matching LangChain's production hybrid memory.
+    /// 这是业界主流的“混合”方案（摘要上下文 + 滑动窗口），
+    /// 与 LangChain 生产环境中的混合记忆机制一致。
     pub fn summary_buffer(
         llm: std::sync::Arc<dyn echo_core::llm::LlmClient>,
         window: usize,
@@ -201,6 +205,7 @@ mod tests {
     use crate::compression::compressor::SlidingWindowCompressor;
     use echo_core::llm::types::{MessageContent, Role};
 
+    /// 构造一条测试用消息。
     fn make_msg(role: Role, text: &str) -> Message {
         Message {
             role,
@@ -211,10 +216,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_hybrid_short_circuit_skips_second_stage() {
-        // Two sliding window stages: first keeps 10, second keeps 2
-        // With short_circuit=true and token_limit=100 (high enough),
-        // the first stage should run and the second should be skipped
-        // because tokens after first stage should be below the high limit.
+        // 两个滑动窗口阶段：第一个保留 10 条，第二个保留 2 条
+        // 当 short_circuit=true 且 token_limit=100（足够高）时，
+        // 第一阶段应当执行，第二阶段应当被跳过，
+        // 因为第一阶段执行后的 token 数应已低于该较高的限制。
         let compressor = HybridCompressor::builder()
             .stage(SlidingWindowCompressor::new(10))
             .stage(SlidingWindowCompressor::new(2))
@@ -228,7 +233,7 @@ mod tests {
 
         let input = CompressionInput {
             messages,
-            token_limit: 1000, // Very high — first stage result will be under this
+            token_limit: 1000, // 非常高——第一阶段的结果会低于此值
             current_query: None,
             focus_instructions: None,
             cancel_token: None,
@@ -236,9 +241,9 @@ mod tests {
         };
 
         let output = compressor.compress(input).await.unwrap();
-        // With short_circuit, second stage (keep 2) should be skipped.
-        // First stage keeps 10 messages, so output should have 10 + 1 system = 11.
-        // Without short_circuit, second stage would reduce to 2 + 1 = 3.
+        // 启用 short_circuit 后，第二阶段（保留 2 条）应被跳过。
+        // 第一阶段保留 10 条消息，因此输出应为 10 + 1 条 system 消息 = 11。
+        // 如果不启用 short_circuit，第二阶段会将结果缩减为 2 + 1 = 3。
         assert!(
             output.messages.len() > 3,
             "Short-circuit should have prevented second stage from running. Got {} messages.",
@@ -269,8 +274,8 @@ mod tests {
         };
 
         let output = compressor.compress(input).await.unwrap();
-        // Both stages should run: first keeps 10, second keeps 2
-        // Result: system + 2 = 3 messages
+        // 两个阶段都应执行：第一个保留 10 条，第二个保留 2 条
+        // 结果：system + 2 = 3 条消息
         assert_eq!(output.messages.len(), 3, "All stages should have run");
     }
 }

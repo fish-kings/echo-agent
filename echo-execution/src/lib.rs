@@ -1,17 +1,17 @@
-//! # echo_execution
-//!
-//! Execution layer for the [echo-agent](https://crates.io/crates/echo_agent) framework.
-//!
-//! ## Modules
-//!
-//! | Module | Description |
-//! |--------|-------------|
-//! | [`sandbox`] | Multi-layer code execution: `LocalSandbox`, `DockerSandbox`, `K8sSandbox` |
-//! | [`skills`] | File-based skill system: discover → activate → use, with hooks |
-//! | [`tools`] | `ToolManager` — registry, execution, concurrency control |
-//!
-//! Most users should depend on `echo_agent` (the facade crate) instead of
-//! depending on `echo_execution` directly.
+/*! # echo_execution
+
+[echo-agent](https://crates.io/crates/echo_agent) 框架的执行层。
+
+## 模块
+
+| 模块 | 说明 |
+|--------|-------------|
+| [`sandbox`] | 多层代码执行：`LocalSandbox`、`DockerSandbox`、`K8sSandbox` |
+| [`skills`] | 文件型 skill 系统：发现 → 激活 → 使用，并支持 hooks |
+| [`tools`] | `ToolManager` —— 工具注册、执行、并发控制 |
+
+大多数用户应依赖 `echo_agent`（门面 crate），而不是直接依赖 `echo_execution`。
+*/
 
 pub mod risk;
 pub mod sandbox;

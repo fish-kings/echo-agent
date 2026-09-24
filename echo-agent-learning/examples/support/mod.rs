@@ -1,6 +1,7 @@
 use echo_agent::error::{ConfigError, Result};
 use echo_agent::llm::{LlmApiProtocol, LlmConfig};
 
+/// 从环境变量读取配置，构造出 `LlmConfig`；`selector` 可用于覆盖默认模型名称。
 pub fn llm_config(selector: Option<&str>) -> Result<LlmConfig> {
     let provider = required_env("ECHO_AGENT_PROVIDER")?;
     let base_url = required_env("ECHO_AGENT_BASE_URL")?;
@@ -27,6 +28,7 @@ pub fn llm_config(selector: Option<&str>) -> Result<LlmConfig> {
     LlmConfig::for_provider(&provider, &base_url, api_key, &model, protocol)
 }
 
+/// 读取指定的环境变量并去除首尾空白；变量缺失或为空时返回配置错误。
 fn required_env(name: &str) -> Result<String> {
     std::env::var(name)
         .ok()

@@ -1,19 +1,18 @@
-//! Memory system
+//! 记忆系统
 //!
-//! Layered architecture, each with distinct responsibilities:
+//! 分层架构，各层职责各不相同：
 //!
-//! | Layer | Implementation | Scope |
+//! | 层级 | 实现 | 作用范围 |
 //! |------|------|--------|
-//! | Short-term context | [`crate::compression::ContextManager`] | Within a single `execute()` call |
-//! | Conversation history | [`ConversationStore`] / `SqliteConversationStore` | Transcript projection, history browsing, multi-user isolation |
-//! | Long-term memory | [`Store`] / [`FileStore`] / `SqliteStore` | Cross-session, cross-user sharing |
+//! | 短期上下文 | [`crate::compression::ContextManager`] | 单次 `execute()` 调用内 |
+//! | 对话历史 | [`ConversationStore`] / `SqliteConversationStore` | 会话记录投影、历史浏览、多用户隔离 |
+//! | 长期记忆 | [`Store`] / [`FileStore`] / `SqliteStore` | 跨会话、跨用户共享 |
 //!
-//! Runtime checkpoints (for resuming an in-flight conversation across
-//! process restarts) live in `echo_agent::state::RuntimeStateStore` — not
-//! in this module.
+//! 运行时检查点（用于在进程重启后恢复正在进行的对话）存放在
+//! `echo_agent::state::RuntimeStateStore` 中——不在本模块内。
 //!
-//! **Note**: Trait definitions and data types now live in `echo_core::memory`.
-//! They are re-exported here for backward compatibility.
+//! **注意**：trait 定义与数据类型现已迁移至 `echo_core::memory`。
+//! 此处仅为向后兼容而重新导出。
 
 pub mod conversation;
 pub mod embedder;
@@ -27,7 +26,7 @@ pub mod sqlite_store;
 pub mod store;
 pub mod typed_store;
 
-// Re-export traits and data types from echo-core (backward compatibility)
+// 从 echo-core 重新导出 trait 与数据类型（向后兼容）
 pub use echo_core::memory::MemoryScope;
 pub use echo_core::memory::conversation::{
     Conversation, ConversationFilter, ConversationMeta, ConversationProjectionAuthority,
@@ -48,7 +47,7 @@ pub use echo_core::memory::types::{
     MemoryMeta, MemoryRisk, MemorySource, MemoryStatus, MemoryType, TypedMemoryValue,
 };
 
-// Re-export concrete implementations from sub-modules
+// 从子模块重新导出具体实现
 pub use conversation::{
     TranscriptProjectionMeta, normalized_transcript_attachments, project_message, project_messages,
     restore_message, restore_messages, set_transcript_projection_meta,
@@ -68,18 +67,21 @@ pub use typed_store::{MemoryFilter, TypedMemoryEntry, TypedMemoryStore};
 #[cfg(test)]
 pub use test_utils::MockEmbedder;
 
-/// Test embedder (visible only in tests)
+/// 测试用嵌入器（仅在测试环境下可见）
 #[cfg(test)]
 mod test_utils {
     use echo_core::error::Result;
     use echo_core::memory::embedder::Embedder;
     use futures::future::BoxFuture;
 
+    /// 用于测试的模拟嵌入器，通过字节求和生成确定性的归一化向量。
     pub struct MockEmbedder {
+        /// 生成的嵌入向量的维度。
         dimension: usize,
     }
 
     impl MockEmbedder {
+        /// 创建一个指定维度的模拟嵌入器；维度必须大于零。
         pub fn new(dimension: usize) -> Result<Self> {
             if dimension == 0 {
                 return Err(echo_core::error::ReactError::Other(
@@ -91,6 +93,7 @@ mod test_utils {
     }
 
     impl Embedder for MockEmbedder {
+        /// 将文本的字节值按维度取模累加，再做 L2 归一化，生成确定性的伪嵌入向量。
         fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>>> {
             Box::pin(async move {
                 let mut vec = vec![0.0f32; self.dimension];

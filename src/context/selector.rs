@@ -1,20 +1,20 @@
-//! Context selector — scores files by relevance to the current task.
+//! 上下文选择器 —— 根据文件与当前任务的相关性打分。
 //!
-//! Uses symbol matching, recency, and git change detection to find
-//! the most relevant files for context assembly.
+//! 通过符号匹配、最近修改时间以及 git 变更检测，
+//! 找出对上下文组装最相关的文件。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Scores and selects files relevant to a given task.
+/// 为给定任务的相关文件打分并进行选择。
 pub struct ContextSelector {
-    /// Weight for symbol name matches (high — direct code relevance).
+    /// 符号名称匹配的权重（较高 —— 与代码直接相关）。
     pub symbol_weight: f64,
-    /// Weight for recently modified files (medium — likely related).
+    /// 最近修改文件的权重（中等 —— 可能相关）。
     pub recency_weight: f64,
-    /// Weight for files in git diff (medium — actively changing).
+    /// 出现在 git diff 中的文件权重（中等 —— 正在被修改）。
     pub git_diff_weight: f64,
-    /// Maximum number of files to include in context.
+    /// 纳入上下文的最大文件数量。
     pub max_files: usize,
 }
 
@@ -30,16 +30,19 @@ impl Default for ContextSelector {
 }
 
 impl ContextSelector {
+    /// 创建一个使用默认权重配置的 [`ContextSelector`]。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Score files by relevance to the given task description.
-    ///
-    /// Returns file paths sorted by relevance (highest first).
-    /// `symbols` is a map from file path to extracted symbol names.
-    /// `recently_modified` lists recently changed files.
-    /// `git_changed` lists files with git modifications.
+    /**
+    根据与给定任务描述的相关性为文件打分。
+
+    返回按相关性从高到低排序的文件路径列表。
+    `symbols` 是从文件路径到提取出的符号名称的映射。
+    `recently_modified` 列出最近发生变更的文件。
+    `git_changed` 列出存在 git 修改的文件。
+    */
     pub fn score_files(
         &self,
         task: &str,
@@ -51,18 +54,18 @@ impl ContextSelector {
         let task_words: Vec<&str> = task_lower.split_whitespace().collect();
         let mut scores: HashMap<PathBuf, f64> = HashMap::new();
 
-        // Score by symbol matches
+        // 按符号匹配打分
         for (path, syms) in symbols {
             let mut score = 0.0;
             for sym in syms {
                 let sym_lower = sym.to_lowercase();
-                // Direct word match
+                // 直接的单词匹配
                 for word in &task_words {
                     if sym_lower.contains(word) || word.contains(&sym_lower) {
                         score += self.symbol_weight;
                     }
                 }
-                // Substring match (partial)
+                // 子串匹配（部分匹配）
                 if task_lower.contains(&sym_lower) {
                     score += self.symbol_weight * 0.5;
                 }
@@ -72,17 +75,17 @@ impl ContextSelector {
             }
         }
 
-        // Score by recency
+        // 按最近修改时间打分
         for path in recently_modified {
             *scores.entry(path.clone()).or_default() += self.recency_weight;
         }
 
-        // Score by git changes
+        // 按 git 变更打分
         for path in git_changed {
             *scores.entry(path.clone()).or_default() += self.git_diff_weight;
         }
 
-        // Sort by score descending
+        // 按分数降序排序
         let mut scored: Vec<(PathBuf, f64)> = scores.into_iter().collect();
         scored.sort_by(|a, b| {
             b.1.total_cmp(&a.1)
@@ -91,7 +94,7 @@ impl ContextSelector {
         scored
     }
 
-    /// Select the top-N most relevant files for a task.
+    /// 为一个任务选出相关性最高的前 N 个文件。
     pub fn select_relevant(
         &self,
         task: &str,
@@ -127,7 +130,7 @@ mod tests {
 
         let scored = selector.score_files("fix the login bug", &symbols, &[], &[]);
         assert!(!scored.is_empty());
-        // auth.rs should score higher than utils.rs for "login bug"
+        // 对于 "login bug"，auth.rs 的得分应高于 utils.rs
         assert_eq!(scored[0].0, PathBuf::from("src/auth.rs"));
     }
 

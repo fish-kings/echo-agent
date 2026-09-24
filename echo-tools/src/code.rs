@@ -1,17 +1,16 @@
-//! Sandboxed inline or persisted-script execution.
+//! 沙箱化的内联代码或持久化脚本执行。
 //!
-//! Lets a subagent execute arbitrary Python/R/JS/... code snippets or a
-//! reviewable script already saved inside `ctx.working_dir`. Persisted scripts
-//! are executed directly by the language runtime rather than being read back
-//! into another inline wrapper.
+//! 允许子代理执行任意的 Python/R/JS/... 代码片段，或执行已保存在
+//! `ctx.working_dir` 中、可供审查的脚本。持久化脚本由对应语言的运行时
+//! 直接执行，而不是被读回并包装成内联代码再执行。
 //!
-//! `run_code` is an agent-controlled arbitrary-code primitive, so it always
-//! requires an OS-level or stronger [`echo_core::sandbox::SandboxExecutor`]. Interactive terminals
-//! remain a separate user-controlled capability and are not gated here.
+//! `run_code` 是一个由代理控制的任意代码执行原语，因此它始终要求配置
+//! OS 级别或更强的 [`echo_core::sandbox::SandboxExecutor`]。交互式终端是
+//! 独立的、由用户控制的能力，不受此处的限制约束。
 //!
-//! Modeled on `ShellTool` (`shell.rs`): holds `Option<Arc<dyn SandboxExecutor>>`
-//! (the echo-core trait, no echo-execution dependency) and overrides
-//! `execute_with_context` to honor `ctx.working_dir`.
+//! 设计上参照 `ShellTool`（`shell.rs`）：持有 `Option<Arc<dyn SandboxExecutor>>`
+//! （echo-core 中定义的 trait，不依赖 echo-execution），并重写
+//! `execute_with_context` 以遵循 `ctx.working_dir`。
 
 use echo_core::error::{ReactError, Result, ToolError};
 use echo_core::sandbox::{
@@ -27,9 +26,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Languages supported by [`RunCodeTool`]. Inline code uses the existing
-/// arg-based `Code` backend; persisted scripts use a direct interpreter
-/// program invocation.
+/// [`RunCodeTool`] 支持的语言列表。内联代码使用现有的基于参数的 `Code`
+/// 后端；持久化脚本则直接调用对应的解释器程序。
 const SUPPORTED_LANGUAGES: &[&str] = &[
     "python",
     "python3",
@@ -43,22 +41,23 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
     "bash",
     "sh",
 ];
+/// 默认保留的标准输出+标准错误字节预算上限。
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 
-/// Validate a language against the supported set (case-insensitive).
+/// 校验语言是否在支持集合内（大小写不敏感）。
 ///
-/// Decision D-10b-case-1: the LLM may emit `Python`/`PYTHON`/`R`, so we
-/// normalize to lowercase before matching.
+/// 决策 D-10b-case-1：LLM 可能会给出 `Python`/`PYTHON`/`R` 等形式，因此
+/// 匹配前先统一归一化为小写。
 ///
-/// Returns the normalized lowercase language, or an error.
+/// 返回归一化后的小写语言名，或返回错误。
 fn validate_language(language: &str) -> Result<String> {
     let normalized = language.to_lowercase();
     if SUPPORTED_LANGUAGES.iter().any(|&l| l == normalized) {
         Ok(normalized)
     } else {
-        // ToolError::InvalidParameter is a struct variant {name, message}
-        // (echo-core/src/error.rs:118). Wrap explicitly into ReactError to
-        // avoid Into-ambiguity at the call site.
+        // ToolError::InvalidParameter 是一个结构体变体 {name, message}
+        // （echo-core/src/error.rs:118）。这里显式包装为 ReactError，
+        // 以避免调用处的 Into 转换产生歧义。
         Err(ReactError::from(ToolError::InvalidParameter {
             name: "language".to_string(),
             message: format!(
@@ -69,6 +68,7 @@ fn validate_language(language: &str) -> Result<String> {
     }
 }
 
+/// 返回给定语言对应的脚本解释器可执行文件名，用于直接执行持久化脚本。
 fn script_program(language: &str) -> Result<&'static str> {
     match language {
         "python" | "python3" => Ok("python3"),
@@ -86,6 +86,10 @@ fn script_program(language: &str) -> Result<&'static str> {
     }
 }
 
+/// 根据语言和（可选的）脚本执行画像构建持久化脚本的沙箱命令。
+///
+/// 若提供了 `profile`，会校验其语言与目标语言一致，并使用画像中指定的
+/// 解释器程序、前置参数与环境变量；否则退回使用默认的解释器程序。
 fn script_command(
     language: &str,
     relative_script: &Path,
@@ -125,6 +129,10 @@ fn script_command(
     Ok((command, Some(profile.clone())))
 }
 
+/// 校验脚本路径必须是相对路径，且规范化后仍停留在执行工作目录之内
+/// （防止通过 `..`、绝对路径或跨目录符号链接逃逸出工作目录）。
+///
+/// 返回校验通过的相对路径。
 fn validate_script_path(script_path: &str, working_dir: Option<&Path>) -> Result<PathBuf> {
     let trimmed = script_path.trim();
     if trimmed.is_empty() {
@@ -179,17 +187,17 @@ fn validate_script_path(script_path: &str, working_dir: Option<&Path>) -> Result
     Ok(relative.to_path_buf())
 }
 
-/// Sandboxed inline or persisted-script execution tool.
+/// 沙箱化的内联代码/持久化脚本执行工具。
 pub struct RunCodeTool {
-    /// Interior-mutable so `Tool::set_sandbox` (a `&self` method) can inject
-    /// the executor after construction (via `set_sandbox_manager` →
-    /// `ToolManager::apply_sandbox`), without requiring `&mut self`.
+    /// 使用内部可变性，使得 `Tool::set_sandbox`（一个 `&self` 方法）能够
+    /// 在构造之后（通过 `set_sandbox_manager` → `ToolManager::apply_sandbox`）
+    /// 注入执行器，而无需 `&mut self`。
     sandbox: Mutex<Option<Arc<dyn SandboxExecutor>>>,
-    /// Optional application-owned lazy runtime resolver for persisted scripts.
+    /// 应用侧持有的、用于持久化脚本的可选惰性运行时解析器。
     script_profile_resolver: Mutex<Option<Arc<dyn ScriptExecutionProfileResolver>>>,
-    /// Per-call timeout in seconds (default 60, capped at 300 like ShellTool).
+    /// 单次调用的超时时间（秒），默认 60，最大限制为 300（与 ShellTool 一致）。
     timeout_secs: u64,
-    /// Shared retained stdout + stderr budget.
+    /// 共享的标准输出+标准错误保留字节预算。
     max_output_bytes: u64,
 }
 
@@ -205,11 +213,12 @@ impl Default for RunCodeTool {
 }
 
 impl RunCodeTool {
+    /// 使用默认配置创建一个新的 `RunCodeTool`。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Inject an OS-level or stronger sandbox executor.
+    /// 注入一个 OS 级别或更强的沙箱执行器。
     pub fn with_sandbox(self, sandbox: Arc<dyn SandboxExecutor>) -> Self {
         *self
             .sandbox
@@ -218,13 +227,13 @@ impl RunCodeTool {
         self
     }
 
-    /// Per-call timeout (default 60s, capped at 300s like ShellTool).
+    /// 设置单次调用超时时间（默认 60 秒，最大限制为 300 秒，与 ShellTool 一致）。
     pub fn with_timeout_secs(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
     }
 
-    /// Override the retained stdout + stderr byte budget.
+    /// 覆盖默认的标准输出+标准错误保留字节预算。
     pub fn with_max_output_bytes(mut self, max_output_bytes: u64) -> Self {
         self.max_output_bytes = max_output_bytes;
         self
@@ -232,14 +241,17 @@ impl RunCodeTool {
 }
 
 impl Tool for RunCodeTool {
+    /// 返回工具名称 `run_code`。
     fn name(&self) -> &str {
         "run_code"
     }
 
+    /// 返回面向 LLM 的工具描述文本。
     fn description(&self) -> &str {
         "Execute Python/R/JavaScript/etc. code in the task working directory. For real analysis, save the script first and run it via `script_path` (a reviewed file); for quick exploration use `code`. Provide exactly one of the two. Returns stdout/stderr/exit code."
     }
 
+    /// 返回工具的 JSON Schema 参数定义。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -270,15 +282,17 @@ impl Tool for RunCodeTool {
         })
     }
 
+    /// 返回该工具所需的权限：执行权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Execute]
     }
 
+    /// 返回该工具的风险等级：危险（可执行任意代码）。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
-    /// P2: receive sandbox at agent-setup time (via ToolManager::apply_sandbox).
+    /// P2：在代理初始化阶段接收沙箱执行器（通过 ToolManager::apply_sandbox 注入）。
     fn set_sandbox(&self, sandbox: Arc<dyn SandboxExecutor>) -> bool {
         *self
             .sandbox
@@ -287,6 +301,7 @@ impl Tool for RunCodeTool {
         true
     }
 
+    /// 注入用于解析持久化脚本运行时画像的解析器。
     fn set_script_execution_profile_resolver(
         &self,
         resolver: Arc<dyn ScriptExecutionProfileResolver>,
@@ -298,6 +313,7 @@ impl Tool for RunCodeTool {
         true
     }
 
+    /// 校验参数、构建沙箱命令并在沙箱中执行代码/脚本，返回执行结果。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -314,7 +330,7 @@ impl Tool for RunCodeTool {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .clone();
-            // 1. Parse + circuit-break on unknown language (user review patch #1).
+            // 1. 解析语言参数，并在语言未知时立即熔断（用户评审补丁 #1）。
             let raw_lang = parameters
                 .get("language")
                 .and_then(|v| v.as_str())
@@ -375,8 +391,8 @@ impl Tool for RunCodeTool {
                 .clamp(1, 300);
             let timeout_duration = Duration::from_secs(timeout_secs);
 
-            // 2. Bind the Subagent working directory and minimum isolation.
-            //    `with_timeout` takes a Duration (echo-core/src/sandbox.rs:148).
+            // 2. 绑定子代理的工作目录，并设置最低隔离级别。
+            //    `with_timeout` 接收一个 Duration（echo-core/src/sandbox.rs:148）。
             sandbox_cmd = sandbox_cmd.with_minimum_isolation(IsolationLevel::OsSandbox);
             if let Some(dir) = &ctx.working_dir {
                 sandbox_cmd = sandbox_cmd.with_working_dir(dir.clone());
@@ -446,6 +462,7 @@ impl Tool for RunCodeTool {
     }
 }
 
+/// 构建表示「沙箱不可用」的错误结果。
 fn sandbox_unavailable_result(message: impl Into<String>) -> ToolResult {
     ToolResult::error(message).with_failure(
         ToolFailure::new(ToolFailureCategory::Unavailable)
@@ -453,6 +470,7 @@ fn sandbox_unavailable_result(message: impl Into<String>) -> ToolResult {
     )
 }
 
+/// 构建表示「执行被取消」的错误结果，并提示调用方需要核实沙箱进程状态。
 fn cancelled_result(message: impl Into<String>) -> ToolResult {
     let mut failure = ToolFailure::new(ToolFailureCategory::Cancelled);
     failure.side_effect = ToolSideEffect::Possible;
@@ -462,6 +480,7 @@ fn cancelled_result(message: impl Into<String>) -> ToolResult {
     ToolResult::error(message).with_failure(failure)
 }
 
+/// 将沙箱执行过程中产生的错误转换为工具错误结果。
 fn sandbox_error_result(error: ReactError) -> ToolResult {
     let mut failure = ToolFailure::from_error(&error, true);
     if failure.category == ToolFailureCategory::Cancelled {
@@ -473,6 +492,8 @@ fn sandbox_error_result(error: ReactError) -> ToolResult {
     ToolResult::error(format!("Sandbox execution failed: {error}")).with_failure(failure)
 }
 
+/// 将沙箱的原始 `ExecutionResult` 转换为携带完整元数据的 `ToolResult`
+/// （包括退出码、耗时、隔离级别、是否超时/被取消/被截断等信息）。
 fn tool_result_from_execution(
     mut execution: ExecutionResult,
     working_dir: Option<&std::path::PathBuf>,
@@ -567,26 +588,39 @@ mod tests {
     use echo_core::sandbox::CommandKind;
     use std::collections::HashMap;
 
+    /// 测试用：记录一次被拦截的沙箱调用，便于断言实际传入的命令与限制。
     #[derive(Clone)]
     struct RecordedCall {
+        /// 实际传给沙箱的命令。
         command: SandboxCommand,
+        /// 实际传给沙箱的资源限制。
         limits: ResourceLimits,
     }
 
+    /// 测试用沙箱：不真正执行命令，只记录调用并返回预设结果。
     struct RecordingSandbox {
+        /// 该沙箱声明的隔离级别。
         isolation: IsolationLevel,
+        /// 若设置，表示实际生效的隔离级别与声明的不同（用于测试隔离级别上报逻辑）。
         actual_isolation: Option<IsolationLevel>,
+        /// 该沙箱是否可用。
         available: bool,
+        /// 调用执行方法时返回的预设结果。
         result: ExecutionResult,
+        /// 最近一次被记录下来的调用。
         seen: std::sync::Mutex<Option<RecordedCall>>,
     }
 
+    /// 测试用脚本执行画像解析器：只对固定语言返回固定画像，并统计调用次数。
     struct FixedProfileResolver {
+        /// 固定返回的脚本执行画像。
         profile: Arc<ScriptExecutionProfile>,
+        /// 记录 `resolve` 被调用的次数。
         calls: std::sync::atomic::AtomicUsize,
     }
 
     impl ScriptExecutionProfileResolver for FixedProfileResolver {
+        /// 若请求的语言与固定画像的语言一致则返回该画像，否则返回 `None`。
         fn resolve<'a>(
             &'a self,
             language: &'a str,
@@ -598,19 +632,23 @@ mod tests {
     }
 
     impl SandboxExecutor for RecordingSandbox {
+        /// 返回固定的沙箱名称 "recording"。
         fn name(&self) -> &str {
             "recording"
         }
 
+        /// 返回该沙箱声明的隔离级别。
         fn isolation_level(&self) -> IsolationLevel {
             self.isolation
         }
 
+        /// 返回预设的可用性。
         fn is_available(&self) -> BoxFuture<'_, bool> {
             let available = self.available;
             Box::pin(async move { available })
         }
 
+        /// 忽略传入命令，直接返回预设的执行结果（不记录调用）。
         fn execute(
             &self,
             _command: SandboxCommand,
@@ -619,6 +657,7 @@ mod tests {
             Box::pin(async move { Ok(result) })
         }
 
+        /// 记录本次调用的命令与限制，然后返回预设的执行结果。
         fn execute_with_limits_and_cancel(
             &self,
             command: SandboxCommand,
@@ -634,6 +673,8 @@ mod tests {
             Box::pin(async move { Ok(result) })
         }
 
+        /// 记录调用后返回预设结果，并附带 `actual_isolation`（若未设置则回退为
+        /// `isolation`），用于测试实际隔离级别的上报逻辑。
         fn execute_with_isolation_receipt(
             &self,
             command: SandboxCommand,
@@ -650,6 +691,7 @@ mod tests {
         }
     }
 
+    /// 构建一个成功的（退出码 0）测试用执行结果，标准输出为给定字符串。
     fn success_execution(stdout: &str) -> ExecutionResult {
         ExecutionResult {
             exit_code: 0,
@@ -665,6 +707,7 @@ mod tests {
         }
     }
 
+    /// 构建一个测试用 `RecordingSandbox`，`actual_isolation` 默认为 `None`。
     fn recording_sandbox(
         isolation: IsolationLevel,
         available: bool,
@@ -679,6 +722,7 @@ mod tests {
         })
     }
 
+    /// 构建内联代码模式的工具调用参数（`language` + `code`）。
     fn code_params(language: &str, code: &str) -> HashMap<String, serde_json::Value> {
         [
             ("language".to_string(), serde_json::json!(language)),
@@ -688,6 +732,7 @@ mod tests {
         .collect()
     }
 
+    /// 构建持久化脚本模式的工具调用参数（`language` + `script_path`）。
     fn script_params(language: &str, script_path: &str) -> HashMap<String, serde_json::Value> {
         [
             ("language".to_string(), serde_json::json!(language)),
@@ -708,15 +753,14 @@ mod tests {
 
     #[test]
     fn validate_language_rejects_unknown() {
-        // Circuit-breaker (user review patch #1): unknown language fails at the
-        // tool layer, never reaches the sandbox.
+        // 熔断机制（用户评审补丁 #1）：未知语言在工具层就失败，不会到达沙箱。
         assert!(validate_language("haskell").is_err());
         assert!(validate_language("").is_err());
     }
 
     #[test]
     fn supported_languages_includes_r() {
-        // Sprint 10b headline: R is a first-class language.
+        // Sprint 10b 的重点特性：R 是一等公民语言。
         assert!(SUPPORTED_LANGUAGES.contains(&"r"));
         assert!(SUPPORTED_LANGUAGES.contains(&"python"));
     }

@@ -2,6 +2,7 @@ use echo_agent_learning::basics::LearningTask;
 use echo_agent_learning::errors::LearningError;
 use echo_agent_learning::smart_pointers::box_pointer::{PlanNode, boxed_formatter};
 
+/// 演示使用 `Box<T>` 构建递归数据结构，以及通过 `Box<dyn Trait>` 实现动态分发。
 fn main() -> Result<(), LearningError> {
     let plan = PlanNode::Sequence(
         Box::new(PlanNode::Step("调研".to_string())),

@@ -1,8 +1,8 @@
-//! DiffTool — compare two files or strings and show differences
+//! DiffTool —— 对比两个文件或字符串并展示差异
 //!
-//! Uses the `similar` crate to produce unified diffs. Supports:
-//! - Comparing two files (`path_a` + `path_b`)
-//! - Comparing a file against a string (`path_a` + `content_b`)
+//! 使用 `similar` crate 生成统一格式（unified diff）的差异结果。支持：
+//! - 对比两个文件（`path_a` + `path_b`）
+//! - 对比一个文件与一段字符串内容（`path_a` + `content_b`）
 
 use super::resolve_path;
 use echo_core::error::{Result, ToolError};
@@ -16,16 +16,19 @@ use tokio::fs;
 
 // ── DiffTool ────────────────────────────────────────────────────────────────────
 
-/// Compare two files or a file against a string, returning a unified diff.
+/// 对比两个文件，或对比一个文件与一段字符串内容，返回统一格式的差异结果。
 pub struct DiffTool {
+    /// 路径解析的基准目录；为 `None` 时使用调用上下文提供的工作目录或进程当前目录。
     base_dir: Option<PathBuf>,
 }
 
 impl DiffTool {
+    /// 创建一个不限定基准目录的 `DiffTool`。
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建一个限定了基准目录的 `DiffTool`，所有相对路径都会基于该目录解析。
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -34,27 +37,33 @@ impl DiffTool {
 }
 
 impl Default for DiffTool {
+    /// 等价于 [`DiffTool::new`]，创建不限定基准目录的实例。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for DiffTool {
+    /// 返回该工具在工具注册表中的名称：`"diff"`。
     fn name(&self) -> &str {
         "diff"
     }
 
+    /// 返回展示给模型/调用方的工具功能描述。
     fn description(&self) -> &str {
         "Compare two files or a file against a string, returning a unified diff. Use path_a + path_b to compare two files, or path_a + content_b to compare a file against given content."
     }
 
+    /// 声明该工具所需的权限：仅需要读取文件系统。
     fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
         vec![echo_core::tools::permission::ToolPermission::Read]
     }
+    /// 声明该工具的风险等级：只读操作，不会修改任何内容。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
 
+    /// 返回该工具的 JSON Schema 参数定义。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -90,6 +99,7 @@ impl Tool for DiffTool {
         })
     }
 
+    /// 执行差异对比：读取 `path_a`（以及 `path_b` 或 `content_b`），生成统一格式差异并分页返回。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -217,6 +227,7 @@ impl Tool for DiffTool {
 mod tests {
     use super::*;
 
+    /// 内容完全相同的两个字符串应生成空差异。
     #[test]
     fn test_diff_identical() {
         let content = "hello\nworld\n";
@@ -230,6 +241,7 @@ mod tests {
         assert!(diff.is_empty());
     }
 
+    /// 内容有差异时，生成的统一格式差异应包含被删除行和新增行。
     #[test]
     fn test_diff_changed() {
         let a = "hello\nworld\nfoo\n";

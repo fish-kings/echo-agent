@@ -1,8 +1,9 @@
-//! Provider-neutral framework configuration.
-//!
-//! File discovery, product prompts, model catalogs, channels, UI settings, and
-//! server settings belong to embedding applications. The framework accepts a
-//! typed configuration value and explicit paths.
+/*!
+与具体供应商无关的框架配置。
+
+文件发现、产品提示词、模型目录、渠道、UI 设置以及服务器设置都属于
+宿主应用的职责范围。框架本身只接受一个带类型的配置值和显式路径。
+*/
 
 use crate::agent::AgentConfig;
 use echo_core::budget::TokenBudgetConfig;
@@ -10,16 +11,21 @@ use echo_core::llm::LlmApiProtocol;
 use echo_core::llm::capabilities::infer_context_window;
 use serde::{Deserialize, Serialize};
 
+/// 默认的 Agent system prompt
 pub const DEFAULT_AGENT_SYSTEM_PROMPT: &str = "You are a helpful assistant.";
 
-/// Reusable configuration for one Agent runtime.
+/// 可复用的单个 Agent 运行时配置。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct FrameworkConfig {
+    /// 模型相关配置
     pub model: ModelConfig,
+    /// Agent 相关配置
     pub agent: AgentSettings,
 }
 
+/// 解析出实际使用的上下文窗口大小：优先使用显式配置，其次按 provider/model 推断，
+/// 最后回退到默认 token 限制
 fn resolve_context_window(explicit: Option<u32>, provider: &str, model_name: &str) -> usize {
     explicit
         .or_else(|| infer_context_window(provider, model_name))
@@ -27,6 +33,7 @@ fn resolve_context_window(explicit: Option<u32>, provider: &str, model_name: &st
         .clamp(1, 10_000_000) as usize
 }
 
+/// 将 `FrameworkConfig` 转换为底层的 `AgentConfig`
 impl From<FrameworkConfig> for AgentConfig {
     fn from(value: FrameworkConfig) -> Self {
         let FrameworkConfig { model, agent } = value;
@@ -73,12 +80,14 @@ impl From<FrameworkConfig> for AgentConfig {
 }
 
 impl FrameworkConfig {
+    /// 判断当前配置是否需要启用上下文压缩器
     pub fn has_compressor(&self) -> bool {
         self.agent.token_limit > 0
             || self.model.context_window.is_some()
             || !self.agent.compress_strategy.is_empty()
     }
 
+    /// 根据配置的压缩策略，为该 agent 装配对应的上下文压缩器
     pub async fn apply_compressor(&self, agent: &crate::agent::ReactAgent) {
         use crate::compression::compressor::SlidingWindowCompressor;
 
@@ -154,57 +163,82 @@ impl FrameworkConfig {
     }
 }
 
-/// Direct model settings chosen by an embedding application.
+/// 宿主应用直接选择的模型设置。
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ModelConfig {
+    /// 供应商标识
     pub provider: String,
+    /// 模型名称
     pub name: String,
+    /// 鉴权 token
     pub auth_token: Option<String>,
+    /// API 基础 URL
     pub base_url: Option<String>,
+    /// API 协议类型
     pub api_protocol: Option<LlmApiProtocol>,
+    /// 单次生成的最大 token 数
     pub max_tokens: Option<u32>,
+    /// 采样温度
     pub temperature: Option<f32>,
+    /// 显式指定的上下文窗口大小
     pub context_window: Option<u32>,
 }
 
 impl ModelConfig {
+    /// 获取非空的鉴权 token
     pub fn get_auth_token(&self) -> Option<String> {
         self.auth_token.clone().filter(|value| !value.is_empty())
     }
 
+    /// 获取非空的基础 URL
     pub fn get_base_url(&self) -> Option<String> {
         self.base_url.clone().filter(|value| !value.is_empty())
     }
 
+    /// 获取模型名称
     pub fn get_model_name(&self) -> String {
         self.name.clone()
     }
 }
 
-/// Serializable provider-neutral Agent settings.
-///
-/// The value is format-independent; applications may load it from YAML, JSON,
-/// environment variables, or another configuration source.
+/**
+可序列化的、与供应商无关的 Agent 设置。
+
+该值与具体格式无关；应用可以从 YAML、JSON、环境变量或其他配置源加载它。
+*/
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AgentSettings {
+    /// Agent 名称
     pub name: String,
+    /// system prompt
     pub system_prompt: String,
+    /// 最大迭代次数
     pub max_iterations: usize,
+    /// 是否启用工具
     pub enable_tools: bool,
+    /// 是否启用记忆
     pub enable_memory: bool,
+    /// 是否启用人工介入（human-in-the-loop）
     pub enable_human_in_loop: bool,
-    /// Enable framework-level Subagent registration and dispatch support.
+    /// 启用框架层面的 Subagent 注册与调度支持。
     pub enable_subagent: bool,
-    /// Expose the model-callable `agent_tool` dispatcher.
+    /// 暴露可被模型调用的 `agent_tool` 调度器。
     pub register_agent_dispatch_tool: bool,
+    /// 记忆存储路径
     pub memory_path: String,
+    /// 工具执行超时时间（毫秒）
     pub tool_timeout_ms: u64,
+    /// 工具输出的最大 token 数
     pub max_tool_output_tokens: usize,
+    /// token 限制
     pub token_limit: usize,
+    /// 上下文压缩策略
     pub compress_strategy: String,
+    /// 压缩窗口大小
     pub compress_window: usize,
+    /// subagent 执行超时时间（秒）
     pub subagent_timeout_secs: u64,
 }
 
@@ -243,3 +277,4 @@ mod tests {
         assert!(config.model.name.is_empty());
     }
 }
+</content>

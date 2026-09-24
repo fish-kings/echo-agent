@@ -1,8 +1,8 @@
-//! Sandbox executor core trait and types
+//! 沙箱执行器核心 trait 与类型
 //!
-//! Defines the [`SandboxExecutor`] trait and its parameter/result types.
-//! The trait is implemented by `LocalSandbox`, `DockerSandbox`, and `K8sSandbox`
-//! in the `echo-execution` crate.
+//! 定义 [`SandboxExecutor`] trait 及其参数/结果类型。
+//! 该 trait 由 `echo-execution` crate 中的 `LocalSandbox`、`DockerSandbox`
+//! 和 `K8sSandbox` 实现。
 
 use futures::future::BoxFuture;
 use futures::stream::{self, Stream};
@@ -16,35 +16,34 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{ReactError, Result, SandboxError};
 
-/// Sandbox executor unified interface.
+/// 沙箱执行器统一接口。
 ///
-/// All three layers (Local / Docker / K8s) implement this trait.
+/// 全部三层（Local / Docker / K8s）都实现此 trait。
 pub trait SandboxExecutor: Send + Sync {
-    /// Executor name
+    /// 执行器名称
     fn name(&self) -> &str;
 
-    /// Current isolation level
+    /// 当前隔离级别
     fn isolation_level(&self) -> IsolationLevel;
 
-    /// Check if the executor is available
+    /// 检查该执行器是否可用
     fn is_available(&self) -> BoxFuture<'_, bool>;
 
-    /// Check whether an available backend can meet a caller's isolation floor.
-    /// Composite executors override this to inspect the backend they would use.
+    /// 检查一个可用的后端是否满足调用方要求的最低隔离级别。
+    /// 组合式执行器应覆盖此方法，以检查其实际将使用的后端。
     fn is_available_at(&self, minimum: IsolationLevel) -> BoxFuture<'_, bool> {
         Box::pin(async move { self.isolation_level() >= minimum && self.is_available().await })
     }
 
-    /// Execute a command
+    /// 执行一条命令
     fn execute(&self, command: SandboxCommand) -> BoxFuture<'_, Result<ExecutionResult>>;
 
-    /// Execute a command as an event stream.
+    /// 以事件流形式执行一条命令。
     ///
-    /// Executors without live pipe support degrade explicitly to one buffered
-    /// [`SandboxStreamEvent::Complete`] event. Callers can inspect
-    /// [`Self::supports_streaming`] before describing output as live.
-    /// Live backends emit [`SandboxStreamEvent::Failed`] when execution or
-    /// required cleanup fails after the stream has started.
+    /// 不支持实时管道的执行器会显式降级为发出一个缓冲的
+    /// [`SandboxStreamEvent::Complete`] 事件。调用方可以在将输出视为
+    /// 实时之前先检查 [`Self::supports_streaming`]。支持实时的后端会在
+    /// 流开始后执行或必要清理失败时发出 [`SandboxStreamEvent::Failed`]。
     fn execute_stream<'a>(
         &'a self,
         command: SandboxCommand,
@@ -58,12 +57,12 @@ pub trait SandboxExecutor: Send + Sync {
         })
     }
 
-    /// Whether [`Self::execute_stream`] emits output before completion.
+    /// [`Self::execute_stream`] 是否会在完成前就发出输出。
     fn supports_streaming(&self) -> bool {
         false
     }
 
-    /// Execute a command with resource limits
+    /// 在给定资源限制下执行一条命令
     fn execute_with_limits(
         &self,
         command: SandboxCommand,
@@ -73,14 +72,13 @@ pub trait SandboxExecutor: Send + Sync {
         self.execute(command)
     }
 
-    /// Execute with resource limits and an optional owning-run cancellation token.
+    /// 在给定资源限制及可选的所属运行取消令牌下执行。
     ///
-    /// Concrete backends should override this when cancellation needs backend-
-    /// specific cleanup. The default drops the execution future and reports a
-    /// typed cancellation instead of silently treating it as a timeout, so it
-    /// is only suitable when dropping the future releases every owned resource.
-    /// Process, container, and orchestrated backends must override this method
-    /// and await their cleanup before returning a terminal result.
+    /// 当取消需要后端特定的清理逻辑时，具体后端应覆盖此方法。默认实现
+    /// 会直接丢弃执行 future 并报告一个带类型的取消结果，而不是悄悄
+    /// 当作超时处理，因此只适用于“丢弃 future 就能释放所有已持有资源”
+    /// 的情形。进程型、容器型以及编排型后端必须覆盖此方法，并在返回
+    /// 最终结果前等待各自的清理完成。
     fn execute_with_limits_and_cancel(
         &self,
         command: SandboxCommand,
@@ -100,9 +98,9 @@ pub trait SandboxExecutor: Send + Sync {
         })
     }
 
-    /// Execute and report the isolation of the backend that actually ran.
-    /// Composite executors must override this instead of reporting their
-    /// configured maximum; leaf executors can use the default.
+    /// 执行命令，并报告实际运行所用后端的隔离级别。
+    /// 组合式执行器必须覆盖此方法，而不是报告其配置的最大隔离级别；
+    /// 叶子执行器可以使用默认实现。
     fn execute_with_isolation_receipt(
         &self,
         command: SandboxCommand,
@@ -117,7 +115,7 @@ pub trait SandboxExecutor: Send + Sync {
         })
     }
 
-    /// Clean up sandbox resources (containers, temp files, etc.)
+    /// 清理沙箱资源（容器、临时文件等）
     fn cleanup(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async { Ok(()) })
     }

@@ -1,12 +1,11 @@
-//! Mock Agent, implementing the [`Agent`] trait, for replacing real Subagents
-//! when testing multi-Agent orchestration.
+//! Mock Agent，实现了 [`Agent`] trait，用于在测试多 Agent 编排逻辑时替代真实的子 Agent。
 //!
-//! When testing orchestration logic, we typically want to:
-//! - Avoid making real LLM calls
-//! - Control the return content of each Subagent
-//! - Verify how many times a Subagent was called, and what task it received each time
+//! 在测试编排逻辑时，我们通常希望：
+//! - 避免发起真实的 LLM 调用
+//! - 控制每个子 Agent 的返回内容
+//! - 验证某个子 Agent 被调用了多少次、每次收到的任务是什么
 //!
-//! # Example
+//! # 示例
 //!
 //! ```rust
 //! use echo_agent::testing::MockAgent;
@@ -39,24 +38,33 @@ use std::sync::{Arc, Mutex};
 
 // ── MockAgent ─────────────────────────────────────────────────────────────────
 
-/// One step in a cancellation-aware Agent event script.
+/// 可感知取消的 Agent 事件脚本中的一个步骤。
 pub enum MockAgentStep {
+    /// 依次产出的一个 Agent 事件。
     Event(Box<AgentEvent>),
+    /// 以该错误消息结束当前流。
     Error(String),
+    /// 在产出下一步之前等待指定时长（可被取消打断）。
     Delay(std::time::Duration),
 }
 
-/// Failure category emitted by [`FailingMockAgent`].
+/// [`FailingMockAgent`] 发出的失败类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MockAgentFailure {
+    /// 初始化失败。
     Initialization,
+    /// 子 Agent 执行失败。
     Subagent,
+    /// 超时失败。
     Timeout,
+    /// 被取消。
     Cancelled,
+    /// 权限被拒绝。
     PermissionDenied,
 }
 
 impl MockAgentFailure {
+    /// 将失败类别与消息组合成对应的 `ReactError`。
     fn error(self, message: String) -> ReactError {
         let error = match self {
             Self::Initialization => AgentError::InitializationFailed(message),
@@ -69,37 +77,46 @@ impl MockAgentFailure {
     }
 }
 
-/// A scriptable Mock Agent.
-///
-/// Returns preset responses in order and fails closed when exhausted.
-/// Messages from both `execute()` and `chat()` are recorded, and can be inspected
-/// via [`calls()`](MockAgent::calls).
-/// `reset()` clears the call history, simulating the conversation-reset semantics
-/// of a real Agent.
+/** 可编排脚本的 Mock Agent。
+
+按顺序返回预设的响应，脚本耗尽后以失败告终（fail closed）。
+`execute()` 和 `chat()` 收到的消息都会被记录，可通过
+[`calls()`](MockAgent::calls) 查看。
+`reset()` 会清空调用历史，模拟真实 Agent 的对话重置语义。
+*/
 pub struct MockAgent {
+    /// 该 Agent 的名称。
     name: String,
+    /// 该 Agent 报告的模型名称。
     model_name: String,
+    /// 该 Agent 的系统提示词。
     system_prompt: String,
+    /// 待消费的预设文本响应队列。
     responses: Arc<Mutex<VecDeque<String>>>,
+    /// 待消费的预设事件脚本队列（每次流式调用消费一个）。
     event_scripts: Arc<Mutex<VecDeque<Vec<MockAgentStep>>>>,
+    /// 已收到的任务/消息字符串，按调用顺序记录。
     calls: Arc<Mutex<Vec<String>>>,
-    /// Multimodal messages received via `execute_stream_message_with_cancel`
-    /// (records whether dispatch forwarded attachments to the subagent).
+    /// 通过 `execute_stream_message_with_cancel` 收到的多模态消息
+    /// （用于记录分发逻辑是否把附件转发给了子 Agent）。
     messages: Arc<Mutex<Vec<echo_core::llm::types::Message>>>,
-    /// Value-scoped invocation metadata received by streaming calls.
+    /// 流式调用中收到的值域调用上下文（value-scoped invocation metadata）。
     invocation_contexts: Arc<Mutex<Vec<echo_core::agent::AgentInvocationContext>>>,
-    /// `set_working_dir` calls recorded in order (Sprint 8 isolation tests).
-    /// Each entry is the path the agent was asked to bind (`None` = clear).
+    /// 按顺序记录的 `set_working_dir` 调用（Sprint 8 隔离性测试）。
+    /// 每一项是要求该 Agent 绑定的路径（`None` 表示清除）。
     working_dirs: Arc<Mutex<Vec<Option<std::path::PathBuf>>>>,
-    /// Artificial delay before returning (for background-dispatch tests).
+    /// 返回结果前的人为延迟（用于后台分发相关的测试）。
     delay_ms: u64,
+    /// 脚本/响应队列耗尽后使用的默认成功响应。
     default_success: Option<String>,
 }
 
-// All observable state is behind Arc<Mutex>, so cloning shares call/message
-// history — tests can clone a MockAgent, register the clone, and assert on the
-// original.
+/* 所有可观察状态都位于 Arc<Mutex> 之后，因此克隆会共享调用/消息历史 ——
+测试可以克隆一个 MockAgent、注册这个克隆体，再对原对象做断言。
+*/
 impl Clone for MockAgent {
+    /// 克隆该 Mock Agent；由于所有可观察状态都在 `Arc<Mutex>` 之后，
+    /// 克隆体与原对象共享调用/消息历史。
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -118,7 +135,7 @@ impl Clone for MockAgent {
 }
 
 impl MockAgent {
-    /// Create a named Mock Agent
+    /// 创建一个具名的 Mock Agent。
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -135,25 +152,25 @@ impl MockAgent {
         }
     }
 
-    /// Artificial delay before each response (background-dispatch tests).
+    /// 为每次响应设置一个人为延迟（用于后台分发相关的测试）。
     pub fn with_delay_ms(mut self, delay_ms: u64) -> Self {
         self.delay_ms = delay_ms;
         self
     }
 
-    /// Set the model name (for tests that need to check model_name)
+    /// 设置模型名称（用于需要校验 model_name 的测试）。
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model_name = model.into();
         self
     }
 
-    /// Set the system prompt
+    /// 设置系统提示词。
     pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
         self.system_prompt = prompt.into();
         self
     }
 
-    /// Append a preset response
+    /// 追加一个预设响应。
     pub fn with_response(self, text: impl Into<String>) -> Self {
         self.responses
             .lock()
@@ -162,7 +179,7 @@ impl MockAgent {
         self
     }
 
-    /// Append multiple preset responses in bulk
+    /// 批量追加多个预设响应。
     pub fn with_responses(self, texts: impl IntoIterator<Item = impl Into<String>>) -> Self {
         {
             let mut q = self.responses.lock().unwrap_or_else(|e| e.into_inner());
@@ -173,7 +190,7 @@ impl MockAgent {
         self
     }
 
-    /// Append one complete neutral event script for the next streaming call.
+    /// 为下一次流式调用追加一段完整的中性事件脚本。
     pub fn with_event_script(self, steps: Vec<MockAgentStep>) -> Self {
         self.event_scripts
             .lock()
@@ -182,12 +199,13 @@ impl MockAgent {
         self
     }
 
-    /// Explicitly allow calls after the script is exhausted.
+    /// 显式允许在脚本耗尽后继续调用，返回给定的默认成功响应。
     pub fn with_default_success(mut self, text: impl Into<String>) -> Self {
         self.default_success = Some(text.into());
         self
     }
 
+    /// 返回尚未被消费的预设响应数量。
     pub fn remaining(&self) -> usize {
         self.responses
             .lock()
@@ -195,17 +213,17 @@ impl MockAgent {
             .len()
     }
 
-    /// Total number of times called
+    /// 被调用的总次数。
     pub fn call_count(&self) -> usize {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// All historical call task strings (in chronological order)
+    /// 所有历史调用的任务字符串（按时间顺序）。
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// The task string from the last call (returns `None` if never called)
+    /// 最近一次调用的任务字符串（从未调用过时返回 `None`）。
     pub fn last_task(&self) -> Option<String> {
         self.calls
             .lock()
@@ -214,7 +232,7 @@ impl MockAgent {
             .cloned()
     }
 
-    /// Number of multimodal messages received via the message dispatch path.
+    /// 通过消息分发路径收到的多模态消息数量。
     pub fn message_count(&self) -> usize {
         self.messages
             .lock()
@@ -222,8 +240,8 @@ impl MockAgent {
             .len()
     }
 
-    /// The last multimodal message received (returns `None` if dispatch never
-    /// forwarded a `Message`). Used to verify subagents see user attachments.
+    /// 最近收到的多模态消息（如果分发从未转发过 `Message` 则返回 `None`）。
+    /// 用于验证子 Agent 是否看到了用户的附件。
     pub fn last_message(&self) -> Option<echo_core::llm::types::Message> {
         self.messages
             .lock()
@@ -232,15 +250,16 @@ impl MockAgent {
             .cloned()
     }
 
-    /// Clear call history (response queue is unaffected)
-    ///
-    /// Used only for test assertion reset, not equivalent to `Agent::reset()`.
+    /** 清空调用历史（不影响响应队列）。
+
+    仅用于测试断言的重置，不等价于 `Agent::reset()`。
+    */
     pub fn reset_calls(&self) {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    /// All `set_working_dir` calls recorded in order (Sprint 8 isolation tests).
-    /// Each entry is the path the agent was asked to bind; `None` = clear.
+    /// 按顺序记录的所有 `set_working_dir` 调用（Sprint 8 隔离性测试）。
+    /// 每一项是要求该 Agent 绑定的路径；`None` 表示清除。
     pub fn working_dir_calls(&self) -> Vec<Option<std::path::PathBuf>> {
         self.working_dirs
             .lock()
@@ -248,7 +267,7 @@ impl MockAgent {
             .clone()
     }
 
-    /// Invocation contexts received by value-scoped streaming methods.
+    /// 值域调用方法（value-scoped streaming methods）收到的调用上下文。
     pub fn invocation_contexts(&self) -> Vec<echo_core::agent::AgentInvocationContext> {
         self.invocation_contexts
             .lock()
@@ -256,7 +275,7 @@ impl MockAgent {
             .clone()
     }
 
-    /// Drain invocation contexts recorded by value-scoped streaming methods.
+    /// 取出（并清空）值域流式方法记录的调用上下文。
     pub fn take_invocation_contexts(&self) -> Vec<echo_core::agent::AgentInvocationContext> {
         let mut contexts = self
             .invocation_contexts
@@ -265,6 +284,8 @@ impl MockAgent {
         std::mem::take(&mut *contexts)
     }
 
+    /// 弹出下一个预设文本响应；队列为空时回退到默认成功响应，
+    /// 两者都没有则返回错误。
     fn next_response(&self) -> Result<String> {
         self.responses
             .lock()
@@ -278,6 +299,8 @@ impl MockAgent {
             })
     }
 
+    /// 构建下一次流式调用的事件流：优先使用预设的事件脚本，
+    /// 否则退化为发出一个 `FinalAnswer` 事件（取自 `next_response`）。
     fn next_event_stream<'a>(
         &'a self,
         cancel: CancellationToken,
@@ -328,18 +351,22 @@ impl MockAgent {
 }
 
 impl Agent for MockAgent {
+    /// 返回该 Agent 的名称。
     fn name(&self) -> &str {
         &self.name
     }
 
+    /// 返回该 Agent 报告的模型名称。
     fn model_name(&self) -> &str {
         &self.model_name
     }
 
+    /// 返回该 Agent 的系统提示词。
     fn system_prompt(&self) -> &str {
         &self.system_prompt
     }
 
+    /// 记录任务并返回下一个预设文本响应。
     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             if self.delay_ms > 0 {
@@ -353,6 +380,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录任务并返回下一个预设事件流（使用一个新的取消令牌）。
     fn execute_stream<'a>(
         &'a self,
         task: &'a str,
@@ -366,6 +394,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录任务并返回下一个预设事件流，使用调用方提供的取消令牌。
     fn execute_stream_with_cancel<'a>(
         &'a self,
         task: &'a str,
@@ -380,10 +409,9 @@ impl Agent for MockAgent {
         })
     }
 
-    /// Multimodal dispatch override: record the received message (so tests can
-    /// assert subagents saw user attachments) and consume a preset response like
-    /// the text path. Without this override, the trait default would reject
-    /// multimodal dispatch — making it impossible to test message forwarding.
+    /// 多模态分发的重载：记录收到的消息（便于测试断言子 Agent 是否看到了
+    /// 用户附件），并像文本路径一样消费一个预设响应。若不重载此方法，
+    /// trait 的默认实现会拒绝多模态分发，导致无法测试消息转发逻辑。
     fn execute_stream_message_with_cancel<'a>(
         &'a self,
         message: echo_core::llm::types::Message,
@@ -394,7 +422,7 @@ impl Agent for MockAgent {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .push(message.clone());
-            // Also record as a regular call (text part) for parity with last_task.
+            // 同时以常规调用（文本部分）记录，保持与 last_task 的一致性。
             let text = message.content.as_text().unwrap_or_default();
             self.calls
                 .lock()
@@ -404,6 +432,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录调用上下文，然后委托给 `execute_stream_with_cancel`。
     fn execute_stream_with_invocation_context<'a>(
         &'a self,
         task: &'a str,
@@ -419,6 +448,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录调用上下文，然后委托给 `execute_stream_message_with_cancel`。
     fn execute_stream_message_with_invocation_context<'a>(
         &'a self,
         message: echo_core::llm::types::Message,
@@ -435,8 +465,8 @@ impl Agent for MockAgent {
         })
     }
 
-    /// `chat()` also records the call and consumes the preset response queue.
-    /// Note: MockAgent does not maintain a real conversation context; this only satisfies the call contract.
+    /// `chat()` 同样记录调用并消费预设响应队列。
+    /// 注意：MockAgent 不维护真实的对话上下文，这里只是满足调用契约。
     fn chat<'a>(&'a self, message: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             self.calls
@@ -447,6 +477,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录消息并返回下一个预设事件流（使用一个新的取消令牌）。
     fn chat_stream<'a>(
         &'a self,
         message: &'a str,
@@ -460,6 +491,7 @@ impl Agent for MockAgent {
         })
     }
 
+    /// 记录消息并返回下一个预设事件流，使用调用方提供的取消令牌。
     fn chat_stream_with_cancel<'a>(
         &'a self,
         message: &'a str,
@@ -474,15 +506,15 @@ impl Agent for MockAgent {
         })
     }
 
-    /// Clear call history, simulating the reset semantics of a real Agent.
+    /// 清空调用历史，模拟真实 Agent 的重置语义。
     fn reset(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             self.calls.lock().unwrap_or_else(|e| e.into_inner()).clear();
         })
     }
 
-    /// Record `set_working_dir` calls so Sprint 8 isolation tests can verify
-    /// the subagent was chrooted into the worktree (and cleared afterwards).
+    /// 记录 `set_working_dir` 调用，便于 Sprint 8 隔离性测试验证子 Agent
+    /// 是否被 chroot 进了对应的 worktree（以及之后是否被清除）。
     fn set_working_dir(&self, path: Option<std::path::PathBuf>) {
         self.working_dirs
             .lock()
@@ -490,6 +522,7 @@ impl Agent for MockAgent {
             .push(path);
     }
 
+    /// 记录一次“清除工作目录”的调用（以 `None` 形式追加）。
     fn clear_working_dir(&self) {
         self.working_dirs
             .lock()
@@ -498,17 +531,22 @@ impl Agent for MockAgent {
     }
 }
 
-/// A Mock Agent that always returns an error (for testing orchestration fault-tolerance behavior)
+/// 总是返回错误的 Mock Agent（用于测试编排逻辑的容错行为）。
 pub struct FailingMockAgent {
+    /// 该 Agent 的名称。
     name: String,
+    /// 默认的错误消息（脚本耗尽时使用）。
     error_message: String,
+    /// 每次调用返回的类型化失败类别。
     failure: MockAgentFailure,
+    /// 待消费的预设事件脚本队列。
     event_scripts: Arc<Mutex<VecDeque<Vec<MockAgentStep>>>>,
+    /// 已收到的任务字符串，按调用顺序记录。
     calls: Arc<Mutex<Vec<String>>>,
 }
 
 impl FailingMockAgent {
-    /// Create a failing Mock Agent
+    /// 创建一个总是失败的 Mock Agent。
     pub fn new(name: impl Into<String>, error_message: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -519,16 +557,17 @@ impl FailingMockAgent {
         }
     }
 
-    /// Choose the typed agent failure returned by every invocation.
+    /// 选择每次调用返回的类型化 Agent 失败类别。
     pub fn with_failure(mut self, failure: MockAgentFailure) -> Self {
         self.failure = failure;
         self
     }
 
-    /// Append partial events, delays, and the eventual error for one stream.
-    ///
-    /// `MockAgentStep::Error` is mapped to the selected typed failure category.
-    /// When no script remains, the configured default error is emitted.
+    /** 为一次流式调用追加部分事件、延迟以及最终的错误。
+
+    `MockAgentStep::Error` 会被映射为所选的类型化失败类别。
+    当脚本耗尽时，会发出配置的默认错误。
+    */
     pub fn with_event_script(self, steps: Vec<MockAgentStep>) -> Self {
         self.event_scripts
             .lock()
@@ -537,16 +576,17 @@ impl FailingMockAgent {
         self
     }
 
-    /// Get the number of times this Mock Agent has been called.
+    /// 获取该 Mock Agent 被调用的次数。
     pub fn call_count(&self) -> usize {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// All historical call task strings in chronological order.
+    /// 所有历史调用的任务字符串（按时间顺序）。
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// 记录一次调用的任务字符串。
     fn record_call(&self, task: &str) {
         self.calls
             .lock()
@@ -554,6 +594,8 @@ impl FailingMockAgent {
             .push(task.to_string());
     }
 
+    /// 构建下一次流式调用的事件流：使用预设脚本，若脚本耗尽则
+    /// 直接产出配置的默认错误。
     fn next_event_stream<'a>(
         &'a self,
         cancel: CancellationToken,
@@ -589,18 +631,22 @@ impl FailingMockAgent {
 }
 
 impl Agent for FailingMockAgent {
+    /// 返回该 Agent 的名称。
     fn name(&self) -> &str {
         &self.name
     }
 
+    /// 固定返回 `"mock-model"`。
     fn model_name(&self) -> &str {
         "mock-model"
     }
 
+    /// 固定返回 `"failing mock agent"`。
     fn system_prompt(&self) -> &str {
         "failing mock agent"
     }
 
+    /// 记录任务，并返回配置的类型化失败错误。
     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             self.record_call(task);
@@ -608,6 +654,7 @@ impl Agent for FailingMockAgent {
         })
     }
 
+    /// 记录任务并返回失败事件流（使用一个新的取消令牌）。
     fn execute_stream<'a>(
         &'a self,
         task: &'a str,
@@ -618,6 +665,7 @@ impl Agent for FailingMockAgent {
         })
     }
 
+    /// 记录任务并返回失败事件流，使用调用方提供的取消令牌。
     fn execute_stream_with_cancel<'a>(
         &'a self,
         task: &'a str,
@@ -629,10 +677,12 @@ impl Agent for FailingMockAgent {
         })
     }
 
+    /// 委托给 `execute`。
     fn chat<'a>(&'a self, message: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move { self.execute(message).await })
     }
 
+    /// 清空调用历史。
     fn reset(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             self.calls.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -645,6 +695,7 @@ mod tests {
     use super::*;
     use futures::StreamExt;
 
+    /// 验证 MockAgent 能按脚本先发出部分事件，再以错误结束流。
     #[tokio::test]
     async fn mock_agent_scripts_partial_event_then_error() -> Result<()> {
         let agent = MockAgent::new("partial").with_event_script(vec![
@@ -666,6 +717,8 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 FailingMockAgent 能按脚本先发出部分事件，再以指定类型化错误结束流，
+    /// 且调用历史被正确记录。
     #[tokio::test]
     async fn failing_mock_agent_scripts_partial_event_then_typed_error() -> Result<()> {
         let agent = FailingMockAgent::new("partial-failure", "default failure")

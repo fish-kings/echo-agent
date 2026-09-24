@@ -4,6 +4,7 @@ use echo_agent_learning::smart_pointers::synchronization::SharedProgress;
 use tokio::sync::watch;
 use tokio::time::Duration;
 
+/// 演示异步并发工具：共享进度、并发子任务、超时控制与取消信号。
 #[tokio::main]
 async fn main() -> Result<(), LearningError> {
     let progress = SharedProgress::new();

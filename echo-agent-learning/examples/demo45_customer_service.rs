@@ -49,12 +49,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static TICKET_COUNTER: AtomicU32 = AtomicU32::new(1);
 
+/// 一次客服流式对话的执行结果摘要。
 #[derive(Default)]
 struct ChatRunSummary {
+    /// 拼接后的最终回答文本。
     final_answer: String,
+    /// 本次对话中依次调用过的工具名称列表。
     tool_calls: Vec<String>,
 }
 
+/// 查询指定订单的状态（当前为模拟实现，返回固定的示例订单信息）。
 #[tool(name = "query_order", description = "查询订单状态")]
 async fn query_order(
     /// 订单号，格式如 ORD-2024-001234
@@ -72,6 +76,7 @@ async fn query_order(
     Ok(ToolResult::success(order_info.to_string()))
 }
 
+/// 提交一笔退款申请；退款处于 `pending_approval` 状态，需要人工审批后才能生效。
 #[tool(name = "process_refund", description = "处理退款申请（需要人工审批）")]
 async fn process_refund(
     /// 订单号
@@ -92,6 +97,7 @@ async fn process_refund(
     Ok(ToolResult::success(refund_info.to_string()))
 }
 
+/// 查询指定商品的库存情况（当前为模拟实现，返回固定的示例库存信息）。
 #[tool(name = "check_inventory", description = "查询商品库存")]
 async fn check_inventory(
     /// 商品名称
@@ -106,6 +112,7 @@ async fn check_inventory(
     Ok(ToolResult::success(inventory.to_string()))
 }
 
+/// 创建一个新工单，工单编号基于全局自增计数器生成。
 #[tool(name = "create_ticket", description = "创建工单")]
 async fn create_ticket(
     /// 工单标题
@@ -131,6 +138,8 @@ async fn create_ticket(
 // Main
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 程序入口：搭建长期记忆、审计日志、人工审批、护栏系统并构建智能客服 Agent，
+/// 依次演示多轮客服对话、审计日志展示、快照展示与记忆检索展示。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -197,7 +206,7 @@ async fn main() -> Result<()> {
                         .respond("客户未补充更多信息，请基于已知订单信息继续处理。".to_string());
                 }
                 _ => {
-                    // SelectionRequest and other variants — not used by this demo.
+                    // SelectionRequest 及其他事件变体——本示例未用到。
                 }
             }
         }
@@ -463,6 +472,8 @@ async fn main() -> Result<()> {
 // 辅助函数
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/// 以流式方式向 Agent 发送一条客服消息，实时打印 token、工具调用与结果，
+/// 并返回汇总后的最终答复与调用过的工具列表。
 async fn stream_chat(agent: &mut ReactAgent, message: &str) -> Result<ChatRunSummary> {
     let mut stream = agent.chat_stream(message).await?;
     let mut summary = ChatRunSummary::default();
@@ -508,6 +519,7 @@ async fn stream_chat(agent: &mut ReactAgent, message: &str) -> Result<ChatRunSum
     Ok(summary)
 }
 
+/// 打印演示程序的标题横幅。
 fn print_banner() {
     println!("╔══════════════════════════════════════════════════════════════╗");
     println!("║          Echo Agent 智能客服助手 - 综合示例                  ║");
@@ -519,6 +531,7 @@ fn print_banner() {
     println!("╚══════════════════════════════════════════════════════════════╝\n");
 }
 
+/// 校验某个场景的对话摘要中确实调用过指定工具，否则返回验收失败错误。
 fn ensure_tool_called(summary: &ChatRunSummary, tool_name: &str, scenario: &str) -> Result<()> {
     if !summary.tool_calls.iter().any(|name| name == tool_name) {
         return Err(echo_agent::error::ReactError::Other(format!(
@@ -528,6 +541,7 @@ fn ensure_tool_called(summary: &ChatRunSummary, tool_name: &str, scenario: &str)
     Ok(())
 }
 
+/// 生成本次演示使用的临时 SQLite 数据库文件路径（按进程 ID 区分）。
 fn customer_service_db_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "echo_agent_customer_service_{}.db",
@@ -535,6 +549,7 @@ fn customer_service_db_path() -> PathBuf {
     ))
 }
 
+/// 删除 SQLite 主数据库文件及其 WAL / SHM 辅助文件。
 fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path);
     let _ = std::fs::remove_file(path.with_extension("db-wal"));

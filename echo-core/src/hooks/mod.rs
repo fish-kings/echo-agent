@@ -1,8 +1,8 @@
-//! Hook type definitions — shared across all workspace crates.
+//! Hook 类型定义 —— 供整个工作区所有 crate 共享。
 //!
-//! This module contains the core types for the unified hook system,
-//! defined here in `echo-core` so that both `echo-execution` and
-//! `echo-orchestration` can reference them without circular dependencies.
+//! 本模块包含统一 hook 系统的核心类型，之所以定义在 `echo-core` 中，
+//! 是为了让 `echo-execution` 和 `echo-orchestration` 都能引用它们，
+//! 而不会产生循环依赖。
 
 pub mod types;
 

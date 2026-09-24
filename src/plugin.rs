@@ -1,7 +1,7 @@
-//! Plugin facade and immutable preparation API.
+//! 插件门面模块与不可变的准备（preparation）API。
 //!
-//! Discovery and parsing happen once in [`PluginIntegrator::prepare`]. Live
-//! Agents consume the returned generation without rereading package files.
+//! 发现与解析只在 [`PluginIntegrator::prepare`] 中执行一次。运行中的
+//! Agent 只消费返回的这一代（generation）结果，而不会重新读取包文件。
 
 pub use echo_core::plugin::{
     AGENT_PLUGIN_SCHEMA_V1, InstallSource, PluginAuthor, PluginCapability, PluginDependency,

@@ -7,14 +7,20 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
+/// 一次消息投递请求：携带待发送消息、回执通道与投递许可。
 pub(crate) struct DeliveryRequest {
+    /// 待发送的出站消息。
     pub message: OutboundMessage,
+    /// 用于回传投递结果（成功/失败）的一次性通道。
     pub receipt: oneshot::Sender<Result<()>>,
+    /// 投递许可，持有期间代表该消息占用一个投递名额，drop 后释放。
     pub delivery_permit: Option<ChannelDeliveryPermit>,
 }
 
+/// 投递请求的发送端类型别名。
 pub(crate) type DeliverySender = mpsc::Sender<DeliveryRequest>;
 
+/// 将一条消息封装为投递请求发往投递队列，并等待投递结果回执。
 async fn deliver(send_tx: &DeliverySender, message: OutboundMessage) -> Result<()> {
     let delivery_permit = message.begin_delivery()?;
     let (receipt, delivered) = oneshot::channel();

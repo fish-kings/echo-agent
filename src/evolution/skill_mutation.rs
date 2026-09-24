@@ -20,38 +20,56 @@ use super::curator::{Curator, CuratorState};
 use super::security::{PromptInjectionDetector, SecretScanner};
 use crate::error::Result;
 
+/// ChangeLog 中用于记录 Skill 生命周期权威绑定关系的固定审计键。
 const SKILL_AUTHORITY_AUDIT_KEY: &str = "__skill_lifecycle_authority_binding__";
 
+/// 将 Skill 操作日志（journal）与某个 ChangeLog 权威实例绑定的标记。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SkillAuditBinding {
+    /// 绑定的审计权威（authority）唯一标识。
     authority_id: String,
+    /// 绑定时 ChangeLog 的持久化目的地身份标识。
     destination_identity: String,
 }
 
+/// Skill 生命周期变更的操作种类。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SkillMutationKind {
+    /// 起草一个新的 Skill。
     Draft,
+    /// 将 Skill 提升到更高的生命周期阶段。
     Promote,
+    /// 记录一次不改变生命周期阶段的使用（usage）触达。
     Touch,
+    /// 弃用一个 Skill。
     Deprecate,
+    /// 合并多个 Skill。
     Merge,
+    /// 对已有 Skill 内容打补丁。
     Patch,
+    /// 回滚到之前的 Skill 状态。
     Rollback,
 }
 
+/// 单个 Skill 资源文件在一次变更前后的快照。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkillFileMutation {
+    /// 规范化（canonical）之后的文件路径。
     pub path: PathBuf,
+    /// 变更前的文件内容；`None` 表示该文件此前不存在。
     pub before: Option<Vec<u8>>,
+    /// 变更后的文件内容；`None` 表示该文件将被删除。
     pub after: Option<Vec<u8>>,
 }
 
 impl SkillFileMutation {
+    /// 将给定路径规范化为用于比较与存储的绝对规范路径。
     pub fn canonical_path(path: impl AsRef<Path>) -> Result<PathBuf> {
         canonical_resource_path(path.as_ref())
     }
 
+    /// 构造一条文件变更记录，路径会先被规范化。
     pub fn new(
         path: impl AsRef<Path>,
         before: Option<Vec<u8>>,
@@ -65,36 +83,56 @@ impl SkillFileMutation {
     }
 }
 
+/// 一次完整的 Skill 生命周期变更请求。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SkillMutationRequest {
+    /// 该请求的幂等（idempotent）唯一标识。
     pub request_id: String,
+    /// 受影响的 Skill 实体键（通常是 Skill 名称）。
     pub entity_key: String,
+    /// 本次变更的种类。
     pub kind: SkillMutationKind,
+    /// 发起本次变更的原因说明。
     pub reason: String,
+    /// 本次变更涉及的文件级别改动列表。
     pub files: Vec<SkillFileMutation>,
+    /// 变更前预期的 Curator 状态，用于乐观并发校验。
     pub curator_before: CuratorState,
+    /// 变更后期望达到的 Curator 状态。
     pub curator_after: CuratorState,
+    /// 若本次请求是一次回滚，指向被回滚目标的血缘信息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback_of: Option<SkillRollbackLineage>,
 }
 
+/// 回滚请求指向的目标批次血缘信息。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillRollbackLineage {
+    /// 被回滚目标所在的操作批次 ID。
     pub target_batch_id: String,
+    /// 触发本次回滚的单个变更 ID（若适用）。
     pub target_change_id: Option<String>,
+    /// 目标批次对应的全部审计变更 ID。
     pub target_change_ids: Vec<String>,
+    /// 目标批次的生成号（generation）。
     pub target_generation: u64,
 }
 
+/// 对某次操作摘要（digest）的审批凭证。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillApprovalArtifact {
+    /// 该审批凭证的唯一标识。
     pub approval_id: String,
+    /// 被审批操作的内容摘要，必须与预览阶段计算出的摘要一致。
     pub operation_digest: String,
+    /// 审批人标识。
     pub approver: String,
+    /// 审批完成的时间。
     pub approved_at: DateTime<Utc>,
 }
 
 impl SkillApprovalArtifact {
+    /// 构造一条审批凭证。
     pub fn new(
         approval_id: impl Into<String>,
         operation_digest: impl Into<String>,
@@ -110,74 +148,130 @@ impl SkillApprovalArtifact {
     }
 }
 
+/// 一次变更请求在应用前的预览结果，供审批环节比对使用。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMutationPreview {
+    /// 对应的请求 ID。
     pub request_id: String,
+    /// 本次操作的内容摘要。
     pub operation_digest: String,
+    /// 受影响的文件路径列表。
     pub affected_paths: Vec<PathBuf>,
+    /// 受影响的 Skill 名称列表。
     pub affected_skills: Vec<String>,
 }
 
+/// 一次变更成功落地后返回的回执。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillMutationReceipt {
+    /// 对应的请求 ID。
     pub request_id: String,
+    /// 本次变更落地所属的操作批次 ID。
     pub batch_id: String,
+    /// 该批次在操作日志中的生成号。
     pub generation: u64,
+    /// 本次变更写入 ChangeLog 的审计变更 ID 列表。
     pub change_ids: Vec<String>,
+    /// 本次变更所使用的审批凭证 ID。
     pub approval_id: String,
 }
 
+/// 一次变更请求应用后的结果。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillMutationOutcome {
+    /// 变更已成功应用。
     Applied(SkillMutationReceipt),
+    /// 该请求此前已被应用过（幂等重放）。
     AlreadyApplied(SkillMutationReceipt),
-    Conflict { reason: String },
-    HistoryUnavailable { reason: String },
+    /// 变更因与当前状态冲突而被拒绝。
+    Conflict {
+        /// 冲突原因说明。
+        reason: String,
+    },
+    /// 由于历史记录不可用，无法判断请求状态。
+    HistoryUnavailable {
+        /// 不可用原因说明。
+        reason: String,
+    },
 }
 
+/// 回滚操作所指向的目标定位方式。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillRollbackTarget {
+    /// 按审计变更 ID 定位目标。
     ChangeId(String),
+    /// 按操作批次 ID 定位目标。
     BatchId(String),
+    /// 按宿主自有（host-owned）规则名定位目标。
     Rule(String),
 }
 
+/// 描述某个回滚目标是否受本权威支持。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillRollbackSupport {
+    /// 该目标受本权威直接支持。
     Supported,
-    HostOwned { target: String },
+    /// 该目标由宿主自行拥有并处理。
+    HostOwned {
+        /// 宿主侧的目标标识。
+        target: String,
+    },
 }
 
+/// 回滚预览的结果。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SkillRollbackPreviewOutcome {
+    /// 预览已就绪，可提交审批。
     Ready(SkillMutationPreview),
-    Conflict { reason: String },
-    HistoryUnavailable { reason: String },
-    HostOwned { target: String },
+    /// 预览因冲突而无法生成。
+    Conflict {
+        /// 冲突原因说明。
+        reason: String,
+    },
+    /// 历史记录不可用，无法生成预览。
+    HistoryUnavailable {
+        /// 不可用原因说明。
+        reason: String,
+    },
+    /// 该回滚目标由宿主自行拥有。
+    HostOwned {
+        /// 宿主侧的目标标识。
+        target: String,
+    },
 }
 
+/// 在每次 Skill 变更成功落地后接收通知的观察者。
 pub trait SkillMutationObserver: Send + Sync {
+    /// 在一次变更成功应用后被调用。
     fn on_skill_mutation(&self, receipt: &SkillMutationReceipt);
 }
 
+/// 记录 Skill 使用情况的结果。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkillUsageOutcome {
+    /// 使用记录已更新。
     Updated,
+    /// 目标 Skill 未知（不存在）。
     UnknownSkill,
 }
 
-/// Narrow runtime handle for recording usage of an existing Skill.
-/// It cannot create, promote, or otherwise change lifecycle state.
+/**
+ * 用于记录已有 Skill 使用情况的窄接口运行时句柄。
+ * 它不能创建、提升或以其他方式改变生命周期状态。
+ */
 #[derive(Clone)]
 pub struct SkillUsageHandle {
+    /// 底层的 Skill 变更权威实例。
     authority: Arc<SkillMutationAuthority>,
 }
 
 impl SkillUsageHandle {
+    /// 基于给定的变更权威构造一个使用记录句柄。
     pub fn new(authority: Arc<SkillMutationAuthority>) -> Self {
         Self { authority }
     }
 
+    /// 记录一次对指定 Skill 的使用，内部会重试直至冲突消解或次数耗尽。
     pub async fn record_usage(&self, skill_name: &str) -> Result<SkillUsageOutcome> {
         let mut last_error = None;
         for _ in 0..3 {
@@ -235,41 +329,68 @@ impl SkillUsageHandle {
     }
 }
 
+/// 一次已获批准并即将/已经落地的 Skill 操作批次。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct SkillOperationBatch {
+    /// 批次唯一 ID。
     id: String,
+    /// 原始变更请求。
     request: SkillMutationRequest,
+    /// 对应的审批凭证。
     approval: SkillApprovalArtifact,
+    /// 本批次写入 ChangeLog 的审计条目。
     audits: Vec<ChangeEntry>,
+    /// 若本批次是一次回滚，记录被回滚目标的血缘信息。
     #[serde(default)]
     rollback_of: Option<SkillRollbackLineage>,
 }
 
+/// 写入 Skill 操作日志的事件类型。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum SkillOperationEvent {
-    Bound { audit_authority_id: String },
+    /// 日志已绑定到某个审计权威。
+    Bound {
+        /// 绑定的审计权威 ID。
+        audit_authority_id: String,
+    },
+    /// 一个操作批次已准备（prepare）但尚未结算。
     Prepared(Box<SkillOperationBatch>),
-    Settled { id: String },
+    /// 指定 ID 的操作批次已结算（settle）。
+    Settled {
+        /// 已结算批次的 ID。
+        id: String,
+    },
 }
 
+/// 通过重放日志得到的单条历史操作条目。
 #[derive(Clone)]
 struct SkillHistoryItem {
+    /// 该条目对应的操作批次。
     batch: SkillOperationBatch,
+    /// 该批次是否已完成结算。
     settled: bool,
+    /// 该批次在日志中的序号（generation）。
     generation: u64,
 }
 
+/// 重放操作日志后得到的完整历史视图。
 struct SkillJournalHistory {
+    /// 日志当前绑定的审计权威 ID（若已绑定）。
     audit_authority_id: Option<String>,
+    /// 已重放出的全部历史操作条目。
     operations: Vec<SkillHistoryItem>,
 }
 
+/// Skill 操作的持久化事件日志（journal）。
 struct SkillOperationJournal {
+    /// 底层的文件事件日志。
     journal: Arc<FileEventJournal<SkillOperationEvent>>,
+    /// 用于串行化写入的进程内互斥锁。
     serial: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SkillOperationJournal {
+    /// 打开（或创建）位于指定路径的操作日志。
     fn open(path: &Path) -> Result<Self> {
         let journal = Arc::new(FileEventJournal::open(path, FileDurability::SyncData)?);
         static SERIALS: OnceLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
@@ -289,6 +410,7 @@ impl SkillOperationJournal {
         Ok(Self { journal, serial })
     }
 
+    /// 将一个事件追加写入日志，并根据落盘状态确保持久性。
     fn append(&self, event: SkillOperationEvent) -> Result<()> {
         let receipt = self
             .journal
@@ -306,14 +428,17 @@ impl SkillOperationJournal {
         }
     }
 
+    /// 记录一个刚准备好、尚未结算的操作批次。
     fn prepare(&self, batch: SkillOperationBatch) -> Result<()> {
         self.append(SkillOperationEvent::Prepared(Box::new(batch)))
     }
 
+    /// 记录指定批次已完成结算。
     fn settle(&self, id: &str) -> Result<()> {
         self.append(SkillOperationEvent::Settled { id: id.to_owned() })
     }
 
+    /// 将本日志绑定到指定的审计权威 ID；重复绑定同一 ID 是幂等的。
     fn bind(&self, audit_authority_id: &str) -> Result<()> {
         if audit_authority_id.is_empty() {
             return Err(ReactError::Other(
@@ -335,6 +460,7 @@ impl SkillOperationJournal {
         }
     }
 
+    /// 返回已绑定日志的全部历史操作条目；若日志未绑定则报错。
     fn history(&self) -> Result<Vec<SkillHistoryItem>> {
         let history = self.history_state()?;
         if history.audit_authority_id.is_none() && !history.operations.is_empty() {
@@ -345,6 +471,7 @@ impl SkillOperationJournal {
         Ok(history.operations)
     }
 
+    /// 从头重放底层文件日志，重建完整的历史状态。
     fn history_state(&self) -> Result<SkillJournalHistory> {
         self.journal.sync_data()?;
         let mut audit_authority_id = None;
@@ -412,30 +539,52 @@ impl SkillOperationJournal {
     }
 }
 
+/// Skill 生命周期资源的唯一（canonical）持久化变更权威。
+///
+/// 所有对 Skill 文件与 Curator 状态的变更都必须经由本权威完成，
+/// 以保证操作日志、文件系统与 ChangeLog 三者之间的一致性。
 pub struct SkillMutationAuthority {
+    /// Skill 元数据（Curator 状态）的读写入口。
     curator: Curator,
+    /// 持久化的操作日志。
     journal: SkillOperationJournal,
+    /// 审计变更日志。
     change_log: Arc<dyn ChangeLog>,
+    /// 本权威绑定的审计权威 ID。
     audit_authority_id: String,
+    /// 用于检测内容中是否包含密钥的扫描器。
     scanner: SecretScanner,
+    /// 用于检测提示词注入攻击的检测器。
     injector: PromptInjectionDetector,
+    /// 可选的变更观察者，用于在变更落地后接收通知。
     observer: Option<Arc<dyn SkillMutationObserver>>,
+    /// 仅测试使用：用于在指定阶段注入失败的开关。
     #[cfg(test)]
     fail_point: Mutex<Option<SkillMutationFailPoint>>,
+    /// 仅测试使用：在文件投影完成后执行的钩子。
     #[cfg(test)]
     after_files_hook: Option<Arc<dyn Fn() -> Result<()> + Send + Sync>>,
 }
 
+/// 仅测试使用：标记应在应用流程的哪个阶段注入失败。
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SkillMutationFailPoint {
+    /// 在批次已准备（prepare）之后失败。
     Prepared,
+    /// 在文件投影完成之后失败。
     FilesProjected,
+    /// 在 Curator 状态投影完成之后失败。
     CuratorProjected,
+    /// 在审计记录写入完成之后失败。
     AuditRecorded,
 }
 
 impl SkillMutationAuthority {
+    /// 打开（或首次创建）一个绑定到指定 Curator 与 ChangeLog 的变更权威。
+    ///
+    /// 会校验操作日志与 ChangeLog 中的审计权威标记是否一致；
+    /// 若两者都为空，则会创建一条新的绑定标记并写入 ChangeLog。
     pub fn open(curator: Curator, change_log: Arc<dyn ChangeLog>) -> Result<Self> {
         let journal = SkillOperationJournal::open(&curator.skill_operation_journal_path())?;
         let _serial = journal.serial.try_lock().map_err(|_| {
@@ -532,11 +681,13 @@ impl SkillMutationAuthority {
         })
     }
 
+    /// 附加一个变更观察者，返回配置后的自身（构建器风格）。
     pub fn with_observer(mut self, observer: Arc<dyn SkillMutationObserver>) -> Self {
         self.observer = Some(observer);
         self
     }
 
+    /// 仅测试使用：配置在指定阶段注入一次失败。
     #[cfg(test)]
     fn with_fail_point(self, point: SkillMutationFailPoint) -> Self {
         if let Ok(mut configured) = self.fail_point.lock() {
@@ -545,12 +696,14 @@ impl SkillMutationAuthority {
         self
     }
 
+    /// 仅测试使用：配置在文件投影完成后执行的钩子。
     #[cfg(test)]
     fn with_after_files_hook(mut self, hook: Arc<dyn Fn() -> Result<()> + Send + Sync>) -> Self {
         self.after_files_hook = Some(hook);
         self
     }
 
+    /// 仅测试使用：若当前失败点与给定阶段匹配，则消费该失败点并返回错误。
     #[cfg(test)]
     fn fail_if(&self, point: SkillMutationFailPoint) -> Result<()> {
         let mut configured = self.fail_point.lock().map_err(|error| {
@@ -565,14 +718,17 @@ impl SkillMutationAuthority {
         Ok(())
     }
 
+    /// 返回底层的 Curator 引用。
     pub fn curator(&self) -> &Curator {
         &self.curator
     }
 
+    /// 返回本权威绑定的审计权威 ID。
     pub fn audit_authority_id(&self) -> &str {
         &self.audit_authority_id
     }
 
+    /// 从 ChangeLog 中读取当前的审计权威绑定标记（若存在）。
     fn read_audit_binding(change_log: &dyn ChangeLog) -> Result<Option<SkillAuditBinding>> {
         let markers = change_log
             .query(&ChangeFilter::new().with_key_prefix(SKILL_AUTHORITY_AUDIT_KEY))?
@@ -612,12 +768,14 @@ impl SkillMutationAuthority {
         }
     }
 
+    /// 构造一个表示“该回滚目标由宿主自行拥有”的支持声明。
     pub fn rule_rollback_support(target: impl Into<String>) -> SkillRollbackSupport {
         SkillRollbackSupport::HostOwned {
             target: target.into(),
         }
     }
 
+    /// 预览一次回滚操作，但不实际应用；用于生成待审批的摘要。
     pub async fn preview_rollback(
         &self,
         request_id: impl Into<String>,
@@ -649,6 +807,7 @@ impl SkillMutationAuthority {
         Ok(SkillRollbackPreviewOutcome::Ready(self.preview(&request)?))
     }
 
+    /// 对指定目标执行一次回滚，需要提供已通过审批的凭证。
     pub async fn rollback(
         &self,
         request_id: impl Into<String>,
@@ -703,11 +862,13 @@ impl SkillMutationAuthority {
         )
     }
 
+    /// 计算某个请求内容的摘要（digest），供审批环节校验一致性使用。
     pub fn digest(request: &SkillMutationRequest) -> Result<String> {
         let bytes = serde_json::to_vec(request)?;
         Ok(hex_digest(&bytes))
     }
 
+    /// 校验一个请求，并生成对应的预览（不产生任何持久化副作用）。
     pub fn preview(&self, request: &SkillMutationRequest) -> Result<SkillMutationPreview> {
         self.validate_request(request)?;
         self.validate_current(request)?;
@@ -719,6 +880,7 @@ impl SkillMutationAuthority {
         })
     }
 
+    /// 应用一次已获审批的变更请求，加锁后委托给 `apply_locked` 完成实际落地。
     pub async fn apply(
         &self,
         request: SkillMutationRequest,
@@ -728,6 +890,7 @@ impl SkillMutationAuthority {
         self.apply_locked(request, approval)
     }
 
+    /// 在已持有串行锁的前提下应用一次变更请求：先做幂等/冲突检测，再落地。
     fn apply_locked(
         &self,
         request: SkillMutationRequest,
@@ -790,6 +953,7 @@ impl SkillMutationAuthority {
         Ok(SkillMutationOutcome::Applied(receipt))
     }
 
+    /// 补齐日志中所有已准备但尚未结算的批次（例如进程崩溃恢复后调用）。
     pub fn reconcile(&self) -> Result<()> {
         let guard = self.journal.serial.try_lock().map_err(|_| {
             ReactError::Other("skill mutation is active; retry reconciliation".into())
@@ -799,6 +963,7 @@ impl SkillMutationAuthority {
         result
     }
 
+    /// 在已持有串行锁的前提下补齐所有未结算的批次。
     fn reconcile_locked(&self) -> Result<()> {
         for item in self.journal.history()? {
             if !item.settled {
@@ -808,6 +973,7 @@ impl SkillMutationAuthority {
         Ok(())
     }
 
+    /// 将一个已准备好的批次实际投影到文件系统、Curator 状态与 ChangeLog，并标记为已结算。
     fn apply_batch(&self, batch: &SkillOperationBatch) -> Result<()> {
         self.validate_current_or_after(&batch.request)?;
         for file in &batch.request.files {
@@ -846,6 +1012,7 @@ impl SkillMutationAuthority {
         self.journal.settle(&batch.id)
     }
 
+    /// 对请求本身做静态校验（结构完整性、路径规范化、安全扫描等），不涉及当前系统状态。
     fn validate_request(&self, request: &SkillMutationRequest) -> Result<()> {
         if request.request_id.is_empty()
             || request.entity_key.is_empty()
@@ -916,6 +1083,7 @@ impl SkillMutationAuthority {
         Ok(())
     }
 
+    /// 校验请求所引用的“变更前”状态是否与当前实际状态精确一致（乐观并发控制）。
     fn validate_current(&self, request: &SkillMutationRequest) -> Result<()> {
         for file in &request.files {
             if read_optional(&file.path)? != file.before {
@@ -936,6 +1104,7 @@ impl SkillMutationAuthority {
         Ok(())
     }
 
+    /// 校验当前实际状态是幂等重放场景下允许的“变更前”或“变更后”之一（容忍重复应用）。
     fn validate_current_or_after(&self, request: &SkillMutationRequest) -> Result<()> {
         for file in &request.files {
             let current = read_optional(&file.path)?;
@@ -961,6 +1130,7 @@ impl SkillMutationAuthority {
     }
 }
 
+/// 校验审批凭证是否完整，且其摘要与预览的操作摘要精确匹配。
 fn validate_approval(
     approval: &SkillApprovalArtifact,
     preview: &SkillMutationPreview,
@@ -976,6 +1146,7 @@ fn validate_approval(
     Ok(())
 }
 
+/// 在历史记录中定位回滚目标对应的操作批次；`Rule` 目标始终返回 `None`。
 fn resolve_target<'a>(
     target: &SkillRollbackTarget,
     history: &'a [SkillHistoryItem],
@@ -1004,6 +1175,7 @@ fn resolve_target<'a>(
     }
 }
 
+/// 若目标批次不再是其所涉及文件/Skill 的最新（tip）生成，返回冲突原因；否则返回 `None`。
 fn non_tip_reason(target: &SkillHistoryItem, history: &[SkillHistoryItem]) -> Option<String> {
     for file in &target.batch.request.files {
         let latest = history
@@ -1037,6 +1209,7 @@ fn non_tip_reason(target: &SkillHistoryItem, history: &[SkillHistoryItem]) -> Op
     None
 }
 
+/// 若回滚目标是按审计变更 ID 定位的，返回该 ID；否则返回 `None`。
 fn target_change_id(target: &SkillRollbackTarget) -> Option<String> {
     match target {
         SkillRollbackTarget::ChangeId(change_id) => Some(change_id.clone()),
@@ -1044,6 +1217,7 @@ fn target_change_id(target: &SkillRollbackTarget) -> Option<String> {
     }
 }
 
+/// 基于目标批次构造其反向（逆）变更请求，用于回滚操作。
 fn inverse_request(
     request_id: String,
     target: &SkillHistoryItem,
@@ -1081,6 +1255,7 @@ fn inverse_request(
     }
 }
 
+/// 计算请求在 `curator_before` 与 `curator_after` 之间发生变化的 Skill 名称，按字典序排序。
 fn changed_skill_names(request: &SkillMutationRequest) -> Vec<String> {
     let mut names = HashSet::new();
     for name in request
@@ -1098,6 +1273,7 @@ fn changed_skill_names(request: &SkillMutationRequest) -> Vec<String> {
     names
 }
 
+/// 为一次变更请求构造要写入 ChangeLog 的审计条目。
 fn build_audits(
     batch_id: &str,
     request: &SkillMutationRequest,
@@ -1137,6 +1313,7 @@ fn build_audits(
     ]
 }
 
+/// 提取请求中受影响 Skill 在变更前或变更后的元数据快照，用于审计摘要。
 fn curator_summary(
     request: &SkillMutationRequest,
     before: bool,
@@ -1155,14 +1332,17 @@ fn curator_summary(
         .collect()
 }
 
+/// 生成文件变更“前”状态的摘要（用于审计记录）。
 fn file_summary_before(file: &SkillFileMutation) -> serde_json::Value {
     file_summary(&file.path, file.before.as_deref())
 }
 
+/// 生成文件变更“后”状态的摘要（用于审计记录）。
 fn file_summary_after(file: &SkillFileMutation) -> serde_json::Value {
     file_summary(&file.path, file.after.as_deref())
 }
 
+/// 为文件内容生成脱敏后的摘要 JSON（路径、哈希、长度、内容预览、是否含密钥）。
 fn file_summary(path: &Path, bytes: Option<&[u8]>) -> serde_json::Value {
     let scanner = SecretScanner::new();
     let (summary, redacted) = bytes
@@ -1183,6 +1363,7 @@ fn file_summary(path: &Path, bytes: Option<&[u8]>) -> serde_json::Value {
     })
 }
 
+/// 由一条历史条目构造对外返回的变更回执。
 fn receipt(item: &SkillHistoryItem) -> SkillMutationReceipt {
     SkillMutationReceipt {
         request_id: item.batch.request.request_id.clone(),
@@ -1198,6 +1379,7 @@ fn receipt(item: &SkillHistoryItem) -> SkillMutationReceipt {
     }
 }
 
+/// 读取文件内容；文件不存在时返回 `None` 而不是报错。
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -1206,6 +1388,8 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
+/// 将路径规范化为绝对规范路径，拒绝任何包含父目录穿越（`..`）的路径；
+/// 若路径尚不存在，则规范化其存在的最近祖先目录后拼回剩余部分。
 fn canonical_resource_path(path: &Path) -> Result<PathBuf> {
     if path
         .components()
@@ -1262,6 +1446,7 @@ fn canonical_resource_path(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+/// 原子写入文件；`bytes` 为 `None` 时删除文件（文件不存在也视为成功）。
 fn write_optional(path: &Path, bytes: Option<&[u8]>) -> Result<()> {
     match bytes {
         Some(bytes) => echo_core::utils::fs::atomic_write(path, bytes).map_err(Into::into),
@@ -1273,6 +1458,7 @@ fn write_optional(path: &Path, bytes: Option<&[u8]>) -> Result<()> {
     }
 }
 
+/// 计算字节内容的 SHA-256 十六进制摘要字符串。
 fn hex_digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()

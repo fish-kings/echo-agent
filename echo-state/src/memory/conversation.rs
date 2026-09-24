@@ -1,7 +1,7 @@
-//! Conversation persistence — concrete implementations and helper functions
+//! 对话持久化——具体实现与辅助函数
 //!
-//! Trait definition and data types live in [`echo_core::memory::conversation`].
-//! This module provides `project_messages`/`project_message` helpers.
+//! trait 定义与数据类型位于 [`echo_core::memory::conversation`]。
+//! 本模块提供 `project_messages`/`project_message` 辅助函数。
 
 use echo_core::error::{MemoryError, Result};
 use echo_core::llm::types::{Message, MessageContent, Role, ToolCall};
@@ -10,36 +10,46 @@ use sha2::{Digest, Sha256};
 
 const MESSAGE_PROJECTION_VERSION: u8 = 1;
 
+/// 消息投影的元数据结构，用于在 `attachments_json` 中携带无法用普通字段
+/// 表达的结构化信息，并支持后续版本演进。
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MessageProjectionMeta {
+    /// 投影格式版本号，用于兼容性校验。
     #[serde(rename = "_echo_message_version")]
     version: u8,
+    /// 结构化内容（仅当消息内容为 `Parts` 或 `Empty` 时存在）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     content: Option<MessageContent>,
+    /// 模型的推理/思考内容（如有）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reasoning_content: Option<String>,
+    /// 消息关联的名称（如工具名）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    /// 关联的工具调用 ID（如有）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_call_id: Option<String>,
+    /// 该消息所属的会话记录生成 ID（用于追加排序）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transcript_generation_id: Option<String>,
+    /// 该消息在所属生成内的序号。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     transcript_ordinal: Option<u64>,
 }
 
-/// Typed append identity for one product transcript message.
+/// 单条产品级会话记录消息的类型化追加标识。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TranscriptProjectionMeta {
+    /// 消息所属的生成（generation）ID。
     pub generation_id: String,
+    /// 消息在该生成内的序号。
     pub ordinal: u64,
 }
 
-/// Stable generation-cursor fingerprint for one user-visible transcript row.
+/// 为单条用户可见的会话记录行计算稳定的生成游标指纹。
 ///
-/// Backend ids, timestamps, and generation/ordinal metadata are excluded so
-/// the active cursor can match the same logical message before and after a
-/// projection batch is prepared.
+/// 计算时排除后端 ID、时间戳以及生成/序号元数据，使得当前活跃游标能够在
+/// 投影批次准备前后匹配到同一条逻辑消息。
 pub fn transcript_projection_message_digest(message: &StoredMessage) -> Result<String> {
     let normalized = serde_json::to_vec(&(
         &message.role,
@@ -51,7 +61,7 @@ pub fn transcript_projection_message_digest(message: &StoredMessage) -> Result<S
     Ok(format!("{:x}", Sha256::digest(normalized)))
 }
 
-/// Project runtime Message list to persistable transcript records.
+/// 将运行时 Message 列表投影为可持久化的会话记录。
 pub fn project_messages(conversation_id: &str, messages: &[Message]) -> Result<Vec<StoredMessage>> {
     messages
         .iter()
@@ -59,7 +69,7 @@ pub fn project_messages(conversation_id: &str, messages: &[Message]) -> Result<V
         .collect()
 }
 
-/// Project a single runtime Message to a transcript record.
+/// 将单条运行时 Message 投影为一条会话记录。
 pub fn project_message(conversation_id: &str, message: &Message) -> Result<StoredMessage> {
     let tool_calls_json = message
         .tool_calls
@@ -79,10 +89,9 @@ pub fn project_message(conversation_id: &str, message: &Message) -> Result<Store
         None
     };
 
-    // `content` is the searchable text projection. Every canonical runtime
-    // message carries the marker, including plain text, so application
-    // projections can reliably distinguish an Agent-owned transcript from a
-    // UI-only bootstrap record.
+    // `content` 是可供搜索的文本投影。每条规范化的运行时消息都会携带该
+    // 标记（包括纯文本消息），使应用层投影能够可靠地区分由 Agent 生成的
+    // 会话记录与仅用于 UI 引导的记录。
     let structured_content = matches!(
         &message.content,
         MessageContent::Parts(_) | MessageContent::Empty
@@ -110,7 +119,7 @@ pub fn project_message(conversation_id: &str, message: &Message) -> Result<Store
     })
 }
 
-/// Attach one generation-local ordinal to a canonical projected message.
+/// 为一条规范化投影消息附加其生成内局部序号。
 pub fn set_transcript_projection_meta(
     stored: &mut StoredMessage,
     generation_id: &str,
@@ -127,7 +136,7 @@ pub fn set_transcript_projection_meta(
     Ok(())
 }
 
-/// Read a generation-local ordinal from a canonical projected message.
+/// 从一条规范化投影消息中读取其生成内局部序号。
 pub fn transcript_projection_meta(
     stored: &StoredMessage,
 ) -> Result<Option<TranscriptProjectionMeta>> {
@@ -155,7 +164,7 @@ pub fn transcript_projection_meta(
     )
 }
 
-/// Return attachment metadata with generation-local append coordinates removed.
+/// 返回去除了生成内追加坐标信息（generation/ordinal）的附件元数据。
 pub fn normalized_transcript_attachments(stored: &StoredMessage) -> Result<Option<String>> {
     let Some(mut projection) = restore_projection_meta(stored)? else {
         return Ok(stored.attachments_json.clone());
@@ -165,23 +174,24 @@ pub fn normalized_transcript_attachments(stored: &StoredMessage) -> Result<Optio
     Ok(Some(serde_json::to_string(&projection)?))
 }
 
-/// Restore a single persisted transcript record back into a runtime [`Message`].
-///
-/// This is the inverse of [`project_message`]: it parses the role + the
-/// `tool_calls_json` / `tool_result_json` projections back into the structured
-/// `Message` shape. Round-trips losslessly for the four canonical roles
-/// (system/user/assistant/tool) and for assistant messages carrying tool calls.
-///
-/// # Errors
-///
-/// Returns an error when:
-/// - `tool_calls_json` is present but cannot be deserialized as
-///   `Vec<ToolCall>` (corruption — surfaced rather than silently dropped).
-/// - `tool_result_json` is present on a `tool`-role message but cannot be
-///   deserialized into `{ tool_call_id, name }`.
-/// - the role is anything other than `system`/`user`/`assistant`/`tool`.
-///   Unknown roles are an error rather than silently demoted to `user`, so
-///   callers can detect schema drift instead of silently losing the role.
+/** 将一条持久化的会话记录还原为运行时 [`Message`]。
+
+这是 [`project_message`] 的逆操作：解析 role 以及
+`tool_calls_json` / `tool_result_json` 投影，还原为结构化的
+`Message`。对四种规范角色（system/user/assistant/tool）以及携带
+工具调用的 assistant 消息可实现无损往返。
+
+# 错误
+
+以下情况会返回错误：
+- 存在 `tool_calls_json` 但无法反序列化为 `Vec<ToolCall>`（数据损坏——
+  会显式报错而不是静默丢弃）。
+- `tool`角色消息存在 `tool_result_json` 但无法反序列化为
+  `{ tool_call_id, name }`。
+- role 不是 `system`/`user`/`assistant`/`tool` 之一。未知角色会报错，
+  而不是静默降级为 `user`，使调用方能够检测到 schema 漂移，而不是
+  悄悄丢失角色信息。
+*/
 pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
     let text = stored.content.clone().unwrap_or_default();
     let projection = restore_projection_meta(stored)?;
@@ -215,9 +225,9 @@ pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
                 .as_deref()
                 .map(serde_json::from_str::<ToolResultMeta>)
                 .transpose()?;
-            // If the projection carried the call id/name, use them; otherwise
-            // fall back to a stable placeholder so the tool message is still
-            // well-formed (downstream code keys on role==Tool, not the id).
+            // 如果投影携带了调用 ID/名称，则直接使用；否则回退到一个稳定的
+            // 占位符，保证工具消息依旧格式良好（下游代码依据 role==Tool
+            // 判断，而不是依据该 ID）。
             let tool_call_id = meta
                 .as_ref()
                 .and_then(|value| value.tool_call_id.clone())
@@ -244,13 +254,14 @@ pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
     Ok(message)
 }
 
+/// 尝试从 `attachments_json` 中解析出投影元数据；若不是本模块写入的
+/// 规范化投影负载，则返回 `None`。
 fn restore_projection_meta(stored: &StoredMessage) -> Result<Option<MessageProjectionMeta>> {
     let Some(raw) = stored.attachments_json.as_deref() else {
         return Ok(None);
     };
-    // The application also uses attachments_json for UI metadata. Only claim
-    // payloads carrying our explicit marker; unrelated or legacy payloads are
-    // intentionally left to the application projection.
+    // 应用层也会使用 attachments_json 存放 UI 元数据。这里只认领携带
+    // 我们显式标记的负载；无关或历史遗留的负载会有意留给应用层投影处理。
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(None);
     };
@@ -268,10 +279,10 @@ fn restore_projection_meta(stored: &StoredMessage) -> Result<Option<MessageProje
     Ok(Some(projection))
 }
 
-/// Restore a list of persisted transcript records into runtime [`Message`]s.
+/// 将一批持久化的会话记录还原为运行时 [`Message`] 列表。
 ///
-/// Batch form of [`restore_message`]; fails on the first record that cannot be
-/// restored (matching `project_messages` fail-fast semantics).
+/// 是 [`restore_message`] 的批量形式；遇到第一条无法还原的记录即失败
+/// （与 `project_messages` 的快速失败语义一致）。
 pub fn restore_messages(stored: &[StoredMessage]) -> Result<Vec<Message>> {
     stored.iter().map(restore_message).collect()
 }

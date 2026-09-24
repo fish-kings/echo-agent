@@ -1,25 +1,27 @@
-//! Secret scanner and redaction — prevent credential leakage.
-//!
-//! TODO(security, v0.3): Split patterns into high-confidence (AWS/GH/Anthropic key prefixes)
-//! vs heuristic/generic (token/password patterns with high false-positive rate).
-//! High-confidence matches should block execution; generic matches should warn only.
-//! Priority: start with AWS (AKIA prefix) and GitHub (ghp_/github_pat_) as they have
-//! near-zero false-positive rates, then expand to other providers.
-//!
-//! TODO(security, v0.3): "Password in URL" pattern matches harmless examples in docs
-//! and code comments. Add boundary checks: exclude lines starting with "//" or "#"
-//! (comment lines), and require the match to appear in a configuration context
-//! (e.g., inside a connection string or URI assignment).
-//!
-//! Scans text for secrets (API keys, tokens, passwords, private keys) and
-//! either redacts them or warns the user. Used by the output guard pipeline
-//! and the /commit flow.
+/*!
+密钥扫描与脱敏 —— 防止凭据泄露。
+
+TODO(security, v0.3)：将模式拆分为高置信度（AWS/GH/Anthropic 密钥前缀）
+与启发式/通用模式（误报率较高的 token/password 模式）两类。
+高置信度匹配应当阻断执行；通用匹配仅做告警即可。
+优先级：先从 AWS（AKIA 前缀）与 GitHub（ghp_/github_pat_）开始，
+它们的误报率接近于零，之后再扩展到其他服务商。
+
+TODO(security, v0.3)："URL 中的密码" 模式会匹配到文档与代码注释中
+无害的示例。需要增加边界检查：排除以 "//" 或 "#" 开头的行
+（注释行），并要求匹配内容出现在配置语境中
+（例如出现在连接字符串或 URI 赋值内）。
+
+对文本进行密钥扫描（API key、token、密码、私钥），
+并对其进行脱敏或向用户发出警告。被输出护栏（guard）流水线
+以及 /commit 流程使用。
+*/
 
 pub use echo_core::utils::retention::{
     SecretMatch, contains_secrets, redact_secrets, scan_secrets,
 };
 
-/// Scan and return a summary suitable for CLI display.
+/// 扫描文本并返回适合在 CLI 中展示的摘要信息。
 pub fn scan_summary(text: &str) -> Vec<String> {
     let matches = scan_secrets(text);
     if matches.is_empty() {
@@ -77,7 +79,7 @@ mod tests {
         assert!(contains_secrets(text));
     }
 
-    // ── Regression: newly-added patterns (P1-16 / 2.7) ────────────────────
+    // ── 回归测试：新增的模式（P1-16 / 2.7） ────────────────────
 
     #[test]
     fn test_huggingface_token() {
