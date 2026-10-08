@@ -1,13 +1,15 @@
-//! 工具审批（Human-in-the-Loop）示例
-//!
-//! 演示 PermissionService 7 阶段管线的完整审批流程：
-//! - 受保护路径检查（.git/.env）
-//! - 审批缓存（带 TTL）
-//! - 事件驱动审批（HumanLoopManager）
-//!
-//! ```bash
-//! RUST_LOG=info cargo run -p echo-agent-learning --example demo03_approval
-//! ```
+/*!
+工具审批（Human-in-the-Loop）示例
+
+演示 PermissionService 7 阶段管线的完整审批流程：
+- 受保护路径检查（.git/.env）
+- 审批缓存（带 TTL）
+- 事件驱动审批（HumanLoopManager）
+
+```bash
+RUST_LOG=info cargo run -p echo-agent-learning --example demo03_approval
+```
+*/
 
 use echo_agent::error::ReactError;
 use echo_agent::human_loop::{
@@ -20,6 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+/// 获取当前系统时间，以 UNIX 时间戳（秒）的形式返回。
 #[tool(name = "current_time", description = "获取当前系统时间")]
 async fn current_time() -> Result<ToolResult> {
     let now = std::time::SystemTime::now()
@@ -31,6 +34,7 @@ async fn current_time() -> Result<ToolResult> {
     )))
 }
 
+/// 程序入口：配置 PermissionService 审批管线与 HumanLoopManager 事件处理，演示完整审批流程。
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -68,9 +72,10 @@ async fn main() -> Result<()> {
                     responder.respond("提醒对象是产品团队，时间是下周三下午三点".to_string());
                 }
                 _ => {
-                    // SelectionRequest and other variants — not exercised by
-                    // this demo; ignore so the example keeps compiling as
-                    // HumanLoopEvent gains new variants.
+                    /*
+                    SelectionRequest 及其他变体本 demo 不会触发；此处忽略，
+                    以便 HumanLoopEvent 新增变体时示例仍能编译通过。
+                    */
                 }
             }
         }

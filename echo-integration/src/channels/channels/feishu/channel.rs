@@ -1,15 +1,17 @@
-//! 飞书渠道实现
-//!
-//! 支持两种模式：
-//! - Long Poll（WebSocket 长连接）：无需公网 IP，纯 Rust 实现
-//! - Webhook：需要公网 IP，HTTP 事件推送
-//!
-//! 消息流程：
-//! 1. 用户发送消息 → bot 添加 "OK" 表情反应
-//! 2. Bot 回复：发送卡片消息
-//! 3. Agent 处理消息并返回结果
-//! 4. Bot 更新卡片内容
-//! 5. Bot 添加 "DONE" 表情反应
+/*!
+飞书渠道实现
+
+支持两种模式：
+- Long Poll（WebSocket 长连接）：无需公网 IP，纯 Rust 实现
+- Webhook：需要公网 IP，HTTP 事件推送
+
+消息流程：
+1. 用户发送消息 → bot 添加 "OK" 表情反应
+2. Bot 回复：发送卡片消息
+3. Agent 处理消息并返回结果
+4. Bot 更新卡片内容
+5. Bot 添加 "DONE" 表情反应
+*/
 
 use super::super::super::types::*;
 use super::super::{DeliveryRequest, DeliverySender};
@@ -27,7 +29,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-// ── Config ────────────────────────────────────────────────────────────────────
+// ── 配置 ────────────────────────────────────────────────────────────────────
 
 /// 飞书通道模式
 #[derive(Clone, Default)]
@@ -49,6 +51,7 @@ pub enum FeishuMode {
 }
 
 impl fmt::Debug for FeishuMode {
+    /// 输出模式信息，校验 token 与签名密钥仅显示是否已配置。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Webhook {
@@ -90,6 +93,7 @@ pub struct FeishuConfig {
 }
 
 impl fmt::Debug for FeishuConfig {
+    /// 输出配置信息，`app_secret` 脱敏，域名中的凭据部分也会被隐藏。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("FeishuConfig")
@@ -167,7 +171,7 @@ impl FeishuConfig {
     }
 }
 
-// ── Channel ───────────────────────────────────────────────────────────────────
+// ── 渠道实现 ───────────────────────────────────────────────────────────────────
 
 /// 飞书 IM 通道实现
 pub struct FeishuChannel {
@@ -239,6 +243,7 @@ impl ChannelPlugin for FeishuChannel {
 
     /// 返回该渠道支持的能力（会话类型、媒体、话题等）。
     fn capabilities(&self) -> &ChannelCapabilities {
+        /// 渠道能力声明（惰性初始化的全局单例）
         static CAPS: std::sync::OnceLock<ChannelCapabilities> = std::sync::OnceLock::new();
         CAPS.get_or_init(|| ChannelCapabilities {
             chat_types: &[ChatType::Direct, ChatType::Group],
@@ -247,8 +252,10 @@ impl ChannelPlugin for FeishuChannel {
         })
     }
 
-    /// 启动飞书渠道：初始化 token 管理器、启动发送任务，并根据配置的模式
-    /// （长连接或 Webhook）启动对应的消息接收服务。
+    /**
+    启动飞书渠道：初始化 token 管理器、启动发送任务，并根据配置的模式
+    （长连接或 Webhook）启动对应的消息接收服务。
+    */
     async fn start(&mut self, handler: Arc<dyn MessageHandler>) -> Result<()> {
         if self.task_handle.is_some() || self.send_handle.is_some() {
             return Err(ReactError::Channel(Box::new(ChannelError::Other(
@@ -505,8 +512,10 @@ impl MessageHandler for FeishuMessageHandler {
             );
         }
 
-        // 消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
-        // (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
+        /*
+        消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
+        (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
+        */
         super::super::dispatch_stream_to_send_tx(&self.inner, &self.send_tx, msg).await
     }
 
@@ -521,6 +530,7 @@ mod config_tests {
     use super::*;
     use crate::channels::types::ChannelDeliveryFence;
 
+    /// 验证 Debug 输出不会暴露 webhook 凭据。
     #[test]
     fn debug_does_not_expose_webhook_credentials() {
         let config = FeishuConfig::new_webhook(
@@ -555,6 +565,7 @@ mod config_tests {
         }
     }
 
+    /// 验证直接发送会在访问通道状态前拒绝已退役的代次。
     #[tokio::test]
     async fn direct_send_rejects_retired_generation_before_channel_state() -> Result<()> {
         let channel = FeishuChannel::new(FeishuConfig::new_long_poll(

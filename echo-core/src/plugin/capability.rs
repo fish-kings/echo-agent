@@ -1,22 +1,26 @@
-//! 插件能力类型 —— 描述插件能够提供什么。
-//!
-//! 每个变体都对应一种组件类型，在插件加载期间会被接入相应的子系统。
+/*!
+插件能力类型 —— 描述插件能够提供什么。
+
+每个变体都对应一种组件类型，在插件加载期间会被接入相应的子系统。
+*/
 
 use serde::{Deserialize, Serialize};
 
-/// 插件所提供的内容。
-///
-/// 能力在插件清单中声明，并在加载阶段被解析。每种能力类型
-/// 都对应一个具体的子系统：
-///
-/// | 能力 | 目标子系统 |
-/// |-----------|-----------------|
-/// | `Skill` | `SkillRegistry` |
-/// | `Hook` | `HookRegistry` |
-/// | `McpServer` | `McpManager` |
-/// | `LspServer` | `LspManager` |
-/// | `Agent` | `SubagentRegistry` |
-/// | `Tool` | `ToolManager`（原生代码插件，未来支持） |
+/**
+插件所提供的内容。
+
+能力在插件清单中声明，并在加载阶段被解析。每种能力类型
+都对应一个具体的子系统：
+
+| 能力 | 目标子系统 |
+|-----------|-----------------|
+| `Skill` | `SkillRegistry` |
+| `Hook` | `HookRegistry` |
+| `McpServer` | `McpManager` |
+| `LspServer` | `LspManager` |
+| `Agent` | `SubagentRegistry` |
+| `Tool` | `ToolManager`（原生代码插件，未来支持） |
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginCapability {
@@ -49,6 +53,7 @@ impl PluginCapability {
 }
 
 impl std::str::FromStr for PluginCapability {
+    /// 解析失败时返回的错误信息。
     type Err = String;
 
     /// 从字符串解析出对应的插件能力（大小写不敏感，支持单复数别名）。

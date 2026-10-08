@@ -705,8 +705,10 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
-    /// 校验作用域记录内部一致性：退役中的作用域必须携带清单，非退役中的作用域不得携带清单，
-    /// 且已完成的退役回执必须归属该作用域并处于已完成/已墓碑化状态。
+    /**
+    校验作用域记录内部一致性：退役中的作用域必须携带清单，非退役中的作用域不得携带清单，
+    且已完成的退役回执必须归属该作用域并处于已完成/已墓碑化状态。
+    */
     fn validate_scope_record(record: &SqliteRuntimeScopeRecord) -> Result<()> {
         match (
             record.authority.lifecycle,
@@ -1002,8 +1004,10 @@ impl SqliteRuntimeStateStore {
         Ok(())
     }
 
-    /// 校验运行时状态记录内部一致性：不同版本（未托管/已托管/已退役/缺失）分别要求
-    /// 检查点存在与否、待处理投影的基准修订号匹配等约束；同时校验转录确认证明的合法性。
+    /**
+    校验运行时状态记录内部一致性：不同版本（未托管/已托管/已退役/缺失）分别要求
+    检查点存在与否、待处理投影的基准修订号匹配等约束；同时校验转录确认证明的合法性。
+    */
     fn validate_state_record(record: &SqliteRuntimeStateRecord) -> Result<()> {
         match &record.version {
             RuntimeStateVersion::Unmanaged { .. } => {
@@ -1141,8 +1145,10 @@ impl SqliteRuntimeStateStore {
         Ok(records)
     }
 
-    /// 推导作用域的权威信息：优先使用已持久化的作用域记录，否则从其下修订号最高的状态
-    /// 记录推断，都不存在时退回到未托管场景下的默认权威信息。
+    /**
+    推导作用域的权威信息：优先使用已持久化的作用域记录，否则从其下修订号最高的状态
+    记录推断，都不存在时退回到未托管场景下的默认权威信息。
+    */
     fn authority_or_unmanaged(
         scope_id: &str,
         scope: Option<&SqliteRuntimeScopeRecord>,
@@ -1221,8 +1227,10 @@ impl SqliteRuntimeStateStore {
         }
     }
 
-    /// 查找与指定删除操作标识匹配的已完成退役回执，并根据留存下限纪元刷新其状态
-    /// （区分“已完成”与“回执已过期”两种情形）。
+    /**
+    查找与指定删除操作标识匹配的已完成退役回执，并根据留存下限纪元刷新其状态
+    （区分“已完成”与“回执已过期”两种情形）。
+    */
     fn completed_retirement(
         record: &SqliteRuntimeScopeRecord,
         delete_operation_id: &str,
@@ -1624,8 +1632,10 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
-    /// 以比较并保存（CAS）语义持久化检查点：校验作用域纪元与修订号后原子性地写入新版本，
-    /// 并处理已退役、作用域受限、修订冲突及幂等重放等各类边界情况。
+    /**
+    以比较并保存（CAS）语义持久化检查点：校验作用域纪元与修订号后原子性地写入新版本，
+    并处理已退役、作用域受限、修订冲突及幂等重放等各类边界情况。
+    */
     fn compare_and_save_checkpoint<'a>(
         &'a self,
         request: RuntimeCheckpointCasRequest,
@@ -1762,8 +1772,10 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
-    /// 确认一次转录投影已成功应用：校验其与当前待处理投影一致后推进状态版本，
-    /// 同样需要处理已退役、作用域受限、修订冲突及幂等重放等边界情况。
+    /**
+    确认一次转录投影已成功应用：校验其与当前待处理投影一致后推进状态版本，
+    同样需要处理已退役、作用域受限、修订冲突及幂等重放等边界情况。
+    */
     fn acknowledge_transcript_projection<'a>(
         &'a self,
         request: RuntimeTranscriptAckRequest,
@@ -1914,8 +1926,10 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
-    /// 退役一次运行时生成（generation）：校验其无待处理投影且修订号匹配后，将版本
-    /// 标记为已退役并清除其检查点，同样需要处理作用域受限与幂等重放等边界情况。
+    /**
+    退役一次运行时生成（generation）：校验其无待处理投影且修订号匹配后，将版本
+    标记为已退役并清除其检查点，同样需要处理作用域受限与幂等重放等边界情况。
+    */
     fn retire_runtime_generation<'a>(
         &'a self,
         request: RuntimeGenerationRetireRequest,
@@ -2043,8 +2057,10 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
-    /// 为一个活跃作用域启动退役流程：生成包含其下全部运行时状态的退役清单，并将
-    /// 作用域生命周期切换为“退役中”；对已存在的同一次退役请求做幂等处理。
+    /**
+    为一个活跃作用域启动退役流程：生成包含其下全部运行时状态的退役清单，并将
+    作用域生命周期切换为“退役中”；对已存在的同一次退役请求做幂等处理。
+    */
     fn begin_scope_retirement<'a>(
         &'a self,
         request: ScopeRetirementRequest,
@@ -2183,8 +2199,10 @@ impl RuntimeStateStore for SqliteRuntimeStateStore {
         })
     }
 
-    /// 推进一个进行中的作用域退役流程：根据 `advance` 记录会话删除回执、标记某个
-    /// 运行时生成已被丢弃，或在所有条件满足时将作用域标记为已墓碑化并归档回执。
+    /**
+    推进一个进行中的作用域退役流程：根据 `advance` 记录会话删除回执、标记某个
+    运行时生成已被丢弃，或在所有条件满足时将作用域标记为已墓碑化并归档回执。
+    */
     fn continue_scope_retirement<'a>(
         &'a self,
         scope_id: &'a str,

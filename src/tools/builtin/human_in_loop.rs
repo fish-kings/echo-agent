@@ -27,14 +27,17 @@ impl HumanInLoop {
 }
 
 impl Tool for HumanInLoop {
+    /// 工具名称：`human_in_loop`。
     fn name(&self) -> &str {
         "human_in_loop"
     }
 
+    /// 面向 LLM 的工具用途说明。
     fn description(&self) -> &str {
         "Use this tool when you are uncertain about user intent, need additional information, or require user confirmation."
     }
 
+    /// 工具参数的 JSON Schema（approval_type、reasoning、tool）。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -56,6 +59,7 @@ impl Tool for HumanInLoop {
         })
     }
 
+    /// 向用户发起人工介入请求并返回用户的回复。
     fn execute(
         &self,
         parameters: ToolParameters,

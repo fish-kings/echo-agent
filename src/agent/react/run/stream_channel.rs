@@ -88,7 +88,7 @@ async fn finish_pre_spawn_terminal(
     (crate::agent::AgentSteerTurnOutcome::Failed, events)
 }
 
-/*
+/**
  * 包装底层 channel 接收端的事件流：负责在把终止事件交给消费者之前，
  * 先等待后台生产者任务真正落定，并在被提前丢弃时负责取消与回收该任务。
  */
@@ -130,8 +130,10 @@ impl ManagedAgentEventStream {
 }
 
 impl Stream for ManagedAgentEventStream {
+    /// 流中每一项为一个 Agent 事件或错误。
     type Item = Result<AgentEvent>;
 
+    /// 轮询下一个事件；终止事件会暂存，直到生产者任务结算完成后才交付。
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let stream = self.get_mut();
         loop {
@@ -173,6 +175,7 @@ impl Stream for ManagedAgentEventStream {
 }
 
 impl Drop for ManagedAgentEventStream {
+    /// 丢弃流时取消生产者任务，并确保其被妥善回收。
     fn drop(&mut self) {
         let Some(mut task) = self.task.take() else {
             return;
@@ -786,8 +789,10 @@ impl AgentSnapshot {
         }
     }
 
-    /// 把当前 turn 待处理的 steer（引导）输入消息排空并写入 context，
-    /// 返回实际写入的消息条数；若提供了 `assistant_draft`，会先写入这条草稿。
+    /**
+    把当前 turn 待处理的 steer（引导）输入消息排空并写入 context，
+    返回实际写入的消息条数；若提供了 `assistant_draft`，会先写入这条草稿。
+    */
     async fn drain_steer_into_context(
         &self,
         context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -1173,6 +1178,7 @@ impl AgentSnapshot {
     }
 }
 
+/// 流式通道运行路径的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1185,6 +1191,7 @@ mod tests {
     use futures::future::BoxFuture;
     use std::sync::Arc;
 
+    /// 托管流应在生产者结算完成后才释放终止事件。
     #[tokio::test]
     async fn managed_stream_releases_terminal_after_producer_settlement() -> Result<()> {
         use futures::StreamExt;
@@ -1239,6 +1246,7 @@ mod tests {
         Ok(())
     }
 
+    /// 生产者失败时，托管流应以错误替换已缓冲的终止事件。
     #[tokio::test]
     async fn managed_stream_replaces_buffered_terminal_when_producer_fails() -> Result<()> {
         use futures::StreamExt;
@@ -1300,9 +1308,11 @@ mod tests {
     /// 一个用固定理由拦截所有输入的 guard。
     struct BlockingGuard;
     impl Guard for BlockingGuard {
+        /// 返回 guard 名称。
         fn name(&self) -> &str {
             "test-blocking-guard"
         }
+        /// 对任意内容均返回拦截结果。
         fn check<'a>(
             &'a self,
             _content: &'a str,
@@ -1320,15 +1330,18 @@ mod tests {
         }
     }
 
+    /// 在检查时通知已开始、随后永久挂起的 guard，用于模拟检查阶段被中断。
     struct AwaitingGuard {
         started: Arc<tokio::sync::Notify>,
     }
 
     impl Guard for AwaitingGuard {
+        /// 返回 guard 名称。
         fn name(&self) -> &str {
             "awaiting-guard"
         }
 
+        /// 通知检查已开始，然后永不完成。
         fn check<'a>(
             &'a self,
             _content: &'a str,
@@ -1341,15 +1354,18 @@ mod tests {
         }
     }
 
+    /// 统计被调用次数、始终放行的 guard。
     struct CountingGuard {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Guard for CountingGuard {
+        /// 返回 guard 名称。
         fn name(&self) -> &str {
             "counting-guard"
         }
 
+        /// 累加调用计数并放行。
         fn check<'a>(
             &'a self,
             _content: &'a str,
@@ -1360,18 +1376,21 @@ mod tests {
         }
     }
 
+    /// 记录输入被排空次数的生命周期探针。
     #[derive(Default)]
     struct InputLifecycleProbe {
         drained: std::sync::atomic::AtomicUsize,
     }
 
     impl AgentInputLifecycle for InputLifecycleProbe {
+        /// 标记一次输入排空。
         fn mark_drained(&self) {
             self.drained
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
+    /// 准备上下文阶段应在调用模型提供方之前发布初始输入的排空通知。
     #[tokio::test]
     async fn prepare_context_publishes_initial_input_drain_before_provider() -> Result<()> {
         let llm = Arc::new(MockLlmClient::new().with_response("done"));
@@ -1405,9 +1424,11 @@ mod tests {
         Ok(())
     }
 
+    /// 始终将意图判定为直接回答的分类器。
     struct AlwaysDirectClassifier;
 
     impl IntentClassifier for AlwaysDirectClassifier {
+        /// 返回直接回答意图。
         fn classify<'a>(
             &'a self,
             _user_input: &'a str,
@@ -1417,9 +1438,11 @@ mod tests {
         }
     }
 
+    /// 用于验证直接回答路径经过投影边界的上下文投影器。
     struct RoutingProjection;
 
     impl PreModelContextProjector for RoutingProjection {
+        /// 对上下文执行测试用投影。
         fn project(
             &self,
             _context: &ProjectionContext,
@@ -1433,6 +1456,7 @@ mod tests {
         }
     }
 
+    /// 记录每次投影所见 run_id、并可阻塞首次调用的投影器。
     struct BlockingRunIdProjection {
         run_ids: std::sync::Mutex<Vec<Option<String>>>,
         calls: std::sync::atomic::AtomicUsize,
@@ -1441,6 +1465,7 @@ mod tests {
     }
 
     impl BlockingRunIdProjection {
+        /// 创建空记录的投影器。
         fn new() -> Self {
             Self {
                 run_ids: std::sync::Mutex::new(Vec::new()),
@@ -1452,6 +1477,7 @@ mod tests {
     }
 
     impl PreModelContextProjector for BlockingRunIdProjection {
+        /// 记录当前 run_id，首次调用时阻塞直到被释放。
         fn project<'a>(
             &'a self,
             context: &'a ProjectionContext,
@@ -1480,9 +1506,11 @@ mod tests {
         agent
     }
 
+    /// 拦截最终答案的干预回调。
     struct BlockFinalAnswer;
 
     impl crate::agent::InterventionCallback for BlockFinalAnswer {
+        /// 始终拦截最终答案。
         fn on_final_answer<'a>(
             &'a self,
             _agent: &'a str,
@@ -1524,6 +1552,7 @@ mod tests {
         }
     }
 
+    /// 托管模式下 guard 拦截应在终止结算前完成状态回填。
     #[tokio::test]
     async fn managed_guard_block_hydrates_before_terminal_settlement() -> Result<()> {
         let conversation_root = tempfile::tempdir()?;
@@ -1610,6 +1639,7 @@ mod tests {
         Ok(())
     }
 
+    /// 正在退役的作用域应在产生准入副作用之前拒绝新的代次。
     #[tokio::test]
     async fn retiring_scope_rejects_new_generation_before_admission_side_effects() -> Result<()> {
         let conversation_root = tempfile::tempdir()?;
@@ -1700,6 +1730,7 @@ mod tests {
         Ok(())
     }
 
+    /// 已删除且无运行时作用域的会话应拒绝准入。
     #[tokio::test]
     async fn deleted_conversation_without_runtime_scope_rejects_admission() -> Result<()> {
         let conversation_root = tempfile::tempdir()?;
@@ -1787,6 +1818,7 @@ mod tests {
         Ok(())
     }
 
+    /// 带修订号但未绑定的作用域应在副作用前拒绝托管准入。
     #[tokio::test]
     async fn revisioned_unbound_scope_rejects_managed_admission_before_side_effects() -> Result<()>
     {
@@ -1862,6 +1894,7 @@ mod tests {
         Ok(())
     }
 
+    /// 文本最终答案被干预时应先结算，再产生唯一的错误终止事件。
     #[tokio::test]
     async fn text_final_intervention_settles_before_single_error_terminal() -> Result<()> {
         let conversation_root = tempfile::tempdir()?;
@@ -1923,6 +1956,7 @@ mod tests {
         Ok(())
     }
 
+    /// 旧路径下 guard 拦截的追踪记录应使用捕获的上下文。
     #[tokio::test]
     async fn legacy_guard_block_trace_uses_captured_context() -> Result<()> {
         let mut agent = agent_with_blocking_guard();
@@ -1968,7 +2002,7 @@ mod tests {
         Ok(())
     }
 
-    /*
+    /**
      * 一次 guard 拦截了某个 stream 之后，必须释放 execution mutex，
      * 这样紧接着的下一次调用才能顺利进行。这个测试用来防止出现
      * “锁泄漏”回归——即某个提前返回（short-circuit）的分支忘记
@@ -2039,9 +2073,11 @@ mod tests {
     use crate::state::RuntimeStateStore;
     use crate::testing::{MockLlmClient, MockTool, StreamChunk};
 
+    /// 将工具调用重定向并改写参数的干预回调。
     struct InvocationRewrite;
 
     impl crate::agent::InterventionCallback for InvocationRewrite {
+        /// 把调用重定向到 `effective_tool` 并改写参数。
         fn on_tool_call<'a>(
             &'a self,
             _agent: &'a str,
@@ -2058,6 +2094,7 @@ mod tests {
         }
     }
 
+    /// 记录每次调用实际收到的参数的测试工具。
     struct CapturingArgsTool {
         name: &'static str,
         calls: Arc<std::sync::Mutex<Vec<crate::tools::ToolParameters>>>,
@@ -2065,14 +2102,17 @@ mod tests {
     }
 
     impl crate::tools::Tool for CapturingArgsTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             self.name
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "Returns the effective value and records the executed arguments"
         }
 
+        /// 返回工具参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({
                 "type": "object",
@@ -2081,10 +2121,12 @@ mod tests {
             })
         }
 
+        /// 返回工具所需权限。
         fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
             self.permissions.clone()
         }
 
+        /// 记录参数并返回成功结果。
         fn execute(
             &self,
             params: crate::tools::ToolParameters,
@@ -2103,11 +2145,13 @@ mod tests {
         }
     }
 
+    /// 审批时返回修改后参数的人工介入提供方。
     #[cfg(feature = "human-loop")]
     struct ModifiedArgsApproval;
 
     #[cfg(feature = "human-loop")]
     impl crate::human_loop::HumanLoopProvider for ModifiedArgsApproval {
+        /// 以修改后的参数批准一次调用。
         fn request(
             &self,
             _request: crate::human_loop::HumanLoopRequest,
@@ -2121,6 +2165,7 @@ mod tests {
         }
     }
 
+    /// 执行时延迟完成、并通过通知暴露开始与完成时刻的工具。
     struct DelayedTerminalTool {
         started: Arc<tokio::sync::Notify>,
         completed: Arc<tokio::sync::Notify>,
@@ -2128,18 +2173,22 @@ mod tests {
     }
 
     impl crate::tools::Tool for DelayedTerminalTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "delayed_terminal"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "Finishes a durable terminal write shortly after parent cancellation"
         }
 
+        /// 返回工具参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({ "type": "object", "properties": {} })
         }
 
+        /// 通知开始，等待延迟后标记完成并返回结果。
         fn execute(
             &self,
             _params: crate::tools::ToolParameters,
@@ -2157,6 +2206,7 @@ mod tests {
         }
     }
 
+    /// 记录检查点与作用域读写的内存运行时状态存储。
     #[derive(Default)]
     struct RecordingRuntimeStateStore {
         checkpoint: std::sync::Mutex<Option<crate::state::AgentCheckpoint>>,
@@ -2166,6 +2216,7 @@ mod tests {
     }
 
     impl crate::state::RuntimeStateStore for RecordingRuntimeStateStore {
+        /// 读取已记录的检查点。
         fn get_checkpoint<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -2179,6 +2230,7 @@ mod tests {
             })
         }
 
+        /// 保存检查点。
         fn save_checkpoint<'a>(
             &'a self,
             checkpoint: &'a crate::state::AgentCheckpoint,
@@ -2186,6 +2238,7 @@ mod tests {
             self.save_checkpoint_for_scope(&checkpoint.conversation_id, checkpoint)
         }
 
+        /// 按作用域保存检查点并记录作用域。
         fn save_checkpoint_for_scope<'a>(
             &'a self,
             scope_id: &'a str,
@@ -2206,6 +2259,7 @@ mod tests {
             })
         }
 
+        /// 列出会话下已记录的运行时状态标识。
         fn runtime_state_ids<'a>(
             &'a self,
             scope_id: &'a str,
@@ -2221,6 +2275,7 @@ mod tests {
             })
         }
 
+        /// 清除指定运行时状态。
         fn clear_runtime_state<'a>(
             &'a self,
             scope_id: &'a str,
@@ -2258,6 +2313,7 @@ mod tests {
             })
         }
 
+        /// 按作用域清除运行时状态。
         fn clear_runtime_state_scope<'a>(
             &'a self,
             scope_id: &'a str,
@@ -2299,6 +2355,7 @@ mod tests {
             })
         }
 
+        /// 清除整个会话的运行时状态。
         fn clear_conversation<'a>(
             &'a self,
             conversation_id: &'a str,
@@ -2311,7 +2368,7 @@ mod tests {
         }
     }
 
-    /*
+    /**
      * 构建一个具备流式能力的 agent，底层使用脚本化的 mock LLM，
      * 且不配置 guard、也不配置 intent router（这样请求才会到达
      * run_core_loop）。
@@ -2324,20 +2381,24 @@ mod tests {
             .expect("agent builds")
     }
 
+    /// 所有写入都失败的 RunStore。
     struct RejectingRunStore;
 
     #[async_trait::async_trait]
     impl crate::trace::RunStore for RejectingRunStore {
+        /// 总是返回保存失败。
         async fn save(&self, _run: crate::trace::Run) -> Result<()> {
             Err(ReactError::Other(
                 "injected trace persistence failure".to_string(),
             ))
         }
 
+        /// 不返回任何记录。
         async fn load(&self, _run_id: &str) -> Result<Option<crate::trace::Run>> {
             Ok(None)
         }
 
+        /// 返回空列表。
         async fn list_by_session(
             &self,
             _session_id: &str,
@@ -2345,19 +2406,23 @@ mod tests {
             Ok(Vec::new())
         }
 
+        /// 返回空列表。
         async fn list_all(&self, _limit: usize) -> Result<Vec<crate::trace::RunSummary>> {
             Ok(Vec::new())
         }
     }
 
+    /// 所有写入都失败的审计日志器。
     struct RejectingAuditLogger;
 
+    /// 仅拒绝最终保存、其余委托给内存存储的 RunStore。
     struct FinalSaveRejectingRunStore {
         inner: crate::trace::InMemoryRunStore,
     }
 
     #[async_trait::async_trait]
     impl crate::trace::RunStore for FinalSaveRejectingRunStore {
+        /// 最终状态的保存返回失败，其余委托给内部存储。
         async fn save(&self, run: crate::trace::Run) -> Result<()> {
             if !matches!(&run.status, crate::trace::RunStatus::Running) {
                 return Err(ReactError::Other(
@@ -2367,20 +2432,24 @@ mod tests {
             crate::trace::RunStore::save(&self.inner, run).await
         }
 
+        /// 委托给内部存储。
         async fn load(&self, run_id: &str) -> Result<Option<crate::trace::Run>> {
             crate::trace::RunStore::load(&self.inner, run_id).await
         }
 
+        /// 委托给内部存储。
         async fn list_by_session(&self, session_id: &str) -> Result<Vec<crate::trace::RunSummary>> {
             crate::trace::RunStore::list_by_session(&self.inner, session_id).await
         }
 
+        /// 委托给内部存储。
         async fn list_all(&self, limit: usize) -> Result<Vec<crate::trace::RunSummary>> {
             crate::trace::RunStore::list_all(&self.inner, limit).await
         }
     }
 
     impl crate::audit::AuditLogger for RejectingAuditLogger {
+        /// 总是返回写入失败。
         fn log<'a>(&'a self, _event: crate::audit::AuditEvent) -> BoxFuture<'a, Result<()>> {
             Box::pin(async {
                 Err(ReactError::Other(
@@ -2389,6 +2458,7 @@ mod tests {
             })
         }
 
+        /// 返回空结果。
         fn query<'a>(
             &'a self,
             _filter: crate::audit::AuditFilter,
@@ -2397,6 +2467,7 @@ mod tests {
         }
     }
 
+    /// 记录诊断投递失败的观察者。
     #[derive(Default)]
     struct RecordingDiagnosticObserver {
         failures: std::sync::Mutex<Vec<crate::audit::DiagnosticDeliveryFailure>>,
@@ -2404,6 +2475,7 @@ mod tests {
     }
 
     impl crate::audit::DiagnosticDeliveryObserver for RecordingDiagnosticObserver {
+        /// 记录一次失败并唤醒等待者。
         fn on_failure(&self, failure: crate::audit::DiagnosticDeliveryFailure) {
             self.failures
                 .lock()
@@ -2414,6 +2486,7 @@ mod tests {
     }
 
     impl RecordingDiagnosticObserver {
+        /// 等待直到记录的失败数达到指定值或超时。
         fn wait_for_count(
             &self,
             count: usize,
@@ -2437,12 +2510,14 @@ mod tests {
         }
     }
 
+    /// 在回调中阻塞直到被释放的诊断观察者。
     struct BlockingDiagnosticObserver {
         entered: std::sync::mpsc::Sender<()>,
         release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
     impl crate::audit::DiagnosticDeliveryObserver for BlockingDiagnosticObserver {
+        /// 通知已进入回调，并阻塞等待释放信号。
         fn on_failure(&self, _failure: crate::audit::DiagnosticDeliveryFailure) {
             let _ = self.entered.send(());
             let _ = self
@@ -2453,9 +2528,11 @@ mod tests {
         }
     }
 
+    /// 释放阻塞诊断观察者的句柄，丢弃时自动释放。
     struct DiagnosticObserverRelease(Option<std::sync::mpsc::Sender<()>>);
 
     impl DiagnosticObserverRelease {
+        /// 立即释放被阻塞的观察者。
         fn release(mut self) {
             if let Some(sender) = self.0.take() {
                 let _ = sender.send(());
@@ -2464,6 +2541,7 @@ mod tests {
     }
 
     impl Drop for DiagnosticObserverRelease {
+        /// 丢弃时发送释放信号。
         fn drop(&mut self) {
             if let Some(sender) = self.0.take() {
                 let _ = sender.send(());
@@ -2471,6 +2549,7 @@ mod tests {
         }
     }
 
+    /// 构建带直接回答意图路由与测试投影器的 agent。
     fn agent_with_direct_router_and_projection(llm: Arc<MockLlmClient>) -> Result<ReactAgent> {
         let router = IntentRouter::new(
             Box::new(AlwaysDirectClassifier),
@@ -2485,6 +2564,7 @@ mod tests {
         Ok(agent)
     }
 
+    /// 排队的流式调用应保持各自调用的运行上下文原子隔离。
     #[tokio::test]
     async fn queued_stream_keeps_invocation_run_contexts_atomic() -> Result<()> {
         let llm = MockLlmClient::new().with_responses(["first", "second"]);
@@ -2598,6 +2678,7 @@ mod tests {
         Ok(())
     }
 
+    /// close 应取消活跃与排队中的 turn，且可重试。
     #[tokio::test]
     async fn close_cancels_active_and_queued_turns_and_remains_retryable() -> Result<()> {
         let llm = MockLlmClient::new().with_responses(["first", "second"]);
@@ -2666,6 +2747,7 @@ mod tests {
         Ok(())
     }
 
+    /// 输入 guard 阶段被中止应转为持久化的关闭债务。
     #[tokio::test]
     async fn abort_during_input_guard_becomes_persistent_close_debt() -> Result<()> {
         let started = Arc::new(tokio::sync::Notify::new());
@@ -2712,6 +2794,7 @@ mod tests {
         Ok(())
     }
 
+    /// 强制中止生产者应转为持久化的关闭债务。
     #[test]
     fn forced_producer_abort_becomes_persistent_close_debt() -> Result<()> {
         let agent = Arc::new(agent_with_mock_llm(
@@ -2769,6 +2852,7 @@ mod tests {
         Ok(())
     }
 
+    /// 提供方失败应结算关闭租约，且 close 可幂等调用。
     #[tokio::test]
     async fn provider_failure_settles_close_lease_and_close_is_idempotent() -> Result<()> {
         let agent = agent_with_mock_llm(MockLlmClient::new().with_error(
@@ -2788,6 +2872,7 @@ mod tests {
         Ok(())
     }
 
+    /// 值作用域的流式调用不应修改 agent 的 run_id。
     #[tokio::test]
     async fn value_scoped_stream_does_not_mutate_agent_run_id() -> Result<()> {
         let mut agent = agent_with_mock_llm(MockLlmClient::new().with_response("done"));
@@ -2831,6 +2916,7 @@ mod tests {
         Ok(())
     }
 
+    /// 值作用域的直接回答应在子追踪中记录用量。
     #[tokio::test]
     async fn value_scoped_direct_answer_records_usage_in_child_trace() -> Result<()> {
         use crate::trace::RunStore;
@@ -2918,6 +3004,7 @@ mod tests {
         Ok(())
     }
 
+    /// 非流式直接回答应经过投影边界。
     #[tokio::test]
     async fn non_streaming_direct_answer_routes_through_projection_boundary() -> Result<()> {
         let llm = Arc::new(MockLlmClient::new().with_response("normal loop answer"));
@@ -2935,6 +3022,7 @@ mod tests {
         Ok(())
     }
 
+    /// 流式直接回答应经过投影边界。
     #[tokio::test]
     async fn streaming_direct_answer_routes_through_projection_boundary() -> Result<()> {
         let llm = Arc::new(MockLlmClient::new().with_response("normal loop answer"));
@@ -2963,6 +3051,7 @@ mod tests {
         Ok(())
     }
 
+    /// 连续的 execute_stream 调用应重置之前任务的消息。
     #[tokio::test]
     async fn sequential_execute_stream_calls_reset_prior_task_messages() -> Result<()> {
         let llm = Arc::new(
@@ -3003,6 +3092,7 @@ mod tests {
         Ok(())
     }
 
+    /// 连续的结构化 chat 调用应保留之前 turn 的消息。
     #[tokio::test]
     async fn sequential_structured_chat_calls_preserve_prior_turn_messages() -> Result<()> {
         let llm = Arc::new(
@@ -3068,6 +3158,7 @@ mod tests {
             .collect()
     }
 
+    /// 运行流式通道并收集所有事件结果。
     async fn collect_events_result(agent: &ReactAgent, text: &str) -> Result<Vec<AgentEvent>> {
         let mut stream = agent
             .run_stream_channel(
@@ -3087,6 +3178,7 @@ mod tests {
         Ok(events)
     }
 
+    /// 干预改写后的调用应是唯一被实际执行的调用。
     #[tokio::test]
     async fn q_flt_v09_effective_rewrite_is_the_only_executed_invocation() -> Result<()> {
         let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -3157,6 +3249,7 @@ mod tests {
         Ok(())
     }
 
+    /// ReAct 应发出并执行审批修改后的参数。
     #[cfg(feature = "human-loop")]
     #[tokio::test]
     async fn react_emits_and_executes_approval_modified_arguments() -> Result<()> {
@@ -3220,6 +3313,7 @@ mod tests {
         Ok(())
     }
 
+    /// 断言超大工具结果已溢出为带摘要绑定的产物。
     async fn assert_spilled_tool_result(
         agent: &ReactAgent,
         call_id: &str,
@@ -3267,6 +3361,7 @@ mod tests {
         Ok(())
     }
 
+    /// 超大输出应溢出为摘要绑定的产物。
     #[tokio::test]
     async fn q_flt_v03_huge_output_spills_to_digest_bound_artifact() -> Result<()> {
         let artifact_dir =
@@ -3297,6 +3392,7 @@ mod tests {
             .await
     }
 
+    /// 流式工具应保留富结构的溢出终止结果。
     #[tokio::test]
     async fn react_streaming_tool_preserves_rich_spilled_terminal() -> Result<()> {
         let artifact_dir =
@@ -3331,6 +3427,7 @@ mod tests {
         assert_spilled_tool_result(&agent, "stream-1", "transport", "stream", &original).await
     }
 
+    /// 激活技能工具应在压缩前后替换受保护的投影。
     #[tokio::test]
     async fn activate_skill_tool_replaces_protected_projection_across_compression() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| ReactError::Other(error.to_string()))?;
@@ -3399,7 +3496,7 @@ mod tests {
         Ok(())
     }
 
-    /*
+    /**
      * 单轮纯文本回答：mock LLM 回复纯文本内容，因此循环应当发出一个
      * Token，再发出一个终止性的 FinalAnswer 然后停止（不进入工具
      * 阶段）。用来保护核心循环里的文本分支。
@@ -3424,6 +3521,7 @@ mod tests {
         }
     }
 
+    /// 诊断持久化失败不应替换生产者的最终答案。
     #[tokio::test]
     async fn diagnostic_persistence_failures_do_not_replace_producer_final_answer() -> Result<()> {
         let observer = Arc::new(RecordingDiagnosticObserver::default());
@@ -3454,6 +3552,7 @@ mod tests {
         Ok(())
     }
 
+    /// 最终追踪保存失败不应替换流的最终答案。
     #[tokio::test]
     async fn final_trace_save_failure_does_not_replace_stream_final_answer() -> Result<()> {
         let observer = Arc::new(RecordingDiagnosticObserver::default());
@@ -3494,6 +3593,7 @@ mod tests {
         Ok(())
     }
 
+    /// 阻塞的诊断观察者不应延迟最终答案。
     #[tokio::test]
     async fn blocking_diagnostic_observer_does_not_delay_final_answer() -> Result<()> {
         let (entered, observer_entered) = std::sync::mpsc::channel();
@@ -3529,7 +3629,7 @@ mod tests {
         Ok(())
     }
 
-    /*
+    /**
      * 一次完整的 ReAct 循环：mock LLM 先请求一次工具调用，工具返回一个
      * 脚本化的结果，然后 LLM 产出最终的文本回答。用来保护核心循环里的
      * 工具调用分支（think → tools → think → finalize）。
@@ -3564,6 +3664,7 @@ mod tests {
         );
     }
 
+    /// DeepSeek 工具 turn 应回放完整的 assistant 消息。
     #[tokio::test]
     async fn deepseek_tool_turn_replays_complete_assistant_message() -> Result<()> {
         let llm = Arc::new(
@@ -3631,6 +3732,7 @@ mod tests {
         Ok(())
     }
 
+    /// 畸形的工具 JSON 不应导致幽灵执行。
     #[tokio::test]
     async fn q_flt_v01_malformed_tool_json_has_no_phantom_execution() -> Result<()> {
         let llm = Arc::new(
@@ -3695,6 +3797,7 @@ mod tests {
         Ok(())
     }
 
+    /// 已完成批次的副作用应在推进前写入检查点。
     #[tokio::test]
     async fn q_flt_v08_completed_batch_effects_are_checkpointed_before_progress() -> Result<()> {
         let store = Arc::new(RecordingRuntimeStateStore::default());
@@ -3729,6 +3832,7 @@ mod tests {
         Ok(())
     }
 
+    /// 恢复执行应在追踪中记录检查点来源与已完成工具。
     #[tokio::test]
     async fn resume_records_checkpoint_origin_and_completed_tools_in_trace() -> Result<()> {
         use crate::trace::RunStore;
@@ -3811,6 +3915,7 @@ mod tests {
         Ok(())
     }
 
+    /// 调用级运行时状态标识应控制恢复与保存。
     #[tokio::test]
     async fn invocation_runtime_state_identity_controls_restore_and_save() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| ReactError::Other(error.to_string()))?;
@@ -3917,6 +4022,7 @@ mod tests {
         Ok(())
     }
 
+    /// 非流式旧路径的运行时标识应控制恢复与保存。
     #[tokio::test]
     async fn nonstream_legacy_runtime_identity_controls_restore_and_save() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| ReactError::Other(error.to_string()))?;
@@ -3987,6 +4093,7 @@ mod tests {
         Ok(())
     }
 
+    /// transcript 代次运行时标识不匹配时应无副作用地拒绝准入。
     #[tokio::test]
     async fn transcript_generation_runtime_identity_rejects_admission_without_side_effects()
     -> Result<()> {
@@ -4083,6 +4190,7 @@ mod tests {
         Ok(())
     }
 
+    /// 已预热的 agent 切换运行时状态标识时不应泄漏上下文。
     #[tokio::test]
     async fn warm_agent_switches_runtime_state_identity_without_context_leakage() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| ReactError::Other(error.to_string()))?;
@@ -4253,6 +4361,7 @@ mod tests {
         Ok(())
     }
 
+    /// 被取消的运行时切换不能发布部分回填的状态。
     #[tokio::test]
     async fn cancelled_runtime_switch_cannot_publish_partial_hydration() -> Result<()> {
         use crate::skills::hooks::{HookAction, HookEvent, HookRule, HooksDefinition};
@@ -4425,6 +4534,7 @@ mod tests {
         Ok(())
     }
 
+    /// 旧路径的运行时会话应控制恢复与保存。
     #[tokio::test]
     async fn legacy_runtime_conversation_controls_restore_and_save() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| ReactError::Other(error.to_string()))?;
@@ -4512,6 +4622,7 @@ mod tests {
         Ok(())
     }
 
+    /// 迭代收尾提示只应注入一次。
     #[tokio::test]
     async fn iteration_wind_down_is_injected_once() {
         let llm = Arc::new(
@@ -4553,6 +4664,7 @@ mod tests {
         }));
     }
 
+    /// ReAct 流应在运行追踪中记录真实用量。
     #[tokio::test]
     async fn react_stream_records_real_usage_in_run_trace() -> Result<()> {
         use crate::trace::RunStore;
@@ -4609,6 +4721,7 @@ mod tests {
         Ok(())
     }
 
+    /// 模型 token 预算耗尽应禁用工具并强制只求最终答案。
     #[tokio::test]
     async fn model_token_budget_blocks_tools_and_forces_final_only_request() {
         let usage = crate::llm::types::Usage {
@@ -4658,6 +4771,7 @@ mod tests {
         assert_eq!(llm.all_tool_choices(), vec![None, Some("none".to_string())]);
     }
 
+    /// 不支持 none 时，仅最终答案请求应回退为空工具集。
     #[tokio::test]
     async fn final_only_falls_back_to_empty_tool_surface_when_none_is_unsupported() {
         let usage = crate::llm::types::Usage {
@@ -4697,6 +4811,7 @@ mod tests {
         assert_eq!(tool_counts.get(1), Some(&0));
     }
 
+    /// 提供方缺失用量时不应伪造 token 预算耗尽。
     #[tokio::test]
     async fn missing_provider_usage_does_not_fake_token_budget_exhaustion() {
         let llm = MockLlmClient::new()
@@ -4729,7 +4844,7 @@ mod tests {
         }));
     }
 
-    /*
+    /**
      * 当 mock LLM 耗尽其响应队列（返回 EmptyResponse 错误）时，循环必须
      * 以一个 Error 事件优雅终止，而不是挂起或 panic。用来保护
      * empty-response / error 分支。
@@ -4772,7 +4887,7 @@ mod tests {
         );
     }
 
-    /*
+    /**
      * 阶段 3：验证正在进行中的 LLM 调用能够响应取消。
      * 使用 `MockLlmClient::with_delay` 模拟一个很慢的 LLM（30 秒），
      * 然后在中途取消 agent 的 token。这个 stream 必须远早于 30 秒
@@ -4834,6 +4949,7 @@ mod tests {
         ));
     }
 
+    /// 取消时应先排空正在运行的工具再放弃 turn。
     #[tokio::test]
     async fn cancellation_drains_running_tool_before_abandoning_turn() -> Result<()> {
         use futures::StreamExt;
@@ -4884,12 +5000,14 @@ mod tests {
         Ok(())
     }
 
+    /// 在工具调用干预阶段永久挂起的回调，用于模拟执行前阶段超时。
     struct StallingToolIntervention {
         entered: Arc<std::sync::atomic::AtomicBool>,
         tool_name: Option<&'static str>,
     }
 
     impl crate::agent::InterventionCallback for StallingToolIntervention {
+        /// 命中目标工具时标记已进入并永久挂起，否则放行。
         fn on_tool_call<'a>(
             &'a self,
             _agent: &'a str,
@@ -4906,6 +5024,7 @@ mod tests {
         }
     }
 
+    /// 执行前阶段的外层超时应只记录一条完整的工具追踪。
     #[tokio::test]
     async fn outer_timeout_during_pre_execution_stage_records_one_complete_tool_trace() -> Result<()>
     {
@@ -5055,6 +5174,7 @@ mod tests {
         Ok(())
     }
 
+    /// 并发超时应保留已完成的同批结果并结算所有 assistant 调用。
     #[tokio::test]
     async fn concurrent_timeout_preserves_completed_peer_and_settles_all_assistant_calls()
     -> Result<()> {
@@ -5170,6 +5290,7 @@ mod tests {
         Ok(())
     }
 
+    /// 丢弃消费者应排空上游并释放 turn。
     #[tokio::test]
     async fn q_flt_v06_dropping_consumer_drains_upstream_and_releases_turn() -> Result<()> {
         let started = Arc::new(tokio::sync::Notify::new());
@@ -5224,6 +5345,7 @@ mod tests {
         Ok(())
     }
 
+    /// LLM 调用期间的 steer 应带着新输入继续同一 turn。
     #[tokio::test]
     async fn steer_during_llm_call_continues_same_turn_with_new_input() -> Result<()> {
         use futures::StreamExt;
@@ -5313,6 +5435,7 @@ mod tests {
         Ok(())
     }
 
+    /// 被追踪的 steer 应在提供方失败终止前报告已排空。
     #[tokio::test]
     async fn tracked_steer_reports_drain_before_provider_failure_terminal() -> Result<()> {
         use futures::StreamExt;
@@ -5393,6 +5516,7 @@ mod tests {
         Ok(())
     }
 
+    /// 被追踪的 steer 在真实排空后被取消时应报告取消。
     #[tokio::test]
     async fn tracked_steer_reports_cancelled_after_real_drain() -> Result<()> {
         use futures::StreamExt;
@@ -5474,6 +5598,7 @@ mod tests {
         Ok(())
     }
 
+    /// 被上下文屏障阻挡时被追踪的 steer 应保持已接受状态。
     #[tokio::test]
     async fn tracked_steer_stays_accepted_behind_context_barrier() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "system"));
@@ -5517,6 +5642,7 @@ mod tests {
         Ok(())
     }
 
+    /// turn 结算应先于被阻塞的上下文排空生效。
     #[tokio::test]
     async fn tracked_turn_settlement_wins_before_blocked_context_drain() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "system"));
@@ -5561,6 +5687,7 @@ mod tests {
         Ok(())
     }
 
+    /// 同 ID 的过期快照不能排空新一代的 steer。
     #[tokio::test]
     async fn tracked_steer_same_id_stale_snapshot_cannot_drain_new_incarnation() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "system"));
@@ -5615,6 +5742,7 @@ mod tests {
      * 每个 fixture 在修复前会失败，修复后会通过。
      */
 
+    /// 脚本化流的终止块应报告用量。
     #[tokio::test]
     async fn stream_script_terminal_chunk_reports_usage() {
         /*
@@ -5664,6 +5792,7 @@ mod tests {
         assert!(matches!(last, AgentEvent::FinalAnswer(t) if t == "Hello world"));
     }
 
+    /// 无用量的脚本化流应报告 false。
     #[tokio::test]
     async fn stream_script_without_usage_reports_false() {
         /*
@@ -5700,6 +5829,7 @@ mod tests {
         }
     }
 
+    /// 并发批次的结果应按调用顺序返回。
     #[tokio::test]
     async fn concurrent_batch_results_follow_call_order() {
         /*
@@ -5766,7 +5896,7 @@ mod tests {
         );
     }
 
-    /*
+    /**
      * 被截断/正常断开的 stream：循环不能把这部分（部分）输出当作一个
      * 完整的最终答案来接受（Q-FLT-01-P1-01）。这个 fixture 会一直保留
      * 在强制运行的测试套件里，这样终止相关的回归就不会被隐藏在一个

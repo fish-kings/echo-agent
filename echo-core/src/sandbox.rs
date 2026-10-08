@@ -1,8 +1,10 @@
-//! 沙箱执行器核心 trait 与类型
-//!
-//! 定义 [`SandboxExecutor`] trait 及其参数/结果类型。
-//! 该 trait 由 `echo-execution` crate 中的 `LocalSandbox`、`DockerSandbox`
-//! 和 `K8sSandbox` 实现。
+/*!
+沙箱执行器核心 trait 与类型
+
+定义 [`SandboxExecutor`] trait 及其参数/结果类型。
+该 trait 由 `echo-execution` crate 中的 `LocalSandbox`、`DockerSandbox`
+和 `K8sSandbox` 实现。
+*/
 
 use futures::future::BoxFuture;
 use futures::stream::{self, Stream};
@@ -16,9 +18,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{ReactError, Result, SandboxError};
 
-/// 沙箱执行器统一接口。
-///
-/// 全部三层（Local / Docker / K8s）都实现此 trait。
+/**
+沙箱执行器统一接口。
+
+全部三层（Local / Docker / K8s）都实现此 trait。
+*/
 pub trait SandboxExecutor: Send + Sync {
     /// 执行器名称
     fn name(&self) -> &str;
@@ -29,8 +33,10 @@ pub trait SandboxExecutor: Send + Sync {
     /// 检查该执行器是否可用
     fn is_available(&self) -> BoxFuture<'_, bool>;
 
-    /// 检查一个可用的后端是否满足调用方要求的最低隔离级别。
-    /// 组合式执行器应覆盖此方法，以检查其实际将使用的后端。
+    /**
+    检查一个可用的后端是否满足调用方要求的最低隔离级别。
+    组合式执行器应覆盖此方法，以检查其实际将使用的后端。
+    */
     fn is_available_at(&self, minimum: IsolationLevel) -> BoxFuture<'_, bool> {
         Box::pin(async move { self.isolation_level() >= minimum && self.is_available().await })
     }
@@ -38,12 +44,14 @@ pub trait SandboxExecutor: Send + Sync {
     /// 执行一条命令
     fn execute(&self, command: SandboxCommand) -> BoxFuture<'_, Result<ExecutionResult>>;
 
-    /// 以事件流形式执行一条命令。
-    ///
-    /// 不支持实时管道的执行器会显式降级为发出一个缓冲的
-    /// [`SandboxStreamEvent::Complete`] 事件。调用方可以在将输出视为
-    /// 实时之前先检查 [`Self::supports_streaming`]。支持实时的后端会在
-    /// 流开始后执行或必要清理失败时发出 [`SandboxStreamEvent::Failed`]。
+    /**
+    以事件流形式执行一条命令。
+
+    不支持实时管道的执行器会显式降级为发出一个缓冲的
+    [`SandboxStreamEvent::Complete`] 事件。调用方可以在将输出视为
+    实时之前先检查 [`Self::supports_streaming`]。支持实时的后端会在
+    流开始后执行或必要清理失败时发出 [`SandboxStreamEvent::Failed`]。
+    */
     fn execute_stream<'a>(
         &'a self,
         command: SandboxCommand,
@@ -72,13 +80,15 @@ pub trait SandboxExecutor: Send + Sync {
         self.execute(command)
     }
 
-    /// 在给定资源限制及可选的所属运行取消令牌下执行。
-    ///
-    /// 当取消需要后端特定的清理逻辑时，具体后端应覆盖此方法。默认实现
-    /// 会直接丢弃执行 future 并报告一个带类型的取消结果，而不是悄悄
-    /// 当作超时处理，因此只适用于“丢弃 future 就能释放所有已持有资源”
-    /// 的情形。进程型、容器型以及编排型后端必须覆盖此方法，并在返回
-    /// 最终结果前等待各自的清理完成。
+    /**
+    在给定资源限制及可选的所属运行取消令牌下执行。
+
+    当取消需要后端特定的清理逻辑时，具体后端应覆盖此方法。默认实现
+    会直接丢弃执行 future 并报告一个带类型的取消结果，而不是悄悄
+    当作超时处理，因此只适用于“丢弃 future 就能释放所有已持有资源”
+    的情形。进程型、容器型以及编排型后端必须覆盖此方法，并在返回
+    最终结果前等待各自的清理完成。
+    */
     fn execute_with_limits_and_cancel(
         &self,
         command: SandboxCommand,
@@ -98,9 +108,11 @@ pub trait SandboxExecutor: Send + Sync {
         })
     }
 
-    /// 执行命令，并报告实际运行所用后端的隔离级别。
-    /// 组合式执行器必须覆盖此方法，而不是报告其配置的最大隔离级别；
-    /// 叶子执行器可以使用默认实现。
+    /**
+    执行命令，并报告实际运行所用后端的隔离级别。
+    组合式执行器必须覆盖此方法，而不是报告其配置的最大隔离级别；
+    叶子执行器可以使用默认实现。
+    */
     fn execute_with_isolation_receipt(
         &self,
         command: SandboxCommand,
@@ -121,68 +133,84 @@ pub trait SandboxExecutor: Send + Sync {
     }
 }
 
-/// Pipe channel for sandbox output.
+/// 沙箱输出所属的管道通道。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxOutputChannel {
+    /// 标准输出管道。
     Stdout,
+    /// 标准错误管道。
     Stderr,
 }
 
-/// Typed terminal failure emitted by a live sandbox stream.
+/// 实时沙箱流发出的带类型终止失败。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SandboxStreamFailure {
-    /// The owning run cancelled execution after backend cleanup completed.
-    Cancelled { message: String },
-    /// Execution, output draining, or required cleanup failed.
-    IoError { message: String },
+    /// 所属运行在后端清理完成后取消了执行。
+    Cancelled {
+        /// 取消原因的描述信息。
+        message: String,
+    },
+    /// 执行、输出排空或必要的清理失败。
+    IoError {
+        /// 失败原因的描述信息。
+        message: String,
+    },
 }
 
 impl SandboxStreamFailure {
+    /// 返回该失败携带的描述信息。
     pub fn message(&self) -> &str {
         match self {
             Self::Cancelled { message } | Self::IoError { message } => message,
         }
     }
 
+    /// 该失败是否由取消引起。
     pub const fn is_cancelled(&self) -> bool {
         matches!(self, Self::Cancelled { .. })
     }
 }
 
-/// Incremental sandbox execution event.
+/// 沙箱执行的增量事件。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event_type", rename_all = "snake_case")]
 pub enum SandboxStreamEvent {
+    /// 一段增量输出。
     Output {
+        /// 该输出片段所属的管道通道。
         channel: SandboxOutputChannel,
+        /// 输出文本片段。
         chunk: String,
     },
-    /// Terminal failure. The stream ends after this event is emitted.
+    /// 终止失败。发出此事件后流即结束。
     Failed {
+        /// 带类型的失败详情。
         failure: SandboxStreamFailure,
     },
+    /// 执行完成，携带最终的执行结果。
     Complete(ExecutionResult),
 }
 
-/// Isolation level
+/// 隔离级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IsolationLevel {
-    /// No isolation (direct host execution)
+    /// 无隔离（直接在宿主机上执行）
     None = 0,
-    /// Process-level isolation (resource limits, path restrictions)
+    /// 进程级隔离（资源限制、路径限制）
     Process = 1,
-    /// OS sandbox isolation (bubblewrap / sandbox-exec / seccomp)
+    /// 操作系统沙箱隔离（bubblewrap / sandbox-exec / seccomp）
     OsSandbox = 2,
-    /// Container isolation (Docker / Podman)
+    /// 容器隔离（Docker / Podman）
     Container = 3,
-    /// Orchestration workload isolation (e.g. ephemeral K8s Pod)
+    /// 编排工作负载隔离（例如临时的 K8s Pod）
     Orchestrated = 4,
 }
 
 impl std::fmt::Display for IsolationLevel {
+    /// 以 kebab-case 形式输出隔离级别名称。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             IsolationLevel::None => write!(f, "none"),
@@ -194,37 +222,47 @@ impl std::fmt::Display for IsolationLevel {
     }
 }
 
-/// Sandbox execution command
+/// 沙箱执行命令
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxCommand {
-    /// Command type
+    /// 命令类型
     pub kind: CommandKind,
-    /// Minimum isolation required by the caller for this command.
+    /// 调用方对该命令要求的最低隔离级别。
     #[serde(default)]
     pub minimum_isolation: Option<IsolationLevel>,
-    /// Working directory
+    /// 工作目录
     pub working_dir: Option<PathBuf>,
-    /// Environment variables
+    /// 环境变量
     pub env: HashMap<String, String>,
-    /// Execution timeout
+    /// 执行超时时间
     pub timeout: Duration,
-    /// Standard input
+    /// 标准输入
     pub stdin: Option<String>,
 }
 
-/// Command type
+/// 命令类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CommandKind {
-    /// Shell command (executed via sh -c / cmd /C)
+    /// Shell 命令（通过 sh -c / cmd /C 执行）
     Shell(String),
-    /// Direct program execution
-    Program { program: String, args: Vec<String> },
-    /// Execute code snippet (requires language runtime)
-    Code { language: String, code: String },
+    /// 直接执行程序
+    Program {
+        /// 要执行的程序路径或名称。
+        program: String,
+        /// 传给程序的参数列表。
+        args: Vec<String>,
+    },
+    /// 执行代码片段（需要对应的语言运行时）
+    Code {
+        /// 代码所用的语言。
+        language: String,
+        /// 要执行的代码内容。
+        code: String,
+    },
 }
 
 impl SandboxCommand {
-    /// Create a shell command
+    /// 创建一条 shell 命令
     pub fn shell(cmd: impl Into<String>) -> Self {
         Self {
             kind: CommandKind::Shell(cmd.into()),
@@ -236,7 +274,7 @@ impl SandboxCommand {
         }
     }
 
-    /// Create a program execution command
+    /// 创建一条直接执行程序的命令
     pub fn program(program: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             kind: CommandKind::Program {
@@ -251,7 +289,7 @@ impl SandboxCommand {
         }
     }
 
-    /// Create a code execution command
+    /// 创建一条执行代码片段的命令
     pub fn code(language: impl Into<String>, code: impl Into<String>) -> Self {
         Self {
             kind: CommandKind::Code {
@@ -266,73 +304,73 @@ impl SandboxCommand {
         }
     }
 
-    /// Set working directory
+    /// 设置工作目录
     pub fn with_working_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.working_dir = Some(dir.into());
         self
     }
 
-    /// Set timeout
+    /// 设置超时时间
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
     }
 
-    /// Require at least this isolation level regardless of manager policy.
+    /// 要求至少达到该隔离级别，无论管理器策略如何。
     pub fn with_minimum_isolation(mut self, isolation: IsolationLevel) -> Self {
         self.minimum_isolation = Some(isolation);
         self
     }
 
-    /// Add environment variable
+    /// 添加一个环境变量
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(key.into(), value.into());
         self
     }
 
-    /// Set standard input
+    /// 设置标准输入
     pub fn with_stdin(mut self, stdin: impl Into<String>) -> Self {
         self.stdin = Some(stdin.into());
         self
     }
 }
 
-/// Execution result
+/// 执行结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutionResult {
-    /// Exit code (0 = success)
+    /// 退出码（0 表示成功）
     pub exit_code: i32,
-    /// Standard output
+    /// 标准输出
     pub stdout: String,
-    /// Standard error
+    /// 标准错误
     pub stderr: String,
-    /// Execution duration
+    /// 执行耗时
     pub duration: Duration,
-    /// Sandbox type used
+    /// 实际使用的沙箱类型
     pub sandbox_type: String,
-    /// Whether the execution was terminated due to timeout
+    /// 执行是否因超时而被终止
     pub timed_out: bool,
-    /// Whether the execution was terminated by an owning-run cancellation.
+    /// 执行是否因所属运行被取消而终止。
     #[serde(default)]
     pub cancelled: bool,
-    /// Whether retained output exceeded the configured memory cap.
+    /// 保留的输出是否超出了配置的内存上限。
     #[serde(default)]
     pub output_truncated: bool,
-    /// Total stdout bytes observed before truncation.
+    /// 截断前观测到的 stdout 总字节数。
     #[serde(default)]
     pub stdout_bytes: u64,
-    /// Total stderr bytes observed before truncation.
+    /// 截断前观测到的 stderr 总字节数。
     #[serde(default)]
     pub stderr_bytes: u64,
 }
 
 impl ExecutionResult {
-    /// Whether execution was successful
+    /// 执行是否成功
     pub fn success(&self) -> bool {
         self.exit_code == 0 && !self.timed_out && !self.cancelled
     }
 
-    /// Combined stdout + stderr output
+    /// 合并后的 stdout + stderr 输出
     pub fn combined_output(&self) -> String {
         if self.stderr.is_empty() {
             self.stdout.clone()
@@ -343,7 +381,7 @@ impl ExecutionResult {
         }
     }
 
-    /// Bound retained stdout + stderr to a shared UTF-8-safe byte budget.
+    /// 将保留的 stdout + stderr 限制在一个共享的、UTF-8 安全的字节预算内。
     pub fn enforce_output_limit(&mut self, max_output_bytes: u64) {
         let max_output_bytes = usize::try_from(max_output_bytes).unwrap_or(usize::MAX);
         let original_stdout_bytes = self.stdout.len();
@@ -358,6 +396,7 @@ impl ExecutionResult {
     }
 }
 
+/// 截取不超过 `max_bytes` 字节的最长 UTF-8 安全前缀。
 fn retain_utf8_prefix(value: &str, max_bytes: usize) -> String {
     let mut retained_bytes = 0_usize;
     value
@@ -373,26 +412,27 @@ fn retain_utf8_prefix(value: &str, max_bytes: usize) -> String {
         .collect()
 }
 
-/// Resource limits
+/// 资源限制
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceLimits {
-    /// Maximum execution time (seconds, treated as wall-clock timeout)
+    /// 最长执行时间（秒，按墙钟超时处理）
     pub cpu_time_secs: Option<u64>,
-    /// Maximum memory (bytes)
+    /// 最大内存（字节）
     pub memory_bytes: Option<u64>,
-    /// Maximum output size (bytes)
+    /// 最大输出大小（字节）
     pub max_output_bytes: Option<u64>,
-    /// Maximum number of processes
+    /// 最大进程数
     pub max_processes: Option<u32>,
-    /// Whether networking is allowed
+    /// 是否允许联网
     pub network: bool,
-    /// Allowed mount paths (read-only)
+    /// 允许挂载的路径（只读）
     pub read_only_paths: Vec<PathBuf>,
-    /// Allowed mount paths (read-write)
+    /// 允许挂载的路径（读写）
     pub writable_paths: Vec<PathBuf>,
 }
 
 impl Default for ResourceLimits {
+    /// 默认限制：30 秒、256 MB 内存、1 MB 输出、64 个进程、禁止联网。
     fn default() -> Self {
         Self {
             cpu_time_secs: Some(30),
@@ -407,7 +447,7 @@ impl Default for ResourceLimits {
 }
 
 impl ResourceLimits {
-    /// No limits (trusted environments only)
+    /// 不设任何限制（仅限可信环境）
     pub fn unrestricted() -> Self {
         Self {
             cpu_time_secs: None,
@@ -420,7 +460,7 @@ impl ResourceLimits {
         }
     }
 
-    /// Strict limits (suitable for untrusted code)
+    /// 严格限制（适用于不可信代码）
     pub fn strict() -> Self {
         Self {
             cpu_time_secs: Some(10),
@@ -438,6 +478,7 @@ impl ResourceLimits {
 mod tests {
     use super::*;
 
+    /// 永不完成执行的测试用执行器，用于验证取消逻辑。
     struct PendingExecutor;
 
     impl SandboxExecutor for PendingExecutor {
@@ -458,6 +499,7 @@ mod tests {
         }
     }
 
+    /// 构造一个测试用的执行结果。
     fn execution_result(stdout: &str, stderr: &str) -> ExecutionResult {
         ExecutionResult {
             exit_code: 0,

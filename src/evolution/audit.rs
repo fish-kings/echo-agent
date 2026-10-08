@@ -84,7 +84,7 @@ pub struct ChangeEntry {
     pub trigger: String,
 }
 
-// ── ChangeLog trait ─────────────────────────────────────────────────────
+// ── ChangeLog 特征 ─────────────────────────────────────────────────────
 
 /// 用于记录与查询演化变更的 trait。
 pub trait ChangeLog: Send + Sync {
@@ -354,7 +354,9 @@ impl JsonlChangeLog {
             .truncate(false)
             .open(&lock_path)?;
         use fs2::FileExt;
+        // 获取文件锁的最大尝试次数。
         const MAX_ATTEMPTS: u32 = 600;
+        // 每次尝试获取文件锁失败后的等待间隔。
         const BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
         let mut got_lock = false;
         for _ in 0..MAX_ATTEMPTS {
@@ -456,6 +458,7 @@ impl JsonlChangeLog {
 }
 
 impl ChangeLog for JsonlChangeLog {
+    /// 返回该日志规范化后的持久化目标标识。
     fn durable_destination_identity(&self) -> Result<Option<String>> {
         Ok(Some(format!(
             "jsonl:{}",
@@ -463,15 +466,18 @@ impl ChangeLog for JsonlChangeLog {
         )))
     }
 
+    /// 记录一条变更条目。
     fn record(&self, entry: ChangeEntry) -> Result<()> {
         self.record_idempotent_inner(entry)?;
         Ok(())
     }
 
+    /// 以幂等方式记录一条变更条目。
     fn record_idempotent(&self, entry: ChangeEntry) -> Result<ChangeRecordOutcome> {
         self.record_idempotent_inner(entry)
     }
 
+    /// 按过滤条件查询变更条目。
     fn query(&self, filter: &ChangeFilter) -> Result<Vec<ChangeEntry>> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         *entries = self.with_disk_lock(|| Self::load_from_disk(&self.path))?;
@@ -488,6 +494,7 @@ impl ChangeLog for JsonlChangeLog {
         Ok(results)
     }
 
+    /// 返回指定实体的最新变更条目。
     fn latest_for(&self, entity_type: EntityType, entity_key: &str) -> Result<Option<ChangeEntry>> {
         let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
         *entries = self.with_disk_lock(|| Self::load_from_disk(&self.path))?;
@@ -498,6 +505,7 @@ impl ChangeLog for JsonlChangeLog {
             .cloned())
     }
 
+    /// 返回已记录的条目数量。
     fn len(&self) -> usize {
         self.entries.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
@@ -663,15 +671,19 @@ impl ChangeEntryBuilder {
 pub struct NullChangeLog;
 
 impl ChangeLog for NullChangeLog {
+    /// 空操作：直接丢弃条目。
     fn record(&self, _entry: ChangeEntry) -> Result<()> {
         Ok(())
     }
+    /// 空操作：总是视为已记录。
     fn record_idempotent(&self, _entry: ChangeEntry) -> Result<ChangeRecordOutcome> {
         Ok(ChangeRecordOutcome::AlreadyRecorded)
     }
+    /// 空操作：总是返回空列表。
     fn query(&self, _filter: &ChangeFilter) -> Result<Vec<ChangeEntry>> {
         Ok(vec![])
     }
+    /// 空操作：总是返回 `None`。
     fn latest_for(
         &self,
         _entity_type: EntityType,
@@ -679,6 +691,7 @@ impl ChangeLog for NullChangeLog {
     ) -> Result<Option<ChangeEntry>> {
         Ok(None)
     }
+    /// 空操作：总是返回 `0`。
     fn len(&self) -> usize {
         0
     }
@@ -686,10 +699,12 @@ impl ChangeLog for NullChangeLog {
 
 // ── 测试 ───────────────────────────────────────────────────────────────
 
+/// 审计日志的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 构造一条用于测试的示例变更条目。
     fn sample_entry(change_id: &str, entity_key: &str) -> ChangeEntry {
         ChangeEntryBuilder::new(EntityType::Memory, entity_key, ChangeType::Create)
             .reason("Test")
@@ -697,6 +712,7 @@ mod tests {
             .build_with(change_id, Utc::now())
     }
 
+    /// 验证记录后可以查询到条目。
     #[test]
     fn test_record_and_query() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -723,6 +739,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证两个句柄都能查询到当前的持久化审计记录。
     #[test]
     fn two_handles_query_current_durable_audit()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -743,6 +760,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 `latest_for` 返回实体的最新条目。
     #[test]
     fn test_latest_for() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -769,6 +787,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证按变更类型过滤。
     #[test]
     fn test_filter_by_change_type() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -794,6 +813,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证按键前缀过滤。
     #[test]
     fn test_filter_by_key_prefix() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
@@ -821,6 +841,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证中间记录损坏时以失败关闭方式处理且不修改文件。
     #[test]
     fn interior_corruption_fails_closed_without_mutation()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -839,6 +860,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证被截断的最后一条记录会被截掉，只保留最后一条完整条目。
     #[test]
     fn torn_final_record_is_truncated_to_last_complete_entry()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -857,6 +879,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证缺少换行符但有效的最后一条记录会被保留并补齐换行。
     #[test]
     fn valid_final_record_without_newline_is_preserved_and_terminated()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -872,6 +895,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证稳定变更 ID 具备幂等性，并拒绝内容冲突。
     #[test]
     fn stable_change_id_is_idempotent_and_rejects_content_collision()
     -> std::result::Result<(), Box<dyn std::error::Error>> {

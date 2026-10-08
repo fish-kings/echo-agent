@@ -1,5 +1,7 @@
-//! 每次迭代的 LLM 调用：触发 `on_think_start`、运行干预（intervention）回调、
-//! 流式接收 LLM 分片、推导 token 计数，并发出 `ThinkEnd`。
+/*!
+ * 每次迭代的 LLM 调用：触发 `on_think_start`、运行干预（intervention）回调、
+ * 流式接收 LLM 分片、推导 token 计数，并发出 `ThinkEnd`。
+ */
 
 use super::super::processor::process_stream_chunk;
 use super::super::stream_macros::yield_event_or;
@@ -370,9 +372,9 @@ pub(crate) async fn run_think(
     })
     .await;
 
-    // 把真实的 prompt token 数反馈给 CalibratedTokenizer，使后续的上下文窗口 /
-    // 压缩估算能够收敛到模型真实的分词结果。如果不这样做，校准系数会一直
-    // 停留在 1.0，分词器就不会比原始的启发式估算更准确。
+    /* 把真实的 prompt token 数反馈给 CalibratedTokenizer，使后续的上下文窗口 /
+       压缩估算能够收敛到模型真实的分词结果。如果不这样做，校准系数会一直
+       停留在 1.0，分词器就不会比原始的启发式估算更准确。 */
     if pt > 0 {
         let estimated: usize = messages
             .iter()
@@ -489,6 +491,7 @@ pub(crate) async fn run_think(
     }))
 }
 
+/// 在调用失败前，把已经累积的部分内容作为 Token 事件发送出去（发送失败时静默忽略）。
 async fn emit_partial_content_before_failure(tx: &mpsc::Sender<Result<AgentEvent>>, content: &str) {
     if !content.is_empty() {
         let _ = tx.send(Ok(AgentEvent::Token(content.to_string()))).await;
@@ -508,17 +511,20 @@ pub(crate) async fn create_llm_stream(
     let tools = tools_for_request(snap, final_only);
     log_prompt_cache_shape(&messages, tools.as_deref());
 
-    // ── Trait 路径：当挂载了 LlmClient trait 对象时（生产环境的
-    // OpenAiClient / 测试用的 MockLlmClient），走这条路径。这样可以避免
-    // 每次调用都做一次模型解析，使核心循环能够用 mock 进行测试，
-    // 也避免执行逻辑与全局模型注册表耦合。
-    // tracing::info!(
-    //     agent = %snap.config.agent_name,
-    //     model = %snap.config.model_name,
-    //     has_llm_client = snap.llm_client.is_some(),
-    //     "think: LLM call path selection"
-    // );
+    /* ── Trait 路径：当挂载了 LlmClient trait 对象时（生产环境的
+       OpenAiClient / 测试用的 MockLlmClient），走这条路径。这样可以避免
+       每次调用都做一次模型解析，使核心循环能够用 mock 进行测试，
+       也避免执行逻辑与全局模型注册表耦合。 */
+    /*
+    tracing::info!(
+        agent = %snap.config.agent_name,
+        model = %snap.config.model_name,
+        has_llm_client = snap.llm_client.is_some(),
+        "think: LLM call path selection"
+    );
+    */
     if let Some(llm_client) = snap.llm_client.clone() {
+        // 装箱后的流式 LLM 分片类型别名。
         type ChunkStream = std::pin::Pin<
             Box<dyn futures::Stream<Item = Result<crate::llm::types::ChatCompletionChunk>> + Send>,
         >;
@@ -565,9 +571,9 @@ pub(crate) async fn create_llm_stream(
                         }),
                     };
                     let inner = llm_client.chat_stream(request).await?;
-                    // 把 trait 扁平化后的 ChatChunk 适配回 think 阶段所消费的
-                    // ChatCompletionChunk 形状。两者来自同一个流，因此不会
-                    // 丢失任何信息。
+                    /* 把 trait 扁平化后的 ChatChunk 适配回 think 阶段所消费的
+                       ChatCompletionChunk 形状。两者来自同一个流，因此不会
+                       丢失任何信息。 */
                     let mapped = inner.map(|chunk_result| {
                         chunk_result.map(|c| crate::llm::types::ChatCompletionChunk {
                             id: String::new(),
@@ -593,6 +599,7 @@ pub(crate) async fn create_llm_stream(
     )))
 }
 
+/// 计算本次请求要携带的工具定义；工具被禁用、仅需最终回答或无可用工具时返回 `None`，并记录工具 schema 的预算统计。
 fn tools_for_request(snap: &AgentRunSnapshot, final_only: bool) -> Option<Vec<ToolDefinition>> {
     if !snap.config.enable_tool || final_only {
         return None;
@@ -614,6 +621,7 @@ fn tools_for_request(snap: &AgentRunSnapshot, final_only: bool) -> Option<Vec<To
     Some(tools)
 }
 
+/// 校验本次请求（消息 + 工具 schema + 输出预留 + 安全余量）的 token 估算值是否超出模型上下文窗口。
 fn validate_request_budget(
     snap: &AgentRunSnapshot,
     message_tokens: usize,
@@ -649,6 +657,7 @@ fn validate_request_budget(
     Ok(())
 }
 
+/// 根据消息与工具定义计算提示词缓存（prompt cache）指纹。
 pub(crate) fn cache_fingerprint(
     messages: &[Message],
     tools: Option<&[ToolDefinition]>,
@@ -663,6 +672,7 @@ pub(crate) fn cache_fingerprint(
     )
 }
 
+/// 记录提示词缓存的结构信息，并在可能导致缓存前缀不稳定时发出告警。
 fn log_prompt_cache_shape(messages: &[Message], tools: Option<&[ToolDefinition]>) {
     let fingerprint = cache_fingerprint(messages, tools);
     let leading_system_messages = messages
@@ -719,6 +729,7 @@ fn log_prompt_cache_shape(messages: &[Message], tools: Option<&[ToolDefinition]>
 mod tests {
     use super::*;
 
+    /// 验证提示词缓存指纹能将稳定的 system 部分与对话历史隔离开。
     #[test]
     fn prompt_cache_fingerprint_isolates_stable_system_from_history() {
         let first = vec![
@@ -743,6 +754,7 @@ mod tests {
         );
     }
 
+    /// 验证重复的 system 消息会改变 system 组成部分的哈希值。
     #[test]
     fn duplicate_system_messages_change_system_component_hash() {
         let duplicate = vec![

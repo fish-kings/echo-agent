@@ -53,6 +53,7 @@ pub struct KeywordClassifier {
 }
 
 impl Default for KeywordClassifier {
+    /// 创建默认分类器：无关键词，启用 DirectAnswer 路由。
     fn default() -> Self {
         Self {
             skill_keywords: HashMap::new(),
@@ -222,6 +223,7 @@ impl KeywordClassifier {
 }
 
 impl IntentClassifier for KeywordClassifier {
+    /// 基于关键词匹配对用户输入进行意图分类。
     fn classify<'a>(
         &'a self,
         user_input: &'a str,
@@ -430,6 +432,7 @@ Respond ONLY with valid JSON (no markdown):
 }
 
 impl IntentClassifier for LlmIntentClassifier {
+    /// 调用 LLM 对用户输入进行语义意图分类，失败时回退为 Fallback。
     fn classify<'a>(
         &'a self,
         user_input: &'a str,
@@ -479,6 +482,7 @@ impl ChainedClassifier {
 }
 
 impl IntentClassifier for ChainedClassifier {
+    /// 依次调用各分类器，返回第一个非 Fallback 的结果。
     fn classify<'a>(
         &'a self,
         user_input: &'a str,
@@ -503,6 +507,7 @@ impl IntentClassifier for ChainedClassifier {
 mod tests {
     use super::*;
 
+    /// 验证未注册任何关键词时一律返回 Fallback。
     #[test]
     fn test_keyword_classifier_empty_returns_fallback() {
         let classifier = KeywordClassifier::default();
@@ -517,6 +522,7 @@ mod tests {
         ));
     }
 
+    /// 验证命中技能关键词时路由到对应技能。
     #[test]
     fn test_keyword_classifier_skill_match() {
         let mut classifier = KeywordClassifier::default();
@@ -526,6 +532,7 @@ mod tests {
         assert_eq!(intent.skill_name(), Some("coding"));
     }
 
+    /// 验证命中直接回答关键词时返回 DirectAnswer。
     #[test]
     fn test_keyword_classifier_direct_match() {
         let mut classifier = KeywordClassifier::default();
@@ -534,6 +541,7 @@ mod tests {
         assert!(matches!(intent, Intent::DirectAnswer { .. }));
     }
 
+    /// 验证关闭 DirectAnswer 路由后不再返回 DirectAnswer。
     #[test]
     fn test_keyword_classifier_direct_disabled() {
         let mut classifier = KeywordClassifier::default();
@@ -546,6 +554,7 @@ mod tests {
         ));
     }
 
+    /// 验证关键词匹配不区分大小写。
     #[test]
     fn test_keyword_classifier_case_insensitive() {
         let mut classifier = KeywordClassifier::default();
@@ -555,6 +564,7 @@ mod tests {
         assert!(matches!(intent, Intent::SkillRequired { .. }));
     }
 
+    /// 验证解析 DIRECT 响应。
     #[test]
     fn test_llm_classifier_parse_direct() {
         let response = r#"{"intent": "DIRECT", "skill": null, "confidence": 0.95}"#;
@@ -567,6 +577,7 @@ mod tests {
         ));
     }
 
+    /// 验证解析 SKILL 响应。
     #[test]
     fn test_llm_classifier_parse_skill() {
         let response = r#"{"intent": "SKILL", "skill": "coding", "confidence": 0.88}"#;
@@ -574,6 +585,7 @@ mod tests {
         assert_eq!(intent.skill_name(), Some("coding"));
     }
 
+    /// 验证解析 FALLBACK 响应。
     #[test]
     fn test_llm_classifier_parse_fallback() {
         let response = r#"{"intent": "FALLBACK", "skill": null, "confidence": 0.6}"#;
@@ -581,6 +593,7 @@ mod tests {
         assert!(matches!(intent, Intent::Fallback));
     }
 
+    /// 验证非法 JSON 响应回退为 Fallback。
     #[test]
     fn test_llm_classifier_parse_invalid_json() {
         let response = "I think this is a coding task";
@@ -588,6 +601,7 @@ mod tests {
         assert!(matches!(intent, Intent::Fallback));
     }
 
+    /// 验证能解析被 Markdown 代码块包裹的 JSON 响应。
     #[test]
     fn test_llm_classifier_parse_markdown_wrapped() {
         let response = r#"```json
@@ -597,6 +611,7 @@ mod tests {
         assert_eq!(intent.skill_name(), Some("paper-search"));
     }
 
+    /// 验证构建的提示词包含所有技能描述。
     #[test]
     fn test_llm_classifier_build_prompt_contains_skills() {
         let classifier = LlmIntentClassifier::new(
@@ -621,6 +636,7 @@ mod tests {
         assert!(prompt.contains("帮我写个排序算法"));
     }
 
+    /// 验证配置构建器的各项设置生效。
     #[test]
     fn test_config_builder() {
         let config = KeywordClassifierConfig {
@@ -839,39 +855,39 @@ mod tests {
 
         // ── 正例：每个技能至少 2 条测试查询 ──
         let test_cases: Vec<(&str, &str)> = vec![
-            // coding
+            // coding 技能
             ("帮我写代码实现排序", "coding"),
             ("这段代码有个 bug", "coding"),
             ("帮我写个 Python 脚本", "coding"),
             ("实现一个单例模式", "coding"),
-            // data-visualization
+            // data-visualization 技能
             ("画一个柱状图", "data-visualization"),
             ("生成可视化图表", "data-visualization"),
-            // data-wrangling
+            // data-wrangling 技能
             ("读取CSV文件并清洗", "data-wrangling"),
             ("缺失值处理怎么做", "data-wrangling"),
-            // doc-writing
+            // doc-writing 技能
             ("帮我写报告", "doc-writing"),
             ("撰写技术文档", "doc-writing"),
-            // evidence-medicine
+            // evidence-medicine 技能
             ("搜索 PubMed 文献", "evidence-medicine"),
             ("系统综述怎么做", "evidence-medicine"),
-            // git-workflow
+            // git-workflow 技能
             ("git 怎么提交", "git-workflow"),
             ("合并分支冲突了", "git-workflow"),
-            // paper-reader
+            // paper-reader 技能
             ("帮我读论文", "paper-reader"),
             ("分析这篇论文的方法论", "paper-reader"),
-            // paper-search
+            // paper-search 技能
             ("找论文 arxiv", "paper-search"),
             ("学术论文检索", "paper-search"),
-            // statistical-analysis
+            // statistical-analysis 技能
             ("做个 t检验", "statistical-analysis"),
             ("回归分析怎么做", "statistical-analysis"),
-            // translation
+            // translation 技能
             ("翻译这段话", "translation"),
             ("翻译成英文", "translation"),
-            // web-search
+            // web-search 技能
             ("上网查一下最新消息", "web-search"),
             ("搜索网页找资料", "web-search"),
         ];

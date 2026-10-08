@@ -6,6 +6,7 @@
 截断，以保持在限制范围内。
 */
 
+/// 上下文选择器子模块。
 pub mod selector;
 pub use selector::ContextSelector;
 
@@ -46,6 +47,7 @@ pub struct ContextBudget {
 }
 
 impl Default for ContextBudget {
+    /// 创建默认实例。
     fn default() -> Self {
         Self {
             total_tokens: 128_000,
@@ -67,6 +69,7 @@ impl ContextBudget {
     }
 }
 
+/// 默认上下文预算相关测试。
 #[cfg(test)]
 mod default_budget_tests {
     use super::ContextBudget;
@@ -124,6 +127,7 @@ pub struct ContextAssembler {
 }
 
 impl Default for ContextAssembler {
+    /// 创建默认实例。
     fn default() -> Self {
         Self::new()
     }
@@ -160,7 +164,7 @@ impl ContextAssembler {
     pub fn assemble(&self, sources: ContextSources) -> Vec<Message> {
         let mut messages = Vec::new();
 
-        // 1. system prompt
+        // 1. 系统提示词
         if let Some(sys) = &sources.system_prompt {
             messages.push(Message::system(sys.clone()));
         }
@@ -263,4 +267,3 @@ fn dynamic_context_note(source: &str, body: &str) -> Message {
         "[runtime_context:{source}]\n{body}\n[Use this runtime context for the current task. It is dynamic state, not stable system policy.]"
     ))
 }
-</content>

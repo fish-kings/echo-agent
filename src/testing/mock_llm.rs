@@ -1,31 +1,33 @@
-//! 用于测试的 Mock LLM 客户端 —— 让依赖 [`LlmClient`] 的组件无需发起真实 HTTP 请求即可测试。
-//!
-//! 典型用途：
-//! - 测试 [`SummaryCompressor`]（它通过 `LlmClient` 调用 LLM）
-//! - 测试自定义的 [`ContextCompressor`] 实现
-//! - 任何以 `Arc<dyn LlmClient>` 形式注入依赖的组件
-//!
-//! # 示例
-//!
-//! ```rust
-//! use echo_agent::testing::MockLlmClient;
-//! use echo_agent::llm::LlmClient;
-//! use echo_agent::llm::types::Message;
-//! use std::sync::Arc;
-//!
-//! # #[tokio::main]
-//! # async fn main() {
-//! let mock = Arc::new(
-//!     MockLlmClient::new()
-//!         .with_response("First response")
-//!         .with_response("Second response")
-//! );
-//!
-//! let r1 = mock.chat_simple(vec![Message::user("hi".to_string())]).await.unwrap();
-//! assert_eq!(r1, "First response");
-//! assert_eq!(mock.call_count(), 1);
-//! # }
-//! ```
+/*!
+ * 用于测试的 Mock LLM 客户端 —— 让依赖 [`LlmClient`] 的组件无需发起真实 HTTP 请求即可测试。
+ *
+ * 典型用途：
+ * - 测试 [`SummaryCompressor`]（它通过 `LlmClient` 调用 LLM）
+ * - 测试自定义的 [`ContextCompressor`] 实现
+ * - 任何以 `Arc<dyn LlmClient>` 形式注入依赖的组件
+ *
+ * # 示例
+ *
+ * ```rust
+ * use echo_agent::testing::MockLlmClient;
+ * use echo_agent::llm::LlmClient;
+ * use echo_agent::llm::types::Message;
+ * use std::sync::Arc;
+ *
+ * # #[tokio::main]
+ * # async fn main() {
+ * let mock = Arc::new(
+ *     MockLlmClient::new()
+ *         .with_response("First response")
+ *         .with_response("Second response")
+ * );
+ *
+ * let r1 = mock.chat_simple(vec![Message::user("hi".to_string())]).await.unwrap();
+ * assert_eq!(r1, "First response");
+ * assert_eq!(mock.call_count(), 1);
+ * # }
+ * ```
+ */
 
 use crate::error::{LlmError, ReactError, Result};
 use crate::llm::types::{
@@ -91,10 +93,12 @@ pub struct MockLlmClient {
     tool_choices: Arc<Mutex<Vec<Option<String>>>>,
     /// 每次请求暴露的工具定义数量。
     tool_counts: Arc<Mutex<Vec<usize>>>,
-    /// 返回每个响应前的可选延迟。设置后，`chat` 和
-    /// `chat_stream` 会睡眠这段时长，但如果请求的 `cancel_token` 被触发，
-    /// 会提前返回 Cancelled 错误。这让测试可以模拟"正在运行中"且可被中断的
-    /// LLM 调用（Phase 3）。
+    /**
+     * 返回每个响应前的可选延迟。设置后，`chat` 和
+     * `chat_stream` 会睡眠这段时长，但如果请求的 `cancel_token` 被触发，
+     * 会提前返回 Cancelled 错误。这让测试可以模拟"正在运行中"且可被中断的
+     * LLM 调用（Phase 3）。
+     */
     delay: Option<Duration>,
 }
 
@@ -119,8 +123,10 @@ impl MockLlmClient {
         }
     }
 
-    /// 为每个响应设置一个延迟。与请求的 `cancel_token` 配合使用时，
-    /// 可以让测试验证中途取消的行为（Phase 3）。
+    /**
+     * 为每个响应设置一个延迟。与请求的 `cancel_token` 配合使用时，
+     * 可以让测试验证中途取消的行为（Phase 3）。
+     */
     pub fn with_delay(mut self, delay: Duration) -> Self {
         self.delay = Some(delay);
         self
@@ -430,8 +436,10 @@ enum PopResult {
 }
 
 impl LlmClient for MockLlmClient {
-    /// 执行一次非流式聊天调用：记录本次调用信息，处理可选延迟/取消，
-    /// 并弹出下一个预设响应（文本、工具调用或折叠后的脚本化流）。
+    /**
+     * 执行一次非流式聊天调用：记录本次调用信息，处理可选延迟/取消，
+     * 并弹出下一个预设响应（文本、工具调用或折叠后的脚本化流）。
+     */
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
         Box::pin(async move {
             // 记录本次调用
@@ -452,8 +460,10 @@ impl LlmClient for MockLlmClient {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(request.tool_choice);
 
-            // 可选的、支持取消感知的延迟（Phase 3：让测试能够验证
-            // 中途取消的行为）。
+            /*
+             * 可选的、支持取消感知的延迟（Phase 3：让测试能够验证
+             * 中途取消的行为）。
+             */
             if let Some(d) = self.delay {
                 let token = request.cancel_token.clone().unwrap_or_default();
                 tokio::select! {
@@ -483,8 +493,10 @@ impl LlmClient for MockLlmClient {
                         ..crate::llm::types::ChatCompletionResponse::default()
                     },
                 }),
-                // 通过非流式入口消费脚本化流：把各个增量折叠为单条
-                // 助手消息，并采用最后一个终止分片的结束原因/用量。
+                /*
+                 * 通过非流式入口消费脚本化流：把各个增量折叠为单条
+                 * 助手消息，并采用最后一个终止分片的结束原因/用量。
+                 */
                 PopResult::Stream(chunks) => {
                     let mut text = String::new();
                     let mut reasoning = String::new();
@@ -543,8 +555,10 @@ impl LlmClient for MockLlmClient {
         })
     }
 
-    /// 执行一次流式聊天调用：记录本次调用信息，处理可选延迟/取消，
-    /// 并把弹出的预设响应转换为对应的分片流。
+    /**
+     * 执行一次流式聊天调用：记录本次调用信息，处理可选延迟/取消，
+     * 并把弹出的预设响应转换为对应的分片流。
+     */
     fn chat_stream(
         &self,
         request: ChatRequest,
@@ -579,9 +593,11 @@ impl LlmClient for MockLlmClient {
                 }
             }
 
-            // 真实 provider 以增量形式流式发送内容，并在单独的终止分片中
-            // 报告用量；这里发出同样的形状，而不是那种不可能出现的
-            // 单分片合并（F-TST-01-P1-01）。
+            /*
+             * 真实 provider 以增量形式流式发送内容，并在单独的终止分片中
+             * 报告用量；这里发出同样的形状，而不是那种不可能出现的
+             * 单分片合并（F-TST-01-P1-01）。
+             */
             match self.pop_response()? {
                 PopResult::Content(text, usage) => {
                     let stream = futures::stream::iter([

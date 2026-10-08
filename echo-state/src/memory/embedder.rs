@@ -1,7 +1,9 @@
-//! HTTP 向量嵌入客户端（兼容 OpenAI 接口）
-//!
-//! [`Embedder`] trait 定义于 [`echo_core::memory::embedder`]。
-//! 本模块提供其 [`HttpEmbedder`] 实现。
+/*!
+HTTP 向量嵌入客户端（兼容 OpenAI 接口）
+
+[`Embedder`] trait 定义于 [`echo_core::memory::embedder`]。
+本模块提供其 [`HttpEmbedder`] 实现。
+*/
 
 use echo_core::error::{MemoryError, Result};
 pub use echo_core::memory::embedder::Embedder;
@@ -35,18 +37,20 @@ struct EmbedData {
     embedding: Vec<f32>,
 }
 
-/// 兼容 OpenAI 接口的 HTTP 向量嵌入客户端
-///
-/// 支持 OpenAI、通义千问（DashScope）以及其他兼容 `/v1/embeddings` 接口的服务。
-///
-/// # 环境变量
-///
-/// | 用途 | 优先级 1 | 优先级 2 | 优先级 3 |
-/// |---------|------------|------------|-------------|
-/// | 完整端点 URL | `EMBEDDING_BASEURL` | — | — |
-/// | 基础 URL（自动拼接 `/v1/embeddings`） | `EMBEDDING_API_URL` | — | `https://api.openai.com` |
-/// | API key | `EMBEDDING_APIKEY` | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` |
-/// | 模型名称 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` |
+/**
+兼容 OpenAI 接口的 HTTP 向量嵌入客户端
+
+支持 OpenAI、通义千问（DashScope）以及其他兼容 `/v1/embeddings` 接口的服务。
+
+# 环境变量
+
+| 用途 | 优先级 1 | 优先级 2 | 优先级 3 |
+|---------|------------|------------|-------------|
+| 完整端点 URL | `EMBEDDING_BASEURL` | — | — |
+| 基础 URL（自动拼接 `/v1/embeddings`） | `EMBEDDING_API_URL` | — | `https://api.openai.com` |
+| API 密钥 | `EMBEDDING_APIKEY` | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` |
+| 模型名称 | `EMBEDDING_MODEL` | — | `text-embedding-3-small` |
+*/
 pub struct HttpEmbedder {
     /// 底层 HTTP 客户端。
     client: reqwest::Client,

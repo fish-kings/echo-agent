@@ -1,15 +1,17 @@
-//! demo25: 宏系统综合演示
-//!
-//! 展示 echo-agent 提供的所有便捷宏，覆盖从工具定义、Agent 构建到消息组装等场景。
-//!
-//! ```bash
-//! ECHO_AGENT_PROVIDER=openai \
-//! ECHO_AGENT_BASE_URL=https://api.openai.com/v1 \
-//! ECHO_AGENT_API_PROTOCOL=responses \
-//! ECHO_AGENT_MODEL=gpt-5.5 \
-//! ECHO_AGENT_API_KEY=sk-... \
-//! cargo run -p echo-agent-learning --example demo25_macros --locked
-//! ```
+/*!
+ * demo25: 宏系统综合演示
+ *
+ * 展示 echo-agent 提供的所有便捷宏，覆盖从工具定义、Agent 构建到消息组装等场景。
+ *
+ * ```bash
+ * ECHO_AGENT_PROVIDER=openai \
+ * ECHO_AGENT_BASE_URL=https://api.openai.com/v1 \
+ * ECHO_AGENT_API_PROTOCOL=responses \
+ * ECHO_AGENT_MODEL=gpt-5.5 \
+ * ECHO_AGENT_API_KEY=sk-... \
+ * cargo run -p echo-agent-learning --example demo25_macros --locked
+ * ```
+ */
 
 mod support;
 
@@ -17,10 +19,11 @@ use echo_agent::error::Result;
 use echo_agent::prelude::*;
 use echo_agent::{agent, callback, chat_request, guard, messages, tool, tool_params};
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 1. #[tool] —— 一行定义工具
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   1. #[tool] —— 一行定义工具
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
+/// 工具：计算两数之和。
 #[tool(name = "add", description = "两数相加")]
 async fn add(
     /// 第一个数
@@ -31,6 +34,7 @@ async fn add(
     Ok(ToolResult::success(format!("{}", a + b)))
 }
 
+/// 工具：计算两数之积。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(
     /// 第一个数
@@ -41,6 +45,7 @@ async fn multiply(
     Ok(ToolResult::success(format!("{}", a * b)))
 }
 
+/// 工具：向指定用户问候。
 #[tool(name = "greet", description = "问候用户", permissions = [Execute])]
 async fn greet(
     /// 用户姓名
@@ -49,26 +54,30 @@ async fn greet(
     Ok(ToolResult::success(format!("你好，{}！", name)))
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 2. #[callback] —— 只覆写需要的回调方法
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   2. #[callback] —— 只覆写需要的回调方法
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
+/// 打印工具开始与最终答案事件的回调。
 struct PrintCallback;
 
 #[callback]
 impl PrintCallback {
+    /// 工具开始执行时打印工具名。
     async fn on_tool_start(&self, _agent: &str, tool: &str, _args: &serde_json::Value) {
         println!("  [回调] 工具开始: {tool}");
     }
+    /// 得到最终答案时打印答案。
     async fn on_final_answer(&self, _agent: &str, answer: &str) {
         println!("  [回调] 最终答案: {answer}");
     }
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 3. #[guard] —— 一个函数即是护栏
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   3. #[guard] —— 一个函数即是护栏
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
+/// 护栏：内容超过 50000 字符时拦截。
 #[guard(name = "length-limit")]
 async fn check_length(content: &str, direction: GuardDirection) -> Result<GuardResult> {
     let _ = direction;
@@ -81,10 +90,11 @@ async fn check_length(content: &str, direction: GuardDirection) -> Result<GuardR
     }
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// main
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   main
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
 
+/// 示例入口：依次演示 messages!、tool_params!、chat_request! 与 agent! 宏。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -163,6 +173,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// 检查 `ECHO_AGENT_API_KEY` 是否已设置且非空，否则返回缺失配置错误。
 fn require_api_key(example: &str) -> Result<()> {
     std::env::var("ECHO_AGENT_API_KEY")
         .ok()

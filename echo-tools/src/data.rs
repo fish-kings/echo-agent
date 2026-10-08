@@ -1,12 +1,14 @@
-//! 数据处理工具
-//!
-//! 基于 Polars 的数据处理能力，支持：
-//! - CSV/JSON/Parquet 文件读取
-//! - 数据过滤、聚合、排序
-//! - 统计计算
-//! - 数据转换
-//! - 数据画像（维度/指标识别）
-//! - TopN / 贡献度分析 / 数值分箱
+/*!
+ * 数据处理工具
+ *
+ * 基于 Polars 的数据处理能力，支持：
+ * - CSV/JSON/Parquet 文件读取
+ * - 数据过滤、聚合、排序
+ * - 统计计算
+ * - 数据转换
+ * - 数据画像（维度/指标识别）
+ * - TopN / 贡献度分析 / 数值分箱
+ */
 
 use std::path::Path;
 
@@ -19,6 +21,7 @@ use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
+/// 工具错误信息中使用的统一工具名称
 const TOOL_NAME: &str = "data_tools";
 
 // ── 共享的数据加载辅助函数 ──────────────────────────────────────
@@ -119,19 +122,21 @@ fn load_lazyframe(path: &Path, format: Option<&str>) -> Result<LazyFrame> {
     }
 }
 
-/// 构建带有统一元数据的标准化数据工具响应。
-///
-/// 输出信封格式：
-/// ```json
-/// {
-///   "tool": "tool_name",
-///   "rows": 100,
-///   "columns": 5,
-///   "column_names": ["a", "b"],
-///   "truncated": false,
-///   "data": [ ... ]
-/// }
-/// ```
+/**
+ * 构建带有统一元数据的标准化数据工具响应。
+ *
+ * 输出信封格式：
+ * ```json
+ * {
+ *   "tool": "tool_name",
+ *   "rows": 100,
+ *   "columns": 5,
+ *   "column_names": ["a", "b"],
+ *   "truncated": false,
+ *   "data": [ ... ]
+ * }
+ * ```
+ */
 fn data_tool_response(tool_name: &str, df: &DataFrame, max_rows: usize) -> Value {
     let total_rows = df.height();
     let columns = df.width();
@@ -226,8 +231,8 @@ fn classify_column(dtype: &DataType, distinct_count: usize, row_count: usize) ->
         0.0
     };
 
-    // 低基数（去重比例 < 10% 或去重值数量 < 50）→ 维度
-    // 字符串类型 → 维度
+    /* 低基数（去重比例 < 10% 或去重值数量 < 50）→ 维度
+       字符串类型 → 维度 */
     if is_numeric(dtype) {
         if distinct_ratio < 0.1 || distinct_count < 50 {
             ColumnCategory::Dimension
@@ -808,6 +813,7 @@ impl Tool for DataTransformTool {
         "Transform data: sort, select columns, rename columns, drop columns, etc."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -962,6 +968,7 @@ impl Tool for DataExportTool {
         "Export processed data to CSV, JSON, or Parquet file."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1342,6 +1349,7 @@ impl Tool for DataTopNTool {
         "Sort by a metric column and take Top N. Without dimension columns, returns global top N; with dimension_columns specified, returns top N within each group. Suitable for questions like 'top 10 products by sales', 'top 3 categories by revenue in each region'. Example: topn_data(file_path='sales.csv', metric_column='revenue', dimension_columns='region', top_n=3)"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1415,8 +1423,8 @@ impl Tool for DataTopNTool {
                     .map(|s| s.to_string())
                     .collect();
 
-                // 先按指标列排序，再用 group_by + agg 配合 head(N) 取每组的前 N 条
-                // 这是在 Polars 中实现组内 TopN 的正确方式
+                /* 先按指标列排序，再用 group_by + agg 配合 head(N) 取每组的前 N 条
+                   这是在 Polars 中实现组内 TopN 的正确方式 */
                 let sort_desc = !ascending;
                 let agg_exprs: Vec<Expr> = all_col_names
                     .iter()
@@ -1440,8 +1448,8 @@ impl Tool for DataTopNTool {
                     },
                 );
 
-                // 对每个分组，按排序后的顺序取 TopN 行
-                // group_by + agg(all().sort_by(metric).head(n)) 确保每个分组内取到前 n 条
+                /* 对每个分组，按排序后的顺序取 TopN 行
+                   group_by + agg(all().sort_by(metric).head(n)) 确保每个分组内取到前 n 条 */
                 sorted
                     .group_by(group_cols)
                     .agg(agg_exprs)
@@ -1498,23 +1506,28 @@ impl Tool for DataTopNTool {
     }
 }
 
-// ── Contribution ratio analysis tool ─────────────────────────────────
+// ── 贡献度分析工具 ─────────────────────────────────
 
+/// 计算各维度值对指标的贡献占比与累计占比（帕累托分析）的工具
 pub struct DataContributionTool;
 
 impl Tool for DataContributionTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "contribution_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Calculate contribution ratio (percentage) and cumulative ratio (Pareto analysis / 80-20 rule) of each dimension value to the metric column. Outputs dimension value, metric value, ratio (%), cumulative (%). Dimension values beyond top_n are merged into 'Other'. Suitable for questions like 'sales ratio by region', 'which categories contribute 80% of revenue? (Pareto analysis)'. Example: contribution_data(file_path='sales.csv', dimension_column='category', metric_column='revenue', top_n=15)"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1540,6 +1553,7 @@ impl Tool for DataContributionTool {
         })
     }
 
+    /// 执行该工具逻辑：按维度分组求和，计算各维度值的占比与累计占比，超出 top_n 的合并为“其他”
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1569,7 +1583,7 @@ impl Tool for DataContributionTool {
 
             let df = load_dataframe(&path, format)?;
 
-            // Group by dimension, sum metric
+            // 按维度分组，对指标列求和
             let agg_df = df
                 .lazy()
                 .group_by([col(dim_col)])
@@ -1678,23 +1692,28 @@ impl Tool for DataContributionTool {
     }
 }
 
-// ── Numeric binning tool ─────────────────────────────────────────────
+// ── 数值分箱工具 ─────────────────────────────────────────────
 
+/// 对数值列进行等宽/等频分箱并统计各箱分布的工具
 pub struct DataBinTool;
 
 impl Tool for DataBinTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "bin_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Bin numeric columns (equal-width / equal-frequency), counting records per bin and summarizing metrics. Suitable for analyzing data distribution and generating histogram data."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1720,6 +1739,7 @@ impl Tool for DataBinTool {
         })
     }
 
+    /// 执行该工具逻辑：按等宽或等频方式对数值列分箱并统计每箱的数量、占比、总和与均值
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1807,7 +1827,7 @@ impl Tool for DataBinTool {
                     bins
                 }
                 _ => {
-                    // equal_width (default)
+                    // 等宽分箱（默认）
                     let mut bins = Vec::new();
                     let width = (max_val - min_val) / num_bins as f64;
                     if width == 0.0 {
@@ -1822,7 +1842,7 @@ impl Tool for DataBinTool {
                         for i in 0..num_bins {
                             let bin_start = min_val + i as f64 * width;
                             let bin_end = if i == num_bins - 1 {
-                                max_val + 0.0001 // include max
+                                max_val + 0.0001 // 包含最大值
                             } else {
                                 bin_start + width
                             };
@@ -1879,23 +1899,28 @@ impl Tool for DataBinTool {
     }
 }
 
-// ── Ratio / expression computation tool ──────────────────────────────
+// ── 比率 / 表达式计算工具 ──────────────────────────────
 
+/// 计算列间算术表达式与比率（支持分组）的工具
 pub struct DataRatioTool;
 
 impl Tool for DataRatioTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "ratio_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Compute arithmetic expressions and ratios between columns. Supports +, -, *, / and parentheses, with optional grouping dimensions for within-group ratios. Suitable for computing profit margin, conversion rate, YoY/MoM, proportions, etc. Example: ratio_data(file_path='sales.csv', expressions='profit_margin:(revenue-cost)/revenue*100, ratio:cost/revenue')"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1921,6 +1946,7 @@ impl Tool for DataRatioTool {
         })
     }
 
+    /// 执行该工具逻辑：解析算术表达式并（可选按维度分组）计算列间比率
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1947,28 +1973,28 @@ impl Tool for DataRatioTool {
 
             let df = load_dataframe(&path, format)?;
 
-            // Collect valid column names
+            // 收集有效列名
             let valid_columns: Vec<String> = df
                 .get_column_names()
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
 
-            // Parse expressions
+            // 解析表达式
             let parsed_exprs = parse_ratio_expressions(exprs_str, &valid_columns)?;
 
-            // Build Polars expressions
+            // 构建 Polars 表达式
             let mut polars_exprs: Vec<Expr> = Vec::new();
             for (alias, _) in &parsed_exprs {
                 let polars_expr = build_ratio_expr(exprs_str, &valid_columns, alias)?;
                 polars_exprs.push(polars_expr);
             }
 
-            // If grouping columns exist, group first then compute; otherwise select directly
+            // 若指定了分组列则先分组再计算，否则直接 select
             let result_df = if let Some(dim_str) = dim_cols_str {
                 let dim_cols: Vec<&str> = dim_str.split(',').map(|s| s.trim()).collect();
 
-                // Validate all grouping columns exist
+                // 校验所有分组列均存在
                 for dc in &dim_cols {
                     if !valid_columns.iter().any(|c| c == dc) {
                         return Err(ToolError::InvalidParameter {
@@ -2009,7 +2035,7 @@ impl Tool for DataRatioTool {
                         message: format!("Grouped ratio calculation failed: {}", e),
                     })?
             } else {
-                // No grouping: directly select expression columns + first rows of all original columns as context
+                // 无分组：直接 select 表达式列，并带上所有原始列的前若干行作为上下文
                 let mut all_exprs: Vec<Expr> = valid_columns.iter().map(col).collect();
                 all_exprs.extend(polars_exprs);
 
@@ -2039,8 +2065,11 @@ impl Tool for DataRatioTool {
     }
 }
 
-/// Parse ratio expression string, returns (alias, expression) list
-/// Format: "alias1:expr1, alias2:expr2"
+/**
+ * 解析比率表达式字符串，返回 (别名, 表达式) 列表
+ *
+ * 格式："alias1:expr1, alias2:expr2"（括号内的逗号不作为分隔符）
+ */
 fn parse_ratio_expressions(
     expr_str: &str,
     valid_columns: &[String],
@@ -2091,7 +2120,7 @@ fn parse_ratio_expressions(
     Ok(result)
 }
 
-/// Parse a single "alias:expression" pair
+/// 解析单个 "alias:expression" 对，校验别名与表达式非空且别名不是数字
 fn parse_single_expression(spec: &str, _valid_columns: &[String]) -> Result<(String, String)> {
     let colon_pos = spec.find(':').ok_or_else(|| ToolError::InvalidParameter {
         name: "expressions".to_string(),
@@ -2112,7 +2141,7 @@ fn parse_single_expression(spec: &str, _valid_columns: &[String]) -> Result<(Str
         .into());
     }
 
-    // Alias cannot be a number
+    // 别名不能是数字
     if alias.parse::<f64>().is_ok() {
         return Err(ToolError::InvalidParameter {
             name: "expressions".to_string(),
@@ -2124,7 +2153,7 @@ fn parse_single_expression(spec: &str, _valid_columns: &[String]) -> Result<(Str
     Ok((alias, expr))
 }
 
-/// Build a Polars Expr from expression and alias (for a single parsed expression)
+/// 根据表达式字符串与目标别名，构建对应的单个 Polars Expr
 fn build_ratio_expr(exprs_str: &str, valid_columns: &[String], target_alias: &str) -> Result<Expr> {
     let parsed = parse_ratio_expressions(exprs_str, valid_columns)?;
     for (alias, expr_text) in &parsed {
@@ -2139,7 +2168,7 @@ fn build_ratio_expr(exprs_str: &str, valid_columns: &[String], target_alias: &st
     .into())
 }
 
-/// Compile a single arithmetic expression into a Polars Expr
+/// 将单个算术表达式编译为 Polars Expr，并设置别名
 fn build_single_polars_expr(
     expr_text: &str,
     valid_columns: &[String],
@@ -2148,24 +2177,32 @@ fn build_single_polars_expr(
     let tokens = tokenize_expr(expr_text, valid_columns)?;
     let (_, expr) = parse_expr_tokens(&tokens, 0, valid_columns)?;
 
-    // Try casting to ensure Float64 type
+    // 尝试转换以确保为 Float64 类型
     Ok(expr.alias(alias))
 }
 
-/// Token type
+/// 算术表达式的词法单元类型
 #[derive(Debug, Clone, PartialEq)]
 enum ExprToken {
+    /// 列引用（列名）
     ColRef(String),
+    /// 数字字面量
     Number(f64),
+    /// 加号 `+`
     Plus,
+    /// 减号 `-`
     Minus,
+    /// 乘号 `*`
     Star,
+    /// 除号 `/`
     Slash,
+    /// 左括号 `(`
     LParen,
+    /// 右括号 `)`
     RParen,
 }
 
-/// Tokenize an expression string
+/// 将表达式字符串切分为词法单元序列，并校验列名是否存在
 fn tokenize_expr(expr_text: &str, valid_columns: &[String]) -> Result<Vec<ExprToken>> {
     let mut tokens = Vec::new();
     let chars: Vec<char> = expr_text.chars().collect();
@@ -2175,7 +2212,7 @@ fn tokenize_expr(expr_text: &str, valid_columns: &[String]) -> Result<Vec<ExprTo
     while i < len {
         let ch = chars[i];
 
-        // Skip whitespace
+        // 跳过空白字符
         if ch.is_whitespace() {
             i += 1;
             continue;
@@ -2207,7 +2244,7 @@ fn tokenize_expr(expr_text: &str, valid_columns: &[String]) -> Result<Vec<ExprTo
                 i += 1;
             }
             _ if ch.is_ascii_digit() || ch == '.' => {
-                // Number literal
+                // 数字字面量
                 let start = i;
                 while i < len && (chars[i].is_ascii_digit() || chars[i] == '.') {
                     i += 1;
@@ -2220,14 +2257,14 @@ fn tokenize_expr(expr_text: &str, valid_columns: &[String]) -> Result<Vec<ExprTo
                 tokens.push(ExprToken::Number(num));
             }
             _ if ch.is_alphabetic() || ch == '_' => {
-                // Identifier (column name)
+                // 标识符（列名）
                 let start = i;
                 while i < len && (chars[i].is_alphanumeric() || chars[i] == '_') {
                     i += 1;
                 }
                 let ident: String = chars[start..i].iter().collect();
 
-                // Check if it's a valid column name
+                // 检查是否为有效列名
                 if !valid_columns.iter().any(|c| c == &ident) {
                     return Err(ToolError::InvalidParameter {
                         name: "expressions".to_string(),
@@ -2255,10 +2292,14 @@ fn tokenize_expr(expr_text: &str, valid_columns: &[String]) -> Result<Vec<ExprTo
     Ok(tokens)
 }
 
-/// Recursive descent parser for expression token stream
-/// Grammar: expr = term (('+' | '-') term)*
-///       term = factor (('*' | '/') factor)*
-///       factor = NUMBER | ColRef | '(' expr ')'
+/**
+ * 表达式词法单元流的递归下降解析器
+ *
+ * 文法：
+ *   expr   = term (('+' | '-') term)*
+ *   term   = factor (('*' | '/') factor)*
+ *   factor = NUMBER | ColRef | '(' expr ')'
+ */
 fn parse_expr_tokens(
     tokens: &[ExprToken],
     pos: usize,
@@ -2286,7 +2327,7 @@ fn parse_expr_tokens(
     Ok((p, left))
 }
 
-/// Parse term: factor (('*' | '/') factor)*
+/// 解析 term：factor (('*' | '/') factor)*
 fn parse_term(tokens: &[ExprToken], pos: usize, valid_columns: &[String]) -> Result<(usize, Expr)> {
     let (pos, mut left) = parse_factor(tokens, pos, valid_columns)?;
 
@@ -2310,7 +2351,7 @@ fn parse_term(tokens: &[ExprToken], pos: usize, valid_columns: &[String]) -> Res
     Ok((p, left))
 }
 
-/// Parse factor: NUMBER | ColRef | '(' expr ')'
+/// 解析 factor：NUMBER | ColRef | '(' expr ')'
 fn parse_factor(
     tokens: &[ExprToken],
     pos: usize,
@@ -2347,9 +2388,9 @@ fn parse_factor(
     }
 }
 
-// ── Helper functions ──────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────
 
-/// Format a Polars value
+/// 将 Polars 值格式化为字符串（空值显示为 "-"）
 fn format_value(value: &AnyValue) -> String {
     match value {
         AnyValue::Null => "-".to_string(),
@@ -2370,7 +2411,7 @@ fn format_value(value: &AnyValue) -> String {
     }
 }
 
-/// Smart float formatting: preserve precision (up to 6 decimals), strip trailing zeros.
+/// 智能浮点格式化：保留精度（最多 6 位小数）并去除末尾多余的零
 fn format_smart_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
@@ -2393,11 +2434,12 @@ fn format_smart_float(f: f64) -> String {
     }
 }
 
-// ── Multi-file read tool ─────────────────────────────────────────────
+// ── 多文件读取工具 ─────────────────────────────────────────────
 
+/// 多文件读取时允许的最大文件数
 const MAX_MULTI_FILES: usize = 50;
 
-/// Load multiple DataFrames and vertically concatenate them (using Polars concat for efficiency)
+/// 加载多个 DataFrame 并纵向拼接（使用 Polars 拼接以提升效率）
 fn load_multi_dataframes(paths: &[&Path], format: Option<&str>) -> Result<DataFrame> {
     if paths.is_empty() {
         return Err(ToolError::MissingParameter("file_paths".to_string()).into());
@@ -2417,7 +2459,7 @@ fn load_multi_dataframes(paths: &[&Path], format: Option<&str>) -> Result<DataFr
     let first_df = load_dataframe(paths[0], format)?;
     let schema = first_df.schema().clone();
 
-    // Load all DataFrames and validate schema compatibility
+    // 加载所有 DataFrame 并校验 schema 兼容性
     let mut all_dfs = vec![first_df];
     for path in &paths[1..] {
         let df = load_dataframe(path, format)?;
@@ -2435,7 +2477,7 @@ fn load_multi_dataframes(paths: &[&Path], format: Option<&str>) -> Result<DataFr
         all_dfs.push(df);
     }
 
-    // Use single-pass concat via vstack_mut for efficiency (avoids O(n²) copies)
+    // 逐个 vstack 拼接以提升效率（避免 O(n²) 复制）
     let mut result = all_dfs.remove(0);
     for df in &all_dfs {
         result = result.vstack(df).map_err(|e| ToolError::ExecutionFailed {
@@ -2447,21 +2489,26 @@ fn load_multi_dataframes(paths: &[&Path], format: Option<&str>) -> Result<DataFr
     Ok(result)
 }
 
+/// 读取并纵向拼接多个同构数据文件的工具
 pub struct DataMultiReadTool;
 
 impl Tool for DataMultiReadTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "multi_read_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Read and concatenate multiple same-schema data files into a single DataFrame. Supports CSV, JSON, and Parquet. Maximum 50 files. Useful for merging monthly reports, log files, or sharded data. Example: multi_read_data(file_paths=['data/jan.csv','data/feb.csv','data/mar.csv'])"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -2484,6 +2531,7 @@ impl Tool for DataMultiReadTool {
         })
     }
 
+    /// 执行该工具逻辑：校验并加载多个文件后纵向拼接，返回合并结果预览与各文件行数
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let paths_val = parameters
@@ -2520,14 +2568,14 @@ impl Tool for DataMultiReadTool {
 
             let security = SecurityConfig::global();
 
-            // Validate all paths
+            // 校验所有路径
             let paths: Vec<std::path::PathBuf> = path_strs
                 .iter()
                 .map(|p| security.validate_file(p))
                 .collect::<Result<Vec<_>>>()?;
             let path_refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
 
-            // Load and concatenate
+            // 加载并拼接
             let df = load_multi_dataframes(&path_refs, format)?;
 
             let effective_preview = preview_rows.min(security.limits.max_preview_rows);
@@ -2541,7 +2589,7 @@ impl Tool for DataMultiReadTool {
             let preview = df.head(Some(effective_preview));
             let preview_json = df_to_json(&preview)?;
 
-            // Per-file row counts (reload individually for stats)
+            // 统计每个文件的行数（逐个重新加载以获取统计）
             let file_details: Vec<Value> = path_strs
                 .iter()
                 .map(|p| {
@@ -2582,23 +2630,28 @@ impl Tool for DataMultiReadTool {
     }
 }
 
-// ── Join tool ────────────────────────────────────────────────────────
+// ── 关联（Join）工具 ────────────────────────────────────────────────────────
 
+/// 基于公共键列关联两个数据文件的工具
 pub struct DataJoinTool;
 
 impl Tool for DataJoinTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "join_data"
     }
 
+    /// 声明该工具所需的权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Join two data files on common key columns. Supports inner, left, and outer joins. Useful for combining orders with customers, facts with dimensions, etc. Example: join_data(left_file='orders.csv', right_file='customers.csv', join_keys=['customer_id'], join_type='left')"
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -2641,6 +2694,7 @@ impl Tool for DataJoinTool {
         })
     }
 
+    /// 执行该工具逻辑：校验关联键、处理重名列后按指定类型关联两个数据文件
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let left_path = parameters
@@ -2710,7 +2764,7 @@ impl Tool for DataJoinTool {
             let left_df = load_dataframe(&l_path, format)?;
             let right_df = load_dataframe(&r_path, format)?;
 
-            // Validate join keys exist in both DataFrames
+            // 校验关联键在两个 DataFrame 中都存在
             let left_names: std::collections::HashSet<String> = left_df
                 .get_column_names()
                 .iter()
@@ -2739,7 +2793,7 @@ impl Tool for DataJoinTool {
                 }
             }
 
-            // Resolve duplicate non-key column names by adding suffixes
+            // 为重名的非键列添加后缀以消除冲突
             let key_set: std::collections::HashSet<&str> =
                 key_strs.iter().map(|s| s.as_str()).collect();
             let mut right_rename_map = std::collections::HashMap::new();
@@ -2755,7 +2809,7 @@ impl Tool for DataJoinTool {
                 let _ = right_df.rename(old, PlSmallStr::from_str(new));
             }
 
-            // Determine join type
+            // 确定关联类型
             let how = match join_type_str {
                 "inner" => JoinType::Inner,
                 "left" => JoinType::Left,
@@ -2823,7 +2877,7 @@ impl Tool for DataJoinTool {
     }
 }
 
-/// Convert DataFrame to a JSON array (column-major for performance)
+/// 将 DataFrame 转换为 JSON 数组（按列预提取以提升性能）
 fn df_to_json(df: &DataFrame) -> Result<Value> {
     let height = df.height();
     if height == 0 {
@@ -2836,7 +2890,7 @@ fn df_to_json(df: &DataFrame) -> Result<Value> {
         .map(|s| s.to_string())
         .collect();
 
-    // Pre-extract all column data as Vec<Value> to avoid repeated column lookups
+    // 预先将所有列数据提取为 Vec<Value>，避免重复查找列
     let col_data: Vec<Vec<Value>> = columns
         .iter()
         .map(|col_name| {
@@ -2854,7 +2908,7 @@ fn df_to_json(df: &DataFrame) -> Result<Value> {
         })
         .collect();
 
-    // Build records from pre-extracted column data
+    // 基于预提取的列数据构建逐行记录
     let records = (0..height)
         .map(|row_index| {
             let record = columns
@@ -2874,7 +2928,7 @@ fn df_to_json(df: &DataFrame) -> Result<Value> {
     Ok(Value::Array(records))
 }
 
-/// Convert AnyValue to JSON Value
+/// 将 Polars AnyValue 转换为 JSON Value
 fn any_value_to_json(value: &AnyValue) -> Value {
     match value {
         AnyValue::Null => Value::Null,
@@ -2899,9 +2953,9 @@ fn any_value_to_json(value: &AnyValue) -> Value {
     }
 }
 
-/// Parse filter expression (extended: supports AND/OR, contains, starts_with, ends_with, in)
+/// 解析过滤表达式（扩展语法：支持 AND/OR、contains、starts_with、ends_with、in）
 fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
-    // Try splitting by AND / OR first (respecting quoted strings)
+    // 优先按 AND / OR 拆分（忽略引号内的内容）
     for separator in [" AND ", " and ", " OR ", " or "] {
         if let Some(pos) = find_separator_outside_quotes(expr_str, separator) {
             let left = &expr_str[..pos];
@@ -2918,11 +2972,11 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
 
     let s = expr_str.trim();
 
-    // Column name pattern: either quoted "Column Name" or unquoted word_chars
-    // Capture group 1 = quoted col, capture group 2 = unquoted col
+    /* 列名模式：带引号的 "Column Name" 或不带引号的单词字符
+       捕获组 1 = 带引号的列名，捕获组 2 = 不带引号的列名 */
     let col_pat = r#"(?:"([^"]+)"|(\w[\w\s]*\w|\w+))"#;
 
-    // Helper to extract column name from capture groups
+    // 从捕获组中提取列名的辅助闭包
     let extract_col = |cap: &regex::Captures| -> String {
         cap.get(1)
             .or_else(|| cap.get(2))
@@ -2930,7 +2984,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
             .unwrap_or_default()
     };
 
-    // Helper to parse numeric value with proper error handling
+    // 解析数值并提供恰当错误信息的辅助闭包
     let parse_num = |s: &str, expr: &str| -> Result<f64> {
         s.parse::<f64>().map_err(|_| {
             ToolError::InvalidParameter {
@@ -2941,6 +2995,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
         })
     };
 
+    // 编译过滤解析用正则的辅助闭包
     let compile_filter_regex = |pattern: String| -> Result<regex::Regex> {
         regex::Regex::new(&pattern).map_err(|error| {
             ToolError::ExecutionFailed {
@@ -2951,7 +3006,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
         })
     };
 
-    // Numeric comparisons (supports negative numbers: -?[\d.]+)
+    // 数值比较（支持负数：-?[\d.]+）
     let re = compile_filter_regex(format!(r#"^{}\s*(>=|<=|!=|==|>|<)\s*(-?[\d.]+)$"#, col_pat))?;
     if let Some(cap) = re.captures(s)
         && let (Some(operator), Some(value)) = (cap.get(3), cap.get(4))
@@ -2974,7 +3029,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
         };
     }
 
-    // String comparison: col == "value" or col != "value"
+    // 字符串比较：col == "value" 或 col != "value"
     let re = compile_filter_regex(format!(r#"^{}\s*(==|!=)\s*"([^"]+)"$"#, col_pat))?;
     if let Some(cap) = re.captures(s)
         && let (Some(operator), Some(value)) = (cap.get(3), cap.get(4))
@@ -2987,7 +3042,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
         };
     }
 
-    // String contains/starts_with/ends_with
+    // 字符串 contains/starts_with/ends_with 匹配
     let re = compile_filter_regex(format!(
         r#"^{}\s+(contains|starts_with|ends_with)\s+"([^"]+)"$"#,
         col_pat
@@ -3009,7 +3064,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
         };
     }
 
-    // IN expression: col in ("a", "b", "c")
+    // IN 表达式：col in ("a", "b", "c")
     let re = compile_filter_regex(format!(r#"(?s)^{}\s+in\s*\((.+)\)$"#, col_pat))?;
     if let Some(cap) = re.captures(s)
         && let Some(values) = cap.get(3)
@@ -3042,7 +3097,7 @@ fn parse_filter_expression(expr_str: &str) -> Result<Expr> {
     .into())
 }
 
-/// Find separator position outside of quoted strings
+/// 查找位于引号之外的分隔符位置
 fn find_separator_outside_quotes(expr: &str, separator: &str) -> Option<usize> {
     let mut in_quotes = false;
     let bytes = expr.as_bytes();
@@ -3062,7 +3117,7 @@ fn find_separator_outside_quotes(expr: &str, separator: &str) -> Option<usize> {
     None
 }
 
-/// Parse aggregation expression (extended: supports more operations)
+/// 解析聚合表达式（扩展：支持更多聚合操作），格式为 "column:operation, ..."
 fn parse_aggregations(agg_str: &str) -> Result<Vec<Expr>> {
     let mut exprs = Vec::new();
 
@@ -3109,7 +3164,7 @@ fn parse_aggregations(agg_str: &str) -> Result<Vec<Expr>> {
             "first" => col(col_name).first().alias(format!("{}_first", col_name)),
             "last" => col(col_name).last().alias(format!("{}_last", col_name)),
             _ => {
-                // Support percentile:N for custom percentile
+                // 支持 percentile:N 形式的自定义百分位数
                 if op.starts_with("percentile:") || op.starts_with("pct:") {
                     let pct_str = op
                         .strip_prefix("percentile:")
@@ -3149,9 +3204,9 @@ fn parse_aggregations(agg_str: &str) -> Result<Vec<Expr>> {
     Ok(exprs)
 }
 
-// ── Helper functions for data tools ──────────────────────────────────
+// ── 数据工具的辅助函数 ──────────────────────────────────
 
-/// Compute covariance between two Series
+/// 计算两个 Series 之间的（样本）协方差
 fn compute_covariance(s1: &Series, s2: &Series) -> f64 {
     if s1.len() != s2.len() || s1.is_empty() {
         return f64::NAN;
@@ -3174,13 +3229,13 @@ fn compute_covariance(s1: &Series, s2: &Series) -> f64 {
     }
 
     if count > 1 {
-        sum / (count as f64 - 1.0) // Sample covariance
+        sum / (count as f64 - 1.0) // 样本协方差
     } else {
         f64::NAN
     }
 }
 
-/// Compute Pearson correlation between two f64 Series
+/// 计算两个 f64 Series 之间的 Pearson 相关系数
 fn compute_pearson(s1: &Series, s2: &Series) -> f64 {
     let cov = compute_covariance(s1, s2);
     let std1 = s1.std(1).unwrap_or(f64::NAN);
@@ -3192,7 +3247,7 @@ fn compute_pearson(s1: &Series, s2: &Series) -> f64 {
     }
 }
 
-/// Convert a Series to ranks (average rank for ties) for Spearman correlation.
+/// 将 Series 转换为秩次（并列值取平均秩），用于 Spearman 相关系数计算
 fn compute_ranks(s: &Series) -> Vec<f64> {
     let n = s.len();
     let mut indexed: Vec<(usize, f64)> = Vec::with_capacity(n);
@@ -3205,7 +3260,7 @@ fn compute_ranks(s: &Series) -> Vec<f64> {
         indexed.push((i, val));
     }
 
-    // Sort by value (NaN goes to end)
+    // 按值排序（NaN 排在末尾）
     indexed.sort_by(|a, b| {
         if a.1.is_nan() && b.1.is_nan() {
             std::cmp::Ordering::Equal
@@ -3225,12 +3280,12 @@ fn compute_ranks(s: &Series) -> Vec<f64> {
             i += 1;
             continue;
         }
-        // Find all ties (same value)
+        // 找出所有并列值（相同值）
         let mut j = i;
         while j < n && (indexed[j].1 - indexed[i].1).abs() < f64::EPSILON {
             j += 1;
         }
-        // Average rank for ties (1-based)
+        // 并列值取平均秩（从 1 开始）
         let avg_rank = (i as f64 + j as f64 + 1.0) / 2.0;
         for k in i..j {
             ranks[indexed[k].0] = avg_rank;
@@ -3240,20 +3295,23 @@ fn compute_ranks(s: &Series) -> Vec<f64> {
     ranks
 }
 
-// ── CorrelateTool ────────────────────────────────────────────────────────────
+// ── 相关性分析工具（CorrelateTool） ────────────────────────────────────────────────────────────
 
-/// Compute correlation matrix between numeric columns
+/// 计算数值列之间相关系数矩阵的工具
 pub struct CorrelateTool;
 
 impl Tool for CorrelateTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "correlate_data"
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Compute correlation matrix between numeric columns. Returns Pearson correlation coefficients between -1 and 1."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -3276,6 +3334,7 @@ impl Tool for CorrelateTool {
         })
     }
 
+    /// 执行该工具逻辑：选取数值列并按 Pearson 或 Spearman 方法计算相关系数矩阵
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -3294,7 +3353,7 @@ impl Tool for CorrelateTool {
 
             let df = load_dataframe(&path, None)?;
 
-            // Select numeric columns
+            // 选取数值列
             let numeric_cols: Vec<String> = if let Some(cols_str) = columns {
                 cols_str.split(',').map(|s| s.trim().to_string()).collect()
             } else {
@@ -3316,7 +3375,7 @@ impl Tool for CorrelateTool {
                 })));
             }
 
-            // Precompute ranks if Spearman
+            // 若为 Spearman 方法则预先计算秩次
             let all_ranks: Option<Vec<Vec<f64>>> = if method == "spearman" {
                 let ranks: std::result::Result<Vec<Vec<f64>>, ToolError> = numeric_cols
                     .iter()
@@ -3342,7 +3401,7 @@ impl Tool for CorrelateTool {
                 None
             };
 
-            // Compute correlation matrix
+            // 计算相关系数矩阵
             let mut matrix = Vec::new();
             for (ci, col1) in numeric_cols.iter().enumerate() {
                 let mut row = Vec::new();
@@ -3350,12 +3409,12 @@ impl Tool for CorrelateTool {
                     let corr = if col1 == col2 {
                         1.0
                     } else if let Some(ref ranks) = all_ranks {
-                        // Spearman: Pearson correlation on ranks
+                        // Spearman：对秩次计算 Pearson 相关系数
                         let r1 = Series::new(PlSmallStr::EMPTY, &ranks[ci]);
                         let r2 = Series::new(PlSmallStr::EMPTY, &ranks[cj]);
                         compute_pearson(&r1, &r2)
                     } else {
-                        // Pearson
+                        // Pearson 相关系数
                         let s1 = df
                             .column(col1)
                             .map_err(|e| ToolError::ExecutionFailed {
@@ -3389,7 +3448,7 @@ impl Tool for CorrelateTool {
                 matrix.push(row);
             }
 
-            // Format output as structured JSON
+            // 将输出格式化为结构化 JSON
             let matrix_json: Vec<Vec<Value>> = matrix
                 .iter()
                 .map(|row| {
@@ -3419,20 +3478,23 @@ impl Tool for CorrelateTool {
     }
 }
 
-// ── PivotTool ────────────────────────────────────────────────────────────────
+// ── 透视表工具 ────────────────────────────────────────────────────────────────
 
-/// Create pivot tables from data
+/// 从数据创建透视表的工具
 pub struct PivotTool;
 
 impl Tool for PivotTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "pivot_data"
     }
 
+    /// 返回该工具的功能描述
     fn description(&self) -> &str {
         "Create pivot tables. Reshape data by grouping rows by one or more columns and pivoting another column's values into new columns."
     }
 
+    /// 返回该工具的 JSON Schema 参数定义
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -3463,6 +3525,7 @@ impl Tool for PivotTool {
         })
     }
 
+    /// 执行该工具逻辑：分组聚合后将透视列的取值展开为新列，生成透视表
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -3495,11 +3558,11 @@ impl Tool for PivotTool {
 
             let df = load_dataframe(&path, None)?;
 
-            // Parse column lists
+            // 解析列名列表
             let index_cols: Vec<String> = index.split(',').map(|s| s.trim().to_string()).collect();
             let value_cols: Vec<String> = values.split(',').map(|s| s.trim().to_string()).collect();
 
-            // Validate columns exist
+            // 校验列是否存在
             for col in index_cols.iter().chain(value_cols.iter()) {
                 let col_str = col.as_str();
                 if !df.get_column_names().iter().any(|c| c.as_str() == col_str) {
@@ -3524,18 +3587,19 @@ impl Tool for PivotTool {
                 .into());
             }
 
-            // ── Real pivot: spread `columns` values into new columns ──
-            //
-            // Example: index=["Region"], columns="Product", values="Revenue", agg="sum"
-            //   Input:  Region | Product | Revenue
-            //           North  | A       | 100
-            //           North  | B       | 200
-            //           South  | A       | 300
-            //   Output: Region | A   | B
-            //           North  | 100 | 200
-            //           South  | 300 | null
+            /* ── 真正的透视：将 `columns` 列的取值展开为新列 ──
 
-            // Step 1: group by (index_cols + columns_col) and aggregate values
+               示例：index=["Region"], columns="Product", values="Revenue", agg="sum"
+                 输入：  Region | Product | Revenue
+                         North  | A       | 100
+                         North  | B       | 200
+                         South  | A       | 300
+                 输出：  Region | A   | B
+                         North  | 100 | 200
+                         South  | 300 | null
+            */
+
+            // 第 1 步：按 (index_cols + columns_col) 分组并聚合值列
             let mut group_cols: Vec<Expr> = index_cols.iter().map(col).collect();
             group_cols.push(col(columns_str));
 
@@ -3564,7 +3628,7 @@ impl Tool for PivotTool {
                     message: format!("Group-by step failed: {}", e),
                 })?;
 
-            // Step 2: Get unique values of the pivot column
+            // 第 2 步：获取透视列的唯一值
             let pivot_col_series = grouped
                 .column(columns_str)
                 .map_err(|e| ToolError::ExecutionFailed {
@@ -3589,10 +3653,10 @@ impl Tool for PivotTool {
                 })
                 .collect();
 
-            // Step 3: For each pivot value, filter + rename value columns, then join
+            // 第 3 步：对每个透视值，过滤并重命名值列，然后关联
             let index_exprs: Vec<Expr> = index_cols.iter().map(col).collect();
 
-            // Start with the unique index rows
+            // 以去重后的索引行作为起点
             let index_names: Arc<[PlSmallStr]> = index_cols
                 .iter()
                 .map(|s| PlSmallStr::from(s.as_str()))
@@ -3615,7 +3679,7 @@ impl Tool for PivotTool {
 
             for pval in &pivot_values {
                 for val_col in &value_cols {
-                    // Filter grouped data for this pivot value
+                    // 过滤出该透视值对应的分组数据
                     let filter_expr = col(columns_str).eq(lit(pval.as_str()));
                     let new_col_name = if value_cols.len() == 1 {
                         pval.clone()
@@ -3640,7 +3704,7 @@ impl Tool for PivotTool {
                             message: format!("Failed to filter for pivot value '{}': {}", pval, e),
                         })?;
 
-                    // Left join with result
+                    // 与结果进行左关联
                     let left_on: Vec<Expr> = index_cols.iter().map(col).collect();
                     let right_on: Vec<Expr> = index_cols.iter().map(col).collect();
                     result = result
@@ -3662,7 +3726,7 @@ impl Tool for PivotTool {
                 }
             }
 
-            // Convert to JSON for output
+            // 转换为 JSON 输出
             let json_value = df_to_json(&result)?;
 
             Ok(ToolResult::success_json(serde_json::json!({
@@ -3680,10 +3744,12 @@ impl Tool for PivotTool {
     }
 }
 
+/// 数据处理工具的单元测试
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 测试空 DataFrame 转换为空 JSON 数组
     #[test]
     fn test_df_to_json_empty_dataframe() {
         let df = DataFrame::empty();
@@ -3691,6 +3757,7 @@ mod tests {
         assert!(result.as_array().unwrap().is_empty());
     }
 
+    /// 测试含数据的 DataFrame 能正确转换为逐行 JSON 记录
     #[test]
     fn test_df_to_json_with_data() {
         let s1 = Series::new(PlSmallStr::from("name"), &["Alice", "Bob"]);
@@ -3706,6 +3773,7 @@ mod tests {
         assert_eq!(arr[1]["age"], 25);
     }
 
+    /// 测试标准化响应信封包含完整字段
     #[test]
     fn test_data_tool_response_structure() {
         let s1 = Series::new(PlSmallStr::from("x"), &[1i32, 2, 3]);
@@ -3714,7 +3782,7 @@ mod tests {
         let result = data_tool_response("test_tool", &df, 100);
         let obj = result.as_object().unwrap();
 
-        // Verify standardized envelope
+        // 校验标准化响应信封
         assert_eq!(obj["tool"], "test_tool");
         assert_eq!(obj["rows"], 3);
         assert_eq!(obj["columns"], 1);
@@ -3729,6 +3797,7 @@ mod tests {
         );
     }
 
+    /// 测试超出最大行数时响应数据被截断
     #[test]
     fn test_data_tool_response_truncation() {
         let s1 = Series::new(PlSmallStr::from("v"), &(0..10).collect::<Vec<i32>>());
@@ -3742,6 +3811,7 @@ mod tests {
         assert_eq!(obj["data"].as_array().unwrap().len(), 3);
     }
 
+    /// 测试带额外元数据的响应同时包含标准字段与额外字段
     #[test]
     fn test_data_tool_response_with_meta() {
         let s1 = Series::new(PlSmallStr::from("a"), &[1i32]);
@@ -3758,14 +3828,15 @@ mod tests {
         );
         let obj = result.as_object().unwrap();
 
-        // Standard fields
+        // 标准字段
         assert_eq!(obj["tool"], "filter_data");
         assert_eq!(obj["rows"], 1);
-        // Extra fields
+        // 额外字段
         assert_eq!(obj["filter"], "a > 0");
         assert_eq!(obj["matched_rows"], 1);
     }
 
+    /// 测试常见 AnyValue 类型到 JSON 的转换
     #[test]
     fn test_any_value_to_json_types() {
         assert_eq!(any_value_to_json(&AnyValue::Null), Value::Null);
@@ -3783,6 +3854,7 @@ mod tests {
         );
     }
 
+    /// 测试根据扩展名与 hint 检测数据格式
     #[test]
     fn test_detect_format() {
         use std::path::PathBuf;

@@ -51,16 +51,26 @@ pub(crate) const AGENT_CANCELLATION_SETTLE_PERIOD: std::time::Duration =
 
 // ── 核心子模块 ───────────────────────────────────────────────────────
 
+/// Agent 执行准入控制。
 pub mod admission;
+/// Agent 执行回调接口与实现。
 pub mod callbacks;
+/// Agent 配置类型。
 pub mod config;
+/// 输出质量评审（Critic）能力。
 pub mod critic;
+/// 默认的 Agent 工厂实现。
 pub mod default_factory;
+/// Agent 运行句柄。
 pub mod handle;
+/// ReAct Agent 核心实现。
 pub mod react;
+/// Agent 状态快照。
 pub mod snapshot;
+/// 运行中引导（steer）消息处理。
 mod steer;
 
+/// 子 Agent 派发与团队协作。
 #[cfg(feature = "subagent")]
 pub mod subagent;
 

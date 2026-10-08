@@ -44,6 +44,7 @@ impl SubagentMessageTool {
 }
 
 impl Default for SubagentMessageTool {
+    /// 创建默认实例。
     fn default() -> Self {
         Self
     }
@@ -304,4 +305,3 @@ mod tests {
         assert!(schema.get("required").is_none());
     }
 }
-</content>

@@ -1,8 +1,9 @@
-//! 轨迹回放（Trajectory replay）—— 对历史 Agent 运行记录的离线分析。
-//!
-//! 给定一个从 [`RunStore`](crate::trace::RunStore) 加载出来的 [`Run`]，
-//! 回放系统会提取模式、检测策略违规，并在不重新运行 Agent 的情况下
-//! 生成评测指标。
+/*! 轨迹回放（Trajectory replay）—— 对历史 Agent 运行记录的离线分析。
+ *
+ * 给定一个从 [`RunStore`](crate::trace::RunStore) 加载出来的 [`Run`]，
+ * 回放系统会提取模式、检测策略违规，并在不重新运行 Agent 的情况下
+ * 生成评测指标。
+ */
 
 use crate::eval::{EvalConstraints, EvalMetric, EvalResult};
 use crate::trace::{Run, RunEvent};
@@ -210,8 +211,9 @@ impl TrajectoryReplay {
         files
     }
 
-    /// 将已确认的文件编辑与之前成功的文件读取进行核对。
-    /// 路径按字面进行归一化比较；不会解析符号链接。
+    /** 将已确认的文件编辑与之前成功的文件读取进行核对。
+     * 路径按字面进行归一化比较；不会解析符号链接。
+     */
     pub fn detect_write_without_read(&self) -> Vec<String> {
         let mut violations = Vec::new();
         let mut read_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -274,7 +276,7 @@ impl TrajectoryReplay {
         vec![
             EvalMetric {
                 name: "tool_calls".into(),
-                score: 1.0, // neutral
+                score: 1.0, // 中性分
                 detail: format!("{total_calls} total tool calls"),
             },
             EvalMetric {

@@ -1,6 +1,8 @@
-//! demo01: 工具调用能力演示（不包含规划 / human-in-loop / subagent）
-//!
-//! 展示 `#[tool]` 宏工具定义方式
+/*!
+demo01: 工具调用能力演示（不包含规划 / human-in-loop / subagent）
+
+展示 `#[tool]` 宏工具定义方式
+*/
 
 use echo_agent::error::Result;
 use echo_agent::prelude::*;

@@ -10,6 +10,7 @@ cargo run -p echo-agent-learning --example demo00_quickstart --locked
 ```
 */
 
+/// 示例共享的辅助模块（LLM 配置加载等）。
 mod support;
 
 use echo_agent::prelude::*;

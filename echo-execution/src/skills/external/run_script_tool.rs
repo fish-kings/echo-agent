@@ -1,43 +1,45 @@
-//! RunSkillScriptTool —— 执行技能随附的脚本（第三层）。
-//!
-//! 许多实际技能都在其 `scripts/` 目录中包含 Python/Node/Shell 脚本。
-//! 该工具让 LLM 能够在正确的工作目录（即技能根目录）下直接执行这些脚本，
-//! 并具备恰当的解释器自动检测能力。
-//!
-//! ## 沙箱集成
-//!
-//! 所有脚本执行都会经过 [`SandboxManager`]，它会根据安全策略自动选择
-//! 最合适的隔离级别：
-//!
-//! | 命令类型 | 典型隔离级别 |
-//! |-------------|-------------------|
-//! | `ls`、`cat`、`echo` | 无隔离（受信） |
-//! | `python3 script.py` | OS 沙箱 |
-//! | 未知 / 危险命令 | Docker 容器 |
-//!
-//! 若未配置 `SandboxManager`，则回退为裸进程启动方式，
-//! 使用最小化的环境变量白名单（`env_clear()` + PATH / SKILL_DIR / SESSION_ID），
-//! 并尽力实现超时终止（`kill_on_drop(true)`）。
-//!
-//! ## 跨平台解释器检测
-//!
-//! | 扩展名 | Unix | Windows |
-//! |-----------|------|---------|
-//! | `.py` | `python3 script.py` | `python script.py` |
-//! | `.js` | `node script.js` | `node script.js` |
-//! | `.ts` | `bun` / `deno` / `npx tsx` | 检测逻辑相同 |
-//! | `.sh` | `bash script.sh` | Git Bash -> PowerShell 回退 |
-//! | `.ps1` | `pwsh script.ps1` | `powershell script.ps1` |
-//! | `.rb` | `ruby script.rb` | `ruby script.rb` |
-//!
-//! ## 安全模型
-//!
-//! - 只有**已激活**技能中的脚本才能被执行
-//! - 脚本路径必须是相对路径，且规范化后必须位于已激活技能目录之下
-//! - 直接调用解释器（不经过 shell 包装）
-//! - 可配置超时时间（默认 30 秒）
-//! - 与沙箱系统完全集成，基于策略进行路由
-//! - 格式错误的 `args` 字符串会被拒绝，而不是被静默地重新解释
+/*!
+RunSkillScriptTool —— 执行技能随附的脚本（第三层）。
+
+许多实际技能都在其 `scripts/` 目录中包含 Python/Node/Shell 脚本。
+该工具让 LLM 能够在正确的工作目录（即技能根目录）下直接执行这些脚本，
+并具备恰当的解释器自动检测能力。
+
+## 沙箱集成
+
+所有脚本执行都会经过 [`SandboxManager`]，它会根据安全策略自动选择
+最合适的隔离级别：
+
+| 命令类型 | 典型隔离级别 |
+|-------------|-------------------|
+| `ls`、`cat`、`echo` | 无隔离（受信） |
+| `python3 script.py` | OS 沙箱 |
+| 未知 / 危险命令 | Docker 容器 |
+
+若未配置 `SandboxManager`，则回退为裸进程启动方式，
+使用最小化的环境变量白名单（`env_clear()` + PATH / SKILL_DIR / SESSION_ID），
+并尽力实现超时终止（`kill_on_drop(true)`）。
+
+## 跨平台解释器检测
+
+| 扩展名 | Unix | Windows |
+|-----------|------|---------|
+| `.py` | `python3 script.py` | `python script.py` |
+| `.js` | `node script.js` | `node script.js` |
+| `.ts` | `bun` / `deno` / `npx tsx` | 检测逻辑相同 |
+| `.sh` | `bash script.sh` | Git Bash -> PowerShell 回退 |
+| `.ps1` | `pwsh script.ps1` | `powershell script.ps1` |
+| `.rb` | `ruby script.rb` | `ruby script.rb` |
+
+## 安全模型
+
+- 只有**已激活**技能中的脚本才能被执行
+- 脚本路径必须是相对路径，且规范化后必须位于已激活技能目录之下
+- 直接调用解释器（不经过 shell 包装）
+- 可配置超时时间（默认 30 秒）
+- 与沙箱系统完全集成，基于策略进行路由
+- 格式错误的 `args` 字符串会被拒绝，而不是被静默地重新解释
+*/
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,21 +56,29 @@ use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult, ToolRiskLevel};
 
+/// 脚本执行的默认超时时间（秒）。
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
-/// Tool for executing scripts from activated skill directories.
-///
-/// See the [module-level docs](self) for cross-platform behavior and security model.
+/**
+用于执行已激活技能目录中脚本的工具。
+
+跨平台行为与安全模型参见[模块级文档](self)。
+*/
 pub struct RunSkillScriptTool {
+    /// 技能注册表，用于校验技能是否已激活并获取其描述符。
     registry: Arc<RwLock<SkillRegistry>>,
+    /// 可选的沙箱执行器；为 `None` 时回退为直接派生进程。
     sandbox: Option<Arc<dyn SandboxExecutor>>,
+    /// 脚本执行超时时间（秒）。
     timeout_secs: u64,
 }
 
-/// Apply SkillSandboxPolicy constraints to a SandboxCommand.
-///
-/// Standalone function (not a method) so it can be called from within
-/// the `execute` method's `BoxFuture` async block.
+/**
+将 SkillSandboxPolicy 约束应用到 SandboxCommand 上。
+
+设计为独立函数（而非方法），以便在 `execute` 方法的
+`BoxFuture` 异步块内调用。
+*/
 fn apply_sandbox_policy(cmd: &mut SandboxCommand, policy: &SkillSandboxPolicy) {
     if !policy.is_constraining() {
         return;
@@ -78,11 +88,13 @@ fn apply_sandbox_policy(cmd: &mut SandboxCommand, policy: &SkillSandboxPolicy) {
     }
 }
 
-/// Build ResourceLimits from a SkillSandboxPolicy for `execute_with_limits`.
-/// When the policy declares network/path restrictions, they translate to
-/// sandbox resource limits enforced at the OS level (Seatbelt / Landlock).
+/**
+根据 SkillSandboxPolicy 构建 ResourceLimits，供 `execute_with_limits` 使用。
+当策略声明了网络/路径限制时，这些限制会转换为在 OS 层面
+（Seatbelt / Landlock）强制执行的沙箱资源限制。
+*/
 fn sandbox_limits_from_policy(policy: &SkillSandboxPolicy) -> ResourceLimits {
-    let mut limits = ResourceLimits::unrestricted(); // embedding application local trust model
+    let mut limits = ResourceLimits::unrestricted(); // 嵌入方应用的本地信任模型
     limits.network = policy.network.unwrap_or(true);
     if !policy.allowed_paths.is_empty() {
         limits.writable_paths = policy.allowed_paths.clone();
@@ -94,6 +106,7 @@ fn sandbox_limits_from_policy(policy: &SkillSandboxPolicy) -> ResourceLimits {
 }
 
 impl RunSkillScriptTool {
+    /// 基于技能注册表创建工具，使用默认超时且不配置沙箱。
     pub fn new(registry: Arc<RwLock<SkillRegistry>>) -> Self {
         Self {
             registry,
@@ -102,11 +115,13 @@ impl RunSkillScriptTool {
         }
     }
 
+    /// 配置沙箱执行器，脚本将经由沙箱执行。
     pub fn with_sandbox_manager(mut self, manager: Arc<dyn SandboxExecutor>) -> Self {
         self.sandbox = Some(manager);
         self
     }
 
+    /// 设置脚本执行超时时间（秒）。
     pub fn with_timeout(mut self, secs: u64) -> Self {
         self.timeout_secs = secs;
         self
@@ -114,10 +129,12 @@ impl RunSkillScriptTool {
 }
 
 impl Tool for RunSkillScriptTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "run_skill_script"
     }
 
+    /// 工具描述，供 LLM 理解其用途。
     fn description(&self) -> &str {
         "Execute a script from an activated skill's scripts/ directory. \
          The working directory is set to the skill's root. \
@@ -126,13 +143,16 @@ impl Tool for RunSkillScriptTool {
          The skill must be activated first via activate_skill."
     }
 
+    /// 该工具需要的权限：执行。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Execute]
     }
+    /// 风险等级：危险。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
+    /// 工具参数的 JSON Schema。
     fn parameters(&self) -> serde_json::Value {
         json!({
             "type": "object",
@@ -155,6 +175,7 @@ impl Tool for RunSkillScriptTool {
         })
     }
 
+    /// 校验技能与脚本路径后，经由沙箱或直接派生进程执行脚本。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let skill_name = parameters
@@ -257,10 +278,10 @@ impl Tool for RunSkillScriptTool {
                 )));
             }
 
-            // Resolve interpreter from script extension
+            // 根据脚本扩展名解析解释器
             let invocation = resolve_interpreter(&script_path);
 
-            // Build argument list: [prefix_args...] <script_path> [user_args...]
+            // 构建参数列表：[prefix_args...] <script_path> [user_args...]
             let mut all_args: Vec<String> = invocation.prefix_args.to_vec();
             all_args.push(canonical_script_path.display().to_string());
             if !args_str.is_empty() {
@@ -275,15 +296,15 @@ impl Tool for RunSkillScriptTool {
 
             let timeout = std::time::Duration::from_secs(self.timeout_secs);
 
-            // -- Sandbox execution path --
+            // -- 沙箱执行路径 --
             if let Some(ref manager) = self.sandbox {
                 let mut sandbox_cmd = SandboxCommand::program(&invocation.program, all_args)
                     .with_working_dir(&canonical_skill_dir)
                     .with_timeout(timeout);
 
-                // Apply SkillSandboxPolicy from descriptor (if declared).
-                // Network / path restrictions go through ResourceLimits +
-                // execute_with_limits for OS-level enforcement.
+                /* 应用描述符中声明的 SkillSandboxPolicy（如有）。
+                网络 / 路径限制通过 ResourceLimits + execute_with_limits
+                在 OS 层面强制执行。 */
                 let execution_result = if let Some(ref policy) = descriptor.sandbox
                     && policy.is_constraining()
                 {
@@ -310,7 +331,7 @@ impl Tool for RunSkillScriptTool {
                 };
             }
 
-            // -- Fallback: direct process execution (no sandbox) --
+            // -- 回退：直接执行进程（无沙箱）--
             let mut cmd = tokio::process::Command::new(&invocation.program);
             for arg in &all_args {
                 cmd.arg(arg);
@@ -318,10 +339,10 @@ impl Tool for RunSkillScriptTool {
             cmd.current_dir(&canonical_skill_dir);
             cmd.kill_on_drop(true);
 
-            // Use minimal environment to avoid leaking sensitive variables
+            // 使用最小化环境，避免泄露敏感变量
             let env = minimal_env(
                 &canonical_skill_dir.display().to_string(),
-                "", // no session_id needed for script execution
+                "", // 脚本执行无需 session_id
                 std::collections::HashMap::new(),
             );
             cmd.env_clear();
@@ -356,17 +377,17 @@ impl Tool for RunSkillScriptTool {
     }
 }
 
-// -- Interpreter Resolution --
+// -- 解释器解析 --
 
-/// Resolved invocation: how to run a script file.
+/// 解析后的调用方式：如何运行某个脚本文件。
 struct Invocation {
-    /// The executable to call (e.g. `python3`, `node`, `bash`).
+    /// 要调用的可执行程序（如 `python3`、`node`、`bash`）。
     program: String,
-    /// Arguments inserted between the program and the script path.
+    /// 插入在程序与脚本路径之间的参数。
     prefix_args: Vec<String>,
 }
 
-/// Resolve the interpreter invocation for a script path, with cross-platform awareness.
+/// 为脚本路径解析解释器调用方式，考虑跨平台差异。
 fn resolve_interpreter(script_path: &str) -> Invocation {
     let ext = script_path
         .rsplit('.')
@@ -384,11 +405,12 @@ fn resolve_interpreter(script_path: &str) -> Invocation {
         "pl" => Invocation::simple("perl"),
         "php" => Invocation::simple("php"),
         "r" | "R" => Invocation::new("Rscript", vec![]),
-        _ => resolve_shell(), // unknown extension -> try shell
+        _ => resolve_shell(), // 未知扩展名 -> 尝试 shell
     }
 }
 
 impl Invocation {
+    /// 创建无前置参数的调用方式。
     fn simple(program: &str) -> Self {
         Self {
             program: program.into(),
@@ -396,6 +418,7 @@ impl Invocation {
         }
     }
 
+    /// 创建带前置参数的调用方式。
     fn new(program: &str, prefix_args: Vec<&str>) -> Self {
         Self {
             program: program.into(),
@@ -404,31 +427,33 @@ impl Invocation {
     }
 }
 
-/// Python: `uv run --script` first (auto PEP 723 ephemeral env),
-/// then `python3`, then `python`, Windows `py -3`.
+/**
+Python：优先 `uv run --script`（自动处理 PEP 723 临时环境），
+其次 `python3`、`python`，Windows 上为 `py -3`。
+*/
 fn resolve_python() -> Invocation {
-    // Tier 1: uv run --script (handles PEP 723 inline dependencies,
-    // auto ephemeral venv, no user pip install needed)
+    /* 第 1 级：uv run --script（处理 PEP 723 内联依赖，
+    自动创建临时 venv，无需用户 pip install） */
     if which_exists("uv") {
         return Invocation::new("uv", vec!["run", "--script"]);
     }
-    // Tier 2: bare python3 (stdlib scripts still work)
+    // 第 2 级：裸 python3（仅用标准库的脚本仍可运行）
     if which_exists("python3") {
         return Invocation::simple("python3");
     }
-    // Tier 3: python (macOS python3 not installed, or Windows)
+    // 第 3 级：python（macOS 未安装 python3，或 Windows）
     if which_exists("python") {
         return Invocation::simple("python");
     }
-    // Windows fallback
+    // Windows 回退
     if cfg!(target_os = "windows") && which_exists("py") {
         return Invocation::new("py", vec!["-3"]);
     }
-    // Last resort: assume python3 exists, let Command fail with clear error
+    // 最后手段：假定 python3 存在，由 Command 给出明确的失败信息
     Invocation::simple("python3")
 }
 
-/// TypeScript: `bun` -> `deno run` -> `npx tsx`.
+/// TypeScript：`bun` -> `deno run` -> `npx tsx`。
 fn resolve_typescript() -> Invocation {
     if which_exists("bun") {
         return Invocation::simple("bun");
@@ -439,7 +464,7 @@ fn resolve_typescript() -> Invocation {
     Invocation::new("npx", vec!["tsx"])
 }
 
-/// Shell scripts (.sh/.bash): bash on Unix, Git Bash -> PowerShell on Windows.
+/// Shell 脚本（.sh/.bash）：Unix 上用 bash，Windows 上 Git Bash -> PowerShell。
 fn resolve_shell() -> Invocation {
     if cfg!(target_os = "windows") {
         if let Some(git_bash) = find_git_bash() {
@@ -454,7 +479,7 @@ fn resolve_shell() -> Invocation {
     }
 }
 
-/// PowerShell: `pwsh` (cross-platform PS 7+) -> `powershell` (Windows built-in).
+/// PowerShell：`pwsh`（跨平台 PS 7+）-> `powershell`（Windows 内置）。
 fn resolve_powershell() -> Invocation {
     if which_exists("pwsh") {
         Invocation::new("pwsh", vec!["-NoProfile", "-NonInteractive", "-File"])
@@ -474,7 +499,7 @@ fn resolve_powershell() -> Invocation {
     }
 }
 
-/// Find Git Bash on Windows.
+/// 在 Windows 上查找 Git Bash。
 #[cfg(target_os = "windows")]
 fn find_git_bash() -> Option<PathBuf> {
     let candidates = [
@@ -501,14 +526,15 @@ fn find_git_bash() -> Option<PathBuf> {
     None
 }
 
+/// 非 Windows 平台无需查找 Git Bash，始终返回 `None`。
 #[cfg(not(target_os = "windows"))]
 fn find_git_bash() -> Option<PathBuf> {
     None
 }
 
-// -- Utilities --
+// -- 工具函数 --
 
-/// Check if a command exists on PATH.
+/// 检查命令是否存在于 PATH 中。
 fn which_exists(cmd: &str) -> bool {
     std::process::Command::new(cmd)
         .arg("--version")
@@ -518,7 +544,7 @@ fn which_exists(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Format execution output into a structured result.
+/// 将执行输出格式化为结构化结果。
 fn format_execution_result(
     skill_name: &str,
     script_path: &str,
@@ -556,8 +582,9 @@ fn format_execution_result(
     }
 }
 
-// -- Tests --
+// -- 测试 --
 
+// 单元测试：脚本解释器选择与执行。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +592,7 @@ mod tests {
     use crate::skills::registry::SkillRegistry;
     use std::collections::HashMap;
 
+    /// 验证 Python 解释器解析结果属于预期候选之一。
     #[test]
     fn test_resolve_python() {
         let inv = resolve_python();
@@ -579,6 +607,7 @@ mod tests {
         );
     }
 
+    /// 验证 TypeScript 解释器解析结果属于预期候选之一。
     #[test]
     fn test_resolve_typescript() {
         let inv = resolve_typescript();
@@ -589,6 +618,7 @@ mod tests {
         );
     }
 
+    /// 验证 shell 解释器解析结果符合当前平台预期。
     #[test]
     fn test_resolve_shell() {
         let inv = resolve_shell();
@@ -606,6 +636,7 @@ mod tests {
         }
     }
 
+    /// 验证 PowerShell 解释器解析结果属于预期候选之一。
     #[test]
     fn test_resolve_powershell() {
         let inv = resolve_powershell();
@@ -616,6 +647,7 @@ mod tests {
         );
     }
 
+    /// 验证常见扩展名映射到正确的解释器。
     #[test]
     fn test_resolve_interpreter_extensions() {
         assert_eq!(resolve_interpreter("test.js").program, "node");
@@ -625,6 +657,7 @@ mod tests {
         assert_eq!(resolve_interpreter("test.R").program, "Rscript");
     }
 
+    /// 验证 shlex 对简单参数的切分。
     #[test]
     fn test_shlex_split_simple() {
         let result = shlex::split("--input data.csv --output result.json");
@@ -639,6 +672,7 @@ mod tests {
         );
     }
 
+    /// 验证 shlex 对带引号参数的切分。
     #[test]
     fn test_shlex_split_quotes() {
         let result = shlex::split(r#"--name "hello world" --verbose"#);
@@ -652,17 +686,20 @@ mod tests {
         );
     }
 
+    /// 验证 shlex 对空字符串与纯空白的切分结果为空。
     #[test]
     fn test_shlex_split_empty() {
         assert!(shlex::split("").unwrap_or_default().is_empty());
         assert!(shlex::split("   ").unwrap_or_default().is_empty());
     }
 
+    /// 验证 shlex 对引号未闭合的参数返回 None。
     #[test]
     fn test_shlex_split_malformed() {
         assert!(shlex::split(r#"--name "unterminated"#).is_none());
     }
 
+    /// 验证 Invocation 不再带有 shell 前缀参数。
     #[test]
     fn test_invocation_no_longer_has_shell_prefix() {
         let inv = Invocation::simple("python3");
@@ -670,6 +707,7 @@ mod tests {
         assert!(inv.prefix_args.is_empty());
     }
 
+    /// 验证 allowed-tools 受限的技能仍可使用 run_skill_script。
     #[tokio::test]
     async fn run_skill_script_remains_available_to_restricted_skill() {
         let root =
@@ -743,6 +781,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 
+    /// 验证 Windows 上查找 Git Bash 不会 panic。
     #[cfg(target_os = "windows")]
     #[test]
     fn test_find_git_bash_returns_something_or_none() {

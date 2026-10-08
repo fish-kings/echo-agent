@@ -39,8 +39,10 @@ impl SharedNotebook {
         Rc::strong_count(&self.entries)
     }
 
-    /// 在尝试写入的同时保持一个读守卫存活，从而产生一个被妥善处理的
-    /// 运行时借用冲突，而不是触发 panic。
+    /**
+    在尝试写入的同时保持一个读守卫存活，从而产生一个被妥善处理的
+    运行时借用冲突，而不是触发 panic。
+    */
     pub fn demonstrate_conflict(&self) -> Result<(), LearningError> {
         let _reading = self
             .entries

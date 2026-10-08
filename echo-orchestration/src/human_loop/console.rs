@@ -1,14 +1,16 @@
-//! 命令行人工介入 Provider
-//!
-//! 传统的阻塞式实现，适合简单的命令行应用。
-//! 对于聊天应用或 Web 应用，推荐使用 [`super::HumanLoopManager`]。
-//!
-//! ## 功能
-//!
-//! - 风险等级可视化（颜色 + 标签）
-//! - 超时倒计时提示
-//! - 参数编辑（修改 JSON 后批准）
-//! - 会话级审批（"Allow for session" 语义）
+/*!
+命令行人工介入 Provider
+
+传统的阻塞式实现，适合简单的命令行应用。
+对于聊天应用或 Web 应用，推荐使用 [`super::HumanLoopManager`]。
+
+## 功能
+
+- 风险等级可视化（颜色 + 标签）
+- 超时倒计时提示
+- 参数编辑（修改 JSON 后批准）
+- 会话级审批（"Allow for session" 语义）
+*/
 
 use std::io::Write as _;
 use std::time::Duration;
@@ -21,12 +23,15 @@ use super::{
 };
 use echo_core::error::Result;
 
-/// 基于命令行 stdin 的人工介入 Provider（阻塞式）
-///
-/// 适合简单的命令行应用。对于复杂的 UI 场景，请使用 [`super::HumanLoopManager`]。
+/**
+基于命令行 stdin 的人工介入 Provider（阻塞式）
+
+适合简单的命令行应用。对于复杂的 UI 场景，请使用 [`super::HumanLoopManager`]。
+*/
 pub struct ConsoleHumanLoopProvider;
 
 impl HumanLoopProvider for ConsoleHumanLoopProvider {
+    /// 根据请求类型分派到对应的命令行交互处理函数。
     fn request(&self, req: HumanLoopRequest) -> BoxFuture<'_, Result<HumanLoopResponse>> {
         Box::pin(async move {
             match req.kind {
@@ -40,6 +45,7 @@ impl HumanLoopProvider for ConsoleHumanLoopProvider {
 
 // ── 审批处理 ──────────────────────────────────────────────────────────────────
 
+/// 处理审批请求：展示风险横幅、参数与操作菜单，并读取用户决定。
 async fn handle_approval(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
     let risk_level = req.risk_level.unwrap_or(RiskLevel::Medium);
     let tool_name = req.tool_name.as_deref().unwrap_or("unknown");
@@ -94,6 +100,7 @@ async fn handle_approval(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
 
 // ── 输入处理 ──────────────────────────────────────────────────────────────────
 
+/// 处理文本输入请求：打印提示并读取一行用户输入。
 async fn handle_input(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
     println!();
     println!("  Agent requests input:");
@@ -113,6 +120,7 @@ async fn handle_input(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
 
 // ── 参数编辑 ──────────────────────────────────────────────────────────────────
 
+/// 处理参数编辑：展示原始参数，读取用户修改后的 JSON 并以修改后的参数批准。
 async fn handle_edit_args(req: &HumanLoopRequest) -> Result<HumanLoopResponse> {
     let original_args = req.args.clone().unwrap_or_default();
     let original_json = serde_json::to_string_pretty(&original_args).unwrap_or_default();
@@ -172,6 +180,7 @@ async fn handle_edit_args(req: &HumanLoopRequest) -> Result<HumanLoopResponse> {
 
 // ── 选择处理 ──────────────────────────────────────────────────────────────────
 
+/// 处理选项选择请求：列出选项并读取用户选择（支持序号或原文）。
 async fn handle_selection(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
     println!("\n=== Selection Required ===");
     println!("  {}", req.prompt);
@@ -186,7 +195,7 @@ async fn handle_selection(req: HumanLoopRequest) -> Result<HumanLoopResponse> {
     let input = read_line_with_timeout(req.timeout).await?;
     let trimmed = input.trim();
 
-    // Try to parse as number, otherwise use as-is
+    // 优先按序号解析，否则按原文使用
     let selection = if let Ok(idx) = trimmed.parse::<usize>() {
         if let Some(ref options) = req.options {
             if idx >= 1 && idx <= options.len() {
@@ -288,6 +297,7 @@ async fn read_line_with_timeout(timeout: Option<Duration>) -> Result<String> {
     }
 }
 
+/// 从标准输入异步读取一行文本。
 async fn read_line() -> Result<String> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -303,23 +313,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证各风险等级的审批横幅打印不会 panic。
     #[test]
     fn test_print_approval_banner_low() {
-        // Should not panic for any risk level
+        // 任意风险等级都不应 panic
         print_approval_banner("Read", RiskLevel::Low);
         print_approval_banner("Bash", RiskLevel::Medium);
         print_approval_banner("Bash", RiskLevel::High);
         print_approval_banner("DangerousOp", RiskLevel::Critical);
     }
 
+    /// 验证简单参数的打印。
     #[test]
     fn test_print_args_simple() {
         print_args(&json!({"path": "/tmp/test"}));
     }
 
+    /// 验证超长参数的截断打印。
     #[test]
     fn test_print_args_large() {
-        // Create a large JSON that exceeds 15 lines
+        // 构造一个超过 15 行的大 JSON
         let mut map = serde_json::Map::new();
         for i in 0..20 {
             map.insert(format!("key_{i}"), json!(format!("value_{i}")));
@@ -327,12 +340,14 @@ mod tests {
         print_args(&serde_json::Value::Object(map));
     }
 
+    /// 验证带/不带超时的操作菜单打印。
     #[test]
     fn test_print_actions_no_timeout() {
         print_actions(RiskLevel::Medium, None);
         print_actions(RiskLevel::Critical, Some(&Duration::from_secs(30)));
     }
 
+    /// 验证带风险等级的审批请求构造。
     #[test]
     fn test_human_loop_request_approval_with_risk() {
         let req =
@@ -341,6 +356,7 @@ mod tests {
         assert_eq!(req.risk_level, Some(RiskLevel::High));
     }
 
+    /// 验证带超时的审批请求构造。
     #[test]
     fn test_human_loop_request_approval_with_timeout() {
         let req = HumanLoopRequest::approval_with_timeout(

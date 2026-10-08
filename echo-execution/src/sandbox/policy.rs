@@ -1,6 +1,8 @@
-//! 沙箱安全策略
-//!
-//! 根据命令内容和安全级别，自动决定使用哪一层沙箱执行。
+/*!
+沙箱安全策略
+
+根据命令内容和安全级别，自动决定使用哪一层沙箱执行。
+*/
 
 use super::{CommandKind, IsolationLevel, ResourceLimits, SandboxCommand};
 use regex::Regex;
@@ -87,9 +89,11 @@ static DANGEROUS_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(
 });
 
 impl Default for SandboxPolicy {
-    /// 构造默认策略：默认级别为 Strict（Docker），实现默认即安全；
-    /// 当 Docker 不可用时会回退到本地沙箱（因为 auto_escalate=true）；
-    /// 开发环境请使用 `SandboxPolicy::trusted()`。
+    /**
+    构造默认策略：默认级别为 Strict（Docker），实现默认即安全；
+    当 Docker 不可用时会回退到本地沙箱（因为 auto_escalate=true）；
+    开发环境请使用 `SandboxPolicy::trusted()`。
+    */
     fn default() -> Self {
         Self {
             default_level: SecurityLevel::Strict,
@@ -207,8 +211,10 @@ impl SandboxPolicy {
         }
     }
 
-    /// 分析 shell 命令字符串所需的隔离级别：先匹配危险模式，
-    /// 再检查是否为受信命令或脚本解释器，否则默认返回进程隔离。
+    /**
+    分析 shell 命令字符串所需的隔离级别：先匹配危险模式，
+    再检查是否为受信命令或脚本解释器，否则默认返回进程隔离。
+    */
     fn analyze_shell_command(&self, cmd: &str) -> IsolationLevel {
         let base_cmd = cmd.split_whitespace().next().unwrap_or("");
 
@@ -262,6 +268,7 @@ impl SandboxPolicy {
 
 // ── 单元测试 ────────────────────────────────────────────────────────────────
 
+// 单元测试：沙箱策略的层级决策。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,8 +278,8 @@ mod tests {
     fn test_default_policy_safe_command() {
         let policy = SandboxPolicy::default();
         let cmd = SandboxCommand::shell("ls -la");
-        // default_level = Strict -> base = Container，安全命令 -> None
-        // evaluate() 取 max(Container, None) = Container
+        /* default_level = Strict -> base = Container，安全命令 -> None
+        evaluate() 取 max(Container, None) = Container */
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 
@@ -333,8 +340,8 @@ mod tests {
     fn test_script_interpreter_escalation() {
         let policy = SandboxPolicy::default();
         let cmd = SandboxCommand::shell("python3 script.py");
-        // default_level = Strict -> base = Container，python3 -> OsSandbox
-        // evaluate() 取 max(Container, OsSandbox) = Container
+        /* default_level = Strict -> base = Container，python3 -> OsSandbox
+        evaluate() 取 max(Container, OsSandbox) = Container */
         assert_eq!(policy.evaluate(&cmd), IsolationLevel::Container);
     }
 

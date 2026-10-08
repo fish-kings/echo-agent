@@ -1,8 +1,10 @@
-//! ClinicalTrials.gov search tool.
-//!
-//! Queries the ClinicalTrials.gov API v2 and returns structured clinical trial
-//! metadata including NCT ID, title, status, phase, conditions, interventions,
-//! and primary outcome measures.
+/*!
+ * ClinicalTrials.gov 搜索工具。
+ *
+ * 查询 ClinicalTrials.gov API v2，返回结构化的临床试验元数据，
+ * 包括 NCT ID、标题、状态、分期、适应症、干预措施
+ * 以及主要结局指标。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -11,11 +13,15 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// 工具名称
 const TOOL_NAME: &str = "clinical_trials_search";
+/// ClinicalTrials.gov API v2 查询地址
 const CT_API_URL: &str = "https://clinicaltrials.gov/api/v2/studies";
 
+/// 全局共享的 HTTP 客户端
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// 获取（首次调用时初始化）带超时与 SSRF 安全重定向策略的共享 HTTP 客户端。
 fn shared_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -26,21 +32,26 @@ fn shared_client() -> &'static reqwest::Client {
     })
 }
 
+/// ClinicalTrials.gov 临床试验搜索工具。
 pub struct ClinicalTrialsSearchTool;
 
 impl Tool for ClinicalTrialsSearchTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Search ClinicalTrials.gov for clinical trials. Returns NCT ID, title, status, phase, conditions, interventions, and primary outcome measures. No API key required. Example: clinical_trials_search(query='CRISPR cancer immunotherapy', max_results=10, status='RECRUITING')"
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -70,6 +81,7 @@ impl Tool for ClinicalTrialsSearchTool {
         })
     }
 
+    /// 构造查询请求 ClinicalTrials.gov API，并将研究记录规范化为统一结构返回。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -87,7 +99,7 @@ impl Tool for ClinicalTrialsSearchTool {
             let phase_filter = parameters.get("phase").and_then(|v| v.as_str());
             let country_filter = parameters.get("country").and_then(|v| v.as_str());
 
-            // Build query string
+            // 构造查询字符串
             let mut url = format!(
                 "{}?query.term={}&pageSize={}&format=json",
                 CT_API_URL,
@@ -95,7 +107,7 @@ impl Tool for ClinicalTrialsSearchTool {
                 max_results
             );
 
-            // Add filter parameters
+            // 添加过滤参数
             let mut filter_parts = Vec::new();
             if let Some(s) = status_filter {
                 filter_parts.push(format!("overallStatus={}", s));
@@ -154,7 +166,7 @@ impl Tool for ClinicalTrialsSearchTool {
                 .cloned()
                 .unwrap_or_default();
 
-            // Normalize study format
+            // 规范化研究记录格式
             let normalized: Vec<Value> = studies
                 .iter()
                 .map(|study| {

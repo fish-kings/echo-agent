@@ -1,9 +1,9 @@
-//! Revisioned task-relation service shared by lightweight progress tracking and
-//! executable task graphs.
-//!
-//! The framework owns patch semantics, structural validation, revisions, and
-//! optimistic concurrency. Applications provide persistence and product policy
-//! through narrow adapters.
+/*!
+ * 带修订版本的任务关系服务，由轻量级进度跟踪与可执行任务图共享。
+ *
+ * 框架负责补丁语义、结构校验、修订版本与乐观并发控制；
+ * 应用通过窄接口适配器提供持久化与产品策略。
+ */
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
@@ -18,46 +18,61 @@ use super::{
     TaskId, TaskSpec, TaskStatus,
 };
 
-/// How a task graph should be driven by a product adapter.
+/// 产品适配器驱动任务图的方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskGraphExecutionMode {
+    /// 按顺序逐个执行任务。
     Sequential,
+    /// 依赖满足的任务可并行执行（默认）。
     #[default]
     Parallel,
 }
 
-/// Generic plan-level context carried beside the runtime DAG snapshot.
+/// 与运行时 DAG 快照一同携带的通用计划级上下文。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskGraphContext {
+    /// 计划目标。
     pub goal: String,
+    /// 计划所依赖的假设。
     pub assumptions: Vec<String>,
+    /// 已识别的风险。
     pub risks: Vec<String>,
+    /// 任务图的执行方式。
     pub execution_mode: TaskGraphExecutionMode,
+    /// 产品自定义的附加元数据。
     #[serde(default)]
     pub metadata: serde_json::Value,
 }
 
-/// One coherent task graph revision plus plan-level context.
+/// 一个一致的任务图修订版本及其计划级上下文。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevisionedTaskGraph {
+    /// 运行时 DAG 快照（含修订号与任务列表）。
     pub snapshot: RuntimePlanSnapshot,
+    /// 计划级上下文。
     pub context: TaskGraphContext,
 }
 
-/// Product-neutral task input before product defaults and metadata are added.
+/// 在添加产品默认值与元数据之前、与产品无关的任务输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDraft {
+    /// 任务 ID。
     pub id: String,
+    /// 任务标题。
     pub title: String,
+    /// 任务描述。
     pub description: String,
+    /// 所依赖的任务 ID 列表。
     pub depends_on: Vec<TaskId>,
+    /// 最大重试次数。
     pub max_retries: u32,
+    /// 产品自有的扩展数据。
     pub extension: serde_json::Value,
 }
 
 impl TaskDraft {
-    /// Attach a typed extension before the framework applies product policy.
+    /// 在框架应用产品策略之前附加一个类型化扩展。
     pub fn with_extension<T: Serialize>(
         mut self,
         extension: T,
@@ -67,39 +82,47 @@ impl TaskDraft {
         Ok(self)
     }
 
-    /// Decode the draft extension into the caller's typed value.
+    /// 将草稿扩展解码为调用方指定的类型。
     pub fn extension_as<T: DeserializeOwned>(&self) -> std::result::Result<T, String> {
         serde_json::from_value(self.extension.clone())
             .map_err(|error| format!("failed to decode task draft extension: {error}"))
     }
 }
 
-/// Parsed `task_create` input.
+/// 解析后的 `task_create` 输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskCreateInput {
+    /// 待创建的任务草稿。
     pub tasks: Vec<TaskDraft>,
+    /// 追加到已有任务图时所基于的修订号。
     pub base_revision: Option<u64>,
+    /// 本次创建的原因。
     pub reason: Option<String>,
+    /// 计划假设。
     pub assumptions: Vec<String>,
+    /// 计划风险。
     pub risks: Vec<String>,
+    /// 任务图执行方式。
     pub execution_mode: TaskGraphExecutionMode,
 }
 
-/// Partial update of one immutable task specification.
+/// 对单个不可变任务规格的部分更新。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSpecPatch {
+    /// 新标题。
     pub title: Option<String>,
+    /// 新描述。
     pub description: Option<String>,
+    /// 新的依赖列表（整体替换）。
     pub depends_on: Option<Vec<TaskId>>,
+    /// 新的最大重试次数。
     pub max_retries: Option<u32>,
-    /// Product-owned partial extension. Object values are recursively merged;
-    /// non-object values replace the existing extension.
+    /** 产品自有的部分扩展。对象值会递归合并；非对象值直接替换现有扩展。 */
     pub extension: Option<serde_json::Value>,
 }
 
 impl TaskSpecPatch {
-    /// Set a complete typed extension on this patch. Use the raw `extension`
-    /// field only for partial object merges.
+    /** 在该补丁上设置完整的类型化扩展。仅在需要部分对象合并时才直接使用原始的 `extension` 字段。 */
     pub fn with_extension<T: Serialize>(
         mut self,
         extension: T,
@@ -111,7 +134,7 @@ impl TaskSpecPatch {
         Ok(self)
     }
 
-    /// Decode a complete extension when this patch carries one.
+    /// 当补丁携带完整扩展时将其解码。
     pub fn extension_as<T: DeserializeOwned>(&self) -> std::result::Result<Option<T>, String> {
         self.extension
             .clone()
@@ -121,144 +144,249 @@ impl TaskSpecPatch {
     }
 }
 
-/// Canonical operation applied by the framework patch engine.
+/// 框架补丁引擎所应用的规范操作。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskPlanPatchOp {
+    /// 插入一个新任务。
     Insert {
+        /// 插入到该任务之后；为 `None` 时插入到开头。
         after_task_id: Option<TaskId>,
+        /// 待插入的任务规格。
         task: TaskSpec,
     },
+    /// 更新某个任务的规格。
     Update {
+        /// 目标任务 ID。
         task_id: TaskId,
+        /// 规格补丁。
         patch: TaskSpecPatch,
     },
+    /// 跳过某个任务。
     Skip {
+        /// 目标任务 ID。
         task_id: TaskId,
     },
+    /// 按给定顺序重排任务。
     Reorder {
+        /// 新的任务 ID 顺序。
         task_ids: Vec<TaskId>,
     },
+    /// 手动设置任务状态。
     SetStatus {
+        /// 目标任务 ID。
         task_id: TaskId,
+        /// 新状态。
         status: TaskStatus,
     },
 }
 
-/// Canonical optimistic patch.
+/// 规范的乐观并发补丁。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskPlanPatch {
+    /// 补丁所基于的修订号。
     pub base_revision: u64,
+    /// 修改原因。
     pub reason: String,
+    /// 要应用的操作列表。
     pub operations: Vec<TaskPlanPatchOp>,
 }
 
-/// Parsed update operation before Insert drafts receive product defaults.
+/// 解析后的更新操作，此时 Insert 草稿尚未获得产品默认值。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskPlanPatchInputOp {
+    /// 插入一个新任务草稿。
     Insert {
+        /// 插入到该任务之后；为 `None` 时插入到开头。
         after_task_id: Option<TaskId>,
+        /// 待插入的任务草稿。
         task: TaskDraft,
     },
+    /// 更新某个任务的规格。
     Update {
+        /// 目标任务 ID。
         task_id: TaskId,
+        /// 规格补丁。
         patch: TaskSpecPatch,
     },
+    /// 跳过某个任务。
     Skip {
+        /// 目标任务 ID。
         task_id: TaskId,
     },
+    /// 按给定顺序重排任务。
     Reorder {
+        /// 新的任务 ID 顺序。
         task_ids: Vec<TaskId>,
     },
+    /// 手动设置任务状态。
     SetStatus {
+        /// 目标任务 ID。
         task_id: TaskId,
+        /// 新状态。
         status: TaskStatus,
     },
 }
 
-/// Parsed `task_update` input.
+/// 解析后的 `task_update` 输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskUpdateInput {
+    /// 更新所基于的修订号。
     pub base_revision: u64,
+    /// 修改原因。
     pub reason: String,
+    /// 待应用的输入操作。
     pub operations: Vec<TaskPlanPatchInputOp>,
 }
 
-/// Generic effects persisted alongside one committed revision.
+/// 与一次已提交修订一同持久化的通用效果。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskPatchEffects {
+    /// 新插入的任务 ID。
     pub inserted_task_ids: Vec<TaskId>,
+    /// 规格被更新的任务 ID。
     pub updated_task_ids: Vec<TaskId>,
+    /// 被跳过的任务 ID。
     pub skipped_task_ids: Vec<TaskId>,
+    /// 执行状态被重置的任务 ID。
     pub reset_task_ids: Vec<TaskId>,
+    /// 手动推进了进度的任务 ID。
     pub progressed_task_ids: Vec<TaskId>,
+    /// 是否发生了重排。
     pub reordered: bool,
 }
 
-/// Already-computed candidate handed to a persistence adapter.
+/// 交给持久化适配器的、已计算完成的候选提交。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskGraphCommit {
+    /// 期望的当前修订号；为 `None` 表示期望任务图尚不存在。
     pub expected_revision: Option<u64>,
-    /// Exact runtime execution state observed when a relation patch was
-    /// prepared. Persistence adapters must reject the commit if any entry has
-    /// changed, even when the relation revision is unchanged. `None` is kept
-    /// for create and legacy/direct commits that do not carry this stronger
-    /// precondition.
+    /**
+     * 准备关系补丁时观察到的精确运行时执行状态。
+     *
+     * 即使关系修订号未变，只要任一条目发生变化，持久化适配器也必须拒绝该提交。
+     * 创建操作以及不携带这一更强前置条件的旧版/直接提交保持为 `None`。
+     */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_executions: Option<BTreeMap<TaskId, TaskExecution>>,
+    /// 提交后的新任务图。
     pub next: RevisionedTaskGraph,
+    /// 提交原因。
     pub reason: String,
+    /// 本次提交的效果。
     pub effects: TaskPatchEffects,
 }
 
+/// 修订任务图存储的错误。
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum RevisionedTaskStoreError {
+    /// 指定作用域下不存在任务图。
     #[error("task graph not found for scope {scope_id}")]
-    NotFound { scope_id: String },
+    NotFound {
+        /// 作用域 ID。
+        scope_id: String,
+    },
+    /// 修订号冲突。
     #[error("task graph revision conflict: expected {expected:?}, current {current:?}")]
     Conflict {
+        /// 期望的修订号。
         expected: Option<u64>,
+        /// 实际的当前修订号。
         current: Option<u64>,
     },
+    /// 存储拒绝了该操作。
     #[error("{message}")]
-    Rejected { message: String },
+    Rejected {
+        /// 错误信息。
+        message: String,
+    },
+    /// 后端故障。
     #[error("{message}")]
-    Backend { message: String },
+    Backend {
+        /// 错误信息。
+        message: String,
+    },
 }
 
+/// 产品任务策略的错误。
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum TaskPolicyError {
+    /// 作用域不可用。
     #[error("{message}")]
-    ScopeUnavailable { message: String },
+    ScopeUnavailable {
+        /// 错误信息。
+        message: String,
+    },
+    /// 策略拒绝。
     #[error("{message}")]
-    Rejected { message: String },
+    Rejected {
+        /// 错误信息。
+        message: String,
+    },
+    /// 后端故障。
     #[error("{message}")]
-    Backend { message: String },
+    Backend {
+        /// 错误信息。
+        message: String,
+    },
 }
 
+/// 任务修订服务的错误。
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum TaskRevisionError {
+    /// 输入不合法。
     #[error("{message}")]
-    InvalidInput { message: String },
+    InvalidInput {
+        /// 错误信息。
+        message: String,
+    },
+    /// 指定作用域下不存在任务图。
     #[error("task graph not found for scope {scope_id}")]
-    GraphNotFound { scope_id: String },
+    GraphNotFound {
+        /// 作用域 ID。
+        scope_id: String,
+    },
+    /// 任务不存在。
     #[error("task not found: {task_id}")]
-    TaskNotFound { task_id: TaskId },
+    TaskNotFound {
+        /// 任务 ID。
+        task_id: TaskId,
+    },
+    /// 计划修订号冲突。
     #[error("plan revision conflict: expected {expected:?}, current {current:?}")]
     RevisionConflict {
+        /// 期望的修订号。
         expected: Option<u64>,
+        /// 实际的当前修订号。
         current: Option<u64>,
     },
+    /// 补丁不合法。
     #[error("{message}")]
-    InvalidPatch { message: String },
+    InvalidPatch {
+        /// 错误信息。
+        message: String,
+    },
+    /// 被产品策略拒绝。
     #[error("{message}")]
-    PolicyRejected { message: String },
+    PolicyRejected {
+        /// 错误信息。
+        message: String,
+    },
+    /// 被存储拒绝。
     #[error("{message}")]
-    StoreRejected { message: String },
+    StoreRejected {
+        /// 错误信息。
+        message: String,
+    },
+    /// 后端故障。
     #[error("{message}")]
-    Backend { message: String },
+    Backend {
+        /// 错误信息。
+        message: String,
+    },
 }
 
 impl From<RevisionedTaskStoreError> for TaskRevisionError {
+    /// 将存储错误映射为修订服务错误。
     fn from(error: RevisionedTaskStoreError) -> Self {
         match error {
             RevisionedTaskStoreError::NotFound { scope_id } => Self::GraphNotFound { scope_id },
@@ -272,6 +400,7 @@ impl From<RevisionedTaskStoreError> for TaskRevisionError {
 }
 
 impl From<TaskPolicyError> for TaskRevisionError {
+    /// 将策略错误映射为修订服务错误。
     fn from(error: TaskPolicyError) -> Self {
         match error {
             TaskPolicyError::ScopeUnavailable { message }
@@ -281,14 +410,16 @@ impl From<TaskPolicyError> for TaskRevisionError {
     }
 }
 
-/// Persistence boundary for revisioned task graphs.
+/// 修订任务图的持久化边界。
 #[async_trait]
 pub trait RevisionedTaskStore: Send + Sync {
+    /// 加载指定作用域的任务图；不存在时返回 `None`。
     async fn load(
         &self,
         scope_id: &str,
     ) -> Result<Option<RevisionedTaskGraph>, RevisionedTaskStoreError>;
 
+    /// 比较期望修订号（及执行状态）后原子提交新任务图。
     async fn compare_and_commit(
         &self,
         scope_id: &str,
@@ -296,16 +427,17 @@ pub trait RevisionedTaskStore: Send + Sync {
     ) -> Result<RevisionedTaskGraph, RevisionedTaskStoreError>;
 }
 
-/// Product defaults produced without allowing policy to rewrite generic task
-/// fields.
+/// 产品策略生成的默认值；策略不得借此改写通用任务字段。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedTaskPolicy {
+    /// 产品为任务准备的扩展数据。
     pub extension: serde_json::Value,
 }
 
-/// Product policy boundary used by the task tools and revision service.
+/// 任务工具与修订服务所使用的产品策略边界。
 #[async_trait]
 pub trait TaskToolPolicy: Send + Sync {
+    /// 返回任务输入 JSON Schema 中的扩展属性定义。
     fn task_input_schema_extensions(&self) -> serde_json::Map<String, serde_json::Value> {
         serde_json::Map::from_iter([(
             "extension".to_string(),
@@ -316,21 +448,25 @@ pub trait TaskToolPolicy: Send + Sync {
         )])
     }
 
+    /// 返回任务输入中必填的扩展属性名。
     fn required_task_input_extensions(&self) -> Vec<String> {
         Vec::new()
     }
 
+    /// 是否允许通过补丁手动更新任务进度状态。
     fn allow_manual_progress_updates(&self) -> bool {
         false
     }
 
+    /// 根据工具上下文解析任务图作用域 ID。
     async fn resolve_scope(&self, context: &ToolContext) -> Result<String, TaskPolicyError>;
 
-    /// Prepare the product scope used by one graph creation attempt.
-    ///
-    /// An implementation that returns `Err` must first remove every
-    /// unpublished side effect it staged. [`Self::abort_scope_preparation`] is
-    /// called only after this method returns `Ok`.
+    /**
+     * 为一次任务图创建尝试准备产品作用域。
+     *
+     * 返回 `Err` 的实现必须先清除其暂存的所有未发布副作用。
+     * 只有当本方法返回 `Ok` 后才会调用 [`Self::abort_scope_preparation`]。
+     */
     async fn ensure_scope(
         &self,
         scope_id: &str,
@@ -338,14 +474,15 @@ pub trait TaskToolPolicy: Send + Sync {
         context: &ToolContext,
     ) -> Result<(), TaskPolicyError>;
 
-    /// Roll back product resources staged by [`Self::ensure_scope`] when task
-    /// preparation, validation, or the graph commit fails.
-    ///
-    /// Implementations must be idempotent and must not remove an already
-    /// published scope. Every policy implements this explicitly so policies
-    /// with side effects cannot silently omit rollback handling.
+    /**
+     * 当任务准备、校验或任务图提交失败时，回滚 [`Self::ensure_scope`] 暂存的产品资源。
+     *
+     * 实现必须幂等，且不得删除已发布的作用域。每个策略都必须显式实现该方法，
+     * 以免带副作用的策略悄悄遗漏回滚处理。
+     */
     async fn abort_scope_preparation(&self, scope_id: &str) -> Result<(), TaskPolicyError>;
 
+    /// 为指定位置的任务草稿生成产品默认值。
     async fn prepare_task(
         &self,
         scope_id: &str,
@@ -353,12 +490,14 @@ pub trait TaskToolPolicy: Send + Sync {
         position: usize,
     ) -> Result<PreparedTaskPolicy, TaskPolicyError>;
 
+    /// 为新建任务图生成初始计划级上下文。
     async fn prepare_initial_context(
         &self,
         scope_id: &str,
         input: &TaskCreateInput,
     ) -> Result<TaskGraphContext, TaskPolicyError>;
 
+    /// 在提交前最终确定某个任务的扩展数据。
     async fn finalize_task_extension(
         &self,
         scope_id: &str,
@@ -367,6 +506,7 @@ pub trait TaskToolPolicy: Send + Sync {
         extension: serde_json::Value,
     ) -> Result<serde_json::Value, TaskPolicyError>;
 
+    /// 对候选任务列表执行产品级校验。
     async fn validate_candidate(
         &self,
         scope_id: &str,
@@ -374,19 +514,22 @@ pub trait TaskToolPolicy: Send + Sync {
     ) -> Result<(), TaskPolicyError>;
 }
 
-/// Default policy for the framework's per-Agent lightweight task graph.
+/// 框架中每个 Agent 轻量级任务图的默认策略。
 #[derive(Debug, Clone)]
 pub struct DefaultTaskToolPolicy {
+    /// 上下文中缺少 run/conversation ID 时使用的作用域 ID。
     default_scope_id: String,
 }
 
 impl Default for DefaultTaskToolPolicy {
+    /// 使用随机生成的默认作用域 ID 创建策略。
     fn default() -> Self {
         Self::new(format!("agent-task-scope-{}", uuid::Uuid::new_v4()))
     }
 }
 
 impl DefaultTaskToolPolicy {
+    /// 使用指定的默认作用域 ID 创建策略。
     pub fn new(default_scope_id: impl Into<String>) -> Self {
         Self {
             default_scope_id: default_scope_id.into(),
@@ -396,10 +539,12 @@ impl DefaultTaskToolPolicy {
 
 #[async_trait]
 impl TaskToolPolicy for DefaultTaskToolPolicy {
+    /// 默认策略允许手动更新进度。
     fn allow_manual_progress_updates(&self) -> bool {
         true
     }
 
+    /// 依次使用 run ID、会话 ID 与默认作用域 ID。
     async fn resolve_scope(&self, context: &ToolContext) -> Result<String, TaskPolicyError> {
         Ok(context
             .run_id
@@ -408,6 +553,7 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
             .unwrap_or_else(|| self.default_scope_id.clone()))
     }
 
+    /// 默认策略无需准备作用域。
     async fn ensure_scope(
         &self,
         _scope_id: &str,
@@ -417,10 +563,12 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
         Ok(())
     }
 
+    /// 默认策略没有需要回滚的资源。
     async fn abort_scope_preparation(&self, _scope_id: &str) -> Result<(), TaskPolicyError> {
         Ok(())
     }
 
+    /// 直接沿用草稿中的扩展数据。
     async fn prepare_task(
         &self,
         _scope_id: &str,
@@ -432,6 +580,7 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
         })
     }
 
+    /// 以首个任务标题作为目标生成初始上下文。
     async fn prepare_initial_context(
         &self,
         _scope_id: &str,
@@ -451,6 +600,7 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
         })
     }
 
+    /// 原样返回扩展数据。
     async fn finalize_task_extension(
         &self,
         _scope_id: &str,
@@ -461,6 +611,7 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
         Ok(extension)
     }
 
+    /// 默认策略不做额外校验。
     async fn validate_candidate(
         &self,
         _scope_id: &str,
@@ -470,20 +621,23 @@ impl TaskToolPolicy for DefaultTaskToolPolicy {
     }
 }
 
-/// Per-instance in-memory CAS Store used by default framework Agents.
+/// 默认框架 Agent 使用的、按实例隔离的内存 CAS 存储。
 #[derive(Debug, Default)]
 pub struct InMemoryRevisionedTaskStore {
+    /// 作用域 ID 到任务图的映射。
     graphs: RwLock<HashMap<String, RevisionedTaskGraph>>,
 }
 
 impl InMemoryRevisionedTaskStore {
+    /// 创建空存储。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Atomically claim a pending runtime task without changing the immutable
-    /// graph revision. Intended for [`RuntimeDagController`](super::RuntimeDagController)
-    /// adapters backed by this store.
+    /**
+     * 在不改变不可变任务图修订号的前提下，原子地认领一个待执行的运行时任务。
+     * 供基于本存储的 [`RuntimeDagController`](super::RuntimeDagController) 适配器使用。
+     */
     pub async fn claim_runtime_task(
         &self,
         scope_id: &str,
@@ -502,7 +656,7 @@ impl InMemoryRevisionedTaskStore {
             })
     }
 
-    /// Atomically settle the exact physical claim.
+    /// 原子地结算精确匹配的物理认领。
     pub async fn settle_runtime_claim(
         &self,
         scope_id: &str,
@@ -522,7 +676,7 @@ impl InMemoryRevisionedTaskStore {
             })
     }
 
-    /// Atomically requeue one exact claim using the canonical runtime mutation.
+    /// 使用规范的运行时变更，原子地将一个精确认领重新入队。
     pub async fn requeue_runtime_claim(
         &self,
         scope_id: &str,
@@ -551,7 +705,7 @@ impl InMemoryRevisionedTaskStore {
         })
     }
 
-    /// Atomically apply one framework-owned dispatch resolution request.
+    /// 原子地应用一个由框架持有的调度决议请求。
     pub async fn settle_runtime_resolution(
         &self,
         scope_id: &str,
@@ -576,8 +730,7 @@ impl InMemoryRevisionedTaskStore {
         })
     }
 
-    /// Atomically restart one exact unclaimed task using the canonical runtime
-    /// mutation. Product run/descendant policy remains outside this store.
+    /** 使用规范的运行时变更，原子地重启一个精确匹配的未认领任务。产品的运行/后代策略不在本存储职责内。 */
     pub async fn retry_runtime_task(
         &self,
         scope_id: &str,
@@ -600,7 +753,7 @@ impl InMemoryRevisionedTaskStore {
         })
     }
 
-    /// Atomically resume one paused task without consuming retry budget.
+    /// 原子地恢复一个已暂停任务，不消耗重试预算。
     pub async fn resume_runtime_task(
         &self,
         scope_id: &str,
@@ -623,7 +776,7 @@ impl InMemoryRevisionedTaskStore {
         })
     }
 
-    /// Atomically settle one run-level interruption at an exact graph revision.
+    /// 在精确的任务图修订号上原子地结算一次运行级中断。
     pub async fn settle_runtime_interruption(
         &self,
         scope_id: &str,
@@ -646,6 +799,7 @@ impl InMemoryRevisionedTaskStore {
         })
     }
 
+    /// 判断给定认领是否仍是该任务当前有效的认领。
     pub async fn runtime_claim_is_current(
         &self,
         scope_id: &str,
@@ -668,6 +822,7 @@ impl InMemoryRevisionedTaskStore {
 
 #[async_trait]
 impl RevisionedTaskStore for InMemoryRevisionedTaskStore {
+    /// 从内存中读取任务图副本。
     async fn load(
         &self,
         scope_id: &str,
@@ -675,6 +830,7 @@ impl RevisionedTaskStore for InMemoryRevisionedTaskStore {
         Ok(self.graphs.read().await.get(scope_id).cloned())
     }
 
+    /// 校验修订号与执行状态后替换内存中的任务图。
     async fn compare_and_commit(
         &self,
         scope_id: &str,
@@ -745,17 +901,21 @@ impl RevisionedTaskStore for InMemoryRevisionedTaskStore {
     }
 }
 
+/// 补丁操作应用后的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskPatchApplication {
+    /// 应用补丁后的任务列表。
     pub tasks: Vec<Task>,
+    /// 补丁产生的效果。
     pub effects: TaskPatchEffects,
 }
 
-/// Pure, framework-owned task patch semantics.
+/// 纯函数式、由框架持有的任务补丁语义。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskPatchEngine;
 
 impl TaskPatchEngine {
+    /// 将补丁操作依次应用到当前任务列表上，返回新任务列表与效果。
     pub fn apply_operations(
         current: &[Task],
         operations: Vec<TaskPlanPatchOp>,
@@ -909,6 +1069,7 @@ impl TaskPatchEngine {
     }
 }
 
+/// 将规格补丁应用到任务规格上。
 fn apply_spec_patch(spec: &mut TaskSpec, patch: TaskSpecPatch) {
     if let Some(title) = patch.title {
         spec.title = title;
@@ -927,6 +1088,7 @@ fn apply_spec_patch(spec: &mut TaskSpec, patch: TaskSpecPatch) {
     }
 }
 
+/// 递归合并扩展：对象按键合并，其他值直接替换。
 fn merge_extension(current: &mut serde_json::Value, patch: serde_json::Value) {
     match (current, patch) {
         (serde_json::Value::Object(current), serde_json::Value::Object(patch)) => {
@@ -942,21 +1104,29 @@ fn merge_extension(current: &mut serde_json::Value, patch: serde_json::Value) {
     }
 }
 
+/// 任务创建的结果。
 #[derive(Debug, Clone)]
 pub struct TaskCreateOutcome {
+    /// 提交后的任务图。
     pub graph: RevisionedTaskGraph,
+    /// 本次创建的任务数量。
     pub created_count: usize,
+    /// 是否为追加到已有任务图。
     pub appended: bool,
 }
 
-/// Unique framework service for task creation, revision patches, and reads.
+/// 框架中唯一负责任务创建、修订补丁与读取的服务。
 pub struct TaskRevisionService {
+    /// 持久化存储。
     store: Arc<dyn RevisionedTaskStore>,
+    /// 产品策略。
     policy: Arc<dyn TaskToolPolicy>,
+    /// 结构校验器。
     validator: PlanValidator,
 }
 
 impl TaskRevisionService {
+    /// 使用存储与策略创建服务，校验器取默认值。
     pub fn new(store: Arc<dyn RevisionedTaskStore>, policy: Arc<dyn TaskToolPolicy>) -> Self {
         Self {
             store,
@@ -965,27 +1135,33 @@ impl TaskRevisionService {
         }
     }
 
+    /// 替换结构校验器。
     pub fn with_validator(mut self, validator: PlanValidator) -> Self {
         self.validator = validator;
         self
     }
 
+    /// 返回策略提供的任务输入 Schema 扩展属性。
     pub fn task_input_schema_extensions(&self) -> serde_json::Map<String, serde_json::Value> {
         self.policy.task_input_schema_extensions()
     }
 
+    /// 返回策略要求的必填扩展属性名。
     pub fn required_task_input_extensions(&self) -> Vec<String> {
         self.policy.required_task_input_extensions()
     }
 
+    /// 策略是否允许手动更新进度。
     pub fn allow_manual_progress_updates(&self) -> bool {
         self.policy.allow_manual_progress_updates()
     }
 
+    /// 通过策略解析作用域 ID。
     pub async fn resolve_scope(&self, context: &ToolContext) -> Result<String, TaskRevisionError> {
         self.policy.resolve_scope(context).await.map_err(Into::into)
     }
 
+    /// 加载指定作用域的任务图。
     pub async fn load(
         &self,
         scope_id: &str,
@@ -993,6 +1169,7 @@ impl TaskRevisionService {
         self.store.load(scope_id).await.map_err(Into::into)
     }
 
+    /// 处理 `task_create` 工具输入：准备作用域并创建或追加任务，失败时回滚作用域准备。
     pub async fn create_from_tool(
         &self,
         input: TaskCreateInput,
@@ -1021,6 +1198,7 @@ impl TaskRevisionService {
         }
     }
 
+    /// 在作用域准备完成后执行实际的任务创建或追加。
     async fn create_after_scope_preparation(
         &self,
         scope_id: &str,
@@ -1116,6 +1294,7 @@ impl TaskRevisionService {
         })
     }
 
+    /// 处理 `task_update` 工具输入：为插入草稿补全产品默认值后应用补丁。
     pub async fn update_from_tool(
         &self,
         input: TaskUpdateInput,
@@ -1178,6 +1357,7 @@ impl TaskRevisionService {
         .await
     }
 
+    /// 以修订号 1 创建一个已准备好的任务图。
     pub async fn create_prepared(
         &self,
         scope_id: &str,
@@ -1205,6 +1385,7 @@ impl TaskRevisionService {
             .map_err(Into::into)
     }
 
+    /// 加载当前任务图并应用补丁。
     pub async fn apply_patch(
         &self,
         scope_id: &str,
@@ -1219,6 +1400,7 @@ impl TaskRevisionService {
         self.apply_patch_to_loaded(scope_id, current, patch).await
     }
 
+    /// 在已加载的任务图上校验并应用补丁，然后以 CAS 方式提交。
     async fn apply_patch_to_loaded(
         &self,
         scope_id: &str,
@@ -1282,6 +1464,7 @@ impl TaskRevisionService {
             .map_err(Into::into)
     }
 
+    /// 最终确定各任务扩展，并执行策略校验与结构校验。
     async fn finalize_and_validate(
         &self,
         scope_id: &str,

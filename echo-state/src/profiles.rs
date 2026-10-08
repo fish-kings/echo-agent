@@ -1,8 +1,10 @@
-//! Agent 与用户画像 —— 动态的能力与偏好模型。
-//!
-//! 提供 `AgentProfile`（跟踪技能熟练度和工具使用统计）
-//! 与 `UserProfile`（跟踪用户偏好、擅长领域和常见任务）。
-//! 两者都通过框架的 `Store` trait 持久化。
+/*!
+Agent 与用户画像 —— 动态的能力与偏好模型。
+
+提供 `AgentProfile`（跟踪技能熟练度和工具使用统计）
+与 `UserProfile`（跟踪用户偏好、擅长领域和常见任务）。
+两者都通过框架的 `Store` trait 持久化。
+*/
 
 use std::collections::HashMap;
 use std::sync::Arc;

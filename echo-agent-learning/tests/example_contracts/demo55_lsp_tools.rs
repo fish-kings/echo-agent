@@ -1,23 +1,26 @@
-//! demo55 —— LSP 工具
-//!
-//! 演示为 Agent 提供类 IDE 代码理解能力的 Language Server Protocol（语言服务器协议）集成：
-//!
-//! 1. `LspConfig` —— 解析 `.lsp.yaml` 配置
-//! 2. `LspManager` —— 管理多个语言服务器进程
-//! 3. LSP 工具类型 —— diagnostics（诊断）、goto_definition（跳转定义）、
-//!    find_references（查找引用）、hover（悬浮提示）、status（状态）
-//! 4. 文件扩展名 → 语言服务器路由
-//!
-//! **说明：** 真正运行语言服务器需要安装对应的服务器可执行文件
-//! （例如 `rust-analyzer`、`pyright-langserver`）。
-//! 本示例只演示配置和工具构造，不实际启动服务器。
-//!
-//! 所需 Feature flag：`lsp`
-//!
-//! ```sh
-//! cargo test --features lsp --test example_contracts contract_demo55_lsp_tools
-//! ```
+/*!
+demo55 —— LSP 工具
 
+演示为 Agent 提供类 IDE 代码理解能力的 Language Server Protocol（语言服务器协议）集成：
+
+1. `LspConfig` —— 解析 `.lsp.yaml` 配置
+2. `LspManager` —— 管理多个语言服务器进程
+3. LSP 工具类型 —— diagnostics（诊断）、goto_definition（跳转定义）、
+   find_references（查找引用）、hover（悬浮提示）、status（状态）
+4. 文件扩展名 → 语言服务器路由
+
+**说明：** 真正运行语言服务器需要安装对应的服务器可执行文件
+（例如 `rust-analyzer`、`pyright-langserver`）。
+本示例只演示配置和工具构造，不实际启动服务器。
+
+所需 Feature flag：`lsp`
+
+```sh
+cargo test --features lsp --test example_contracts contract_demo55_lsp_tools
+```
+*/
+
+/// 启用 `lsp` feature 时的完整演示：配置解析、管理器构造、工具构造与扩展名路由。
 #[cfg(feature = "lsp")]
 mod demo {
     use echo_agent::lsp::{LspConfig, LspManager, LspServerConfig};
@@ -39,8 +42,10 @@ mod demo {
         };
     }
 
-    /// 依次运行全部 6 个 LSP 工具演示场景（配置解析、扩展名路由、Manager 创建、
-    /// 工具描述、参数 Schema、编程式配置构建）。
+    /**
+    依次运行全部 6 个 LSP 工具演示场景（配置解析、扩展名路由、Manager 创建、
+    工具描述、参数 Schema、编程式配置构建）。
+    */
     pub async fn run() -> Result<(), String> {
         println!("╔══════════════════════════════════════════════════╗");
         println!("║       echo-agent  LSP Tools Demo                 ║");
@@ -267,6 +272,7 @@ languages:
     }
 }
 
+/// 未启用 `lsp` feature 时的占位演示模块。
 #[cfg(not(feature = "lsp"))]
 mod demo {
     /// `lsp` feature 未启用时的占位实现：打印说明信息，提示如何启用该 feature 运行完整演示。

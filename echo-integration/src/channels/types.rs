@@ -9,7 +9,7 @@ use futures::stream::{BoxStream, StreamExt};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::Notify;
 
-// ── Chat Type ────────────────────────────────────────────────────────────────
+// ── 聊天类型 ────────────────────────────────────────────────────────────────
 
 /// 会话类型:私聊 / 群聊
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,7 +30,7 @@ impl std::fmt::Display for ChatType {
     }
 }
 
-// ── Multimedia Attachments ───────────────────────────────────────────────────
+// ── 多媒体附件 ───────────────────────────────────────────────────
 
 /// 附件类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,18 +73,20 @@ impl MessageAttachment {
     }
 }
 
-// ── Inbound Message ──────────────────────────────────────────────────────────
+// ── 入站消息 ──────────────────────────────────────────────────────────
 
 /// 从 IM 平台接收到的消息
 #[derive(Debug, Clone)]
 pub struct InboundMessage {
     /// 渠道 ID:"qqbot" | "feishu"
     pub channel_id: String,
-    /// 传输层范围内的规范发送者身份标识。
-    ///
-    /// QQ 使用其原始 openid。飞书使用 `open_id:{value}` 或
-    /// `user_id:{value}`,以避免不同服务商的身份命名空间在
-    /// 会话 key 或回调中发生冲突。
+    /**
+    传输层范围内的规范发送者身份标识。
+
+    QQ 使用其原始 openid。飞书使用 `open_id:{value}` 或
+    `user_id:{value}`,以避免不同服务商的身份命名空间在
+    会话 key 或回调中发生冲突。
+    */
     pub sender_id: String,
     /// 会话标识(群聊时为 group_id,私聊时为 sender_id)
     pub chat_id: String,
@@ -100,8 +102,10 @@ pub struct InboundMessage {
     pub attachments: Vec<MessageAttachment>,
 }
 
-/// 校验一个身份字段(如 channel_id/conversation_id/sender_id)是否存在、
-/// 非空且不包含首尾空白,否则返回对应的 `ChannelError`。
+/**
+校验一个身份字段(如 channel_id/conversation_id/sender_id)是否存在、
+非空且不包含首尾空白,否则返回对应的 `ChannelError`。
+*/
 fn require_identity<'a>(
     value: Option<&'a str>,
     field: &str,
@@ -185,7 +189,7 @@ impl InboundMessage {
     }
 }
 
-// ── Outbound Message ─────────────────────────────────────────────────────────
+// ── 出站消息 ─────────────────────────────────────────────────────────
 
 /// `ChannelDeliveryFence` 的内部共享状态:生命周期信息与"已结算"通知。
 struct ChannelDeliveryFenceState {
@@ -205,12 +209,14 @@ struct ChannelDeliveryFenceLifecycle {
     active_deliveries: usize,
 }
 
-/// 为某一个"渠道会话世代"设限的、进程本地的不透明权限对象。
-///
-/// `SessionHandler` 会将此权限对象附加到其输出上。内置传输层在
-/// 将消息送入队列或发起网络请求之前会先获取一个租约(lease),
-/// 从而使 reset 操作能够拒绝过期(stale)的输出,并只需等待
-/// 已经被受理的投递完成即可。
+/**
+为某一个"渠道会话世代"设限的、进程本地的不透明权限对象。
+
+`SessionHandler` 会将此权限对象附加到其输出上。内置传输层在
+将消息送入队列或发起网络请求之前会先获取一个租约(lease),
+从而使 reset 操作能够拒绝过期(stale)的输出,并只需等待
+已经被受理的投递完成即可。
+*/
 #[doc(hidden)]
 #[derive(Clone)]
 pub(super) struct ChannelDeliveryFence {
@@ -288,8 +294,10 @@ impl ChannelDeliveryFence {
         self.lock_lifecycle().active_deliveries > 0
     }
 
-    /// 尝试为一次投递获取许可:若当前世代已退役或已被轮换,则返回
-    /// `ChannelError::StaleDelivery`;否则活跃投递计数加一并返回许可对象。
+    /**
+    尝试为一次投递获取许可:若当前世代已退役或已被轮换,则返回
+    `ChannelError::StaleDelivery`;否则活跃投递计数加一并返回许可对象。
+    */
     pub(super) fn begin_delivery(&self) -> Result<ChannelDeliveryPermit> {
         let mut lifecycle = self.lock_lifecycle();
         if lifecycle.retired || lifecycle.current_incarnation_id != self.incarnation_id {
@@ -326,16 +334,20 @@ impl ChannelDeliveryFence {
     }
 }
 
-/// 代表一次已受理投递的许可(lease)。Drop 时自动释放并递减活跃计数,
-/// 计数归零时唤醒正在等待结算的 `retire_and_wait`。
+/**
+代表一次已受理投递的许可(lease)。Drop 时自动释放并递减活跃计数,
+计数归零时唤醒正在等待结算的 `retire_and_wait`。
+*/
 pub(crate) struct ChannelDeliveryPermit {
     /// 签发该许可的投递围栏。
     fence: ChannelDeliveryFence,
 }
 
 impl Drop for ChannelDeliveryPermit {
-    /// 释放许可:活跃投递计数减一;若发生下溢则记录错误日志;
-    /// 若计数归零则通知正在等待的 `retire_and_wait`。
+    /**
+    释放许可:活跃投递计数减一;若发生下溢则记录错误日志;
+    若计数归零则通知正在等待的 `retire_and_wait`。
+    */
     fn drop(&mut self) {
         let settled = {
             let mut lifecycle = self.fence.lock_lifecycle();
@@ -425,7 +437,7 @@ impl OutboundMessage {
     }
 }
 
-// ── ChannelPlugin Trait ─────────────────────────────────────────────────────
+// ── ChannelPlugin 特征 ─────────────────────────────────────────────────────
 
 /// 消息处理器 —— 将 IM 消息转发给 Agent 进行处理
 #[async_trait]
@@ -436,17 +448,21 @@ pub trait MessageHandler: Send + Sync {
     /// 将一条出站消息发送回 IM 平台(由 Channel 自身实现)
     async fn reply(&self, msg: OutboundMessage) -> Result<()>;
 
-    /// 在传输层停止接受消息、且其正在进行中的投递全部结算完成后,
-    /// 释放 handler 所持有的 Agent 与会话资源。
-    /// 无状态 handler 没有需要释放的资源。
+    /**
+    在传输层停止接受消息、且其正在进行中的投递全部结算完成后,
+    释放 handler 所持有的 Agent 与会话资源。
+    无状态 handler 没有需要释放的资源。
+    */
     async fn close(&self) -> Result<()> {
         Ok(())
     }
 
-    /// 流式 handle:产出逐段 `OutboundMessage`。
-    ///
-    /// 默认实现:只 yield 一次 `handle` 的返回值(向后兼容,所有现有 impl 无需 override)。
-    /// 需要真流式(分段投递)的 handler override 此方法。
+    /**
+    流式 handle:产出逐段 `OutboundMessage`。
+
+    默认实现:只 yield 一次 `handle` 的返回值(向后兼容,所有现有 impl 无需 override)。
+    需要真流式(分段投递)的 handler override 此方法。
+    */
     async fn handle_stream<'a>(
         &'a self,
         msg: InboundMessage,
@@ -455,11 +471,13 @@ pub trait MessageHandler: Send + Sync {
         Ok(futures::stream::once(async move { Ok(out) }).boxed())
     }
 
-    /// 该 handler 是否会在会话取消后使一次被驱动的 Turn 完成结算。
-    ///
-    /// 会话 reset 会等待已声明支持此行为的 handler 完成其正在进行的
-    /// 那次调用。旧版/自定义 handler 若未同时实现
-    /// `handle_stream_with_cancel`,则保留此前"流被丢弃即终止"的行为。
+    /**
+    该 handler 是否会在会话取消后使一次被驱动的 Turn 完成结算。
+
+    会话 reset 会等待已声明支持此行为的 handler 完成其正在进行的
+    那次调用。旧版/自定义 handler 若未同时实现
+    `handle_stream_with_cancel`,则保留此前"流被丢弃即终止"的行为。
+    */
     fn settles_on_cancel(&self) -> bool {
         false
     }
@@ -508,10 +526,12 @@ pub trait ChannelPlugin: Send + Sync {
     /// 发送一条消息
     async fn send(&self, msg: OutboundMessage) -> Result<()>;
 
-    /// 健康检查 —— 验证渠道是否处于正常工作状态。
-    ///
-    /// 默认返回 Ok(());子类可以重写以执行更复杂的检查
-    /// (例如 token 有效性、连接状态等)。
+    /**
+    健康检查 —— 验证渠道是否处于正常工作状态。
+
+    默认返回 Ok(());子类可以重写以执行更复杂的检查
+    (例如 token 有效性、连接状态等)。
+    */
     async fn health_check(&self) -> Result<()> {
         Ok(())
     }
@@ -543,6 +563,7 @@ mod tests {
 
     #[async_trait]
     impl MessageHandler for OnceHandler {
+        /// 以固定文本回复入站消息。
         async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
             Ok(OutboundMessage::new(
                 &msg.channel_id,
@@ -551,11 +572,13 @@ mod tests {
                 &self.reply_text,
             ))
         }
+        /// 回复操作直接成功。
         async fn reply(&self, _msg: OutboundMessage) -> Result<()> {
             Ok(())
         }
     }
 
+    /// 验证默认的流式处理恰好产出一条出站消息。
     #[tokio::test]
     async fn default_handle_stream_yields_exactly_one_outbound() -> Result<()> {
         let handler = OnceHandler {
@@ -578,6 +601,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已退役的投递栅栏会等待租约释放并拒绝新的准入。
     #[tokio::test]
     async fn retired_delivery_fence_waits_for_lease_and_rejects_new_admission() -> Result<()> {
         let fence = ChannelDeliveryFence::new("incarnation-a".to_string());

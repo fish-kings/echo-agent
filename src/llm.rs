@@ -66,6 +66,7 @@ while let Some(chunk) = stream.next().await {
 ```
 */
 
+/// LLM 底层传输类型（从 echo_core 重新导出）。
 pub mod types {
     //! 规范化的底层 LLM 传输类型。
     pub use echo_core::llm::types::*;

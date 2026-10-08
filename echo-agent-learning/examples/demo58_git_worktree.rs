@@ -1,18 +1,20 @@
-//! demo58: Git Worktree 隔离 — 并行子 Agent 的安全工作区
-//!
-//! 演示 git worktree 管理和 checkpoint 机制：
-//! 1. 列出当前仓库的 worktree
-//! 2. 创建新 worktree 用于并行子 Agent 工作
-//! 3. 再次列出 worktree 确认创建成功
-//! 4. 移除 worktree 并清理分支
-//! 5. 为单个文件创建精确 checkpoint
-//!
-//! 需要：
-//! - 当前目录在 git 仓库内（echo-agent 项目本身即可）
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo58_git_worktree --features git
-//! ```
+/*!
+ * demo58: Git Worktree 隔离 — 并行子 Agent 的安全工作区
+ *
+ * 演示 git worktree 管理和 checkpoint 机制：
+ * 1. 列出当前仓库的 worktree
+ * 2. 创建新 worktree 用于并行子 Agent 工作
+ * 3. 再次列出 worktree 确认创建成功
+ * 4. 移除 worktree 并清理分支
+ * 5. 为单个文件创建精确 checkpoint
+ *
+ * 需要：
+ * - 当前目录在 git 仓库内（echo-agent 项目本身即可）
+ *
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo58_git_worktree --features git
+ * ```
+ */
 
 use echo_agent::tools::git_checkpoint::{cleanup_old_checkpoints, create_checkpoint};
 use echo_agent::tools::git_worktree::{
@@ -20,6 +22,7 @@ use echo_agent::tools::git_worktree::{
 };
 use std::path::Path;
 
+/// 示例入口：演示 worktree 的列出、创建、移除以及文件 checkpoint。
 #[tokio::main]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
@@ -30,7 +33,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     println!("    demo58: Git Worktree 隔离 + Checkpoint");
     println!("═══════════════════════════════════════════════════════\n");
 
-    // Use the echo-agent repo root as the working repository.
+    // 使用 echo-agent 仓库根目录作为工作仓库。
     let repo_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new("."));
@@ -80,7 +83,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             wt
         }
         Err(e) => {
-            // May fail if branch already exists from a previous interrupted run.
+            // 若上次运行中断导致分支已存在，这里可能失败。
             println!("  ⚠ worktree 创建失败（可能上次运行未清理）: {e}");
             println!("  尝试清理残留…");
             let _ = std::process::Command::new("git")
@@ -91,7 +94,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 .args(["branch", "-D", branch_name])
                 .current_dir(repo_path)
                 .output();
-            // Retry
+            // 重试
             let wt = create_worktree(repo_path, &config).await?;
             println!("  ✓ 重试成功: {}", wt.path.display());
             wt
@@ -155,11 +158,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // Clean up old checkpoints, keeping last 5
+    // 清理旧的 checkpoint，保留最近 5 个
     cleanup_old_checkpoints(&checkpoint_target, 5);
     println!("  已清理旧 checkpoint（保留最近 5 个）");
 
-    // ── Summary ─────────────────────────────────────────────────────────
+    // ── 总结 ─────────────────────────────────────────────────────────
     println!("\n───────────────────────────────────────────────────────");
     println!("架构说明");
     println!("───────────────────────────────────────────────────────\n");

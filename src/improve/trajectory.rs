@@ -42,8 +42,10 @@ pub struct TrajectoryEntry {
     pub timestamp: DateTime<Utc>,
     /// token 使用总量。
     pub token_usage: u32,
-    /// 被受理的工具请求数量。标记为 `ToolExecutionSkipped` 的请求依然
-    /// 计入，因为轨迹导出需要保持请求/结果的配对关系。
+    /**
+     * 被受理的工具请求数量。标记为 `ToolExecutionSkipped` 的请求依然
+     * 计入，因为轨迹导出需要保持请求/结果的配对关系。
+     */
     pub tool_call_count: usize,
     /// 耗时（毫秒）。
     pub duration_ms: u64,
@@ -189,10 +191,12 @@ impl TrajectorySaver {
         messages
     }
 
-    /// 将一次已完成的运行保存为轨迹。
-    ///
-    /// 只保存状态为 `Completed` 或 `Failed` 的运行（跳过
-    /// `Pending`/`Running`/`Cancelled`）。
+    /**
+     * 将一次已完成的运行保存为轨迹。
+     *
+     * 只保存状态为 `Completed` 或 `Failed` 的运行（跳过
+     * `Pending`/`Running`/`Cancelled`）。
+     */
     pub async fn save(&self, run: &Run, model: &str) -> Result<bool> {
         // 只保存终态运行
         if !matches!(run.status, RunStatus::Completed | RunStatus::Failed) {
@@ -299,6 +303,7 @@ mod tests {
     use crate::trace::{Run, RunEvent, RunStatus, RunTimings, TokenUsage};
     use chrono::Utc;
 
+    /// 构造一个包含用户输入、工具调用、工具结果与最终输出的已完成测试运行。
     fn make_test_run() -> Run {
         Run {
             run_id: "test-run-1".into(),
@@ -351,6 +356,7 @@ mod tests {
         }
     }
 
+    /// 验证运行记录能被正确转换为 ShareGPT 格式的消息序列。
     #[test]
     fn test_convert_run_to_sharegpt() {
         let run = make_test_run();
@@ -377,15 +383,18 @@ mod tests {
         assert!(messages.last().unwrap().value.contains("Hello, world!"));
     }
 
+    /// 验证非终态运行的处理路径（仅构造数据，过滤逻辑在 `save()` 内部）。
     #[test]
     fn test_skips_non_terminal_runs() {
         let _saver = TrajectorySaver::new(std::env::temp_dir().join("echo_traj_test")).unwrap();
         let mut run = make_test_run();
         run.status = RunStatus::Running;
-        // save() 是异步方法，这里只测试其逻辑：非终态应返回 false
-        // 我们测试的是始终有效的转换逻辑，过滤则发生在 save() 内部
+        /* save() 是异步方法，这里只测试其逻辑：非终态应返回 false
+         * 我们测试的是始终有效的转换逻辑，过滤则发生在 save() 内部
+         */
     }
 
+    /// 验证保存轨迹后可以列出条目并得到正确的统计信息。
     #[tokio::test]
     async fn test_save_and_list_and_stats() {
         let dir = std::env::temp_dir().join(format!("echo_traj_test_{}", uuid::Uuid::new_v4()));
@@ -412,6 +421,7 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
     }
 
+    /// 验证按日期过滤列出轨迹时只返回匹配日期的条目。
     #[tokio::test]
     async fn test_list_with_date_filter() {
         let dir = std::env::temp_dir().join(format!("echo_traj_test_{}", uuid::Uuid::new_v4()));

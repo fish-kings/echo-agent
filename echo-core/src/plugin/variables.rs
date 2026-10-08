@@ -1,38 +1,39 @@
-//! Plugin environment variables — path substitution in component configs.
-//!
-//! Three variables are available for substitution in skill content, agent content,
-//! hook commands, monitor commands, and MCP/LSP server configurations:
-//!
-//! | Variable | Description |
-//! |----------|-------------|
-//! | `${ECHO_PLUGIN_ROOT}` | Absolute path to the plugin's install directory |
-//! | `${ECHO_PLUGIN_DATA}` | Persistent data directory, survives updates |
-//! | `${ECHO_PROJECT_DIR}` | Project root directory |
-//!
-//! Environment variables from the OS (`${ENV_VAR}`) are also substituted.
-//!
-//! Agent Plugins 1.0 MCP uses a narrower portable contract: `PLUGIN_ROOT` and
-//! `PLUGIN_DATA` are provided by the strict `mcp.json` adapter and expanded
-//! only in the standard-defined stdio fields.
+/*!
+插件环境变量 —— 组件配置中的路径替换。
+
+以下三个变量可在 skill 内容、agent 内容、hook 命令、monitor 命令
+以及 MCP/LSP 服务器配置中进行替换：
+
+| 变量 | 说明 |
+|----------|-------------|
+| `${ECHO_PLUGIN_ROOT}` | 插件安装目录的绝对路径 |
+| `${ECHO_PLUGIN_DATA}` | 持久化数据目录，更新后仍保留 |
+| `${ECHO_PROJECT_DIR}` | 项目根目录 |
+
+操作系统环境变量（`${ENV_VAR}`）同样会被替换。
+
+Agent Plugins 1.0 MCP 使用更窄的可移植契约：`PLUGIN_ROOT` 与 `PLUGIN_DATA`
+由严格的 `mcp.json` 适配器提供，且仅在标准定义的 stdio 字段中展开。
+*/
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-/// Resolved plugin variables for path substitution.
+/// 用于路径替换的已解析插件变量。
 #[derive(Debug, Clone)]
 pub struct PluginVariables {
-    /// Absolute path to the plugin's install directory.
+    /// 插件安装目录的绝对路径。
     pub plugin_root: PathBuf,
-    /// Persistent data directory for the plugin.
+    /// 插件的持久化数据目录。
     pub plugin_data: PathBuf,
-    /// Project root directory.
+    /// 项目根目录。
     pub project_dir: PathBuf,
-    /// Additional user-defined variables from plugin config.
+    /// 来自插件配置的额外用户自定义变量。
     pub user_config: HashMap<String, String>,
 }
 
 impl PluginVariables {
-    /// Create a new set of variables for a plugin.
+    /// 为插件创建一组新的变量。
     pub fn new(plugin_root: PathBuf, plugin_data: PathBuf, project_dir: PathBuf) -> Self {
         Self {
             plugin_root,
@@ -42,13 +43,13 @@ impl PluginVariables {
         }
     }
 
-    /// Set user configuration values.
+    /// 设置用户配置值。
     pub fn with_user_config(mut self, config: HashMap<String, String>) -> Self {
         self.user_config = config;
         self
     }
 
-    /// Set user configuration from persisted JSON values.
+    /// 从持久化的 JSON 值设置用户配置（非字符串值会转为 JSON 文本）。
     pub fn with_json_user_config(mut self, config: &HashMap<String, serde_json::Value>) -> Self {
         self.user_config = config
             .iter()
@@ -63,61 +64,67 @@ impl PluginVariables {
         self
     }
 
-    /// Override the persistent data directory.
+    /// 覆盖持久化数据目录。
     pub fn with_plugin_data(mut self, plugin_data: PathBuf) -> Self {
         self.plugin_data = plugin_data;
         self
     }
 
-    /// Substitute all variables in a string.
-    ///
-    /// Replaces `${ECHO_PLUGIN_ROOT}`, `${ECHO_PLUGIN_DATA}`,
-    /// `${ECHO_PROJECT_DIR}`, `${user_config.KEY}`, and `${ENV_VAR}`.
+    /**
+    替换字符串中的所有变量。
+
+    替换 `${ECHO_PLUGIN_ROOT}`、`${ECHO_PLUGIN_DATA}`、
+    `${ECHO_PROJECT_DIR}`、`${user_config.KEY}` 以及 `${ENV_VAR}`。
+    */
     pub fn substitute(&self, input: &str) -> String {
         let mut result = input.to_string();
 
-        // Built-in variables
+        // 内置变量
         result = result.replace("${ECHO_PLUGIN_ROOT}", &self.plugin_root.to_string_lossy());
         result = result.replace("${ECHO_PLUGIN_DATA}", &self.plugin_data.to_string_lossy());
         result = result.replace("${ECHO_PROJECT_DIR}", &self.project_dir.to_string_lossy());
 
-        // User config variables: ${user_config.KEY}
+        // 用户配置变量：${user_config.KEY}
         for (key, value) in &self.user_config {
             let placeholder = format!("${{user_config.{key}}}");
             result = result.replace(&placeholder, value);
         }
 
-        // Environment variables: ${ENV_VAR}
+        // 环境变量：${ENV_VAR}
         result = substitute_env_vars(&result);
 
         result
     }
 
-    /// Resolve a relative plugin path to an absolute path.
-    ///
-    /// The path should start with `./` and is resolved relative to `plugin_root`.
+    /**
+    将插件内的相对路径解析为绝对路径。
+
+    路径应以 `./` 开头，并相对于 `plugin_root` 解析。
+    */
     pub fn resolve_path(&self, relative: &str) -> PathBuf {
         let stripped = relative.strip_prefix("./").unwrap_or(relative);
         self.plugin_root.join(stripped)
     }
 
-    /// Ensure the data directory exists.
+    /// 确保数据目录存在。
     pub fn ensure_data_dir(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.plugin_data)?;
         Ok(())
     }
 }
 
-/// Substitute `${ENV_VAR}` patterns with environment variable values.
-///
-/// Unknown variables are left as-is (not removed).
+/**
+将 `${ENV_VAR}` 形式的占位符替换为环境变量值。
+
+未知变量保持原样（不会被移除）。
+*/
 fn substitute_env_vars(input: &str) -> String {
     let mut result = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c == '$' && chars.peek() == Some(&'{') {
-            chars.next(); // consume '{'
+            chars.next(); // 消费 '{'
             let mut var_name = String::new();
             let mut closed = false;
             for ch in chars.by_ref() {
@@ -128,21 +135,21 @@ fn substitute_env_vars(input: &str) -> String {
                 var_name.push(ch);
             }
             if closed && !var_name.starts_with("ECHO_") && !var_name.starts_with("user_config.") {
-                // Try as environment variable
+                // 尝试作为环境变量解析
                 match std::env::var(&var_name) {
                     Ok(val) => result.push_str(&val),
                     Err(_) => {
-                        // Leave as-is if not found
+                        // 未找到时保持原样
                         result.push_str(&format!("${{{var_name}}}"));
                     }
                 }
             } else if !closed {
-                // Unterminated ${, push back what we consumed
+                // 未闭合的 ${，将已消费的内容原样写回
                 result.push('$');
                 result.push('{');
                 result.push_str(&var_name);
             } else {
-                // Already handled variable (ECHO_ or user_config.)
+                // 已处理过的变量（ECHO_ 或 user_config.）
                 result.push_str(&format!("${{{var_name}}}"));
             }
         } else {

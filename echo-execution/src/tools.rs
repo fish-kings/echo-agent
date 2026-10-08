@@ -1,8 +1,9 @@
-//! Tool system core — `ToolManager` and tool trait re-exports.
-//!
-//! The [`ToolManager`] handles registration, execution, concurrency control,
-//! and timeout/retry for all tools in an agent session.
-//! Uses `DashMap` internally so it can be shared via `Arc`.
+/*!
+ * 工具系统核心 —— `ToolManager` 与工具 trait 的重导出。
+ *
+ * [`ToolManager`] 负责 agent 会话中所有工具的注册、执行、并发控制
+ * 以及超时/重试。内部使用 `DashMap`，因此可以通过 `Arc` 共享。
+ */
 
 use dashmap::DashMap;
 use echo_core::error::{AgentError, ReactError, Result, ToolError};
@@ -18,15 +19,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+/// 只读工具结果缓存的存活时间。
 const TOOL_RESULT_CACHE_TTL: Duration = Duration::from_secs(60);
+/// 只读工具结果缓存的最大条目数。
 const TOOL_RESULT_CACHE_CAPACITY: usize = 256;
 
+/// 构造表示工具调用被取消的错误。
 fn cancelled_error(tool_name: &str) -> ReactError {
     ReactError::Agent(Box::new(AgentError::Cancelled(format!(
         "tool '{tool_name}'"
     ))))
 }
 
+/// 若上下文已被取消，则返回取消错误。
 fn reject_cancelled(ctx: &ToolContext, tool_name: &str) -> Result<()> {
     if ctx
         .cancel
@@ -39,6 +44,7 @@ fn reject_cancelled(ctx: &ToolContext, tool_name: &str) -> Result<()> {
     }
 }
 
+/// 获取并发信号量许可，等待期间可响应取消。
 async fn acquire_permit(
     semaphore: &Arc<Semaphore>,
     ctx: &ToolContext,
@@ -64,6 +70,7 @@ async fn acquire_permit(
     }
 }
 
+/// 等待重试延迟，等待期间可响应取消。
 async fn wait_retry_delay(duration: Duration, ctx: &ToolContext, tool_name: &str) -> Result<()> {
     if let Some(cancel) = ctx.cancel.as_ref() {
         tokio::select! {
@@ -76,6 +83,7 @@ async fn wait_retry_delay(duration: Duration, ctx: &ToolContext, tool_name: &str
     }
 }
 
+/// 以可取消方式运行 future；若已进入排空模式，则不再因取消而丢弃 future。
 async fn cancel_aware<T>(
     future: impl std::future::Future<Output = Result<T>>,
     ctx: &ToolContext,
@@ -95,6 +103,7 @@ async fn cancel_aware<T>(
     }
 }
 
+/// 从 `echo_core::tools` 重导出的工具相关类型。
 pub use echo_core::tools::{
     ScriptExecutionProfile, ScriptExecutionProfileResolver, Tool, ToolContext, ToolExecutionConfig,
     ToolFailure, ToolFailureCategory, ToolOutputChannel, ToolParameters, ToolRecoveryAction,
@@ -102,6 +111,7 @@ pub use echo_core::tools::{
     ToolStreamEvent,
 };
 
+/// 计算带指数退避、服务端建议延迟与随机抖动的重试等待毫秒数（上限 30 秒）。
 fn retry_delay_ms(configured_ms: u64, retry_after_ms: Option<u64>, attempt: u32) -> u64 {
     use std::hash::{Hash, Hasher};
 
@@ -124,6 +134,7 @@ fn retry_delay_ms(configured_ms: u64, retry_after_ms: Option<u64>, attempt: u32)
         .min(30_000)
 }
 
+/// 只读工具结果缓存的键，按工具、参数与调用上下文隔离。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ToolResultCacheKey {
     tool_name: String,
@@ -137,6 +148,7 @@ struct ToolResultCacheKey {
     output_artifacts: Option<ToolOutputArtifactCacheScope>,
 }
 
+/// 参与缓存键计算的输出产物配置范围。
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ToolOutputArtifactCacheScope {
     root_dir: std::path::PathBuf,
@@ -145,6 +157,7 @@ struct ToolOutputArtifactCacheScope {
     max_age_secs: Option<u64>,
 }
 
+/// 根据工具名、参数与上下文构造结果缓存键；无法规范化时返回 `None`。
 fn result_cache_key(
     tool_name: &str,
     parameters: &ToolParameters,
@@ -185,6 +198,7 @@ fn result_cache_key(
     })
 }
 
+/// 校验工具参数 JSON Schema 本身是否合法。
 fn validate_schema(tool: &dyn Tool) -> Result<()> {
     jsonschema::validator_for(&tool.parameters()).map_err(|error| {
         ReactError::Config(Box::new(echo_core::error::ConfigError::ConfigFileError(
@@ -194,6 +208,7 @@ fn validate_schema(tool: &dyn Tool) -> Result<()> {
     Ok(())
 }
 
+/// 按工具的 JSON Schema 校验调用参数。
 fn validate_parameters_against_schema(tool: &dyn Tool, parameters: &ToolParameters) -> Result<()> {
     let schema = tool.parameters();
     let validator = jsonschema::validator_for(&schema).map_err(|error| {
@@ -217,128 +232,187 @@ fn validate_parameters_against_schema(tool: &dyn Tool, parameters: &ToolParamete
     Ok(())
 }
 
+/// 依次执行 schema 校验与工具自定义参数校验。
 async fn validate_tool_input(tool: &dyn Tool, parameters: &ToolParameters) -> Result<()> {
     validate_parameters_against_schema(tool, parameters)?;
     tool.validate_parameters(parameters).await
 }
 
+/// 让 `ToolManager` 可作为通用工具注册器使用。
 impl ToolRegistrar for ToolManager {
+    /// 委托给 [`ToolManager::register`]。
     fn register(&mut self, tool: Box<dyn Tool>) {
         ToolManager::register(self, tool);
     }
 }
 
+/// 缓存的工具定义：`((注册版本, 动态 schema 版本), 定义列表)`。
 type CachedToolDefinitions = Option<((u64, u64), Vec<ToolDefinition>)>;
 
-/// 工具管理器 — thread-safe tool registry and executor.
+/// 工具管理器 —— 线程安全的工具注册表与执行器。
 pub struct ToolManager {
+    /// 已注册工具表：工具名 -> 工具实现。
     tools: DashMap<String, Arc<dyn Tool>>,
+    /// 注册互斥锁，保证注册/替换/注销操作串行且批量注册具备原子性。
     registration_lock: parking_lot::Mutex<()>,
+    /// 工具执行配置（超时、重试、并发上限等）。
     config: ToolExecutionConfig,
-    /// Write/execute semaphore (limits concurrent write/execute tools).
+    /// 写/执行类信号量（限制写入/执行类工具的并发数）。
     semaphore: Option<Arc<Semaphore>>,
-    /// Read semaphore (higher limit for concurrent read-only tools).
+    /// 读信号量（为只读工具提供更高的并发上限）。
     read_semaphore: Option<Arc<Semaphore>>,
-    /// Cached tool definitions: `(version, definitions)`.
-    /// Invalidated by bumping `definitions_version`; rebuilt lazily on next access.
-    /// Uses `parking_lot::RwLock` which does not poison on panic.
+    /**
+     * 缓存的工具定义：`(版本, 定义列表)`。
+     * 通过递增 `definitions_version` 使其失效，下次访问时惰性重建。
+     * 使用 `parking_lot::RwLock`，panic 时不会中毒。
+     */
     cached_definitions: RwLock<CachedToolDefinitions>,
-    /// Monotonically increasing version counter. On register/unregister the
-    /// version is bumped so that the next read rebuilds from the live tool set.
+    /**
+     * 单调递增的版本计数器。注册/注销时递增版本号，
+     * 使下一次读取基于当前实际工具集重建定义。
+     */
     definitions_version: AtomicU64,
-    /// Context-scoped cache for successful read-only tool results.
+    /// 按上下文隔离的只读工具成功结果缓存。
     result_cache: RwLock<HashMap<ToolResultCacheKey, (ToolResult, std::time::Instant)>>,
-    /// Every non-read call invalidates at entry and exit. A read may publish
-    /// its result only if this epoch is unchanged since its cache lookup.
+    /**
+     * 每次非只读调用在进入与退出时都会使缓存失效。只读调用仅当该纪元
+     * 自其查询缓存以来未发生变化时，才可发布自己的结果。
+     */
     result_cache_epoch: AtomicU64,
+    /// 工具 schema 与输出预算的聚合统计指标。
     budget_metrics: ToolBudgetMetrics,
 }
 
+/// 结果缓存失效守卫：析构时再次使结果缓存失效，用于写操作结束时。
 struct ResultCacheInvalidationGuard<'a> {
+    /// 所属的工具管理器。
     manager: &'a ToolManager,
 }
 
 impl Drop for ResultCacheInvalidationGuard<'_> {
+    /// 析构时使结果缓存失效。
     fn drop(&mut self) {
         self.manager.invalidate_result_cache();
     }
 }
 
-/// Deterministic size accounting for the tool definitions sent to an LLM.
+/// 发送给 LLM 的工具定义的确定性体积统计。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolSchemaStats {
+    /// 工具数量。
     pub tool_count: usize,
+    /// 序列化后 schema 的字节数。
     pub schema_bytes: usize,
+    /// 估算的 token 数。
     pub estimated_tokens: usize,
 }
 
-/// Content-free aggregate metrics for schema and tool-output budgets.
+/// schema 与工具输出预算的聚合指标快照（不含任何内容）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ToolBudgetMetricsSnapshot {
+    /// 记录 schema 统计的请求次数。
     pub schema_requests: u64,
+    /// 累计 schema 字节数。
     pub schema_bytes: u64,
+    /// 累计 schema 估算 token 数。
     pub schema_estimated_tokens: u64,
+    /// 累计观测到的已激活工具数量。
     pub activated_tool_observations: u64,
+    /// 工具搜索次数。
     pub tool_searches: u64,
+    /// 工具搜索累计匹配数。
     pub tool_search_matches: u64,
+    /// 未匹配或未激活任何工具的搜索次数。
     pub tool_search_misses: u64,
+    /// 工具选择失败次数。
     pub tool_selection_failures: u64,
+    /// 工具结果总数。
     pub tool_results: u64,
+    /// 成功的工具结果数。
     pub successful_tool_results: u64,
+    /// 对模型可见的结果累计字节数。
     pub visible_result_bytes: u64,
+    /// 溢出到产物存储的负载累计字节数。
     pub spilled_payload_bytes: u64,
+    /// 工具执行累计耗时（毫秒）。
     pub tool_duration_ms: u64,
+    /// 成功读取产物（`read_artifact`）的次数。
     pub artifact_reads: u64,
+    /// 分页结果数量。
     pub paginated_results: u64,
+    /// 需要继续翻页（被截断）的分页结果数量。
     pub pagination_continuations: u64,
 }
 
+/// 工具预算指标的原子计数器集合，字段含义与 [`ToolBudgetMetricsSnapshot`] 一一对应。
 #[derive(Default)]
 struct ToolBudgetMetrics {
+    /// schema 统计请求次数。
     schema_requests: AtomicU64,
+    /// 累计 schema 字节数。
     schema_bytes: AtomicU64,
+    /// 累计 schema 估算 token 数。
     schema_estimated_tokens: AtomicU64,
+    /// 累计已激活工具观测数。
     activated_tool_observations: AtomicU64,
+    /// 工具搜索次数。
     tool_searches: AtomicU64,
+    /// 工具搜索累计匹配数。
     tool_search_matches: AtomicU64,
+    /// 工具搜索未命中次数。
     tool_search_misses: AtomicU64,
+    /// 工具选择失败次数。
     tool_selection_failures: AtomicU64,
+    /// 工具结果总数。
     tool_results: AtomicU64,
+    /// 成功工具结果数。
     successful_tool_results: AtomicU64,
+    /// 可见结果累计字节数。
     visible_result_bytes: AtomicU64,
+    /// 溢出负载累计字节数。
     spilled_payload_bytes: AtomicU64,
+    /// 工具执行累计耗时（毫秒）。
     tool_duration_ms: AtomicU64,
+    /// 产物读取次数。
     artifact_reads: AtomicU64,
+    /// 分页结果数量。
     paginated_results: AtomicU64,
+    /// 分页续读数量。
     pagination_continuations: AtomicU64,
 }
 
-/// Catalog search that activates full schemas inside one invocation.
+/// 工具目录搜索工具：在单次调用内激活匹配工具的完整 schema。
 pub struct ToolSearchTool {
+    /// 指向工具管理器的弱引用，避免循环引用。
     manager: std::sync::Weak<ToolManager>,
 }
 
 impl ToolSearchTool {
+    /// 基于工具管理器的弱引用创建搜索工具。
     pub fn new(manager: std::sync::Weak<ToolManager>) -> Self {
         Self { manager }
     }
 }
 
 impl Tool for ToolSearchTool {
+    /// 工具名称：`tool_search`。
     fn name(&self) -> &str {
         "tool_search"
     }
 
+    /// 面向模型的工具描述。
     fn description(&self) -> &str {
         "Find and activate additional tools by capability or exact name. Matching tool schemas become available on the next model turn."
     }
 
+    /// 风险等级为 Standard，以绕过只读结果缓存。
     fn risk_level(&self) -> ToolRiskLevel {
-        // Activation mutates invocation-local visibility, so this must bypass
-        // the read-only result cache even though it has no external side effect.
+        /* 激活操作会修改调用内的工具可见性，因此即使没有外部副作用，
+         * 也必须绕过只读结果缓存。 */
         ToolRiskLevel::Standard
     }
 
+    /// 能力声明：只读访问、标准风险、无额外权限。
     fn capabilities(&self) -> ToolCapabilities {
         ToolCapabilities {
             access: ToolAccess::ReadOnly,
@@ -347,6 +421,7 @@ impl Tool for ToolSearchTool {
         }
     }
 
+    /// 参数 schema：必填 `query`，可选 `limit`（1~10）。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -367,6 +442,7 @@ impl Tool for ToolSearchTool {
         })
     }
 
+    /// 按名称/描述对可见工具打分匹配，激活前 `limit` 个结果并返回摘要。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -478,6 +554,7 @@ impl Tool for ToolSearchTool {
 }
 
 impl ToolManager {
+    /// 获取按名称排序的工具定义列表（带版本缓存），用于发送给 LLM。
     pub fn get_openai_tools(&self) -> Vec<ToolDefinition> {
         let current_version = self.definitions_version.load(Ordering::Acquire);
         let dynamic_version = self.tools.iter().fold(0_u64, |revision, entry| {
@@ -489,27 +566,27 @@ impl ToolManager {
         {
             return cached.1.clone();
         }
-        // Version mismatch or cache empty — rebuild.
+        // 版本不匹配或缓存为空 —— 重建。
         let mut definitions: Vec<ToolDefinition> = self
             .tools
             .iter()
             .map(|entry| ToolDefinition::from_tool(&**entry.value()))
             .collect();
-        // Sort by tool name to ensure deterministic order for prefix caching.
-        // This enables LLM provider-side prefix caching (OpenAI, DeepSeek, Anthropic)
-        // because consecutive requests with the same tool definitions share a stable
-        // cacheable prefix: system prompt → sorted tool definitions → conversation history.
+        /* 按工具名排序，保证顺序确定以利于前缀缓存。
+         * 这使得 LLM 提供方的前缀缓存（OpenAI、DeepSeek、Anthropic）得以生效：
+         * 连续请求使用相同工具定义时共享稳定的可缓存前缀：
+         * 系统提示词 → 排序后的工具定义 → 对话历史。 */
         definitions.sort_by(|a, b| a.function.name.cmp(&b.function.name));
         *self.cached_definitions.write() = Some((cache_key, definitions.clone()));
         definitions
     }
 
-    /// Measure the complete registered tool schema using the framework tokenizer.
+    /// 使用框架分词器测量全部已注册工具 schema 的体积。
     pub fn schema_stats(&self) -> std::result::Result<ToolSchemaStats, serde_json::Error> {
         Self::schema_stats_for(&self.get_openai_tools())
     }
 
-    /// Measure an invocation-filtered subset without creating another registry.
+    /// 测量某次调用过滤后的工具定义子集，无需创建新的注册表。
     pub fn schema_stats_for(
         definitions: &[ToolDefinition],
     ) -> std::result::Result<ToolSchemaStats, serde_json::Error> {
@@ -523,6 +600,7 @@ impl ToolManager {
         })
     }
 
+    /// 记录一次 schema 体积统计到预算指标。
     pub fn record_schema_stats(&self, stats: &ToolSchemaStats) {
         self.budget_metrics
             .schema_requests
@@ -538,6 +616,7 @@ impl ToolManager {
         );
     }
 
+    /// 记录一次工具搜索的匹配与激活情况。
     pub fn record_tool_search(&self, matched: usize, activated: usize) {
         self.budget_metrics
             .tool_searches
@@ -550,12 +629,14 @@ impl ToolManager {
         }
     }
 
+    /// 记录一次工具选择失败。
     pub fn record_tool_selection_failure(&self) {
         self.budget_metrics
             .tool_selection_failures
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    /// 记录一次工具结果的预算指标，并输出不含内容的追踪日志。
     pub fn record_tool_result(
         &self,
         tool_name: &str,
@@ -620,6 +701,7 @@ impl ToolManager {
         );
     }
 
+    /// 获取当前预算指标的快照。
     pub fn budget_metrics(&self) -> ToolBudgetMetricsSnapshot {
         ToolBudgetMetricsSnapshot {
             schema_requests: self.budget_metrics.schema_requests.load(Ordering::Relaxed),
@@ -671,29 +753,35 @@ impl ToolManager {
         }
     }
 
+    /// 使工具定义缓存与结果缓存失效。
     fn invalidate_cache(&self) {
         self.definitions_version.fetch_add(1, Ordering::Release);
         self.invalidate_result_cache();
-        // No need to clear cached_definitions — version mismatch will trigger
-        // a lazy rebuild on the next access.
+        /* 无需清空 cached_definitions —— 版本不匹配会在下次访问时
+         * 触发惰性重建。 */
     }
 
-    /// Force the cached tool definitions to be rebuilt on the next read.
-    ///
-    /// This is useful when a tool's JSON schema depends on external runtime
-    /// metadata while the registered tool set itself has not changed.
+    /**
+     * 强制在下次读取时重建缓存的工具定义。
+     *
+     * 适用于工具的 JSON schema 依赖外部运行时元数据、
+     * 而已注册工具集本身未发生变化的场景。
+     */
     pub fn invalidate_definition_cache(&self) {
         self.invalidate_cache();
     }
 }
 
+/// 默认构造等价于 [`ToolManager::new`]。
 impl Default for ToolManager {
+    /// 创建默认工具管理器。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl ToolManager {
+    /// 使用默认执行配置创建工具管理器。
     pub fn new() -> Self {
         Self {
             tools: DashMap::new(),
@@ -709,6 +797,7 @@ impl ToolManager {
         }
     }
 
+    /// 使用指定执行配置创建工具管理器，并按配置初始化读/写信号量。
     pub fn new_with_config(config: ToolExecutionConfig) -> Self {
         let semaphore = config
             .max_concurrency
@@ -730,24 +819,26 @@ impl ToolManager {
         }
     }
 
+    /// 返回写/执行类工具的最大并发数配置。
     pub fn max_concurrency(&self) -> Option<usize> {
         self.config.max_concurrency
     }
 
-    /// Register a tool (takes `&self` via DashMap interior mutability).
+    /// 注册工具（借助 DashMap 的内部可变性，只需 `&self`）；失败时仅记录错误日志。
     pub fn register(&self, tool: Box<dyn Tool>) {
         if let Err(error) = self.try_register(tool) {
             tracing::error!(%error, "Tool registration rejected");
         }
     }
 
+    /// 批量注册工具；失败时仅记录错误日志。
     pub fn register_tools(&self, tools: Vec<Box<dyn Tool>>) {
         if let Err(error) = self.try_register_tools(tools) {
             tracing::error!(%error, "Tool batch registration rejected");
         }
     }
 
-    /// Register one tool without replacing an existing canonical name.
+    /// 注册单个工具，不会替换已存在的同名工具。
     pub fn try_register(&self, tool: Box<dyn Tool>) -> Result<()> {
         validate_schema(tool.as_ref())?;
         let _registration = self.registration_lock.lock();
@@ -766,7 +857,7 @@ impl ToolManager {
         }
     }
 
-    /// Atomically register a batch, rejecting internal or existing collisions.
+    /// 原子地批量注册工具，批内重名或与已有工具冲突时整体拒绝。
     pub fn try_register_tools(&self, tools: Vec<Box<dyn Tool>>) -> Result<()> {
         let _registration = self.registration_lock.lock();
         let mut names = std::collections::HashSet::with_capacity(tools.len());
@@ -795,7 +886,7 @@ impl ToolManager {
         Ok(())
     }
 
-    /// Explicitly replace a tool and return the displaced implementation.
+    /// 显式替换工具，并返回被替换下来的旧实现。
     pub fn replace(&self, tool: Box<dyn Tool>) -> Option<Arc<dyn Tool>> {
         let _registration = self.registration_lock.lock();
         let old = self.tools.insert(tool.name().to_string(), Arc::from(tool));
@@ -803,6 +894,7 @@ impl ToolManager {
         old
     }
 
+    /// 注销指定工具，返回被移除的实现。
     pub fn unregister(&self, tool_name: &str) -> Option<Arc<dyn Tool>> {
         let _registration = self.registration_lock.lock();
         let tool = self.tools.remove(tool_name).map(|(_, v)| v);
@@ -812,27 +904,29 @@ impl ToolManager {
         tool
     }
 
+    /// 返回按名称排序的已注册工具名列表。
     pub fn list_tools(&self) -> Vec<String> {
         let mut tools: Vec<String> = self.tools.iter().map(|e| e.key().clone()).collect();
         tools.sort();
         tools
     }
 
-    /// Inject a sandbox executor into all registered tools that support it.
-    ///
-    /// Iterates the [`DashMap`], calling
-    /// [`Tool::set_sandbox`] on each tool. Tools that override the method
-    /// (currently `ShellTool` and `RunCodeTool`) accept the executor;
-    /// all others ignore it via the default `false` implementation.
-    ///
-    /// Called by the agent builder at setup time after selecting a sandbox manager.
+    /**
+     * 向所有支持沙箱的已注册工具注入沙箱执行器。
+     *
+     * 遍历 [`DashMap`]，对每个工具调用 [`Tool::set_sandbox`]。重写了该方法的工具
+     * （目前为 `ShellTool` 和 `RunCodeTool`）会接收执行器；
+     * 其余工具通过默认返回 `false` 的实现忽略它。
+     *
+     * 由 agent 构建器在选定沙箱管理器后的初始化阶段调用。
+     */
     pub fn apply_sandbox(&self, sandbox: Arc<dyn SandboxExecutor>) {
         for entry in &self.tools {
             entry.value().set_sandbox(sandbox.clone());
         }
     }
 
-    /// Inject a lazy persisted-script runtime resolver into supporting tools.
+    /// 向支持的工具注入惰性的持久化脚本运行时解析器。
     pub fn apply_script_execution_profile_resolver(
         &self,
         resolver: Arc<dyn ScriptExecutionProfileResolver>,
@@ -844,16 +938,19 @@ impl ToolManager {
         }
     }
 
-    /// Get an owned handle to the current tool generation.
-    ///
-    /// The DashMap reference is released before this method returns, so callers
-    /// may hold the handle across `.await` without blocking registry mutation.
+    /**
+     * 获取当前工具代际的自有句柄。
+     *
+     * DashMap 引用在本方法返回前即已释放，因此调用方可以跨 `.await`
+     * 持有该句柄，而不会阻塞注册表的修改。
+     */
     pub fn get_tool(&self, tool_name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .get(tool_name)
             .map(|entry| Arc::clone(entry.value()))
     }
 
+    /// 返回按名称排序的全部工具定义（不经缓存）。
     pub fn get_tool_definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions: Vec<ToolDefinition> = self
             .tools
@@ -864,7 +961,7 @@ impl ToolManager {
         definitions
     }
 
-    /// Return names of tools whose rich results the configured model cannot consume.
+    /// 返回其富结果无法被当前配置模型消费的工具名称集合。
     pub fn incompatible_tool_names(
         &self,
         available: &[echo_core::llm::ModelInputModality],
@@ -882,7 +979,7 @@ impl ToolManager {
             .collect()
     }
 
-    /// Return tool schemas compatible with an explicit model capability contract.
+    /// 返回与给定模型输入能力约定兼容的工具 schema。
     pub fn get_tool_definitions_for_modalities(
         &self,
         available: &[echo_core::llm::ModelInputModality],
@@ -894,10 +991,12 @@ impl ToolManager {
             .collect()
     }
 
-    /// 执行工具
-    ///
-    /// 支持并发控制、超时和重试。等价于以空 [`ToolContext`] 调用
-    /// [`Self::execute_tool_with_context`]（向后兼容）。
+    /**
+     * 执行工具
+     *
+     * 支持并发控制、超时和重试。等价于以空 [`ToolContext`] 调用
+     * [`Self::execute_tool_with_context`]（向后兼容）。
+     */
     pub async fn execute_tool(
         &self,
         tool_name: &str,
@@ -907,12 +1006,14 @@ impl ToolManager {
             .await
     }
 
-    /// 带运行时上下文执行工具。
-    ///
-    /// [`ToolManager`] 本身不持有任何 `ToolContext` 状态 —— `ctx` 由调用方
-    /// （ExecuteStage）每次传入，从 per-agent 的 config 构造。这保证了
-    /// 跨会话共享同一个 `ToolManager`（如 AgentPool 的 pooled agent）也
-    /// 不会串会话：每个 agent 的 `working_dir` 只跟随它自己的 ctx。
+    /**
+     * 带运行时上下文执行工具。
+     *
+     * [`ToolManager`] 本身不持有任何 `ToolContext` 状态 —— `ctx` 由调用方
+     * （ExecuteStage）每次传入，从 per-agent 的 config 构造。这保证了
+     * 跨会话共享同一个 `ToolManager`（如 AgentPool 的 pooled agent）也
+     * 不会串会话：每个 agent 的 `working_dir` 只跟随它自己的 ctx。
+     */
     pub async fn execute_tool_with_context(
         &self,
         tool_name: &str,
@@ -923,13 +1024,13 @@ impl ToolManager {
             .await
     }
 
-    /// Execute while preserving a bounded caller-owned drain window after start.
-    ///
-    /// Cancellation still rejects a call while it waits for a concurrency
-    /// permit or retry delay. Once the tool future starts, this method does not
-    /// race-drop it. The tool continues to receive `ctx.cancel` for cooperative
-    /// shutdown, while the caller must bound the drain and drop this future
-    /// when its grace period expires.
+    /**
+     * 执行工具，并在启动后保留一个由调用方控制时长的排空（drain）窗口。
+     *
+     * 在等待并发许可或重试延迟期间，取消仍会拒绝该调用。一旦工具 future
+     * 开始运行，本方法不会通过竞争将其丢弃。工具仍可通过 `ctx.cancel` 进行
+     * 协作式关闭，而调用方需要自行限定排空时长，并在宽限期到期时丢弃此 future。
+     */
     pub async fn execute_tool_with_context_draining_started(
         &self,
         tool_name: &str,
@@ -940,9 +1041,11 @@ impl ToolManager {
             .await
     }
 
-    /// Shared body of [`Self::execute_tool`] / [`Self::execute_tool_with_context`]:
-    /// 并发控制、超时、重试、结果缓存，最终通过
-    /// [`Tool::execute_with_context`] 路由到具体工具。
+    /**
+     * [`Self::execute_tool`] / [`Self::execute_tool_with_context`] 的共享实现：
+     * 并发控制、超时、重试、结果缓存，最终通过
+     * [`Tool::execute_with_context`] 路由到具体工具。
+     */
     async fn execute_tool_inner(
         &self,
         tool_name: &str,
@@ -950,8 +1053,8 @@ impl ToolManager {
         ctx: &ToolContext,
         drain_started: bool,
     ) -> Result<ToolResult> {
-        // Observe before obtaining the tool guard so a future registry storage
-        // change cannot let an old implementation publish into a new generation.
+        /* 在获取工具句柄之前读取纪元，确保将来注册表存储方式变化时，
+         * 旧实现也无法把结果发布到新代际的缓存中。 */
         let observed_result_cache_epoch = self.result_cache_epoch.load(Ordering::Acquire);
         let tool = self
             .get_tool(tool_name)
@@ -962,8 +1065,8 @@ impl ToolManager {
         // 并发控制：获取信号量许可（读/写分离）
         let is_read = tool.risk_level() == ToolRiskLevel::ReadOnly;
 
-        // A write can invalidate every cached read, even when the write later
-        // fails: tools may have partially applied an external side effect.
+        /* 写操作即使随后失败也会使所有缓存的读结果失效：
+         * 工具可能已经部分施加了外部副作用。 */
         let (cache_key, read_cache_epoch, _write_cache_guard) = if is_read {
             (
                 result_cache_key(tool_name, &parameters, ctx),
@@ -1069,9 +1172,11 @@ impl ToolManager {
         Err(last_err.unwrap_or_else(|| ToolError::NotFound(tool_name.to_string()).into()))
     }
 
-    /// Validate tool parameters asynchronously.
-    ///
-    /// This is the preferred method — it works correctly inside a Tokio runtime.
+    /**
+     * 异步校验工具参数。
+     *
+     * 这是首选方法 —— 在 Tokio 运行时内可正确工作。
+     */
     pub async fn validate_tool_parameters_async(
         &self,
         tool_name: &str,
@@ -1083,9 +1188,11 @@ impl ToolManager {
         validate_tool_input(tool.as_ref(), parameters).await
     }
 
-    /// Whether the named tool supports streaming execution via [`Tool::execute_stream`].
-    ///
-    /// Returns `false` for unknown tools (they don't exist).
+    /**
+     * 判断指定工具是否支持通过 [`Tool::execute_stream`] 流式执行。
+     *
+     * 未知工具（不存在）返回 `false`。
+     */
     pub fn supports_streaming(&self, tool_name: &str) -> bool {
         match self.get_tool(tool_name) {
             Some(tool) => tool.supports_streaming(),
@@ -1093,11 +1200,12 @@ impl ToolManager {
         }
     }
 
-    /// Execute a tool while forwarding incremental events with backpressure.
-    ///
-    /// The concurrency permit and per-attempt timeout cover the complete
-    /// stream lifetime. Attempts are retried only until the first output chunk
-    /// has been delivered to the caller.
+    /**
+     * 执行工具，并以背压方式转发增量事件。
+     *
+     * 并发许可与单次尝试超时覆盖整个流的生命周期。仅在首个输出块
+     * 交付给调用方之前才会进行重试。
+     */
     pub async fn execute_tool_stream_with_context(
         &self,
         tool_name: &str,
@@ -1109,8 +1217,7 @@ impl ToolManager {
             .await
     }
 
-    /// Streaming counterpart of
-    /// [`Self::execute_tool_with_context_draining_started`].
+    /// [`Self::execute_tool_with_context_draining_started`] 的流式版本。
     pub async fn execute_tool_stream_with_context_draining_started(
         &self,
         tool_name: &str,
@@ -1122,6 +1229,7 @@ impl ToolManager {
             .await
     }
 
+    /// 流式执行的共享实现：并发控制、超时、重试（仅限首个输出前）与结果缓存。
     async fn execute_tool_stream_with_context_inner(
         &self,
         tool_name: &str,
@@ -1130,8 +1238,8 @@ impl ToolManager {
         event_tx: Option<tokio::sync::mpsc::Sender<ToolStreamEvent>>,
         drain_started: bool,
     ) -> Result<ToolResult> {
-        // Keep the registry generation and result-cache generation ordered:
-        // an old tool implementation must never publish into a replacement's cache.
+        /* 保持注册表代际与结果缓存代际的先后顺序：
+         * 旧工具实现绝不能把结果发布到替换后工具的缓存中。 */
         let observed_result_cache_epoch = self.result_cache_epoch.load(Ordering::Acquire);
         let tool = self
             .get_tool(tool_name)
@@ -1292,23 +1400,27 @@ impl ToolManager {
         }))
     }
 
+    /// 立即使结果缓存失效，并返回在结束时再次失效的守卫。
     fn begin_result_cache_invalidation(&self) -> ResultCacheInvalidationGuard<'_> {
         self.invalidate_result_cache();
         ResultCacheInvalidationGuard { manager: self }
     }
 
+    /// 清空结果缓存并递增缓存纪元。
     fn invalidate_result_cache(&self) {
         let mut cache = self.result_cache.write();
         self.result_cache_epoch.fetch_add(1, Ordering::AcqRel);
         cache.clear();
     }
 
+    /// 查询未过期的缓存结果，同时清理过期条目。
     fn cached_result(&self, key: &ToolResultCacheKey) -> Option<ToolResult> {
         let mut cache = self.result_cache.write();
         cache.retain(|_, (_, created)| created.elapsed() < TOOL_RESULT_CACHE_TTL);
         cache.get(key).map(|(result, _)| result.clone())
     }
 
+    /// 在纪元未变化时写入缓存结果，超出容量时淘汰最旧条目。
     fn store_cached_result(
         &self,
         key: ToolResultCacheKey,
@@ -1332,10 +1444,12 @@ impl ToolManager {
     }
 }
 
+/// 将 usize 值饱和转换后累加到原子计数器。
 fn add_usize(counter: &AtomicU64, value: usize) {
     counter.fetch_add(u64::try_from(value).unwrap_or(u64::MAX), Ordering::Relaxed);
 }
 
+/// `ToolManager` 执行、缓存、取消、流式与注册行为的单元测试。
 #[cfg(test)]
 mod execute_with_context_tests {
     use super::*;
@@ -1350,21 +1464,26 @@ mod execute_with_context_tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Arc, Mutex};
 
-    /// Records the `ToolContext` it was called with, so we can verify
-    /// `execute_tool_with_context` actually forwards the caller-supplied ctx.
+    /**
+     * 记录被调用时收到的 `ToolContext`，用于验证
+     * `execute_tool_with_context` 确实转发了调用方提供的 ctx。
+     */
     struct CtxCapturingTool {
         captured: Arc<Mutex<Option<ToolContext>>>,
     }
 
+    /// 仅具有指定名称的简单测试工具。
     struct NamedTool {
         name: &'static str,
     }
 
+    /// 统计调用次数的只读测试工具。
     struct ReadCountingTool {
         calls: Arc<AtomicUsize>,
         output: &'static str,
     }
 
+    /// 可由测试控制开始与释放时机的只读工具，用于验证在途读取的缓存隔离。
     struct CoordinatedReadTool {
         value: Arc<AtomicUsize>,
         calls: Arc<AtomicUsize>,
@@ -1372,26 +1491,33 @@ mod execute_with_context_tests {
         release: tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
     }
 
+    /// 修改共享值的写入类测试工具。
     struct UpdatingWriteTool {
         value: Arc<AtomicUsize>,
     }
 
+    /// 用于验证缓存按产物配置隔离的只读工具。
     struct ArtifactScopeReadTool {
         calls: Arc<AtomicUsize>,
     }
 
+    /// 需要图像输入模态的测试工具。
     struct ImageInputTool;
 
+    /// 先输出再延迟完成的流式测试工具。
     struct DelayedStreamingTool;
 
+    /// 自行管理超时的测试工具。
     struct InternallyTimedTool;
 
+    /// 在自有 spawn 任务中保留资源守卫的测试工具。
     struct SpawnRetainingTool {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         settled: Arc<tokio::sync::Notify>,
     }
 
+    /// 析构时计数的资源守卫。
     struct GuardDropCounter(Arc<AtomicUsize>);
 
     impl Drop for GuardDropCounter {
@@ -1400,21 +1526,25 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 开始后永久挂起的测试工具。
     struct PendingTool {
         name: &'static str,
         started: Arc<tokio::sync::Notify>,
     }
 
+    /// 在取消信号之后仍会完成的测试工具。
     struct CompletingAfterCancellationTool {
         started: Arc<tokio::sync::Notify>,
         finished: Arc<AtomicBool>,
         calls: Arc<AtomicUsize>,
     }
 
+    /// 会超时并统计活跃执行数的测试工具。
     struct TimedOutTool {
         active: Arc<AtomicUsize>,
     }
 
+    /// 活跃执行计数守卫，析构时递减计数。
     struct ActiveExecution(Arc<AtomicUsize>);
 
     impl Drop for ActiveExecution {
@@ -1501,6 +1631,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 带严格参数 schema 的测试工具。
     struct SchemaTool {
         calls: Arc<AtomicUsize>,
     }
@@ -1536,6 +1667,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 声明非法 JSON Schema 的测试工具。
     struct InvalidSchemaTool;
 
     impl Tool for InvalidSchemaTool {
@@ -1559,6 +1691,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 带自定义参数校验逻辑的测试工具。
     struct CustomValidationTool {
         validations: Arc<AtomicUsize>,
         calls: Arc<AtomicUsize>,
@@ -1630,6 +1763,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 首次返回可重试失败、之后成功的测试工具。
     struct RetryOnceTool {
         calls: Arc<AtomicUsize>,
     }
@@ -1663,6 +1797,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 返回参数非法类失败的测试工具。
     struct InvalidArgumentsTool {
         calls: Arc<AtomicUsize>,
     }
@@ -1694,6 +1829,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 先输出再返回瞬时失败的流式测试工具。
     struct OutputThenTransientFailureTool {
         calls: Arc<AtomicUsize>,
     }
@@ -2050,6 +2186,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 验证 `execute_tool_with_context` 会转发调用方提供的上下文。
     #[tokio::test]
     async fn test_execute_tool_with_context_forwards_ctx() {
         let tm = ToolManager::new();
@@ -2091,6 +2228,7 @@ mod execute_with_context_tests {
         assert_eq!(drops.load(AtomicOrdering::SeqCst), 1);
     }
 
+    /// 验证调用方中止后，工具自有 spawn 任务仍保留资源守卫。
     #[tokio::test]
     async fn tool_owned_spawn_retains_guards_after_caller_abort() -> echo_core::error::Result<()> {
         let manager = Arc::new(ToolManager::new());
@@ -2131,6 +2269,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证上下文释放后，阻塞闭包仍保留资源守卫。
     #[tokio::test]
     async fn blocking_closure_retains_guards_after_context_drop() -> echo_core::error::Result<()> {
         let drops = Arc::new(AtomicUsize::new(0));
@@ -2169,6 +2308,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证流式输出在执行完成之前就被转发。
     #[tokio::test]
     async fn streaming_output_is_forwarded_before_execution_completes() {
         let manager = Arc::new(ToolManager::new());
@@ -2207,6 +2347,7 @@ mod execute_with_context_tests {
         assert_eq!(result.output, "done");
     }
 
+    /// 验证自管超时的工具绕过普通执行超时。
     #[tokio::test]
     async fn internally_timed_tool_bypasses_ordinary_execution_timeout()
     -> echo_core::error::Result<()> {
@@ -2229,6 +2370,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证工具超时只产生一个类型化结果且不残留活跃 future。
     #[tokio::test]
     async fn q_flt_v04_tool_timeout_has_one_typed_outcome_and_no_live_future()
     -> echo_core::error::Result<()> {
@@ -2264,6 +2406,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证自管超时工具的流式执行绕过普通执行超时。
     #[tokio::test]
     async fn internally_timed_tool_stream_bypasses_ordinary_execution_timeout()
     -> echo_core::error::Result<()> {
@@ -2291,6 +2434,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证预算指标只保存不含内容的聚合值。
     #[test]
     fn budget_metrics_store_only_content_free_aggregates() {
         let manager = ToolManager::new();
@@ -2340,6 +2484,7 @@ mod execute_with_context_tests {
         );
     }
 
+    /// 验证仅对明确的瞬时失败进行重试。
     #[tokio::test]
     async fn retries_only_explicit_transient_failures() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2365,6 +2510,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证读结果会被缓存，而写操作会使缓存失效。
     #[tokio::test]
     async fn read_results_are_cached_and_write_results_invalidate_cache()
     -> echo_core::error::Result<()> {
@@ -2391,6 +2537,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证读缓存按工作区隔离。
     #[tokio::test]
     async fn read_cache_is_scoped_by_workspace() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2426,6 +2573,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证读缓存按运行、执行与消息标识隔离。
     #[tokio::test]
     async fn read_cache_is_scoped_by_run_execution_and_message() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2468,6 +2616,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证读缓存按产物配置隔离。
     #[tokio::test]
     async fn read_cache_is_scoped_by_artifact_configuration() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2553,6 +2702,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证替换只读工具会使其缓存代际失效。
     #[tokio::test]
     async fn replacing_a_read_tool_invalidates_its_cached_generation()
     -> echo_core::error::Result<()> {
@@ -2583,6 +2733,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证替换只读工具会隔离其在途调用的缓存发布。
     #[tokio::test(flavor = "current_thread")]
     async fn replacing_a_read_tool_fences_its_inflight_generation() -> echo_core::error::Result<()>
     {
@@ -2640,6 +2791,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证注销只读工具无需等待其在途调用完成。
     #[tokio::test(flavor = "current_thread")]
     async fn unregistering_a_read_tool_does_not_wait_for_its_inflight_generation()
     -> echo_core::error::Result<()> {
@@ -2686,6 +2838,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证写操作阻止在途读取重新发布过期缓存。
     #[tokio::test]
     async fn write_prevents_inflight_read_from_republishing_stale_cache()
     -> echo_core::error::Result<()> {
@@ -2739,6 +2892,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证读结果缓存容量有上限。
     #[tokio::test]
     async fn read_result_cache_has_a_bounded_capacity() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2768,6 +2922,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证参数非法的失败不会被重试。
     #[tokio::test]
     async fn invalid_arguments_are_not_retried() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2796,6 +2951,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证 schema 校验失败时不会执行工具。
     #[tokio::test]
     async fn schema_validation_prevents_execution() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2827,6 +2983,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证流式路径下 schema 校验失败时不会执行工具。
     #[tokio::test]
     async fn streaming_schema_validation_prevents_execution() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -2858,6 +3015,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证流式路径下自定义校验失败时不会执行工具。
     #[tokio::test]
     async fn streaming_custom_validation_prevents_execution() -> echo_core::error::Result<()> {
         let validations = Arc::new(AtomicUsize::new(0));
@@ -2892,6 +3050,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证非法 schema 与重复注册会被原子地拒绝。
     #[test]
     fn invalid_schema_and_duplicate_registration_are_rejected_atomically()
     -> echo_core::error::Result<()> {
@@ -2916,6 +3075,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证取消会停止运行中与排队中的工具。
     #[tokio::test]
     async fn cancellation_stops_running_and_queued_tools() -> echo_core::error::Result<()> {
         let manager = Arc::new(ToolManager::new_with_config(ToolExecutionConfig {
@@ -2974,6 +3134,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证排空模式下已启动的工具可运行到终止安全点。
     #[tokio::test]
     async fn draining_started_tool_reaches_terminal_safe_point() -> echo_core::error::Result<()> {
         let manager = Arc::new(ToolManager::new());
@@ -3031,6 +3192,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证取消会中断重试延迟与流等待。
     #[tokio::test]
     async fn cancellation_stops_retry_delay_and_stream_wait() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -3097,6 +3259,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证已产生流式输出后不再自动重试。
     #[tokio::test]
     async fn streaming_output_prevents_automatic_retry() -> echo_core::error::Result<()> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -3129,6 +3292,7 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证工具列表按确定顺序排序。
     #[test]
     fn test_tool_lists_are_deterministically_sorted() {
         let tm = ToolManager::new();
@@ -3166,6 +3330,7 @@ mod execute_with_context_tests {
         assert_eq!(ToolManager::schema_stats_for(&reversed).ok(), Some(stats));
     }
 
+    /// 验证工具定义会按模型输入模态过滤。
     #[test]
     fn tool_definitions_respect_model_input_modalities() {
         let manager = ToolManager::new();
@@ -3189,6 +3354,7 @@ mod execute_with_context_tests {
         assert_eq!(multimodal.len(), 2);
     }
 
+    /// 验证工具搜索只激活符合资格的匹配项。
     #[tokio::test]
     async fn tool_search_activates_only_eligible_matches() -> echo_core::error::Result<()> {
         let manager = Arc::new(ToolManager::new());
@@ -3223,10 +3389,11 @@ mod execute_with_context_tests {
         Ok(())
     }
 
+    /// 验证旧版 `execute_tool` 传递默认上下文。
     #[tokio::test]
     async fn test_execute_tool_passes_default_ctx() {
-        // The legacy execute_tool must still work: it routes through the same
-        // inner path with a default (all-None) ctx.
+        /* 旧版 execute_tool 必须仍然可用：它以默认（全为 None）的 ctx
+         * 走同一条内部路径。 */
         let tm = ToolManager::new();
         let captured = Arc::new(Mutex::new(None));
         tm.register(Box::new(CtxCapturingTool {
@@ -3243,29 +3410,28 @@ mod execute_with_context_tests {
         assert!(got.run_id.is_none());
     }
 
-    /// P0 regression (review P0): two "agents" sharing the SAME ToolManager
-    /// must NOT cross-contaminate each other's working_dir. The ToolManager
-    /// holds no cwd state — each call supplies its own ctx, so concurrent or
-    /// interleaved calls with different ctxs stay isolated.
-    ///
-    /// This simulates the AgentPool pattern where pooled agents share one
-    /// ToolManager via Arc. If ToolManager ever started caching working_dir,
-    /// this test would catch it.
+    /**
+     * P0 回归（评审 P0）：共享同一个 ToolManager 的两个 "agent"
+     * 绝不能相互污染对方的 working_dir。ToolManager 不持有 cwd 状态 ——
+     * 每次调用都提供自己的 ctx，因此使用不同 ctx 的并发或交错调用保持隔离。
+     *
+     * 该测试模拟 AgentPool 模式：池化 agent 通过 Arc 共享同一个 ToolManager。
+     * 如果 ToolManager 将来开始缓存 working_dir，该测试就会捕获到。
+     */
     #[tokio::test]
     async fn test_shared_tool_manager_does_not_cross_contaminate_cwd() {
         use std::path::Path;
 
-        // One shared ToolManager (mirrors AgentPool's shared Arc<ToolManager>).
+        // 一个共享的 ToolManager（对应 AgentPool 中共享的 Arc<ToolManager>）。
         let tm = ToolManager::new();
-        // Single capture slot is overwritten each call — so we run the two
-        // "sessions" strictly sequentially and assert after each, which is
-        // enough to prove the ctx comes from the caller, not ToolManager state.
+        /* 单一捕获槽位每次调用都会被覆盖 —— 因此两个 "会话" 严格顺序执行并在
+         * 每次之后断言，这足以证明 ctx 来自调用方而非 ToolManager 的状态。 */
         let captured = Arc::new(Mutex::new(None));
         tm.register(Box::new(CtxCapturingTool {
             captured: captured.clone(),
         }));
 
-        // "Session A" binds worktree /wt/a.
+        // "会话 A" 绑定工作树 /wt/a。
         let ctx_a = ToolContext {
             working_dir: Some(PathBuf::from("/wt/a")),
             conversation_id: Some("conv-a".into()),
@@ -3283,7 +3449,7 @@ mod execute_with_context_tests {
         assert_eq!(got_a.working_dir.as_deref(), Some(Path::new("/wt/a")));
         assert_eq!(got_a.conversation_id.as_deref(), Some("conv-a"));
 
-        // "Session B" binds worktree /wt/b on the SAME ToolManager.
+        // "会话 B" 在同一个 ToolManager 上绑定工作树 /wt/b。
         let ctx_b = ToolContext {
             working_dir: Some(PathBuf::from("/wt/b")),
             conversation_id: Some("conv-b".into()),
@@ -3301,8 +3467,8 @@ mod execute_with_context_tests {
         assert_eq!(got_b.working_dir.as_deref(), Some(Path::new("/wt/b")));
         assert_eq!(got_b.conversation_id.as_deref(), Some("conv-b"));
 
-        // Session A re-runs and must still get /wt/a, proving B's call did not
-        // mutate any shared ToolManager state.
+        /* 会话 A 再次执行，必须仍拿到 /wt/a，证明 B 的调用没有修改
+         * 任何共享的 ToolManager 状态。 */
         tm.execute_tool_with_context("capture", ToolParameters::new(), &ctx_a)
             .await
             .unwrap();

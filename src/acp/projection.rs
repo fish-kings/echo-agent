@@ -203,6 +203,7 @@ impl AcpEventProjector {
 
 #[async_trait]
 impl EventSink for AcpEventProjector {
+    /// 将事件投影为 ACP 通知发出，并始终继续接收后续事件。
     async fn on_event(&self, envelope: EventEnvelope) -> Result<SinkControl> {
         self.emit(&envelope).await?;
         Ok(SinkControl::Continue)

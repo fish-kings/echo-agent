@@ -400,8 +400,10 @@ impl A2AServer {
 
     // ── tasks/send ───────────────────────────────────────────────────────────
 
-    /// 处理同步的 `tasks/send` 请求：创建任务、以流式方式驱动 Agent 执行，
-    /// 并等待其完成、失败或被取消。
+    /**
+     * 处理同步的 `tasks/send` 请求：创建任务、以流式方式驱动 Agent 执行，
+     * 并等待其完成、失败或被取消。
+     */
     async fn handle_task_send(&self, request: &A2ATaskRequest) -> A2ATaskResponse {
         let task_id = request
             .params
@@ -710,12 +712,14 @@ impl A2AServer {
     }
 }
 
+/// A2A 服务端请求处理的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::react::builder::ReactAgentBuilder;
     use crate::testing::MockAgent;
 
+    /// 构造一个 JSON-RPC 请求字符串，供测试使用。
     fn make_request(method: &str, message: &str, task_id: Option<&str>) -> String {
         let params = if let Some(id) = task_id {
             serde_json::json!({
@@ -737,6 +741,7 @@ mod tests {
         .to_string()
     }
 
+    /// 验证响应中携带的任务状态字段。
     #[test]
     fn test_task_state_in_response() {
         let status = A2ATaskStatus::new(TaskState::Submitted);
@@ -748,6 +753,7 @@ mod tests {
         assert!(json.contains("\"state\":\"input-required\""));
     }
 
+    /// 验证对已处于终态的任务执行取消会被拒绝。
     #[test]
     fn test_cancel_terminal_state_rejected() {
         let task = A2ATask {
@@ -761,6 +767,7 @@ mod tests {
         assert!(!task.status.state.can_transition_to(TaskState::Canceled));
     }
 
+    /// 验证查询不存在的任务时返回未找到错误。
     #[tokio::test]
     async fn test_handle_task_get_not_found() {
         let card = AgentCard::builder("test", "http://localhost").build();
@@ -779,6 +786,7 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, -32001);
     }
 
+    /// 验证同步发送过程中的取消会进入终态且状态单调推进。
     #[tokio::test]
     async fn sync_send_cancellation_is_terminal_and_monotonic() -> std::result::Result<(), String> {
         let card = AgentCard::builder("test", "http://localhost").build();
@@ -852,6 +860,7 @@ mod tests {
         Ok::<(), String>(())
     }
 
+    /// 验证未知方法会返回方法不存在错误。
     #[tokio::test]
     async fn test_handle_unknown_method() {
         let card = AgentCard::builder("test", "http://localhost").build();
@@ -875,6 +884,7 @@ mod tests {
         assert_eq!(resp.error.unwrap().code, -32601);
     }
 
+    /// 验证非法 JSON 请求会返回解析错误。
     #[tokio::test]
     async fn test_handle_parse_error() {
         let card = AgentCard::builder("test", "http://localhost").build();

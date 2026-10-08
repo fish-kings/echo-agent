@@ -278,8 +278,10 @@ fn replace_temp_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     source_wide.push(0);
     let mut destination_wide = destination.as_os_str().encode_wide().collect::<Vec<_>>();
     destination_wide.push(0);
-    // SAFETY: 两个缓冲区都以 NUL 结尾，在调用期间保持存活，并且 MoveFileExW
-    // 返回后不会保留对它们指针的引用。
+    /*
+    SAFETY: 两个缓冲区都以 NUL 结尾，在调用期间保持存活，并且 MoveFileExW
+    返回后不会保留对它们指针的引用。
+    */
     let replaced = unsafe {
         MoveFileExW(
             source_wide.as_ptr(),
@@ -362,8 +364,10 @@ enum ExistingFileAccess {
     Write,
 }
 
-/// 用于判定文件在磁盘上身份是否发生变化的稳定标识（设备号+inode 或
-/// Windows 上的卷序列号+文件索引）。
+/**
+用于判定文件在磁盘上身份是否发生变化的稳定标识（设备号+inode 或
+Windows 上的卷序列号+文件索引）。
+*/
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExistingFileIdentity {
     /// Unix 上该文件所在的设备号。
@@ -435,9 +439,11 @@ fn existing_file_identity(file: &std::fs::File) -> std::io::Result<ExistingFileI
         };
 
         let mut information = BY_HANDLE_FILE_INFORMATION::default();
-        // SAFETY: std 的 File 在整个调用期间持有一个有效句柄，且
-        // `information` 可写、对齐正确，GetFileInformationByHandle 返回后
-        // 不会保留对它的引用。
+        /*
+        SAFETY: std 的 File 在整个调用期间持有一个有效句柄，且
+        `information` 可写、对齐正确，GetFileInformationByHandle 返回后
+        不会保留对它的引用。
+        */
         let succeeded =
             unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) };
         if succeeded == 0 {
@@ -664,9 +670,11 @@ fn sync_verified_directory_handle(directory: &std::fs::File) -> std::io::Result<
 /// 同步已校验的目录句柄（非 Unix 平台的占位实现）。
 #[cfg(not(unix))]
 fn sync_verified_directory_handle(_directory: &std::fs::File) -> std::io::Result<()> {
-    // Windows 上为稳定身份而打开的目录句柄并不可靠地支持
-    // FlushFileBuffers。身份标识仍会在上面完成校验；在该平台上，
-    // 目录项屏障只能是尽力而为的空操作。
+    /*
+    Windows 上为稳定身份而打开的目录句柄并不可靠地支持
+    FlushFileBuffers。身份标识仍会在上面完成校验；在该平台上，
+    目录项屏障只能是尽力而为的空操作。
+    */
     Ok(())
 }
 
@@ -771,8 +779,10 @@ pub fn read_existing_lines_from_matching(
     Ok(bytes)
 }
 
-/// 仅当 no-follow 普通文件的总长度与调用方持有的不可变元数据完全一致时，
-/// 才从中读取数量受限的若干条完整记录。
+/**
+仅当 no-follow 普通文件的总长度与调用方持有的不可变元数据完全一致时，
+才从中读取数量受限的若干条完整记录。
+*/
 pub fn read_existing_lines_from_exact_len(
     path: &Path,
     expected_len: u64,

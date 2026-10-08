@@ -1,15 +1,19 @@
-//! 会话持久化 trait 与数据类型
-//!
-//! 提供支持多用户、多 Agent 隔离的会话历史结构化存储。具体实现
-//! （`SqliteConversationStore`）位于 `echo_state` 中。
+/*! 会话持久化 trait 与数据类型
+
+提供支持多用户、多 Agent 隔离的会话历史结构化存储。具体实现
+（`SqliteConversationStore`）位于 `echo_state` 中。
+*/
 
 use crate::error::{MemoryError, Result};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// 转录投影批次当前的 schema 版本号。
 const TRANSCRIPT_PROJECTION_SCHEMA_VERSION: u16 = 1;
+/// 转录投影 epoch 的最大值（与后端 i64 存储范围兼容）。
 const TRANSCRIPT_PROJECTION_EPOCH_MAX: u64 = i64::MAX as u64;
+/// 转录投影消息序号的最大值（与后端 i64 存储范围兼容）。
 const TRANSCRIPT_PROJECTION_ORDINAL_MAX: u64 = i64::MAX as u64;
 
 /** 通过 Host/扩展适配器传播的非权威性调用元数据。
@@ -275,8 +279,9 @@ pub struct TranscriptProjectionBatch {
 }
 
 impl TranscriptProjectionBatch {
-    /// 一次性构造一个规范化批次。恢复流程会持久化并复用该值；
-    /// 不得重新生成消息时间戳或其它效果字段。
+    /** 一次性构造一个规范化批次。恢复流程会持久化并复用该值；
+    不得重新生成消息时间戳或其它效果字段。
+    */
     pub fn prepare(
         conversation_id: impl Into<String>,
         conversation_epoch: u64,
@@ -936,9 +941,10 @@ pub struct ConversationFilter {
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
 
-/// 会话持久化存储 trait
-///
-/// 提供会话与消息的增删改查操作，支持不同的存储后端实现。
+/** 会话持久化存储 trait
+
+提供会话与消息的增删改查操作，支持不同的存储后端实现。
+*/
 pub trait ConversationStore: Send + Sync {
     /// 在不执行 I/O 的前提下，报告是否支持原子化转录投影。
     fn projection_capability(&self) -> ConversationProjectionCapability {
@@ -1024,8 +1030,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`ensure_projection_epoch`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`ensure_projection_epoch`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn ensure_projection_epoch_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1044,8 +1051,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`get_projection_authority`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`get_projection_authority`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn get_projection_authority_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1064,8 +1072,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`apply_transcript_projection`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`apply_transcript_projection`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn apply_transcript_projection_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1084,8 +1093,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`import_managed_messages`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`import_managed_messages`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn import_managed_messages_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1104,8 +1114,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`update_managed_conversation`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`update_managed_conversation`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn update_managed_conversation_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1124,8 +1135,9 @@ pub trait ConversationStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（截止时间）的 [`delete_managed_conversation`] 版本；
-    /// 默认实现直接委托给不带上下文的版本。
+    /** 带调用上下文（截止时间）的 [`delete_managed_conversation`] 版本；
+    默认实现直接委托给不带上下文的版本。
+    */
     fn delete_managed_conversation_with_context<'a>(
         &'a self,
         _context: PersistenceCallContext,
@@ -1182,6 +1194,7 @@ pub trait ConversationStore: Send + Sync {
     }
 }
 
+/// 转录投影与持久化调用契约相关的单元测试。
 #[cfg(test)]
 mod transcript_projection_contract_tests {
     use super::*;
@@ -1196,7 +1209,9 @@ mod transcript_projection_contract_tests {
         })
     }
 
+    // 所有必需方法都返回 `Unsupported`，仅保留 trait 的默认能力方法以便断言。
     impl ConversationStore for DefaultCapabilityStore {
+        /// 测试桩：不支持。
         fn create_conversation<'a>(
             &'a self,
             _conv: NewConversation,
@@ -1204,6 +1219,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn get_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -1211,6 +1227,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn list_conversations<'a>(
             &'a self,
             _filter: ConversationFilter,
@@ -1218,6 +1235,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn update_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -1228,6 +1246,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn delete_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -1235,6 +1254,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn save_messages<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -1243,6 +1263,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn get_messages<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -1250,6 +1271,7 @@ mod transcript_projection_contract_tests {
             unsupported_store_call()
         }
 
+        /// 测试桩：不支持。
         fn count_messages<'a>(&'a self, _conversation_id: &'a str) -> BoxFuture<'a, Result<usize>> {
             unsupported_store_call()
         }
@@ -1269,6 +1291,7 @@ mod transcript_projection_contract_tests {
         }
     }
 
+    /// 验证持久化截止时间能力必须显式启用。
     #[test]
     fn persistence_call_capability_requires_explicit_opt_in() {
         assert_eq!(
@@ -1277,6 +1300,7 @@ mod transcript_projection_contract_tests {
         );
     }
 
+    /// 验证调用上下文能报告未来的剩余预算，并在过期时返回类型化错误。
     #[test]
     fn persistence_call_context_reports_future_budget_and_typed_expiration() -> Result<()> {
         let remaining = PersistenceCallContext {
@@ -1293,6 +1317,7 @@ mod transcript_projection_contract_tests {
         Ok(())
     }
 
+    /// 验证转录投影批次的标识绑定完整的已准备效果。
     #[test]
     fn transcript_projection_batch_identity_binds_complete_prepared_effect() -> Result<()> {
         let first = TranscriptProjectionBatch::prepare(
@@ -1324,6 +1349,7 @@ mod transcript_projection_contract_tests {
         Ok(())
     }
 
+    /// 验证批次拒绝属于其它会话的消息。
     #[test]
     fn transcript_projection_batch_rejects_cross_conversation_message() {
         let result = TranscriptProjectionBatch::prepare(
@@ -1337,6 +1363,7 @@ mod transcript_projection_contract_tests {
         assert!(result.is_err());
     }
 
+    /// 验证批次拒绝超出后端兼容范围的序号。
     #[test]
     fn transcript_projection_batch_rejects_backend_incompatible_ordinals() {
         let result = TranscriptProjectionBatch::prepare(
@@ -1349,6 +1376,7 @@ mod transcript_projection_contract_tests {
         assert!(result.is_err());
     }
 
+    /// 验证托管删除操作的标识拒绝 epoch 重绑定。
     #[test]
     fn managed_delete_identity_rejects_epoch_rebinding() -> Result<()> {
         let mut request = ManagedConversationDelete::prepare("conversation", 4)?;
@@ -1358,6 +1386,7 @@ mod transcript_projection_contract_tests {
         Ok(())
     }
 
+    /// 验证托管导入操作的标识绑定完整的替换内容。
     #[test]
     fn managed_import_identity_binds_complete_replacement() -> Result<()> {
         let first = ManagedConversationImport::prepare(
@@ -1380,6 +1409,7 @@ mod transcript_projection_contract_tests {
         Ok(())
     }
 
+    /// 验证托管元数据操作的标识拒绝迟到的 revision 重绑定。
     #[test]
     fn managed_metadata_identity_rejects_late_revision_rebinding() -> Result<()> {
         let mut request = ManagedConversationMetadataUpdate::prepare(

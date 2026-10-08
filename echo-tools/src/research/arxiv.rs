@@ -1,6 +1,8 @@
-//! ArXiv paper search tool.
-//!
-//! Queries the ArXiv API (Atom/XML) and returns structured paper metadata.
+/*!
+ * ArXiv 论文搜索工具。
+ *
+ * 查询 ArXiv API（Atom/XML），返回结构化的论文元数据。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -9,11 +11,15 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// 工具名称
 const TOOL_NAME: &str = "arxiv_search";
+/// ArXiv API 查询地址
 const ARXIV_API_URL: &str = "https://export.arxiv.org/api/query";
 
+/// 全局共享的 HTTP 客户端
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// 获取（首次调用时初始化）带超时与 SSRF 安全重定向策略的共享 HTTP 客户端。
 fn shared_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -24,21 +30,26 @@ fn shared_client() -> &'static reqwest::Client {
     })
 }
 
+/// ArXiv 论文搜索工具。
 pub struct ArxivSearchTool;
 
 impl Tool for ArxivSearchTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Search arxiv for academic papers. Returns title, authors, abstract, arxiv ID, PDF URL, categories, and publication date. Supports category filtering (e.g. 'cs.AI', 'cs.LG', 'math.CO') and sorting. Max 100 results per query. Example: arxiv_search(query='transformer attention mechanism', max_results=20, category='cs.CL')"
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -68,6 +79,7 @@ impl Tool for ArxivSearchTool {
         })
     }
 
+    /// 构造查询请求 ArXiv API，并将 Atom XML 响应解析为结构化论文列表。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -91,7 +103,7 @@ impl Tool for ArxivSearchTool {
                 .and_then(|v| v.as_str())
                 .unwrap_or("descending");
 
-            // Build search query (URL-encode to prevent parameter injection)
+            // 构造搜索查询（进行 URL 编码以防止参数注入）
             let search_query = if let Some(cat) = category {
                 format!(
                     "cat:{}+AND+{}",
@@ -146,7 +158,7 @@ impl Tool for ArxivSearchTool {
     }
 }
 
-/// Parse ArXiv Atom XML response into structured paper records.
+/// 将 ArXiv Atom XML 响应解析为结构化的论文记录。
 fn parse_arxiv_atom(xml: &str) -> Result<Vec<Value>> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -158,7 +170,7 @@ fn parse_arxiv_atom(xml: &str) -> Result<Vec<Value>> {
     let mut in_entry = false;
     let mut current_tag = String::new();
 
-    // Current entry fields
+    // 当前条目的字段
     let mut title = String::new();
     let mut summary = String::new();
     let mut published = String::new();
@@ -204,7 +216,7 @@ fn parse_arxiv_atom(xml: &str) -> Result<Vec<Value>> {
                         current_tag = "id".to_string();
                     }
                     "link" if in_entry => {
-                        // Check for PDF link
+                        // 检查是否为 PDF 链接
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"title" && attr.value.as_ref() == b"pdf" {
                                 for attr2 in e.attributes().flatten() {
@@ -249,7 +261,7 @@ fn parse_arxiv_atom(xml: &str) -> Result<Vec<Value>> {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 match tag.as_str() {
                     "entry" if in_entry => {
-                        // Extract arxiv ID from URL
+                        // 从 URL 中提取 arxiv ID
                         let clean_id = arxiv_id.rsplit('/').next().unwrap_or(&arxiv_id).to_string();
 
                         papers.push(serde_json::json!({

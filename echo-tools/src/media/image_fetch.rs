@@ -7,9 +7,11 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::time::Duration;
 
-/// 图片抓取工具
-///
-/// 从 URL 下载图片并转换为适合 LLM 视觉处理的 base64 格式。
+/**
+图片抓取工具
+
+从 URL 下载图片并转换为适合 LLM 视觉处理的 base64 格式。
+*/
 pub struct ImageFetchTool {
     /// 下载请求的超时时间（秒）。
     timeout_secs: u64,
@@ -139,14 +141,18 @@ impl Tool for ImageFetchTool {
                         }
                     }
                     Err(_) => {
-                        // HEAD 请求失败（网络错误、被 SSRF 拦截等）。
-                        // 继续走 GET 请求，GET 同样会做 SSRF 校验。
+                        /*
+                        HEAD 请求失败（网络错误、被 SSRF 拦截等）。
+                        继续走 GET 请求，GET 同样会做 SSRF 校验。
+                        */
                     }
                 }
             }
 
-            // 下载图片（SSRF 安全：解析域名、校验并在锁定的 IP 上建立连接，
-            // 从而关闭 DNS 重绑定造成的 TOCTOU 时间窗口）
+            /*
+            下载图片（SSRF 安全：解析域名、校验并在锁定的 IP 上建立连接，
+            从而关闭 DNS 重绑定造成的 TOCTOU 时间窗口）
+            */
             let response =
                 crate::security::local_http_get(url, Duration::from_secs(self.timeout_secs), 5)
                     .await

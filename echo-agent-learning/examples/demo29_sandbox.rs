@@ -1,26 +1,30 @@
-//! demo29_sandbox.rs —— 三层沙箱执行系统演示
-//!
-//! 展示 Local / Docker / K8s 三层沙箱的完整能力：
-//! 1. 安全策略自动评估
-//! 2. 本地沙箱执行（OS 原生隔离）
-//! 3. Docker 容器沙箱（如可用）
-//! 4. SandboxManager 自动路由
-//! 5. 资源限制与 wall-clock timeout 控制
-//!
-//! 说明：
-//! - `ResourceLimits::cpu_time_secs` 当前表示执行超时（wall-clock），不是 CPU 配额
-//! - K8s 路径会显式删除临时 Pod；当 `network=false` 时仅记录能力告警，不保证逐 Pod 断网
-//!
-//! 运行方式：
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo29_sandbox
-//! ```
+/*!
+ * demo29_sandbox.rs —— 三层沙箱执行系统演示
+ *
+ * 展示 Local / Docker / K8s 三层沙箱的完整能力：
+ * 1. 安全策略自动评估
+ * 2. 本地沙箱执行（OS 原生隔离）
+ * 3. Docker 容器沙箱（如可用）
+ * 4. SandboxManager 自动路由
+ * 5. 资源限制与 wall-clock timeout 控制
+ *
+ * 说明：
+ * - `ResourceLimits::cpu_time_secs` 当前表示执行超时（wall-clock），不是 CPU 配额
+ * - K8s 路径会显式删除临时 Pod；当 `network=false` 时仅记录能力告警，不保证逐 Pod 断网
+ *
+ * 运行方式：
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo29_sandbox
+ * ```
+ */
 
 use echo_agent::prelude::*;
 use std::time::Duration;
 
-/// demo29 主入口：依次演示安全策略评估、本地沙箱、Docker 沙箱、`SandboxManager`
-/// 自动路由，以及资源限制与超时控制共 5 个部分。
+/**
+ * demo29 主入口：依次演示安全策略评估、本地沙箱、Docker 沙箱、`SandboxManager`
+ * 自动路由，以及资源限制与超时控制共 5 个部分。
+ */
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()
@@ -181,8 +185,10 @@ async fn demo_local_sandbox() -> echo_agent::error::Result<()> {
 
 // ── Part 3 ──────────────────────────────────────────────────────────────────
 
-/// 演示 Docker 容器沙箱执行 Shell 命令、Python 代码以及带资源限制的执行；
-/// 若 Docker 不可用则跳过该部分演示。
+/**
+ * 演示 Docker 容器沙箱执行 Shell 命令、Python 代码以及带资源限制的执行；
+ * 若 Docker 不可用则跳过该部分演示。
+ */
 async fn demo_docker_sandbox() -> echo_agent::error::Result<()> {
     use echo_agent::sandbox::docker::DockerConfig;
 

@@ -1,25 +1,29 @@
-//! 统一的 `AgentBuilder` trait —— 构建任意 agent 类型的通用接口。
-//!
-//! 所有具体的 builder（`ReactAgentBuilder`、`SubagentBuilder` 等）都实现
-//! 这个 trait，从而可以编写与具体 agent 类型无关的通用代码。
+/*!
+统一的 `AgentBuilder` trait —— 构建任意 agent 类型的通用接口。
+
+所有具体的 builder（`ReactAgentBuilder`、`SubagentBuilder` 等）都实现
+这个 trait，从而可以编写与具体 agent 类型无关的通用代码。
+*/
 
 use crate::agent::Agent;
 use crate::error::Result;
 use crate::tools::Tool;
 
-/// 所有 agent builder 共享的最小接口。
-///
-/// # 类型参数
-///
-/// * `A` —— 该 builder 所构建的具体 agent 类型。
-///
-/// # 示例
-///
-/// ```rust,ignore
-/// fn create<B: AgentBuilder>(builder: B, task: &str) -> Result<B::Agent> {
-///     builder.model("qwen3-max").system_prompt("...").build()
-/// }
-/// ```
+/**
+所有 agent builder 共享的最小接口。
+
+# 类型参数
+
+* `A` —— 该 builder 所构建的具体 agent 类型。
+
+# 示例
+
+```rust,ignore
+fn create<B: AgentBuilder>(builder: B, task: &str) -> Result<B::Agent> {
+    builder.model("qwen3-max").system_prompt("...").build()
+}
+```
+*/
 pub trait AgentBuilder: Sized {
     /// 该 builder 所构建的具体 agent 类型。
     type Agent: Agent;

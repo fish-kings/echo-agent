@@ -12,7 +12,10 @@ pub enum TaskState {
     /// 任务正在执行中。
     Running,
     /// 任务已完成，携带一段结果摘要。
-    Completed { summary: String },
+    Completed {
+        /// 任务结果摘要。
+        summary: String,
+    },
 }
 
 /// 一个刻意保持精简的任务类型，贯穿各章教学示例使用。

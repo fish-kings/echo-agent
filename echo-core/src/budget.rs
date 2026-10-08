@@ -1,43 +1,47 @@
-//! Token budget management — fine-grained allocation of the LLM context window.
-//!
-//! Divides the model's context window into four categories:
-//! - System prompt
-//! - Tool definitions
-//! - Conversation history
-//! - Output generation
-//!
-//! And reserves a safety margin. When the conversation history exceeds its
-//! allocation, the budget signals that compression is needed.
+/*!
+Token 预算管理 —— 对 LLM 上下文窗口进行细粒度分配。
+
+将模型的上下文窗口划分为四类：
+- 系统提示词
+- 工具定义
+- 对话历史
+- 输出生成
+
+并预留一部分安全余量。当对话历史超出其分配额度时，预算会发出需要压缩的信号。
+*/
 
 use serde::Serialize;
 
 use crate::error::{ReactError, Result};
 
-/// Fine-grained token budget that divides the model's context window
-/// into fixed-percentage allocations.
+/**
+细粒度的 token 预算，将模型的上下文窗口按固定百分比进行分配。
+*/
 #[derive(Debug, Clone)]
 pub struct TokenBudget {
-    /// Total context window size (model-dependent, e.g. 128000 for GPT-4o).
+    /// 上下文窗口总大小（取决于模型，例如 GPT-4o 为 128000）。
     total_window: usize,
-    /// Fraction of total reserved for the system prompt (default 0.10).
+    /// 为系统提示词预留的比例（默认 0.10）。
     system_prompt_pct: f64,
-    /// Fraction of total reserved for tool definitions (default 0.05).
+    /// 为工具定义预留的比例（默认 0.05）。
     tool_defs_pct: f64,
-    /// Fraction of total reserved for output generation (default 0.10).
+    /// 为输出生成预留的比例（默认 0.10）。
     output_pct: f64,
-    /// Fraction of total kept as safety margin (default 0.10).
+    /// 作为安全余量保留的比例（默认 0.10）。
     safety_pct: f64,
 }
 
 impl TokenBudget {
-    /// Total context window governed by this budget.
+    /// 该预算所管理的上下文窗口总大小。
     pub fn total_window(&self) -> usize {
         self.total_window
     }
-    /// Create a default budget from the total context window size.
-    ///
-    /// Uses a safe allocation: 10% system, 5% tools, 10% output, 10% safety,
-    /// leaving 65% for conversation history.
+    /**
+    根据上下文窗口总大小创建默认预算。
+
+    使用一种安全的分配方式：10% 系统提示词、5% 工具、10% 输出、10% 安全余量，
+    剩余 65% 留给对话历史。窗口大小为 0 时返回错误。
+    */
     pub fn new(total_window: usize) -> Result<Self> {
         if total_window == 0 {
             return Err(ReactError::Other(
@@ -53,11 +57,11 @@ impl TokenBudget {
         })
     }
 
-    /// Customize the allocation percentages. All values are fractions
-    /// of `total_window` (e.g., `0.10` = 10%).
-    ///
-    /// The sum must not exceed 1.0; if it does, the conversation budget
-    /// will be zero.
+    /**
+    自定义各项分配比例。所有值均为 `total_window` 的比例（例如 `0.10` = 10%）。
+
+    每个值必须是 [0, 1] 内的有限值，且总和不得超过 1.0，否则返回错误。
+    */
     pub fn with_allocations(
         mut self,
         system_pct: f64,
@@ -87,28 +91,30 @@ impl TokenBudget {
         Ok(self)
     }
 
-    /// Maximum tokens available for the system prompt.
+    /// 系统提示词可用的最大 token 数。
     pub fn system_prompt_budget(&self) -> usize {
         (self.total_window as f64 * self.system_prompt_pct) as usize
     }
 
-    /// Maximum tokens available for tool definitions.
+    /// 工具定义可用的最大 token 数。
     pub fn tool_definitions_budget(&self) -> usize {
         (self.total_window as f64 * self.tool_defs_pct) as usize
     }
 
-    /// Maximum tokens reserved for LLM output.
+    /// 为 LLM 输出预留的最大 token 数。
     pub fn output_budget(&self) -> usize {
         (self.total_window as f64 * self.output_pct) as usize
     }
 
-    /// Tokens held back as a safety margin for provider accounting drift.
+    /// 为应对 provider 计数偏差而保留的安全余量 token 数。
     pub fn safety_budget(&self) -> usize {
         (self.total_window as f64 * self.safety_pct) as usize
     }
 
-    /// Maximum tokens available for conversation history.
-    /// This is what remains after all allocations and the safety margin.
+    /**
+    对话历史可用的最大 token 数。
+    即扣除所有分配项与安全余量之后剩余的部分。
+    */
     pub fn conversation_budget(&self) -> usize {
         let allocated =
             self.system_prompt_pct + self.tool_defs_pct + self.output_pct + self.safety_pct;
@@ -116,8 +122,10 @@ impl TokenBudget {
         (self.total_window as f64 * remaining) as usize
     }
 
-    /// Given estimated token counts, return a detailed [`TokenAllocation`]
-    /// describing what fits and what needs trimming.
+    /**
+    根据估算的 token 数，返回一个详细的 [`TokenAllocation`]，
+    说明哪些部分放得下、哪些需要裁剪。
+    */
     pub fn allocate(
         &self,
         system_size: usize,
@@ -126,8 +134,8 @@ impl TokenBudget {
     ) -> TokenAllocation {
         let sys_ok = system_size <= self.system_prompt_budget();
         let tool_ok = tool_defs_size <= self.tool_definitions_budget();
-        // Category percentages are reporting targets, not hard partitions.
-        // Unused capacity remains available to the other input categories.
+        /* 各类别的百分比只是报告用的目标值，而非硬性分区。
+        未用完的容量仍可供其他输入类别使用。 */
         let effective_conversation_budget = self
             .total_window
             .saturating_sub(self.output_budget())
@@ -154,7 +162,7 @@ impl TokenBudget {
         }
     }
 
-    /// Generate a human-readable budget report for CLI display.
+    /// 生成供 CLI 展示的可读预算报告。
     pub fn report(
         &self,
         system_size: usize,
@@ -180,7 +188,7 @@ impl TokenBudget {
 }
 
 impl Default for TokenBudget {
-    /// Creates a conservative 128K budget with default allocations.
+    /// 创建一个使用默认分配比例、保守的 128K 预算。
     fn default() -> Self {
         Self {
             total_window: 128_000,
@@ -192,66 +200,81 @@ impl Default for TokenBudget {
     }
 }
 
-/// Result of checking a token budget against actual usage.
+/// 将 token 预算与实际用量比对后的结果。
 #[derive(Debug, Clone)]
 pub struct TokenAllocation {
-    /// Whether the system prompt fits within its budget.
+    /// 系统提示词是否在其预算之内。
     pub system_fits: bool,
-    /// Whether tool definitions fit within their budget.
+    /// 工具定义是否在其预算之内。
     pub tool_defs_fit: bool,
-    /// Whether the conversation history fits within its budget.
+    /// 对话历史是否在其预算之内。
     pub conversation_fits: bool,
-    /// Whether there is room for the output budget.
+    /// 是否还有空间容纳输出预算。
     pub output_fits: bool,
-    /// How many conversation tokens must be freed (0 if within budget).
+    /// 需要释放的对话 token 数（在预算内时为 0）。
     pub conversation_excess: usize,
-    /// Total usage as percentage of the full window.
+    /// 总用量占整个窗口的百分比。
     pub usage_pct: f64,
 }
 
 impl TokenAllocation {
-    /// True when all categories fit within their budgets.
+    /// 当所有类别都在各自预算内时返回 true。
     pub fn ok(&self) -> bool {
         self.system_fits && self.tool_defs_fit && self.conversation_fits && self.output_fits
     }
 
-    /// True when compression should be triggered (conversation over budget).
+    /// 当应触发压缩（对话超出预算）时返回 true。
     pub fn needs_compression(&self) -> bool {
         self.conversation_excess > 0
     }
 }
 
-/// Budget status report for CLI display.
+/// 供 CLI 展示的预算状态报告。
 #[derive(Debug, Clone, Serialize)]
 pub struct BudgetReport {
+    /// 上下文窗口总大小。
     pub total_window: usize,
+    /// 系统提示词实际占用的 token 数。
     pub system_prompt: usize,
+    /// 系统提示词的预算。
     pub system_prompt_budget: usize,
+    /// 工具定义实际占用的 token 数。
     pub tool_definitions: usize,
+    /// 工具定义的预算。
     pub tool_definitions_budget: usize,
+    /// 对话历史实际占用的 token 数。
     pub conversation: usize,
+    /// 对话历史的预算。
     pub conversation_budget: usize,
+    /// 预估的输出 token 数。
     pub estimated_output: usize,
+    /// 输出的预算。
     pub output_budget: usize,
+    /// 总用量占窗口的百分比。
     pub usage_pct: f64,
+    /// 是否需要触发压缩。
     pub needs_compression: bool,
 }
 
-/// Token budget configuration that can be embedded in AgentConfig.
+/// 可嵌入 AgentConfig 的 token 预算配置。
 #[derive(Debug, Clone)]
 pub struct TokenBudgetConfig {
-    /// Total context window size. If `None`, auto-detected from the model.
+    /// 上下文窗口总大小。为 `None` 时根据模型自动检测。
     pub total_window: Option<usize>,
-    /// Custom allocation percentages.
+    /// 自定义分配比例：系统提示词所占比例。
     pub system_pct: f64,
+    /// 工具定义所占比例。
     pub tool_pct: f64,
+    /// 输出生成所占比例。
     pub output_pct: f64,
+    /// 安全余量所占比例。
     pub safety_pct: f64,
-    /// Whether budget checking is enabled.
+    /// 是否启用预算检查。
     pub enabled: bool,
 }
 
 impl Default for TokenBudgetConfig {
+    /// 默认启用、自动检测窗口，并使用默认分配比例。
     fn default() -> Self {
         Self {
             total_window: None,
@@ -265,12 +288,12 @@ impl Default for TokenBudgetConfig {
 }
 
 impl TokenBudgetConfig {
-    /// Create a new enabled config with auto-detection.
+    /// 创建一个启用状态、自动检测窗口大小的配置。
     pub fn enabled() -> Self {
         Self::default()
     }
 
-    /// Create a disabled config (budget checks are skipped).
+    /// 创建一个禁用状态的配置（跳过预算检查）。
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -278,13 +301,13 @@ impl TokenBudgetConfig {
         }
     }
 
-    /// Set an explicit context window size rather than auto-detecting.
+    /// 显式设置上下文窗口大小，而不是自动检测。
     pub fn with_total_window(mut self, window: usize) -> Self {
         self.total_window = Some(window);
         self
     }
 
-    /// Build a TokenBudget from this config.
+    /// 根据此配置构建 TokenBudget；未设置窗口时使用 `fallback_window`。
     pub fn build(&self, fallback_window: usize) -> Result<TokenBudget> {
         let window = self.total_window.unwrap_or(fallback_window);
         TokenBudget::new(window)?.with_allocations(
@@ -327,7 +350,7 @@ mod tests {
     #[test]
     fn test_allocation_needs_compression() {
         let budget = TokenBudget::new(100_000).unwrap_or_default();
-        let all = budget.allocate(5_000, 2_000, 75_000); // exceeds 80K total input capacity
+        let all = budget.allocate(5_000, 2_000, 75_000); // 超出 80K 的总输入容量
         assert!(!all.ok());
         assert!(all.needs_compression());
         assert_eq!(all.conversation_excess, 2_000);
@@ -338,8 +361,8 @@ mod tests {
         let budget = TokenBudget::new(100_000)?;
         let allocation = budget.allocate(15_000, 10_000, 50_000);
 
-        // With 20K reserved for output and safety, actual system and tool
-        // usage leaves 55K available to conversation history.
+        /* 为输出与安全余量预留 20K 后，扣除实际的系统提示词与工具用量，
+        对话历史还剩 55K 可用。 */
         assert_eq!(allocation.conversation_excess, 0);
         let over = budget.allocate(15_000, 10_000, 60_000);
         assert_eq!(over.conversation_excess, 5_000);

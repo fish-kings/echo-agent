@@ -1,7 +1,9 @@
-//! PDF download and parse tool.
-//!
-//! Downloads a PDF from a URL and extracts text content.
-//! Bridges the gap between web fetch (HTML only) and local PDF parsing.
+/*!
+ * PDF 下载与解析工具。
+ *
+ * 从 URL 下载 PDF 并提取文本内容。
+ * 弥补网页抓取（仅支持 HTML）与本地 PDF 解析之间的空缺。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -9,25 +11,33 @@ use echo_core::tools::{Tool, ToolParameters, ToolResult};
 use futures::future::BoxFuture;
 use serde_json::Value;
 
+/// 工具名称
 const TOOL_NAME: &str = "pdf_fetch";
+/// 允许下载的最大 PDF 字节数（50 MiB）
 const MAX_PDF_BYTES: usize = 50 * 1024 * 1024;
+/// 允许提取的最大字符数
 const MAX_EXTRACTED_CHARS: usize = 2_000_000;
 
+/// 从 URL 下载 PDF 并提取文本内容的工具。
 pub struct PdfFetchTool;
 
 impl Tool for PdfFetchTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Download a PDF from a URL and extract its text content. Supports arxiv PDF links, direct URLs, and redirects. Useful for reading academic papers. Example: pdf_fetch(url='https://arxiv.org/pdf/1706.03762', pages='1-10')"
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -51,6 +61,7 @@ impl Tool for PdfFetchTool {
         })
     }
 
+    /// 下载 PDF，校验文件类型后解析并提取指定页的文本和元数据。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -75,8 +86,8 @@ impl Tool for PdfFetchTool {
                 .unwrap_or(MAX_EXTRACTED_CHARS)
                 .clamp(1, MAX_EXTRACTED_CHARS);
 
-            // Download PDF (SSRF-safe: resolve + validate + connect on pinned IPs,
-            // closing the DNS-rebinding TOCTOU window)
+            /* 下载 PDF（防 SSRF：解析 + 校验 + 连接到固定的 IP，
+            关闭 DNS 重绑定导致的 TOCTOU 窗口） */
             let response =
                 crate::security::local_http_get(url, std::time::Duration::from_secs(60), 5)
                     .await
@@ -101,7 +112,7 @@ impl Tool for PdfFetchTool {
             )
             .await?;
 
-            // Verify it's a PDF
+            // 校验其确为 PDF
             if bytes.get(..4) != Some(b"%PDF".as_slice()) {
                 return Err(ToolError::InvalidParameter {
                     name: "url".to_string(),
@@ -110,7 +121,7 @@ impl Tool for PdfFetchTool {
                 .into());
             }
 
-            // Parse PDF from memory (single parse for both text and metadata)
+            // 从内存解析 PDF（文本和元数据只解析一次）
             let doc =
                 lopdf::Document::load_mem(&bytes).map_err(|e| ToolError::ExecutionFailed {
                     tool: TOOL_NAME.to_string(),
@@ -181,7 +192,7 @@ impl Tool for PdfFetchTool {
     }
 }
 
-/// Extract text from a parsed PDF Document.
+/// 从已解析的 PDF Document 中提取文本。
 fn extract_pdf_text_from_doc(doc: &lopdf::Document, pages_spec: &str) -> Result<String> {
     let page_count =
         u32::try_from(doc.get_pages().len()).map_err(|_| ToolError::ExecutionFailed {
@@ -223,19 +234,19 @@ fn extract_pdf_text_from_doc(doc: &lopdf::Document, pages_spec: &str) -> Result<
                     all_text.push('\n');
                 }
             }
-            Err(_) => continue, // Skip pages that fail to extract
+            Err(_) => continue, // 跳过提取失败的页
         }
     }
 
     Ok(all_text)
 }
 
-/// Extract PDF metadata from a parsed Document.
+/// 从已解析的 Document 中提取 PDF 元数据。
 fn extract_pdf_metadata_from_doc(doc: &lopdf::Document) -> Value {
     let page_count = doc.get_pages().len();
     let mut meta = serde_json::json!({ "pages": page_count });
 
-    // Extract info dictionary fields (title, author, subject, creator, producer, creation date)
+    // 提取 Info 字典字段（标题、作者、主题、创建工具、生成工具、创建日期）
     if let Ok(info_obj) = doc.trailer.get(b"Info")
         && let Ok(info_dict) = info_obj.as_dict()
     {
@@ -264,7 +275,7 @@ fn extract_pdf_metadata_from_doc(doc: &lopdf::Document) -> Value {
     meta
 }
 
-/// Parse page range specification into a list of page numbers.
+/// 将页码范围说明解析为页码列表。
 fn parse_page_range(spec: &str, total_pages: u32) -> Result<Vec<u32>> {
     if spec == "all" {
         return Ok((1..=total_pages).collect());

@@ -1,10 +1,16 @@
 //! 工具系统的核心 trait 与类型定义
 
+/// 持久化、有界的工具输出 artifact。
 pub mod artifact;
+/// 命令 cell 契约：支持长轮询等待的后台 shell 命令。
 pub mod cell;
+/// 供框架消费者共享的带版本号的工具可见性控制。
 pub mod control;
+/// 返回集合类工具共享的游标分页契约。
 pub mod pagination;
+/// 工具权限模式与权限决策。
 pub mod permission;
+/// Skill 系统的核心 trait 与类型。
 pub mod skill;
 
 use crate::error::{ReactError, Result, SandboxError, ToolError};
@@ -395,11 +401,14 @@ pub enum ToolEffect {
     },
 }
 
-/// 针对"生产者在工具调用返回之后才最终确定"的效果（例如后台 subagent 派发）
-/// 的、绑定到单次调用范围的延续回调。
+/**
+针对"生产者在工具调用返回之后才最终确定"的效果（例如后台 subagent 派发）
+的、绑定到单次调用范围的延续回调。
+*/
 pub type ToolEffectSinkFn = Arc<dyn Fn(ToolEffect) -> BoxFuture<'static, ()> + Send + Sync>;
 
 impl std::fmt::Debug for ToolResultContent {
+    /// 自定义调试输出：URL 只显示字符数，避免打印可能很长的内联数据。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ImageUrl { url, detail } => formatter
@@ -429,8 +438,10 @@ pub struct ToolResult {
     /// `success` 为 false 时的结构化失败与恢复信息。
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub failure: Option<ToolFailure>,
-    /// 可选的结构化数据（JSON）。存在时调用方可直接渲染它，
-    /// 而无需解析 `output` 字符串。
+    /**
+    可选的结构化数据（JSON）。存在时调用方可直接渲染它，
+    而无需解析 `output` 字符串。
+    */
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub data: Option<serde_json::Value>,
     /// 输出是否因超出长度限制而被截断。
@@ -666,8 +677,10 @@ pub enum ToolStreamEvent {
         /// 输出片段（UTF-8 文本；可能是不完整的一行）。
         chunk: String,
     },
-    /// 携带最终 [`ToolResult`] 的终止事件。
-    /// 该事件发出后 stream 结束。
+    /**
+    携带最终 [`ToolResult`] 的终止事件。
+    该事件发出后 stream 结束。
+    */
     Complete(ToolResult),
 }
 
@@ -689,6 +702,7 @@ pub struct ToolExecutionConfig {
 }
 
 impl Default for ToolExecutionConfig {
+    /// 默认配置：30 秒超时等。
     fn default() -> Self {
         Self {
             timeout_ms: 30_000,
@@ -1041,9 +1055,11 @@ pub trait Tool: Send + Sync {
         &[]
     }
 
-    /// 供运行时定义的工具使用的、拥有所有权的模态投影；这类工具所需的模态
-    /// 是通过某条连接协商得到的。静态工具实现继续使用
-    /// [`Self::required_input_modalities`]。
+    /**
+    供运行时定义的工具使用的、拥有所有权的模态投影；这类工具所需的模态
+    是通过某条连接协商得到的。静态工具实现继续使用
+    [`Self::required_input_modalities`]。
+    */
     #[doc(hidden)]
     fn required_input_modalities_owned(&self) -> Vec<crate::llm::ModelInputModality> {
         self.required_input_modalities().to_vec()
@@ -1059,9 +1075,11 @@ pub trait Tool: Send + Sync {
     一个具体的 `impl Tool` 必须至少覆盖这两者之一）。
     */
     fn execute<'a>(&'a self, parameters: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
-        // 不能直接委托给 execute_with_context，因为它的 ctx 借用与 'a
-        // （self 的生命周期）绑定，而一个 default() 临时值活不了那么久。
-        // 因此把一个由该 future 拥有的默认 ctx 内联在这里。
+        /*
+        不能直接委托给 execute_with_context，因为它的 ctx 借用与 'a
+        （self 的生命周期）绑定，而一个 default() 临时值活不了那么久。
+        因此把一个由该 future 拥有的默认 ctx 内联在这里。
+        */
         Box::pin(async move {
             let ctx = ToolContext::default();
             self.execute_with_context(parameters, &ctx).await
@@ -1233,18 +1251,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// 应用层注入的 run 级上下文（跨 spawn 安全，值传递）。
-///
-/// 由应用层在每次 run 启动时构造，经 `AgentInvocationContext` 随单次调用
-/// 传入，最终由 pipeline 填入 [`ToolContext`]。
-///
-/// 为什么需要这个：`tokio::task_local!` 不会跨 `tokio::spawn` 继承。subagent 在框架
-/// 层的 `tokio::spawn`（subagent_executor.rs）里执行，task_local 全部丢失。而
-/// `ExternalRunContext` 是值传递（Clone），天然跨 spawn 安全，是传递 run_id /
-/// cancel / trace_sink 的正确通路。
-///
-/// `trace_sink` 用 `serde_json::Value`（而非应用层的具体事件类型）以避免框架依赖
-/// 应用层类型——应用层在填入时把自己的事件序列化成 Value。
+/// run 级 trace 事件 sink：接收序列化为 `serde_json::Value` 的应用层事件。
 pub type TraceSinkFn = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
 
 /**
@@ -1330,6 +1337,7 @@ impl InvocationResourceGuard {
 }
 
 impl std::fmt::Debug for InvocationResourceGuard {
+    /// 脱敏的调试输出：只显示资源类型和是否带身份，不泄露具体值。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InvocationResourceGuard")
             .field("resource_type", &self.resource_type)
@@ -1355,6 +1363,7 @@ pub struct NestedDelegationPolicy {
 }
 
 impl Default for NestedDelegationPolicy {
+    /// 默认策略：禁止派生子 agent。
     fn default() -> Self {
         Self {
             can_spawn_subagents: false,
@@ -1408,6 +1417,7 @@ pub struct ScriptExecutionProfile {
 }
 
 impl std::fmt::Debug for ScriptExecutionProfile {
+    /// 自定义调试输出：环境变量只显示键名，不泄露其值。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScriptExecutionProfile")
             .field("id", &self.id)
@@ -1421,6 +1431,7 @@ impl std::fmt::Debug for ScriptExecutionProfile {
 }
 
 impl ScriptExecutionProfile {
+    /// 以身份标识、语言名与可执行程序创建 profile，其余字段为空。
     pub fn new(
         id: impl Into<String>,
         language: impl Into<String>,
@@ -1436,16 +1447,19 @@ impl ScriptExecutionProfile {
         }
     }
 
+    /// 追加一个插入在脚本路径之前的参数。
     pub fn with_arg_prefix(mut self, argument: impl Into<String>) -> Self {
         self.args_prefix.push(argument.into());
         self
     }
 
+    /// 为沙箱化子进程追加一个环境变量。
     pub fn with_env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.env.insert(key.into(), value.into());
         self
     }
 
+    /// 追加一个沙箱必须允许读取的运行时路径。
     pub fn with_read_only_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.read_only_paths.push(path.into());
         self
@@ -1484,14 +1498,20 @@ pub struct SubagentLineage {
     pub run_id: Option<String>,
     /// 派发方父 agent 的名称。
     pub parent_agent: Option<String>,
-    /// 当父级本身也是被派发的 Subagent 时，父级当前尝试的 execution id。
-    /// 使默认 uplink 能够引导父级的活跃 turn，而不只是发出一个事件。
+    /**
+    当父级本身也是被派发的 Subagent 时，父级当前尝试的 execution id。
+    使默认 uplink 能够引导父级的活跃 turn，而不只是发出一个事件。
+    */
     pub parent_execution_id: Option<String>,
-    /// 当父级本身也被 envelope 观测时，创建此子派发的父级工具启动事件的
-    /// 稳定框架事件 id。
+    /**
+    当父级本身也被 envelope 观测时，创建此子派发的父级工具启动事件的
+    稳定框架事件 id。
+    */
     pub parent_event_id: Option<String>,
-    /// 规范的派发树路径（`root/<child>/<grandchild>`）。在同一逻辑树的多次
-    /// 尝试之间保持稳定；在派发时分配。
+    /**
+    规范的派发树路径（`root/<child>/<grandchild>`）。在同一逻辑树的多次
+    尝试之间保持稳定；在派发时分配。
+    */
     pub agent_path: Option<String>,
     /// 当由带修订版本的任务运行时派发时，本次尝试执行的任务图任务 id。
     pub task_id: Option<String>,
@@ -1511,8 +1531,10 @@ pub enum SubagentUplinkTarget {
         /// 消息正文（已由调用方工具限定长度）。
         text: String,
     },
-    /// 同一派发图中的一个兄弟节点。投递方式仅为入队：该消息会在兄弟节点
-    /// 下一个模型边界处引导其活跃 turn，绝不会另起一个新 turn。
+    /**
+    同一派发图中的一个兄弟节点。投递方式仅为入队：该消息会在兄弟节点
+    下一个模型边界处引导其活跃 turn，绝不会另起一个新 turn。
+    */
     Sibling {
         /// 目标兄弟节点的地址。
         to: SubagentPeerAddress,
@@ -1526,9 +1548,11 @@ pub enum SubagentUplinkTarget {
 pub enum SubagentPeerAddress {
     /// 一次当前活跃的尝试 —— 可通过共享控制面（实时引导）投递。
     ByExecutionId(String),
-    /// 同一派发图中尚无活跃尝试的任务。框架的默认 sink 无法解析出下一次
-    /// 尝试的编号，因此投递需要一个拥有尝试调度权的应用层 sink（例如
-    /// 排队等待下一次尝试）。
+    /**
+    同一派发图中尚无活跃尝试的任务。框架的默认 sink 无法解析出下一次
+    尝试的编号，因此投递需要一个拥有尝试调度权的应用层 sink（例如
+    排队等待下一次尝试）。
+    */
     ByTaskId(String),
 }
 
@@ -1537,8 +1561,10 @@ pub enum SubagentPeerAddress {
 pub enum SubagentUplinkKind {
     /// 非阻塞的信息性报告；发送方的尝试继续运行。
     Report,
-    /// 阻塞式的澄清请求。发送方并不等待 —— 由宿主决定（暂停该 run、
-    /// 通过引导回答，或忽略），与此同时该尝试继续尽力而为地工作。
+    /**
+    阻塞式的澄清请求。发送方并不等待 —— 由宿主决定（暂停该 run、
+    通过引导回答，或忽略），与此同时该尝试继续尽力而为地工作。
+    */
     Escalate,
 }
 
@@ -1560,8 +1586,10 @@ pub struct SubagentUplinkMessage {
 pub struct SubagentUplinkReceipt {
     /// 该消息是否被接受。
     pub accepted: bool,
-    /// 机器可读的处置结果，例如 `event_emitted`、`parent_steered`、
-    /// `delivered_to_sibling`、`no_parent`、`sibling_not_active`、`rejected`。
+    /**
+    机器可读的处置结果，例如 `event_emitted`、`parent_steered`、
+    `delivered_to_sibling`、`no_parent`、`sibling_not_active`、`rejected`。
+    */
     pub status: String,
     /// 人类可读的详情说明。
     pub detail: String,
@@ -1579,6 +1607,20 @@ pub type SubagentUplinkFn = std::sync::Arc<
         + Sync,
 >;
 
+/**
+应用层注入的 run 级上下文（跨 spawn 安全，值传递）。
+
+由应用层在每次 run 启动时构造，经 `AgentInvocationContext` 随单次调用
+传入，最终由 pipeline 填入 [`ToolContext`]。
+
+为什么需要这个：`tokio::task_local!` 不会跨 `tokio::spawn` 继承。subagent 在框架
+层的 `tokio::spawn`（subagent_executor.rs）里执行，task_local 全部丢失。而
+`ExternalRunContext` 是值传递（Clone），天然跨 spawn 安全，是传递 run_id /
+cancel / trace_sink 的正确通路。
+
+`trace_sink` 用 `serde_json::Value`（而非应用层的具体事件类型）以避免框架依赖
+应用层类型——应用层在填入时把自己的事件序列化成 Value。
+*/
 #[derive(Clone, Default)]
 pub struct ExternalRunContext {
     /// 当前会话标识，跨主 agent/subagent 保持稳定。
@@ -1587,18 +1629,24 @@ pub struct ExternalRunContext {
     pub run_id: Option<String>,
     /// 当前用户输入/agent turn 的稳定标识。
     pub turn_id: Option<String>,
-    /// 当前 run 内的一次具体执行标识。
-    ///
-    /// `None` 表示只有 run 级上下文。设置后，subagent / tool trace 应使用它
-    /// 作为前端可见执行记录的稳定 id，而不是再临时分配一套 dispatch id。
+    /**
+    当前 run 内的一次具体执行标识。
+
+    `None` 表示只有 run 级上下文。设置后，subagent / tool trace 应使用它
+    作为前端可见执行记录的稳定 id，而不是再临时分配一套 dispatch id。
+    */
     pub execution_id: Option<String>,
-    /// 隔离资源的稳定标识，可跨同一逻辑任务的多次执行尝试复用。
-    ///
-    /// 与 `execution_id` 不同，此字段不表示一次具体执行，也不用于事件关联。
-    /// Worktree / workspace 等隔离资源可优先使用它来避免重试时重复创建。
+    /**
+    隔离资源的稳定标识，可跨同一逻辑任务的多次执行尝试复用。
+
+    与 `execution_id` 不同，此字段不表示一次具体执行，也不用于事件关联。
+    Worktree / workspace 等隔离资源可优先使用它来避免重试时重复创建。
+    */
     pub isolation_id: Option<String>,
-    /// 触发本次 run 的消息 id（chat 场景下 = message_key，用于把 subagent
-    /// 执行流钉到聊天流里对应的消息区块上）。`None` = 非 chat 路径（cron 等）。
+    /**
+    触发本次 run 的消息 id（chat 场景下 = message_key，用于把 subagent
+    执行流钉到聊天流里对应的消息区块上）。`None` = 非 chat 路径（cron 等）。
+    */
     pub message_id: Option<String>,
     /// 当前 run 的取消令牌。
     pub cancel: Option<std::sync::Arc<tokio_util::sync::CancellationToken>>,
@@ -1608,16 +1656,21 @@ pub struct ExternalRunContext {
     pub delegation_policy: Option<NestedDelegationPolicy>,
     /// 在主 Agent、subagent 与工具 spawn 之间保留的不透明资源。
     pub resource_guards: Vec<InvocationResourceGuard>,
-    /// 该上下文所属的、已派发 Subagent 尝试的身份/谱系信息。
-    /// 主 agent 调用时为 `None`。
+    /**
+    该上下文所属的、已派发 Subagent 尝试的身份/谱系信息。
+    主 agent 调用时为 `None`。
+    */
     pub subagent_lineage: Option<SubagentLineage>,
-    /// 由派发方安装的 Subagent→父级 / Subagent→兄弟节点 消息通道。
-    /// `None` 表示未接入任何 uplink；消息类工具必须上报不可用，
-    /// 而不是静默丢弃消息。
+    /**
+    由派发方安装的 Subagent→父级 / Subagent→兄弟节点 消息通道。
+    `None` 表示未接入任何 uplink；消息类工具必须上报不可用，
+    而不是静默丢弃消息。
+    */
     pub uplink: Option<SubagentUplinkFn>,
 }
 
 impl std::fmt::Debug for ExternalRunContext {
+    /// 自定义调试输出：回调、令牌等不可打印字段以占位符代替。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ExternalRunContext")
             .field("conversation_id", &self.conversation_id)
@@ -1640,18 +1693,22 @@ impl std::fmt::Debug for ExternalRunContext {
     }
 }
 
-/// 运行时上下文，工具执行时由 ExecuteStage 注入。
-///
-/// 所有字段均为 `Option`，`None` = 回退默认行为（向后兼容老工具）。
-/// 工具 override `Tool::execute_with_context` 时可读取这些字段。
-///
-/// `cancel` / `trace_sink` 由应用层经 [`ExternalRunContext`] 注入 subagent，
-/// 再由 pipeline 填入此处——这是一条跨 `tokio::spawn` 安全的值传递通路（替代会跨
-/// spawn 断裂的 task_local）。
+/**
+运行时上下文，工具执行时由 ExecuteStage 注入。
+
+所有字段均为 `Option`，`None` = 回退默认行为（向后兼容老工具）。
+工具 override `Tool::execute_with_context` 时可读取这些字段。
+
+`cancel` / `trace_sink` 由应用层经 [`ExternalRunContext`] 注入 subagent，
+再由 pipeline 填入此处——这是一条跨 `tokio::spawn` 安全的值传递通路（替代会跨
+spawn 断裂的 task_local）。
+*/
 #[derive(Clone, Default)]
 pub struct ToolContext {
-    /// 会话绑定的默认工作目录（通常是 worktree 路径）。
-    /// None = 回退进程 `current_dir`。
+    /**
+    会话绑定的默认工作目录（通常是 worktree 路径）。
+    None = 回退进程 `current_dir`。
+    */
     pub working_dir: Option<std::path::PathBuf>,
     /// 会话标识（透传给 trace/audit）。
     pub conversation_id: Option<String>,
@@ -1659,21 +1716,29 @@ pub struct ToolContext {
     pub run_id: Option<String>,
     /// 当前用户输入/agent turn 标识。
     pub turn_id: Option<String>,
-    /// 触发当前工具调用的消息标识。Chat 场景用于把工具派生的执行流绑定到
-    /// 正确的消息区块；非 Chat 路径为 `None`。
+    /**
+    触发当前工具调用的消息标识。Chat 场景用于把工具派生的执行流绑定到
+    正确的消息区块；非 Chat 路径为 `None`。
+    */
     pub message_id: Option<String>,
     /// 当前 run 内的一次具体执行标识。
     pub execution_id: Option<String>,
     /// 该逻辑工具调用及其所有重试尝试共用的稳定身份标识。
     pub call_id: Option<String>,
-    /// 由调用方绑定到这一次具体 trace run 和工具调用的可选效果观察者。
-    /// 共享工具不得跨调用保留它。
+    /**
+    由调用方绑定到这一次具体 trace run 和工具调用的可选效果观察者。
+    共享工具不得跨调用保留它。
+    */
     pub effect_sink: Option<ToolEffectSinkFn>,
-    /// 触发当前 turn 的用户消息。委派类工具会转发这个带类型的值，
-    /// 以保持二进制附件完整。
+    /**
+    触发当前 turn 的用户消息。委派类工具会转发这个带类型的值，
+    以保持二进制附件完整。
+    */
     pub active_message: Option<crate::llm::types::Message>,
-    /// 应用层为完整工具输出 artifact 选定的可选根路径与保留策略。
-    /// 流式工具应使用它，而不是在内存中无限保留输出。
+    /**
+    应用层为完整工具输出 artifact 选定的可选根路径与保留策略。
+    流式工具应使用它，而不是在内存中无限保留输出。
+    */
     pub output_artifacts: Option<artifact::ToolOutputArtifactConfig>,
     /// 与 `tool_search` 共享的、限定于本次调用的 schema 可见性。
     pub tool_visibility: Option<std::sync::Arc<ToolVisibilityState>>,
@@ -1690,18 +1755,25 @@ pub struct ToolContext {
     pub trace_sink: Option<TraceSinkFn>,
     /// 供 LLM 可调用的派发类工具使用的嵌套委派策略。
     pub delegation_policy: Option<NestedDelegationPolicy>,
-    /// 不透明的调用资源。当工作跨越内部 spawn 或阻塞边界时，
-    /// 工具可以克隆并保留这些 guard。
+    /**
+    不透明的调用资源。当工作跨越内部 spawn 或阻塞边界时，
+    工具可以克隆并保留这些 guard。
+    */
     pub resource_guards: Vec<InvocationResourceGuard>,
-    /// 调用该工具的 Subagent 尝试的身份/谱系信息。
-    /// 主 agent 调用该工具时为 `None`。
+    /**
+    调用该工具的 Subagent 尝试的身份/谱系信息。
+    主 agent 调用该工具时为 `None`。
+    */
     pub subagent_lineage: Option<SubagentLineage>,
-    /// Subagent→父级 / Subagent→兄弟节点 消息通道。
-    /// 本次调用未接入 uplink 时为 `None`。
+    /**
+    Subagent→父级 / Subagent→兄弟节点 消息通道。
+    本次调用未接入 uplink 时为 `None`。
+    */
     pub uplink: Option<SubagentUplinkFn>,
 }
 
 impl std::fmt::Debug for ToolContext {
+    /// 自定义调试输出：回调、令牌等不可打印字段以占位符代替。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolContext")
             .field("working_dir", &self.working_dir)
@@ -1754,8 +1826,10 @@ pub struct ToolVisibilityState {
 }
 
 impl ToolVisibilityState {
-    /// 用一份 eligible 策略集合和初始可见集合构造状态
-    /// （`available` 与 `eligible` 相同）。
+    /**
+    用一份 eligible 策略集合和初始可见集合构造状态
+    （`available` 与 `eligible` 相同）。
+    */
     pub fn new(
         eligible: std::collections::HashSet<String>,
         initial: std::collections::HashSet<String>,
@@ -1763,9 +1837,11 @@ impl ToolVisibilityState {
         Self::with_available(eligible.clone(), eligible, initial)
     }
 
-    /// 用比当前 eligible 策略集合更大的可激活目录构建可见性状态。
-    /// 产品策略和 skill 之后可以通过 [`Self::extend_eligibility_and_activate`]
-    /// 从 `available` 中提升更多名称。
+    /**
+    用比当前 eligible 策略集合更大的可激活目录构建可见性状态。
+    产品策略和 skill 之后可以通过 [`Self::extend_eligibility_and_activate`]
+    从 `available` 中提升更多名称。
+    */
     pub fn with_available(
         available: std::collections::HashSet<String>,
         eligible: std::collections::HashSet<String>,
@@ -1878,36 +1954,48 @@ impl ToolContext {
     }
 }
 
+/// `ToolContext` 与调用资源守卫相关的单元测试。
 #[cfg(test)]
 mod tool_context_tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 测试资源：被丢弃时递增计数器，用于验证守卫释放资源。
     struct DropCounter {
+        /// 共享的丢弃次数计数器。
         drops: std::sync::Arc<AtomicUsize>,
+        /// 不应出现在调试输出中的敏感值。
         _secret: &'static str,
     }
 
+    /// 另一种资源类型，用于验证类型不匹配时取不到资源。
     struct OtherResource;
 
+    /// 测试用资源身份：包含敏感字段与代次。
     #[derive(PartialEq, Eq)]
     struct GuardIdentity {
+        /// 不应被泄露的敏感值。
         secret: &'static str,
+        /// 身份代次。
         generation: u64,
     }
 
+    /// 另一种身份类型，用于验证身份类型必须精确匹配。
     #[derive(PartialEq, Eq)]
     struct OtherIdentity {
+        /// 身份代次。
         generation: u64,
     }
 
     impl Drop for DropCounter {
+        /// 丢弃时将计数器加一。
         fn drop(&mut self) {
             self.drops.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    /// 验证调用资源守卫不透明、可克隆且调试输出已脱敏。
     #[test]
     fn invocation_resource_guard_is_opaque_cloneable_and_redacted() {
         let drops = std::sync::Arc::new(AtomicUsize::new(0));
@@ -1938,6 +2026,7 @@ mod tool_context_tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
+    /// 验证带身份的资源守卫只匹配精确的类型与值，且不泄露身份内容。
     #[test]
     fn identified_resource_guard_matches_exact_type_and_value_without_disclosure() {
         let drops = std::sync::Arc::new(AtomicUsize::new(0));
@@ -1985,6 +2074,7 @@ mod tool_context_tests {
         assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
+    /// 验证 `ToolContext` 默认值中所有可选字段均为 None。
     #[test]
     fn test_default_is_all_none() {
         let ctx = ToolContext::default();
@@ -1996,6 +2086,7 @@ mod tool_context_tests {
         assert!(ctx.resource_guards.is_empty());
     }
 
+    /// 验证没有精确计数的效果保持“未知”，与计数为零区分开。
     #[test]
     fn test_effect_without_exact_count_keeps_unknown_distinct_from_zero()
     -> std::result::Result<(), serde_json::Error> {
@@ -2014,6 +2105,7 @@ mod tool_context_tests {
         Ok(())
     }
 
+    /// 验证永久失败与部分失败不能被标记为可自动重试。
     #[test]
     fn permanent_and_partial_failures_cannot_be_made_automatically_retryable() {
         let permanent = ToolFailure::new(ToolFailureCategory::Permanent).retryable();
@@ -2025,12 +2117,15 @@ mod tool_context_tests {
         assert!(!partial.allows_automatic_retry());
     }
 
-    // ── stage4 P4.1: cache_user_id 单一来源 ────────────────────────────
-    // 原先的外部 cache_user_id 通道（ExternalRunContext.cache_user_id +
-    // ToolContext.cache_user_id）已经是死代码 —— 从没有工具读取过
-    // ToolContext 的该字段。现已移除，改用单一的配置来源。以下编译期
-    // 断言用于守护这次移除：两个结构体都必须能在没有该字段的情况下构造。
+    /*
+    ── stage4 P4.1: cache_user_id 单一来源 ────────────────────────────
+    原先的外部 cache_user_id 通道（ExternalRunContext.cache_user_id +
+    ToolContext.cache_user_id）已经是死代码 —— 从没有工具读取过
+    ToolContext 的该字段。现已移除，改用单一的配置来源。以下编译期
+    断言用于守护这次移除：两个结构体都必须能在没有该字段的情况下构造。
+    */
 
+    /// 验证 `ExternalRunContext` 无需缓存用户 ID 即可构造。
     #[test]
     fn external_run_context_constructs_without_cache_user_id() {
         let _ctx = ExternalRunContext {
@@ -2050,6 +2145,7 @@ mod tool_context_tests {
         };
     }
 
+    /// 验证 `ToolContext` 无需缓存用户 ID 即可构造。
     #[test]
     fn tool_context_constructs_without_cache_user_id() {
         let _ctx = ToolContext {
@@ -2075,6 +2171,7 @@ mod tool_context_tests {
         };
     }
 
+    /// 验证 `new` 正确设置各字段。
     #[test]
     fn test_new_sets_fields() {
         let ctx = ToolContext {
@@ -2091,6 +2188,7 @@ mod tool_context_tests {
         assert_eq!(ctx.run_id.as_deref(), Some("run-1"));
     }
 
+    /// 验证相对路径会拼接到工作目录下。
     #[test]
     fn test_resolve_path_relative_joins() {
         let ctx = ToolContext {
@@ -2104,6 +2202,7 @@ mod tool_context_tests {
         );
     }
 
+    /// 验证绝对路径不会被拼接。
     #[test]
     fn test_resolve_path_absolute_not_joined() {
         let ctx = ToolContext {
@@ -2114,6 +2213,7 @@ mod tool_context_tests {
         assert_eq!(resolved.as_ref(), std::path::Path::new("/etc/hosts"));
     }
 
+    /// 验证未设置工作目录时路径原样返回。
     #[test]
     fn test_resolve_path_no_working_dir_passthrough() {
         let ctx = ToolContext::default();
@@ -2121,6 +2221,7 @@ mod tool_context_tests {
         assert_eq!(resolved.as_ref(), std::path::Path::new("a/b"));
     }
 
+    /// 验证可见性状态能把策略允许但尚未可见的工具提升为可见。
     #[test]
     fn visibility_can_promote_available_policy_names() {
         let state = ToolVisibilityState::with_available(
@@ -2148,6 +2249,7 @@ mod tool_context_tests {
         assert!(state.is_visible("git_commit"));
     }
 
+    /// 验证被取消的变更类操作会报告可能的副作用。
     #[test]
     fn cancelled_mutation_reports_possible_side_effect() {
         let error = ReactError::from(ToolError::Cancelled("git_branch".to_string()));
@@ -2160,45 +2262,58 @@ mod tool_context_tests {
     }
 }
 
+/// `Tool::exempt_from_batch_timeout` 默认值与覆盖行为的测试。
 #[cfg(test)]
 mod exempt_from_batch_timeout_tests {
     use super::*;
 
-    /// 一个不覆盖 `exempt_from_batch_timeout` 的工具。用于验证该 trait 的默认值
-    /// 是 `false`（与所有普通工具一样受批处理超时约束）。防止默认值被意外改动。
+    /**
+    一个不覆盖 `exempt_from_batch_timeout` 的工具。用于验证该 trait 的默认值
+    是 `false`（与所有普通工具一样受批处理超时约束）。防止默认值被意外改动。
+    */
     struct OrdinaryTool;
 
     impl Tool for OrdinaryTool {
+        /// 返回测试工具名称。
         fn name(&self) -> &str {
             "ordinary"
         }
+        /// 返回测试工具描述。
         fn description(&self) -> &str {
             "test tool"
         }
+        /// 返回测试工具的参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({})
         }
     }
 
-    /// 一个覆盖 `exempt_from_batch_timeout -> true` 的工具，模拟长耗时的
-    /// 派发类工具（agent_tool / delegate_readonly）。
+    /**
+    一个覆盖 `exempt_from_batch_timeout -> true` 的工具，模拟长耗时的
+    派发类工具（agent_tool / delegate_readonly）。
+    */
     struct LongRunningTool;
 
     impl Tool for LongRunningTool {
+        /// 返回测试工具名称。
         fn name(&self) -> &str {
             "long_running"
         }
+        /// 返回测试工具描述。
         fn description(&self) -> &str {
             "long-running dispatch tool"
         }
+        /// 返回测试工具的参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({})
         }
+        /// 声明豁免批处理超时。
         fn exempt_from_batch_timeout(&self) -> bool {
             true
         }
     }
 
+    /// 验证普通工具默认不豁免批处理超时。
     #[test]
     fn ordinary_tool_is_not_exempt_by_default() {
         let t = OrdinaryTool;
@@ -2208,6 +2323,7 @@ mod exempt_from_batch_timeout_tests {
         );
     }
 
+    /// 验证长耗时工具可以选择豁免批处理超时。
     #[test]
     fn long_running_tool_can_opt_into_exempt() {
         let t = LongRunningTool;
@@ -2217,8 +2333,10 @@ mod exempt_from_batch_timeout_tests {
         );
     }
 
-    /// trait 对象派发：该豁免标记必须能通过 `dyn Tool` 被观察到
-    /// （`react_loop` 正是通过 `ToolManager::get_tool` 以这种方式读取它的）。
+    /**
+    trait 对象派发：该豁免标记必须能通过 `dyn Tool` 被观察到
+    （`react_loop` 正是通过 `ToolManager::get_tool` 以这种方式读取它的）。
+    */
     #[test]
     fn exemption_visible_through_dyn_trait_object() {
         let tools: Vec<Box<dyn Tool>> = vec![Box::new(OrdinaryTool), Box::new(LongRunningTool)];
@@ -2236,24 +2354,31 @@ mod exempt_from_batch_timeout_tests {
     }
 }
 
+/// `Tool::execute_with_context` 默认委托行为的测试。
 #[cfg(test)]
 mod execute_with_context_tests {
     use super::*;
 
-    /// 一个"旧式"的工具，只实现了 `execute`。用于验证该 trait 默认的
-    /// `execute_with_context` 无论传入什么 context，都会委托给 `execute`。
+    /**
+    一个"旧式"的工具，只实现了 `execute`。用于验证该 trait 默认的
+    `execute_with_context` 无论传入什么 context，都会委托给 `execute`。
+    */
     struct LegacyTool;
 
     impl Tool for LegacyTool {
+        /// 返回测试工具名称。
         fn name(&self) -> &str {
             "legacy"
         }
+        /// 返回测试工具描述。
         fn description(&self) -> &str {
             "old-style tool, no context awareness"
         }
+        /// 返回测试工具的参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
+        /// 回显参数 `x` 的值。
         fn execute<'a>(&'a self, params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
             Box::pin(async move {
                 let msg = format!(
@@ -2265,6 +2390,7 @@ mod execute_with_context_tests {
         }
     }
 
+    /// 验证默认 `execute_with_context` 忽略上下文并委托给 `execute`。
     #[tokio::test]
     async fn test_default_delegates_to_execute_ignoring_ctx() {
         let tool = LegacyTool;
@@ -2283,10 +2409,12 @@ mod execute_with_context_tests {
     }
 }
 
+/// `ToolStreamEvent` 序列化契约的测试。
 #[cfg(test)]
 mod tool_stream_event_contract_tests {
     use super::*;
 
+    /// 验证各输出通道的 `ToolStreamEvent` 序列化往返一致。
     #[test]
     fn tool_stream_event_serde_round_trip_output_channels() {
         let events = vec![
@@ -2317,6 +2445,7 @@ mod tool_stream_event_contract_tests {
         }
     }
 
+    /// 验证 JSON 中使用 `output` 字段而非 `partial_output`。
     #[test]
     fn tool_stream_event_json_uses_output_not_partial_output() {
         let event = ToolStreamEvent::Output {

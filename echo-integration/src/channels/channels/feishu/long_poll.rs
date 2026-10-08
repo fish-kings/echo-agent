@@ -1,13 +1,15 @@
-//! Feishu WebSocket Long Connection
-//!
-//! Implements the Feishu long connection protocol (PBBP2), no public IP required.
-//!
-//! Flow:
-//! 1. HTTP get WebSocket URL (includes device_id and service_id)
-//! 2. Connect WebSocket, receive binary Protobuf frames
-//! 3. Handle control frames (ping/pong) and data frames (events)
-//! 4. Large messages are auto-fragmented, requires reassembly
-//! 5. Return response frame after processing events
+/*!
+飞书 WebSocket 长连接
+
+实现飞书长连接协议（PBBP2），无需公网 IP。
+
+流程：
+1. 通过 HTTP 获取 WebSocket URL（包含 device_id 和 service_id）
+2. 连接 WebSocket，接收二进制 Protobuf 帧
+3. 处理控制帧（ping/pong）和数据帧（事件）
+4. 大消息会被自动分片，需要重新组装
+5. 处理完事件后返回响应帧
+*/
 
 use super::super::super::types::*;
 use super::api::{ClientConfig, get_ws_endpoint, http_client};
@@ -26,54 +28,72 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 
-/// Processed event cache TTL (seconds) — duplicate events within 5 minutes are dropped
+/// 已处理事件缓存的 TTL（秒）——5 分钟内的重复事件会被丢弃
 const DEDUP_TTL_SECS: u64 = 300;
 
-/// Default ping interval (seconds)
+/// 默认 ping 间隔（秒）
 const DEFAULT_PING_INTERVAL: u64 = 120;
 
-/// Default reconnect interval (seconds)
+/// 默认重连间隔（秒）
 const DEFAULT_RECONNECT_INTERVAL: u64 = 120;
 
-/// Default initial reconnect jitter (seconds)
+/// 默认首次重连随机抖动上限（秒）
 const DEFAULT_RECONNECT_NONCE: u64 = 30;
 
-/// Default reconnect count (-1 means unlimited)
+/// 默认重连次数（-1 表示不限）
 const DEFAULT_RECONNECT_COUNT: i32 = -1;
 
-/// Exponential backoff max delay (seconds)
+/// 指数退避的最大延迟（秒）
 const MAX_BACKOFF_SECS: u64 = 300;
 
-/// Stable connection threshold (seconds) — exceeding this time means the connection is stable, reset backoff
+/// 稳定连接阈值（秒）——连接持续超过该时间即视为稳定，并重置退避
 const STABLE_THRESHOLD_SECS: u64 = 60;
+/// 单条消息允许的最大分片数量
 const MAX_FRAGMENT_COUNT: usize = 256;
+/// 单条消息所有分片累计允许的最大字节数
 const MAX_FRAGMENT_BYTES: usize = 2 * 1024 * 1024;
 
-// Type aliases to simplify complex type signatures
+// 类型别名，用于简化复杂的类型签名
+/// 底层 WebSocket 连接流
 type WsConn =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+/// WebSocket 写半部
 type WsSink = SplitSink<WsConn, Message>;
+/// WebSocket 读半部
 type WsRead = SplitStream<WsConn>;
+/// 可在多个任务间共享的写半部
 type SharedSink = Arc<Mutex<WsSink>>;
+/// 按序号存放的分片列表（未到达的分片为 None）
 type FragmentParts = Vec<Option<Vec<u8>>>;
+/// 分片缓存条目：（创建时间，分片列表）
 type FragmentCacheEntry = (Instant, FragmentParts);
+/// 分片缓存：msg_id -> 分片缓存条目
 type FragmentCache = Arc<DashMap<String, FragmentCacheEntry>>;
 
-// ── WebSocket Client ──────────────────────────────────────────────────────────
+// ── WebSocket 客户端 ──────────────────────────────────────────────────────────
 
-/// WebSocket long connection client configuration
+/// WebSocket 长连接客户端配置
 pub struct WsClientConfig {
+    /// 飞书应用 App ID
     pub app_id: String,
+    /// 飞书应用 App Secret
     pub app_secret: String,
+    /// 开放平台域名
     pub domain: String,
+    /// 连接断开后是否自动重连
     pub auto_reconnect: bool,
+    /// 心跳 ping 间隔
     pub ping_interval: Duration,
+    /// 重连间隔
     pub reconnect_interval: Duration,
+    /// 首次重连的随机抖动上限
     pub reconnect_nonce: Duration,
+    /// 最大重连次数（-1 表示不限）
     pub reconnect_count: i32,
 }
 
 impl WsClientConfig {
+    /// 使用默认的心跳与重连参数创建配置
     pub fn new(app_id: String, app_secret: String, domain: String) -> Self {
         Self {
             app_id,
@@ -87,7 +107,7 @@ impl WsClientConfig {
         }
     }
 
-    /// Update from server-side configuration
+    /// 根据服务端下发的配置更新本地参数
     pub fn update_from_server(&mut self, config: &ClientConfig) {
         if let Some(v) = config.ping_interval {
             self.ping_interval = Duration::from_secs(v as u64);
@@ -104,24 +124,28 @@ impl WsClientConfig {
     }
 }
 
-/// WebSocket long connection client
+/// WebSocket 长连接客户端
 pub struct WsClient {
+    /// 客户端配置
     config: WsClientConfig,
+    /// 用于获取连接地址的 HTTP 客户端
     http: reqwest::Client,
-    /// Connection ID (parsed from URL)
+    /// 连接 ID（从 URL 中解析）
     conn_id: String,
-    /// Service ID (used when sending frames)
+    /// 服务 ID（发送帧时使用）
     service_id: i32,
-    /// Message fragment cache (msg_id -> (creation time, fragments))
+    /// 消息分片缓存（msg_id -> (创建时间, 分片列表)）
     fragment_cache: FragmentCache,
-    /// Processed event dedup cache (event message_id -> processing time)
+    /// 已处理事件的去重缓存（事件 message_id -> 处理时间）
     processed_events: Arc<DashMap<String, Instant>>,
+    /// 按事件 message_id 划分的处理锁，保证同一事件串行处理
     event_locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
-    /// Running flag
+    /// 运行标志
     running: Arc<Mutex<bool>>,
 }
 
 impl WsClient {
+    /// 根据配置创建客户端
     pub fn new(config: WsClientConfig) -> Self {
         Self {
             config,
@@ -135,7 +159,7 @@ impl WsClient {
         }
     }
 
-    /// Start the client (blocking)
+    /// 启动客户端（阻塞运行直至停止）
     pub async fn run(&mut self, handler: Arc<dyn MessageHandler>) -> Result<()> {
         *self.running.lock().await = true;
 
@@ -168,7 +192,7 @@ impl WsClient {
                 break;
             }
 
-            // Determine if the connection is stable, decide whether to reset backoff
+            // 判断连接是否稳定，决定是否重置退避
             let stable = connected_at.elapsed().as_secs() >= STABLE_THRESHOLD_SECS;
             if stable {
                 backoff_secs = 1;
@@ -177,7 +201,7 @@ impl WsClient {
                 attempts_since_stable += 1;
             }
 
-            // Reconnect logic
+            // 重连逻辑
             if self.config.reconnect_count >= 0 {
                 let max_attempts = self.config.reconnect_count as u32;
                 if attempts_since_stable > max_attempts {
@@ -189,17 +213,17 @@ impl WsClient {
                 }
             }
 
-            // Exponential backoff wait
+            // 指数退避等待
             self.do_backoff_sleep(backoff_secs).await;
 
-            // Update backoff delay (exponential growth, capped at MAX_BACKOFF_SECS)
+            // 更新退避延迟（指数增长，上限为 MAX_BACKOFF_SECS）
             backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
         }
 
         Ok(())
     }
 
-    /// Exponential backoff wait (with random jitter on first attempt)
+    /// 指数退避等待（首次尝试时使用随机抖动）
     async fn do_backoff_sleep(&self, delay_secs: u64) {
         if delay_secs <= 1 {
             let jitter = rand_jitter(self.config.reconnect_nonce);
@@ -215,14 +239,14 @@ impl WsClient {
         }
     }
 
-    /// Stop the client
+    /// 停止客户端
     pub async fn stop(&mut self) {
         *self.running.lock().await = false;
     }
 
-    /// Establish connection and process messages
+    /// 建立连接并处理消息
     async fn connect(&mut self, handler: Arc<dyn MessageHandler>) -> Result<()> {
-        // 1. Get WebSocket URL
+        // 1. 获取 WebSocket URL
         let (ws_url, service_id_str, client_config) = get_ws_endpoint(
             &self.http,
             &self.config.domain,
@@ -248,7 +272,7 @@ impl WsClient {
 
         info!("Feishu WebSocket: connecting to {}", redact_url(&ws_url));
 
-        // 2. Establish WebSocket connection, split read/write halves
+        // 2. 建立 WebSocket 连接，拆分读写两半
         let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
             ChannelError::ConnectionError(format!(
                 "WebSocket connect failed: {}",
@@ -265,7 +289,7 @@ impl WsClient {
         let (write, read) = ws_stream.split();
         let ws_sink: SharedSink = Arc::new(Mutex::new(write));
 
-        // 3. Start heartbeat task (actually sends ping frames)
+        // 3. 启动心跳任务（实际发送 ping 帧）
         let ping_interval = self.config.ping_interval;
         let service_id = self.service_id;
         let running = self.running.clone();
@@ -290,13 +314,13 @@ impl WsClient {
             }
         });
 
-        // 4. Message processing loop
+        // 4. 消息处理循环
         let result = self.message_loop(read, ws_sink, handler).await;
         ping_task.abort();
         result
     }
 
-    /// Message processing loop
+    /// 消息处理循环
     async fn message_loop(
         &mut self,
         mut stream: WsRead,
@@ -345,7 +369,7 @@ impl WsClient {
         }
     }
 
-    /// Handle binary Protobuf frame
+    /// 处理二进制 Protobuf 帧
     async fn handle_binary_frame(
         &mut self,
         sink: &SharedSink,
@@ -371,7 +395,7 @@ impl WsClient {
         Ok(())
     }
 
-    /// Handle control frame (pong)
+    /// 处理控制帧（pong）
     fn handle_control_frame(&mut self, frame: &ProtoFrame) {
         let msg_type = frame.get_header(HEADER_TYPE).unwrap_or("");
 
@@ -394,7 +418,7 @@ impl WsClient {
         }
     }
 
-    /// Handle data frame (event)
+    /// 处理数据帧（事件）
     async fn handle_data_frame(
         &mut self,
         sink: &SharedSink,
@@ -406,7 +430,7 @@ impl WsClient {
         let sum = frame.get_header_int(HEADER_SUM);
         let seq = frame.get_header_int(HEADER_SEQ);
 
-        // Fragment handling
+        // 分片处理
         let payload = if sum > 1 {
             match self.combine_fragments(msg_id, sum, seq, frame.payload.clone()) {
                 Some(p) => p,
@@ -428,9 +452,9 @@ impl WsClient {
             msg_id, msg_type
         );
 
-        // Process first: success acknowledgement must mean recoverable work completed.
+        // 先处理再确认：成功应答必须意味着可恢复的工作已经完成。
         if msg_type == MESSAGE_TYPE_EVENT {
-            // Extract the Feishu event's message_id from payload for dedup
+            // 从 payload 中提取飞书事件的 message_id 用于去重
             let event_message_id = Self::extract_event_message_id(&payload_str);
 
             let event_lock = event_message_id.as_ref().map(|event_mid| {
@@ -445,7 +469,7 @@ impl WsClient {
                 None
             };
 
-            // Dedup: check if this event has already been processed
+            // 去重：检查该事件是否已处理过
             if let Some(ref event_mid) = event_message_id
                 && self.processed_events.contains_key(event_mid)
             {
@@ -456,7 +480,7 @@ impl WsClient {
                 return Ok(());
             }
 
-            // Periodically clean up expired dedup cache entries
+            // 顺带清理过期的去重缓存条目
             self.cleanup_processed_events();
 
             if let Err(error) =
@@ -480,7 +504,7 @@ impl WsClient {
         Ok(())
     }
 
-    /// Extract the Feishu message's message_id from event payload (for dedup)
+    /// 从事件 payload 中提取飞书消息的 message_id（用于去重）
     fn extract_event_message_id(payload: &str) -> Option<String> {
         let v: serde_json::Value = serde_json::from_str(payload).ok()?;
         v["event"]["message"]["message_id"]
@@ -489,13 +513,13 @@ impl WsClient {
             .map(|s| s.to_string())
     }
 
-    /// Clean up expired dedup cache entries
+    /// 清理过期的去重缓存条目
     fn cleanup_processed_events(&self) {
         let ttl = Duration::from_secs(DEDUP_TTL_SECS);
         self.processed_events.retain(|_, v| v.elapsed() < ttl);
     }
 
-    /// Reassemble fragmented messages (with TTL to prevent memory leak)
+    /// 重新组装分片消息（带 TTL，防止内存泄漏）
     fn combine_fragments(
         &self,
         msg_id: &str,
@@ -517,15 +541,15 @@ impl WsClient {
         }
         let cache_key = msg_id.to_string();
 
-        // Clean up timed-out incomplete fragments (5 minutes without completion is considered lost)
+        // 清理超时未完成的分片（5 分钟未收齐即视为丢失）
         let ttl = Duration::from_secs(DEDUP_TTL_SECS);
         self.fragment_cache
             .retain(|_, (created, _)| created.elapsed() < ttl);
 
-        // A message id is expected to be stable, but malformed or retried
-        // frames can reuse it with a different fragment count. Replace the
-        // entry when the declared shape changes; otherwise an old, shorter
-        // vector would make the new sequence index out of bounds.
+        /*
+        message id 理应稳定，但格式错误或重试的帧可能以不同的分片数量复用同一 id。
+        当声明的分片形状变化时替换缓存条目，否则旧的、更短的向量会让新的序号越界。
+        */
         let shape_changed = self
             .fragment_cache
             .get(&cache_key)
@@ -534,14 +558,14 @@ impl WsClient {
             self.fragment_cache.remove(&cache_key);
         }
 
-        // Initialize cache
+        // 初始化缓存
         if !self.fragment_cache.contains_key(&cache_key) {
             let fragments: Vec<Option<Vec<u8>>> = vec![None; count];
             self.fragment_cache
                 .insert(cache_key.clone(), (Instant::now(), fragments));
         }
 
-        // Update fragment
+        // 更新分片
         if let Some(mut entry) = self.fragment_cache.get_mut(&cache_key) {
             let (_, fragments) = entry.value_mut();
             let current_bytes = fragments
@@ -555,9 +579,10 @@ impl WsClient {
                 return None;
             }
             let Some(fragment) = fragments.get_mut(index) else {
-                // The entry may have been concurrently replaced after the
-                // shape check. Treat this frame as incomplete and discard the
-                // malformed cache entry instead of panicking.
+                /*
+                形状检查之后条目可能被并发替换。此时将该帧视为不完整，
+                并丢弃这个异常的缓存条目，而不是 panic。
+                */
                 drop(entry);
                 self.fragment_cache.remove(&cache_key);
                 return None;
@@ -581,7 +606,7 @@ impl WsClient {
         None
     }
 
-    /// Process event asynchronously
+    /// 异步处理事件
     async fn process_event_async(
         payload: String,
         handler: Arc<dyn MessageHandler>,
@@ -608,7 +633,7 @@ impl WsClient {
         Ok(())
     }
 
-    /// Handle IM message event
+    /// 处理 IM 消息事件
     async fn process_im_message(
         event: serde_json::Value,
         handler: Arc<dyn MessageHandler>,
@@ -676,6 +701,7 @@ impl WsClient {
         Ok(())
     }
 
+    /// 按消息类型把消息内容解析为纯文本
     fn parse_message_content_static(msg_type: &str, content_str: &str) -> String {
         let content: serde_json::Value = serde_json::from_str(content_str).unwrap_or_default();
 
@@ -689,6 +715,7 @@ impl WsClient {
         }
     }
 
+    /// 把富文本（post）内容解析为纯文本，段落之间以空行分隔
     fn parse_rich_text_static(content: &serde_json::Value) -> String {
         let paragraphs: Vec<String> = content["content"]
             .as_array()
@@ -724,7 +751,7 @@ impl WsClient {
         paragraphs.join("\n\n")
     }
 
-    /// Send response frame
+    /// 发送响应帧
     async fn send_response_frame(
         &mut self,
         sink: &SharedSink,
@@ -760,7 +787,7 @@ impl WsClient {
     }
 }
 
-/// Random jitter
+/// 生成 [0, max) 范围内的随机抖动
 fn rand_jitter(max: Duration) -> Duration {
     let max_ms = max.as_millis() as u64;
     if max_ms == 0 {
@@ -770,6 +797,7 @@ fn rand_jitter(max: Duration) -> Duration {
     Duration::from_millis(jitter_ms)
 }
 
+/// 单元测试
 #[cfg(test)]
 mod tests {
     use super::{WsClient, WsClientConfig};
@@ -781,6 +809,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 构造测试用客户端
     fn client() -> WsClient {
         WsClient::new(WsClientConfig::new(
             "app-id".to_string(),
@@ -789,6 +818,7 @@ mod tests {
         ))
     }
 
+    /// 分片数量变化时替换缓存形状而不会 panic
     #[test]
     fn fragment_count_change_replaces_cached_shape_without_panicking() {
         let client = client();
@@ -798,8 +828,10 @@ mod tests {
             None
         );
 
-        // The same id now declares three parts. This used to index the old
-        // two-element vector with seq=2 and panic.
+        /*
+        同一个 id 现在声明为三个分片。过去这里会用 seq=2 访问旧的
+        两元素向量并 panic。
+        */
         assert_eq!(
             client.combine_fragments("same-id", 3, 2, Some(b"c".to_vec())),
             None
@@ -814,12 +846,15 @@ mod tests {
         );
     }
 
+    /// 统计 handle 调用次数的测试处理器
     struct CountingHandler {
+        /// handle 被调用的次数
         calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
     impl MessageHandler for CountingHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             self.calls.fetch_add(1, Ordering::AcqRel);
             Ok(OutboundMessage::new(
@@ -830,11 +865,13 @@ mod tests {
             ))
         }
 
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
     }
 
+    /// 缺少发送者的消息绝不会到达飞书长连接处理器
     #[tokio::test]
     async fn missing_sender_never_reaches_feishu_long_poll_handler() -> Result<(), String> {
         let calls = Arc::new(AtomicUsize::new(0));

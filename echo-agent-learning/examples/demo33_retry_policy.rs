@@ -1,36 +1,39 @@
-//! demo33_retry_policy —— 统一错误恢复 + Circuit Breaker 完整演示
-//!
-//! 演示 `echo-core` 中的 `RetryPolicy` 和 `with_retry` / `with_retry_if` API，
-//! 所有外部调用（LLM / MCP / A2A / Sandbox）统一使用。
-//!
-//! # 核心概念
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────┐
-//! │                    重试策略层级                             │
-//! ├─────────────────────────────────────────────────────────────┤
-//! │ ① 工具级重试    │ agent 内部处理单个工具失败               │
-//! │ ② LLM 调用重试  │ llm_max_retries 配置项                    │
-//! │ ③ 统一重试策略  │ with_retry / with_retry_if 核心函数      │
-//! └─────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! # 适用场景
-//!
-//! | 错误类型 | 是否重试 | 原因 |
-//! |----------|----------|------|
-//! | 网络超时 | ✅ | 临时性问题 |
-//! | 429 Too Many Requests | ✅ | 限流，等待后可重试 |
-//! | 5xx 服务器错误 | ✅ | 服务端临时故障 |
-//! | 4xx 客户端错误 | ❌ | 参数错误，重试无意义 |
-//! | 认证失败 | ❌ | 需要更新凭证 |
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo33_retry_policy
-//! ```
+/*!
+demo33_retry_policy —— 统一错误恢复 + Circuit Breaker 完整演示
 
+演示 `echo-core` 中的 `RetryPolicy` 和 `with_retry` / `with_retry_if` API，
+所有外部调用（LLM / MCP / A2A / Sandbox）统一使用。
+
+# 核心概念
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                    重试策略层级                             │
+├─────────────────────────────────────────────────────────────┤
+│ ① 工具级重试    │ agent 内部处理单个工具失败               │
+│ ② LLM 调用重试  │ llm_max_retries 配置项                    │
+│ ③ 统一重试策略  │ with_retry / with_retry_if 核心函数      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+# 适用场景
+
+| 错误类型 | 是否重试 | 原因 |
+|----------|----------|------|
+| 网络超时 | ✅ | 临时性问题 |
+| 429 Too Many Requests | ✅ | 限流，等待后可重试 |
+| 5xx 服务器错误 | ✅ | 服务端临时故障 |
+| 4xx 客户端错误 | ❌ | 参数错误，重试无意义 |
+| 认证失败 | ❌ | 需要更新凭证 |
+
+# 运行方式
+
+```bash
+cargo run -p echo-agent-learning --example demo33_retry_policy
+```
+*/
+
+/// 示例共享的辅助模块（LLM 配置加载等）。
 mod support;
 
 use echo_agent::error::ReactError;
@@ -39,8 +42,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// demo33 主入口：依次运行策略构建、退避计算、基础重试、条件重试、
-/// LLM 重试、最佳实践共 6 个演示小节。
+/**
+demo33 主入口：依次运行策略构建、退避计算、基础重试、条件重试、
+LLM 重试、最佳实践共 6 个演示小节。
+*/
 #[tokio::main]
 async fn main() -> Result<()> {
     println!("═══ Unified Retry Policy Demo ═══\n");

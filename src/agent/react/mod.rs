@@ -51,8 +51,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tracing::{Instrument, info, info_span};
 
-/// Drop guard：持有一个取消令牌，在自身被丢弃时自动取消，
-/// 用于确保 hook 触发的 subagent 派发不会在 hook 结束后继续运行。
+/**
+ * Drop guard：持有一个取消令牌，在自身被丢弃时自动取消，
+ * 用于确保 hook 触发的 subagent 派发不会在 hook 结束后继续运行。
+ */
 #[cfg(feature = "subagent")]
 struct HookSubagentCancelGuard(CancellationToken);
 
@@ -70,16 +72,23 @@ use crate::agent::react::subsystems::guard::GuardSubsystem;
 use crate::agent::react::subsystems::memory::MemorySubsystem;
 use crate::agent::react::subsystems::tool_exec::ToolExecutionSubsystem;
 
+/// ReactAgent 构建器。
 pub mod builder;
+/// 能力配置 API：工具、技能、MCP 等的注册与安装。
 mod capabilities;
 pub use capabilities::{
     PreparedAgentModelDeactivation, PreparedAgentModelGeneration, PreparedCriticUpdate,
     PreparedTokenLimit,
 };
+/// 结构化抽取能力。
 mod extract;
+/// Agent 生命周期与关闭权限管理。
 mod lifecycle;
+/// ReAct 循环执行引擎。
 pub mod run;
+/// 结构化输出支持。
 pub mod structured;
+/// ReactAgent 按职责拆分的子系统。
 pub(crate) mod subsystems;
 #[cfg(test)]
 mod tests;
@@ -196,8 +205,10 @@ impl LegacyExternalContextSnapshot {
  */
 pub struct ReactAgent {
     pub(crate) config: AgentConfig,
-    /// 运行时可变的系统提示词覆盖值（通过 trait 方法 `set_system_prompt` 设置）。
-    /// 一旦设置，后续轮次会用它覆盖 `config.system_prompt`。
+    /**
+     * 运行时可变的系统提示词覆盖值（通过 trait 方法 `set_system_prompt` 设置）。
+     * 一旦设置，后续轮次会用它覆盖 `config.system_prompt`。
+     */
     pub(crate) mutable_system_prompt: std::sync::RwLock<Option<String>>,
     /// 工具执行子系统：工具注册 / 执行、Skill、Hook、MCP、Subagent、Sandbox。
     pub(crate) tools: ToolExecutionSubsystem,
@@ -217,9 +228,11 @@ pub struct ReactAgent {
     llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
     /// 应用层注入的 LLM 配置。
     llm_config: Option<LlmConfig>,
-    /// 每个 Agent 的思考深度 / 推理配置，应用于该 Agent 发出的每一次
-    /// chat 请求（think 阶段、react 循环）。`None` 表示"使用模型默认值"
-    /// —— 不发送 thinking 字段。
+    /**
+     * 每个 Agent 的思考深度 / 推理配置，应用于该 Agent 发出的每一次
+     * chat 请求（think 阶段、react 循环）。`None` 表示"使用模型默认值"
+     * —— 不发送 thinking 字段。
+     */
     thinking: Option<crate::llm::ThinkingConfig>,
     /// 与流式快照共享的、同一轮次内的用户输入插话（steer）邮箱。
     pub(crate) turn_steer_mailbox: Arc<crate::agent::steer::TurnSteerMailbox>,
@@ -231,8 +244,10 @@ pub struct ReactAgent {
      */
     pub run_store: Option<Arc<dyn crate::trace::RunStore>>,
 
-    /// Trace 与 Audit 持久化投递失败的观察者。它有意与 Agent 执行结算
-    /// 逻辑分离。
+    /**
+     * Trace 与 Audit 持久化投递失败的观察者。它有意与 Agent 执行结算
+     * 逻辑分离。
+     */
     pub(crate) diagnostic_delivery_observer:
         Option<Arc<dyn crate::audit::DiagnosticDeliveryObserver>>,
 
@@ -263,23 +278,27 @@ pub struct ReactAgent {
     external_delegation_policy: std::sync::Mutex<Option<echo_core::tools::NestedDelegationPolicy>>,
     /// 外部注入的资源 guard 集合。
     external_resource_guards: std::sync::Mutex<Vec<echo_core::tools::InvocationResourceGuard>>,
-    /// 应用层在派发 subagent 之前设置的稳定执行 ID（`{task_id}:{attempt}`），
-    /// 使 `SubagentEvent.execution_id` 携带稳定标识，而不是由桥接层临时分配。
-    /// 与其他 external_* 字段一样以 Mutex 字段承载（跨 spawn 安全）。
+    /**
+     * 应用层在派发 subagent 之前设置的稳定执行 ID（`{task_id}:{attempt}`），
+     * 使 `SubagentEvent.execution_id` 携带稳定标识，而不是由桥接层临时分配。
+     * 与其他 external_* 字段一样以 Mutex 字段承载（跨 spawn 安全）。
+     */
     external_execution_id: std::sync::Mutex<Option<String>>,
     /// 可复用 worktree / workspace 隔离资源的稳定标识。
     external_isolation_id: std::sync::Mutex<Option<String>>,
     /// 外部注入的 turn ID。
     external_turn_id: std::sync::Mutex<Option<String>>,
-    /// 触发本次运行的聊天消息 ID，会转发给
-    /// `SubagentEvent::DispatchStarted.message_id`，以便前端把 subagent 流
-    /// 固定到正确的聊天消息块上。
+    /**
+     * 触发本次运行的聊天消息 ID，会转发给
+     * `SubagentEvent::DispatchStarted.message_id`，以便前端把 subagent 流
+     * 固定到正确的聊天消息块上。
+     */
     external_message_id: std::sync::Mutex<Option<String>>,
 
     /// 可选的工具执行流水线。缺省时使用标准流水线。
     pub(crate) tool_execution_pipeline: Option<Arc<run::pipeline::ToolExecutionPipeline>>,
 
-    /*
+    /**
      * 记录当前会话轮次内已成功读取过的绝对文件路径及读取时刻。
      * 供 `config.force_read_before_edit` 为 true 时的"先读后写"强制校验使用。
      * 超过 TTL（30 分钟）或集合超过 `MAX_READ_FILES` 上限的条目会被淘汰。
@@ -295,20 +314,26 @@ pub struct ReactAgent {
      */
     pub(crate) execution_mutex: Arc<tokio::sync::Mutex<()>>,
 
-    /// 阻挡新轮次进入，并持有取消所有权，直到每个已被接受的轮次都到达
-    /// 各自既有的终止路径为止。
+    /**
+     * 阻挡新轮次进入，并持有取消所有权，直到每个已被接受的轮次都到达
+     * 各自既有的终止路径为止。
+     */
     pub(crate) close_authority: Arc<lifecycle::ReactAgentCloseAuthority>,
 
     /// 该 Agent 插件注册表的唯一发布权威。
     pub(crate) plugin_publication: Arc<crate::plugin::PluginPublicationAuthority>,
 
-    /// 线程安全的 token 用量追踪器，在该 Agent 生命周期内累计所有 LLM
-    /// 调用的 prompt/completion token 数。优先使用 API 响应中的真实用量，
-    /// 否则回退到估算值。
+    /**
+     * 线程安全的 token 用量追踪器，在该 Agent 生命周期内累计所有 LLM
+     * 调用的 prompt/completion token 数。优先使用 API 响应中的真实用量，
+     * 否则回退到估算值。
+     */
     pub(crate) token_tracker: Arc<echo_core::tokenizer::TokenUsageTracker>,
 
-    /// 自校准 tokenizer 封装，利用实际 API token 计数持续提升估算准确度。
-    /// 包裹在 Arc 中以便共享访问；每次 LLM 调用后用 EMA 平滑更新校准因子。
+    /**
+     * 自校准 tokenizer 封装，利用实际 API token 计数持续提升估算准确度。
+     * 包裹在 Arc 中以便共享访问；每次 LLM 调用后用 EMA 平滑更新校准因子。
+     */
     pub(crate) calibrated_tokenizer: Arc<echo_core::tokenizer::CalibratedTokenizer>,
 
     /// 用于 ReAct 前置意图分类与路由的可选意图路由器。
@@ -316,8 +341,10 @@ pub struct ReactAgent {
 
     /// 用于 final_answer 校验的可选 Critic。
     pub(crate) critic: Option<Arc<dyn echo_core::agent::Critic>>,
-    /// 允许在预备的模型生成发布过程中刷新当前 critic 的具名所有者。
-    /// `None` 表示无归属 / 自定义 critic。
+    /**
+     * 允许在预备的模型生成发布过程中刷新当前 critic 的具名所有者。
+     * `None` 表示无归属 / 自定义 critic。
+     */
     critic_owner: Option<String>,
 
     /// 运行时触发的记忆写入所使用的分层记忆管理器。
@@ -335,10 +362,12 @@ pub struct ReactAgent {
     /// Skill 生命周期变更与审计的唯一权威。
     pub(crate) skill_mutation_authority: Option<Arc<crate::evolution::SkillMutationAuthority>>,
 
-    /// hook → classifier 通信的共享槽位。
-    /// 由 prepare 阶段在 UserPromptSubmit hook 解析完成后写入
-    /// （fire_lifecycle_hook → activate_skill）；由 TriggerSupervisor 在
-    /// 意图分类时读取。每轮次消费一次（take）。
+    /**
+     * hook → classifier 通信的共享槽位。
+     * 由 prepare 阶段在 UserPromptSubmit hook 解析完成后写入
+     * （fire_lifecycle_hook → activate_skill）；由 TriggerSupervisor 在
+     * 意图分类时读取。每轮次消费一次（take）。
+     */
     pub(crate) hook_activation_cache: Arc<std::sync::Mutex<Option<(String, String)>>>,
 }
 
@@ -467,16 +496,20 @@ impl ReactAgent {
          */
         if config.token_limit < usize::MAX || config.token_budget_config.enabled {
             use crate::compression::compressor::SlidingWindowCompressor;
-            // 保留能容纳在 token 限制内的最近消息，
-            // 使用保守的窗口：保留最近 40 条消息（约 20 轮）
+            /*
+             * 保留能容纳在 token 限制内的最近消息，
+             * 使用保守的窗口：保留最近 40 条消息（约 20 轮）
+             */
             let compressor = SlidingWindowCompressor::new(40);
             ctx_builder = ctx_builder.compressor(compressor);
         }
 
         let mut ctx = ctx_builder.build();
 
-        // ── 规范上下文（Canonical context）自动接入 ──
-        // 构建规范上下文，使 system prompt、规则与技能在压缩后依然存活
+        /*
+        ── 规范上下文（Canonical context）自动接入 ──
+        构建规范上下文，使 system prompt、规则与技能在压缩后依然存活
+        */
         let canonical = crate::compression::CanonicalContext {
             system_prompt: Some(sp_for_canonical),
             project_rules: {
@@ -885,8 +918,10 @@ impl ReactAgent {
             prompt.push_str(suffix.trim());
         }
 
-        // 项目规则从工作区加载，且对同一项目是稳定的。由于同一工作区内
-        // 请求之间不会变化，它们可以留在 system prompt 中。
+        /*
+         * 项目规则从工作区加载，且对同一项目是稳定的。由于同一工作区内
+         * 请求之间不会变化，它们可以留在 system prompt 中。
+         */
         #[cfg(feature = "project-rules")]
         if config.auto_project_rules {
             let wd = config
@@ -941,8 +976,10 @@ impl ReactAgent {
         }
     }
 
-    /// 按配置初始化长期记忆 Store 并注册 remember/recall/search/forget 工具；
-    /// 未启用记忆或初始化失败时返回 `None`。
+    /**
+     * 按配置初始化长期记忆 Store 并注册 remember/recall/search/forget 工具；
+     * 未启用记忆或初始化失败时返回 `None`。
+     */
     fn setup_memory_store(
         config: &AgentConfig,
         tool_manager: &mut ToolManager,
@@ -979,7 +1016,7 @@ impl ReactAgent {
         }
     }
 
-    /*
+    /**
      * 当配置了 embedding 相关环境变量时，用 [`EmbeddingStore`] 包裹底层
      * Store，使 `remember` 写入自动向量化，`search_memory` 混合检索可用。
      *
@@ -1797,9 +1834,10 @@ impl ReactAgent {
     }
 
     // ── 资源池注入设置器 ─────────────────────────────────────
-    //
-    // 这些设置器允许产品层用 AgentPool 提供的共享（Arc 克隆）实例，
-    // 替换内部创建的资源。
+    /*
+     * 这些设置器允许产品层用 AgentPool 提供的共享（Arc 克隆）实例，
+     * 替换内部创建的资源。
+     */
 
     /// 用共享实例替换工具管理器（供 AgentPool 使用）。
     pub fn set_tool_manager(&mut self, tm: Arc<echo_execution::tools::ToolManager>) {
@@ -2021,8 +2059,10 @@ impl ReactAgent {
      */
     pub fn set_human_loop_provider(&mut self, provider: Arc<dyn HumanLoopProvider>) {
         self.approval.approval_provider = provider.clone();
-        // 原地替换 PermissionService 的 handler，不重建整个服务——
-        // 避免丢失 mode/bypass_disabled/classifier/audit_sink 等配置。
+        /*
+         * 原地替换 PermissionService 的 handler，不重建整个服务——
+         * 避免丢失 mode/bypass_disabled/classifier/audit_sink 等配置。
+         */
         #[cfg(feature = "human-loop")]
         if let Some(ref service) = self.approval.permission_service {
             service.replace_provider(provider.clone());
@@ -2223,8 +2263,10 @@ impl ReactAgent {
             .await
     }
 
-    /// 按显式的 `scope_id` 与 `runtime_state_id` 从状态 store 恢复检查点，
-    /// 并把恢复的消息、技能激活状态、工作目录等写回 Agent。
+    /**
+     * 按显式的 `scope_id` 与 `runtime_state_id` 从状态 store 恢复检查点，
+     * 并把恢复的消息、技能激活状态、工作目录等写回 Agent。
+     */
     pub(crate) async fn resume_from_state_store_scope(
         &self,
         scope_id: &str,
@@ -2271,8 +2313,10 @@ impl ReactAgent {
             self.memory.context.lock().await.set_messages(messages);
             *self.memory.runtime_state_version.lock().await = runtime_version.clone();
 
-            // 恢复一份原子的激活快照。缺失的定义会被忽略，策略会根据当前
-            // 描述符重新构建。
+            /*
+             * 恢复一份原子的激活快照。缺失的定义会被忽略，策略会根据当前
+             * 描述符重新构建。
+             */
             let restored_skills = self
                 .tools
                 .skill_registry
@@ -2284,8 +2328,10 @@ impl ReactAgent {
                 );
             }
 
-            // 恢复检查点中的目录，或退回到构造期默认目录；
-            // 绝不保留其他运行时身份的目录。
+            /*
+             * 恢复检查点中的目录，或退回到构造期默认目录；
+             * 绝不保留其他运行时身份的目录。
+             */
             let working_dir = cp
                 .working_dir
                 .clone()
@@ -2399,8 +2445,10 @@ impl ReactAgent {
 
     // ── Trace / run 记录 ─────────────────────────────────────────────────
 
-    /// 向当前 run 记录一条 trace 事件（若已挂载 run store）。
-    /// 同时把 trace 生命周期发布到全局事件总线，供审计订阅者使用。
+    /**
+     * 向当前 run 记录一条 trace 事件（若已挂载 run store）。
+     * 同时把 trace 生命周期发布到全局事件总线，供审计订阅者使用。
+     */
     pub(crate) async fn record_trace_event(&self, mut event: crate::trace::RunEvent) {
         let run_id = self
             .current_trace_run_id
@@ -2420,8 +2468,10 @@ impl ReactAgent {
         }
     }
 
-    /// 用旧版（legacy）外部上下文快照中的字段启动一个 trace run，并把
-    /// 结果写入 `current_trace_run_id`。
+    /**
+     * 用旧版（legacy）外部上下文快照中的字段启动一个 trace run，并把
+     * 结果写入 `current_trace_run_id`。
+     */
     pub(crate) async fn start_legacy_trace_run(
         &self,
         input: &str,
@@ -2564,8 +2614,10 @@ impl ReactAgent {
                 );
             }
             service.set_mode_sync(mode);
-            // F2 修复：切换权限模式时清除审批缓存。旧模式下的审批决策
-            //（如 Default 模式批准的 shell）不应延续到新模式（如 Plan）。
+            /*
+             * F2 修复：切换权限模式时清除审批缓存。旧模式下的审批决策
+             * （如 Default 模式批准的 shell）不应延续到新模式（如 Plan）。
+             */
             service.clear_cache();
         }
     }
@@ -2608,9 +2660,11 @@ impl ReactAgent {
         self.delegate_task_with_depth(task, 0).await
     }
 
-    /// 与 [`Self::delegate_task`] 类似，但带有显式的委派深度。
-    /// 由 ReAct 循环在处理内部委派标记时调用。顶层调用传入 0；嵌套的
-    /// subagent ReAct 循环会递增该值。
+    /**
+     * 与 [`Self::delegate_task`] 类似，但带有显式的委派深度。
+     * 由 ReAct 循环在处理内部委派标记时调用。顶层调用传入 0；嵌套的
+     * subagent ReAct 循环会递增该值。
+     */
     #[cfg(feature = "subagent")]
     pub async fn delegate_task_with_depth(&self, task: &str, depth: u32) -> Result<String> {
         use crate::agent::subagent::executor::DispatchRequest;
@@ -2636,8 +2690,10 @@ impl ReactAgent {
                 agent_name,
                 task: task.to_string(),
                 mode_override: Some(ExecutionMode::Fork),
-                // 调用级取消由 ToolContext 为活动 run 携带。直接的框架调用
-                // 没有父令牌，因此以一个独立的取消作用域开始。
+                /*
+                 * 调用级取消由 ToolContext 为活动 run 携带。直接的框架调用
+                 * 没有父令牌，因此以一个独立的取消作用域开始。
+                 */
                 cancel,
                 parent_agent: self.config.agent_name.clone(),
                 parent_context: self
@@ -2712,8 +2768,10 @@ impl ReactAgent {
             agent_name: target.to_string(),
             task: task.to_string(),
             mode_override: Some(mode),
-            // 参见 `delegate_task`：取消是调用级作用域的，当派发源自一个
-            // 正在运行的轮次时，由活动的 ToolContext 携带。
+            /*
+             * 参见 `delegate_task`：取消是调用级作用域的，当派发源自一个
+             * 正在运行的轮次时，由活动的 ToolContext 携带。
+             */
             cancel,
             parent_agent: self.config.agent_name.clone(),
             parent_context: self.build_parent_context_with(&inheritance).await,
@@ -2821,8 +2879,10 @@ impl ReactAgent {
         .await
     }
 
-    /// 委派时携带一个调用级的工具允许列表。空列表保留该角色的默认工具；
-    /// 非空列表通过对模型与执行流水线同时隐藏其余所有工具来强制生效。
+    /**
+     * 委派时携带一个调用级的工具允许列表。空列表保留该角色的默认工具；
+     * 非空列表通过对模型与执行流水线同时隐藏其余所有工具来强制生效。
+     */
     #[cfg(feature = "subagent")]
     #[allow(clippy::too_many_arguments)]
     pub async fn delegate_to_agent_with_parent_context_cancel_and_tools(
@@ -2938,8 +2998,10 @@ impl ReactAgent {
             )));
         }
 
-        // 继续使用 Fork 执行以实现 worktree/workspace 隔离，但默认使用
-        // fresh 继承策略（不继承父级 system/history/memory）——Claude/Cursor。
+        /*
+         * 继续使用 Fork 执行以实现 worktree/workspace 隔离，但默认使用
+         * fresh 继承策略（不继承父级 system/history/memory）——Claude/Cursor。
+         */
         let mode = ExecutionMode::Fork;
         let inheritance = crate::agent::subagent::context::ContextInheritance::fresh_default();
         let mut parent_context = self.build_parent_context_with(&inheritance).await;
@@ -3038,8 +3100,10 @@ impl ReactAgent {
         .await
     }
 
-    /// 携带调用级工具允许列表的多模态委派，语义同
-    /// [`Self::delegate_to_agent_with_parent_context_cancel_and_tools`]。
+    /**
+     * 携带调用级工具允许列表的多模态委派，语义同
+     * [`Self::delegate_to_agent_with_parent_context_cancel_and_tools`]。
+     */
     #[cfg(feature = "subagent")]
     #[allow(clippy::too_many_arguments)]
     pub async fn delegate_to_agent_with_parent_context_cancel_message_and_tools(
@@ -3362,7 +3426,7 @@ impl ReactAgent {
         }
     }
 
-    /*
+    /**
      * 从当前 agent 的 external_* 字段构造 ExternalRunContext（透传给 subagent）。
      *
      * 这样主 agent 委派 subagent、subagent 委派 sub-subagent 时,run context 自动继承
@@ -3490,8 +3554,10 @@ impl Agent for ReactAgent {
     }
 
     fn set_working_dir(&self, path: Option<std::path::PathBuf>) {
-        // 委托给固有方法（设置 config.working_dir 并刷新 root-system-prompt，
-        // 使 prompt 中的 cwd 保持准确）。
+        /*
+         * 委托给固有方法（设置 config.working_dir 并刷新 root-system-prompt，
+         * 使 prompt 中的 cwd 保持准确）。
+         */
         ReactAgent::set_working_dir(self, path);
     }
 
@@ -3507,9 +3573,11 @@ impl Agent for ReactAgent {
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
         {
-            // 无法直接返回 RwLock 内容的引用，因此回退到 config 中的 prompt。
-            // 覆盖值会在每个新轮次开始时经 build_system_prompt() 生效。
-            // 本方法返回的是供检查用的"基础" prompt。
+            /*
+             * 无法直接返回 RwLock 内容的引用，因此回退到 config 中的 prompt。
+             * 覆盖值会在每个新轮次开始时经 build_system_prompt() 生效。
+             * 本方法返回的是供检查用的"基础" prompt。
+             */
             return &self.config.system_prompt;
         }
         &self.config.system_prompt

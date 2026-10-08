@@ -46,6 +46,7 @@ pub struct TelemetryConfig {
 }
 
 impl Default for TelemetryConfig {
+    /// 创建默认实例。
     fn default() -> Self {
         Self {
             otlp_endpoint: "http://localhost:4317".to_string(),
@@ -66,9 +67,9 @@ static TELEMETRY_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 /// 保存 tracer/meter provider 的运行时句柄，用于 shutdown 时统一关闭
 struct TelemetryRuntime {
-    /// OpenTelemetry tracing provider
+    /// OpenTelemetry 链路追踪 provider
     tracer_provider: TracerProvider,
-    /// OpenTelemetry metrics provider
+    /// OpenTelemetry 指标 provider
     meter_provider: SdkMeterProvider,
 }
 
@@ -304,4 +305,3 @@ pub fn shutdown_telemetry() -> Result<()> {
         .map_err(|error| ReactError::Other(format!("tracing shutdown failed: {error}")))?;
     Ok(())
 }
-</content>

@@ -1,8 +1,10 @@
-//! 飞书 Webhook 服务器
-//!
-//! HTTP 事件推送模式；需要公网 IP。
-//!
-//! 用于接收飞书推送的事件消息。
+/*!
+飞书 Webhook 服务器
+
+HTTP 事件推送模式；需要公网 IP。
+
+用于接收飞书推送的事件消息。
+*/
 
 use super::super::super::types::*;
 use axum::response::IntoResponse;
@@ -26,13 +28,15 @@ const DEDUP_TTL_SECS: u64 = 300;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// 校验飞书 Webhook 签名（使用常数时间比较以防止时序攻击）。
-///
-/// 飞书签名算法：
-/// 1. 拼接 `timestamp + "\n" + nonce + "\n" + body`
-/// 2. 使用 signing_key 计算 HMAC-SHA256
-/// 3. Base64 编码得到签名
-/// 4. 将 `X-Lark-Signature` 请求头与计算值进行比较
+/**
+校验飞书 Webhook 签名（使用常数时间比较以防止时序攻击）。
+
+飞书签名算法：
+1. 拼接 `timestamp + "\n" + nonce + "\n" + body`
+2. 使用 signing_key 计算 HMAC-SHA256
+3. Base64 编码得到签名
+4. 将 `X-Lark-Signature` 请求头与计算值进行比较
+*/
 fn verify_feishu_signature(
     signing_key: &str,
     timestamp: &str,

@@ -158,8 +158,10 @@ impl PreparedTokenLimit {
 }
 
 impl PreparedAgentModelGeneration {
-    /// 将该生成发布到准备阶段锁定的那个 agent 上。
-    /// 由于不存在 target 参数，某个 agent 上准备的回执不可能被提交到另一个 agent。
+    /**
+     * 将该生成发布到准备阶段锁定的那个 agent 上。
+     * 由于不存在 target 参数，某个 agent 上准备的回执不可能被提交到另一个 agent。
+     */
     pub fn commit(self) {
         let Self {
             mut agent,
@@ -343,9 +345,10 @@ impl ReactAgent {
                 description: Some(format!("Tool {} requires human approval", tool_name)),
             };
 
-            // add_need_appeal_tool 是同步 API，不能在正在运行的 Tokio runtime 内
-            // 调用 block_on()。因此先在此处注册规则，之后再在异步执行阶段
-            // 安全地将其刷新到 PermissionService。
+            /* add_need_appeal_tool 是同步 API，不能在正在运行的 Tokio runtime 内
+             * 调用 block_on()。因此先在此处注册规则，之后再在异步执行阶段
+             * 安全地将其刷新到 PermissionService。
+             */
             if let Ok(mut pending) = self.approval.pending_permission_rules.lock() {
                 pending.push(rule);
             } else {
@@ -563,12 +566,13 @@ impl ReactAgent {
         def: SubagentDefinition,
         agent: Box<dyn Agent>,
     ) {
-        // 注意：子代理注册与 `enable_subagent` 标志已解耦。
-        // `enable_subagent` 历史上同时控制两件事：(1) 此处的子代理注册，
-        // 以及 (2) `ReactAgent::new` 中 `AgentDispatchTool` LLM 工具的注册。
-        // 现在两者已拆分：子代理注册是无条件的（框架通过
-        // `delegate_to_agent*` 进行的调度依赖它），而 LLM 工具注册
-        // 则由 `register_agent_dispatch_tool` 控制。
+        /* 注意：子代理注册与 `enable_subagent` 标志已解耦。
+         * `enable_subagent` 历史上同时控制两件事：(1) 此处的子代理注册，
+         * 以及 (2) `ReactAgent::new` 中 `AgentDispatchTool` LLM 工具的注册。
+         * 现在两者已拆分：子代理注册是无条件的（框架通过
+         * `delegate_to_agent*` 进行的调度依赖它），而 LLM 工具注册
+         * 则由 `register_agent_dispatch_tool` 控制。
+         */
         let name = def.name.clone();
         if self
             .tools
@@ -626,8 +630,10 @@ impl ReactAgent {
         }
     }
 
-    /// 注销一个子代理，并将其从面向模型的调度目录中移除。
-    /// 返回移除之前该定义是否存在。
+    /**
+     * 注销一个子代理，并将其从面向模型的调度目录中移除。
+     * 返回移除之前该定义是否存在。
+     */
     #[cfg(feature = "subagent")]
     pub async fn unregister_subagent(&mut self, name: &str) -> bool {
         let existed = self.tools.subagent_registry.contains(name).await;
@@ -635,8 +641,10 @@ impl ReactAgent {
         existed
     }
 
-    /// 为旧版调用方刷新缓存的工具 schema。调度目录本身是从共享注册表中
-    /// 读取的，会忽略传入的副本。
+    /**
+     * 为旧版调用方刷新缓存的工具 schema。调度目录本身是从共享注册表中
+     * 读取的，会忽略传入的副本。
+     */
     #[cfg(feature = "subagent")]
     pub fn sync_subagent_dispatch_catalog(&self, _definitions: &[SubagentDefinition]) {
         self.tools.tool_manager.invalidate_definition_cache();
@@ -969,9 +977,10 @@ impl ReactAgent {
 
         let mut names = Vec::new();
 
-        // 为渐进式披露工具构建一个并发的定义视图。描述符/文档保留在
-        // 本适配器本地，而激活及激活衍生出的沙箱策略则使用主注册表的
-        // 共享运行时权限。
+        /* 为渐进式披露工具构建一个并发的定义视图。描述符/文档保留在
+         * 本适配器本地，而激活及激活衍生出的沙箱策略则使用主注册表的
+         * 共享运行时权限。
+         */
         let shared = if let Some(existing) = &self.tools.progressive_skill_registry {
             existing.clone()
         } else {
@@ -1076,8 +1085,9 @@ impl ReactAgent {
             return Ok(names);
         }
 
-        // 让目录保持可独立替换。若每次发现都修改根系统提示词，
-        // 会导致内容重复，并使 provider 最长可缓存前缀失效。
+        /* 让目录保持可独立替换。若每次发现都修改根系统提示词，
+         * 会导致内容重复，并使 provider 最长可缓存前缀失效。
+         */
         if let Some(catalog) = self.tools.skill_registry.catalog_prompt() {
             self.memory.context.lock().await.replace_projection(
                 SKILL_CATALOG_PROJECTION,
@@ -1116,10 +1126,11 @@ impl ReactAgent {
             }
         }
 
-        // 用共享注册表注册渐进式披露工具。
-        // 每次发现都会刷新这些工具实例，以确保其内部注册表和
-        // 可用技能名称列表，能够与多次 `discover_skills()` 调用中
-        // 新发现的技能保持同步。
+        /* 用共享注册表注册渐进式披露工具。
+         * 每次发现都会刷新这些工具实例，以确保其内部注册表和
+         * 可用技能名称列表，能够与多次 `discover_skills()` 调用中
+         * 新发现的技能保持同步。
+         */
         let available_names = self.tools.skill_registry.available_names();
 
         self.replace_tool(Box::new(ActivateSkillTool::new(
@@ -1311,10 +1322,11 @@ impl ReactAgent {
         skills_dir: impl Into<std::path::PathBuf>,
     ) -> Result<Vec<String>> {
         let skills_dir = skills_dir.into();
-        // 发现流程会将每个 SKILL.md 的路径规范化（解析符号链接路径部分），
-        // 因此重新加载的过滤逻辑必须比较规范化后的形式，否则传入
-        // 非规范化参数会静默匹配不到任何内容，导致重新加载相对于
-        // 已安装的描述符退化为空操作。
+        /* 发现流程会将每个 SKILL.md 的路径规范化（解析符号链接路径部分），
+         * 因此重新加载的过滤逻辑必须比较规范化后的形式，否则传入
+         * 非规范化参数会静默匹配不到任何内容，导致重新加载相对于
+         * 已安装的描述符退化为空操作。
+         */
         let skills_dir = tokio::fs::canonicalize(&skills_dir)
             .await
             .unwrap_or(skills_dir);
@@ -1658,8 +1670,10 @@ impl ReactAgent {
         Ok(client)
     }
 
-    /// 连接一个由插件拥有的 MCP 服务器，且不会将其权限并入直接的
-    /// 服务器命名空间中。
+    /**
+     * 连接一个由插件拥有的 MCP 服务器，且不会将其权限并入直接的
+     * 服务器命名空间中。
+     */
     #[cfg(feature = "mcp")]
     pub async fn connect_mcp_owned(
         &mut self,
@@ -1752,9 +1766,10 @@ impl ReactAgent {
         name: &str,
         desired: Option<McpServerConfig>,
     ) -> crate::error::Result<McpTargetChange> {
-        // McpManager 会在切换客户端之前先准备好替换项。只有该操作成功后
-        // 才移除旧的已暴露工具，否则一次失败的替换会让最后已知可用的
-        // 目标保持未被触碰的状态。
+        /* McpManager 会在切换客户端之前先准备好替换项。只有该操作成功后
+         * 才移除旧的已暴露工具，否则一次失败的替换会让最后已知可用的
+         * 目标保持未被触碰的状态。
+         */
         let previous_client = self.tools.mcp_manager.get_client(name);
         let previous_tool_names = previous_client
             .as_ref()
@@ -1767,9 +1782,10 @@ impl ReactAgent {
             })
             .unwrap_or_default();
         let result = self.tools.mcp_manager.reconcile_target(name, desired).await;
-        // 当清理失败时，管理器会撤下该具名客户端（转入清理欠账状态），
-        // 但当目标准备失败时，会保留最后已知可用的客户端。只有“已撤下”
-        // 这种情况会留下过期投影，需要被撤销以匹配最终的拓扑结果。
+        /* 当清理失败时，管理器会撤下该具名客户端（转入清理欠账状态），
+         * 但当目标准备失败时，会保留最后已知可用的客户端。只有“已撤下”
+         * 这种情况会留下过期投影，需要被撤销以匹配最终的拓扑结果。
+         */
         let withdrawn = result.is_err()
             && previous_client.is_some()
             && !self
@@ -1974,9 +1990,10 @@ impl ReactAgent {
             })
             .unwrap_or_default();
         let result = self.tools.mcp_manager.disconnect(name).await;
-        // 即使清理失败，管理器依然会撤下该客户端，所以旧的投影会
-        // 引用一个已不属于当前拓扑的客户端；即使返回 Err，也要尽力
-        // 撤销这些投影。
+        /* 即使清理失败，管理器依然会撤下该客户端，所以旧的投影会
+         * 引用一个已不属于当前拓扑的客户端；即使返回 Err，也要尽力
+         * 撤销这些投影。
+         */
         let withdrawn = result.is_err()
             && !self
                 .tools
@@ -2372,9 +2389,10 @@ mod tests {
         assert!(agent.tools.tool_manager.list_tools().contains(&exposed));
         assert_mcp_projections(&agent, "context", true).await;
 
-        // 使用不同的配置进行替换（这样管理器会准备一次真正的替换），
-        // 且旧客户端关闭失败：目标被撤下、返回错误，但过期的工具
-        // 投影必须被撤销。
+        /* 使用不同的配置进行替换（这样管理器会准备一次真正的替换），
+         * 且旧客户端关闭失败：目标被撤下、返回错误，但过期的工具
+         * 投影必须被撤销。
+         */
         let mut different = replacement_config("context");
         different.transport = crate::mcp::TransportConfig::Stdio {
             command: "/bin/sh".to_string(),
@@ -2528,8 +2546,9 @@ mod tests {
         assert!(agent.tools.tool_manager.list_tools().contains(&exposed));
         assert_mcp_projections(&agent, "context", true).await;
 
-        // 一次准备失败的替换（stdio 命令为空）应保持旧目标及其
-        // 投影不受影响。
+        /* 一次准备失败的替换（stdio 命令为空）应保持旧目标及其
+         * 投影不受影响。
+         */
         let mut broken = replacement_config("context");
         broken.transport = crate::mcp::TransportConfig::Stdio {
             command: "   ".to_string(),

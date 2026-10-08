@@ -1,7 +1,9 @@
-//! 插件注册表 —— 发现、安装、生命周期管理。
-//!
-//! `PluginRegistry` 是管理插件的中枢。它负责扫描、安装、卸载、启用/禁用，
-//! 以及依赖解析。
+/*!
+插件注册表 —— 发现、安装、生命周期管理。
+
+`PluginRegistry` 是管理插件的中枢。它负责扫描、安装、卸载、启用/禁用，
+以及依赖解析。
+*/
 
 use crate::plugin::PluginCapability;
 use crate::plugin::manifest::PluginManifest;
@@ -55,10 +57,12 @@ impl PluginEntry {
     }
 }
 
-/// 一个插件全部组件已解析的绝对路径。
-///
-/// 在清单加载完毕、固定位置相对于插件根目录解析完成后填充。
-/// `None` 字段表示该组件不存在。
+/**
+一个插件全部组件已解析的绝对路径。
+
+在清单加载完毕、固定位置相对于插件根目录解析完成后填充。
+`None` 字段表示该组件不存在。
+*/
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedComponents {
     /// 标准的根级 `skills/` 目录。
@@ -84,8 +88,10 @@ enum ExpectedPathKind {
     Directory,
 }
 
-/// 在不阻塞异步执行器的前提下，检查某个可选路径是否存在且类型是否符合预期；
-/// 类型不符或读取失败时记录一条诊断信息。返回该路径是否符合预期类型。
+/**
+在不阻塞异步执行器的前提下，检查某个可选路径是否存在且类型是否符合预期；
+类型不符或读取失败时记录一条诊断信息。返回该路径是否符合预期类型。
+*/
 async fn classify_optional_path(
     path: &Path,
     expected: ExpectedPathKind,
@@ -206,11 +212,13 @@ impl PluginRegistry {
         }
     }
 
-    /// 当前已提交的注册表修订号。
-    ///
-    /// 即使发现过程后续失败，扫描操作也会推进修订号，因为内存中的注册表
-    /// 此时可能已经被清空或部分重建。安装、卸载、启用、禁用与配置变更
-    /// 只有在其持久化状态成功提交后才会推进修订号。
+    /**
+    当前已提交的注册表修订号。
+
+    即使发现过程后续失败，扫描操作也会推进修订号，因为内存中的注册表
+    此时可能已经被清空或部分重建。安装、卸载、启用、禁用与配置变更
+    只有在其持久化状态成功提交后才会推进修订号。
+    */
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -251,19 +259,23 @@ impl PluginRegistry {
 
     // ── 发现 ──────────────────────────────────────────────────────
 
-    /// 扫描所有作用域下已安装的插件并加载它们。
-    ///
-    /// 返回发现的插件数量。
+    /**
+    扫描所有作用域下已安装的插件并加载它们。
+
+    返回发现的插件数量。
+    */
     pub fn scan_all(&mut self) -> std::io::Result<usize> {
         self.scan_scopes(PluginScope::all())
     }
 
-    /// 刷新「上一次成功的作用域视图」，仅在成功时提交。
-    ///
-    /// 一次正常扫描会在遍历各个包目录之前清空接收方，因此一次 I/O 错误
-    /// 可能让内存中的视图处于「部分发现」的状态。生命周期重试逻辑必须
-    /// 在获得一个完整的替换视图之前，保留此前的期望状态权威性。
-    /// 保留已选定的作用域也能防止一次受限的宿主视图在重试过程中被放宽。
+    /**
+    刷新「上一次成功的作用域视图」，仅在成功时提交。
+
+    一次正常扫描会在遍历各个包目录之前清空接收方，因此一次 I/O 错误
+    可能让内存中的视图处于「部分发现」的状态。生命周期重试逻辑必须
+    在获得一个完整的替换视图之前，保留此前的期望状态权威性。
+    保留已选定的作用域也能防止一次受限的宿主视图在重试过程中被放宽。
+    */
     pub fn refresh_current_view(&mut self) -> std::io::Result<usize> {
         let scopes = self.last_successful_scopes.clone();
         let mut refreshed = Self {
@@ -282,9 +294,11 @@ impl PluginRegistry {
         Ok(count)
     }
 
-    /// 只扫描请求中指定的安装作用域。
-    ///
-    /// 这对于内嵌运行时和有意只暴露标准插件作用域子集的隔离集成测试很有用。
+    /**
+    只扫描请求中指定的安装作用域。
+
+    这对于内嵌运行时和有意只暴露标准插件作用域子集的隔离集成测试很有用。
+    */
     pub fn scan_scopes(&mut self, scopes: &[PluginScope]) -> std::io::Result<usize> {
         self.ensure_revision_available_io()?;
         self.advance_revision().map_err(std::io::Error::other)?;
@@ -304,8 +318,10 @@ impl PluginRegistry {
         Ok(total)
     }
 
-    /// 校验一个插件目录，并解析其固定包位置上发现的每一个受支持组件。
-    /// 缺失的可选位置仍然视为有效。
+    /**
+    校验一个插件目录，并解析其固定包位置上发现的每一个受支持组件。
+    缺失的可选位置仍然视为有效。
+    */
     pub fn validate_plugin_dir(
         root: &Path,
     ) -> Result<(PluginManifest, ResolvedComponents), Vec<String>> {
@@ -455,12 +471,14 @@ impl PluginRegistry {
 
     // ── 安装 ───────────────────────────────────────────────────
 
-    /// 从某个来源将插件安装到指定作用域。
-    ///
-    /// 对于本地来源，直接复制目录。
-    /// 对于 git 来源，克隆仓库（浅克隆）。
-    ///
-    /// 成功时返回插件 ID。
+    /**
+    从某个来源将插件安装到指定作用域。
+
+    对于本地来源，直接复制目录。
+    对于 git 来源，克隆仓库（浅克隆）。
+
+    成功时返回插件 ID。
+    */
     pub fn install(
         &mut self,
         source: &InstallSource,
@@ -582,8 +600,10 @@ impl PluginRegistry {
         target_dir: &Path,
         scope: PluginScope,
     ) -> Result<PluginId, String> {
-        // 宿主应用是一个本地、由用户自行掌控的应用。接受标准的加密 Git
-        // 传输方式，包括通过 SSH 访问私有仓库；只拒绝明文/明显畸形的远程输入。
+        /*
+        宿主应用是一个本地、由用户自行掌控的应用。接受标准的加密 Git
+        传输方式，包括通过 SSH 访问私有仓库；只拒绝明文/明显畸形的远程输入。
+        */
         let supported = url.starts_with("https://")
             || url.starts_with("ssh://")
             || (url.starts_with("git@") && url.contains(':'));
@@ -871,10 +891,12 @@ impl PluginRegistry {
 
     // ── 组件解析 ───────────────────────────────────────────────
 
-    /// 解析一个插件的组件路径，使其变为绝对路径。
-    ///
-    /// 组件位置由扁平的包布局固定不变。缺失的可选位置视为有效；
-    /// 若某个位置的文件系统类型不符，只会隔离影响该组件，并作为诊断信息上报。
+    /**
+    解析一个插件的组件路径，使其变为绝对路径。
+
+    组件位置由扁平的包布局固定不变。缺失的可选位置视为有效；
+    若某个位置的文件系统类型不符，只会隔离影响该组件，并作为诊断信息上报。
+    */
     pub fn resolve_components(&mut self, plugin_id: &str) -> Result<ResolvedComponents, String> {
         let entry = self
             .plugins
@@ -884,8 +906,10 @@ impl PluginRegistry {
         let root = &entry.root;
         let mut resolved = ResolvedComponents::default();
 
-        // Agent Plugins 使用固定的可移植组件位置。缺失的位置视为有效；
-        // 文件系统类型不符只会禁用该类型的组件，并作为非致命诊断上报。
+        /*
+        Agent Plugins 使用固定的可移植组件位置。缺失的位置视为有效；
+        文件系统类型不符只会禁用该类型的组件，并作为非致命诊断上报。
+        */
         let skills_dir = root.join("skills");
         if skills_dir.is_dir() {
             resolved.skill_dirs.push(skills_dir);
@@ -1071,16 +1095,20 @@ impl PluginRegistry {
 
     // ── 依赖解析 ──────────────────────────────────────────────
 
-    /// 通过拓扑排序解析插件依赖关系。
-    ///
-    /// 按依赖顺序（依赖项在前）返回插件 ID 列表。
-    /// 若存在循环依赖或缺失依赖，则返回错误。
+    /**
+    通过拓扑排序解析插件依赖关系。
+
+    按依赖顺序（依赖项在前）返回插件 ID 列表。
+    若存在循环依赖或缺失依赖，则返回错误。
+    */
     pub fn resolve_dependencies(&self) -> Result<Vec<PluginId>, String> {
         self.resolve_dependencies_matching(|_| true)
     }
 
-    /// 只解析已启用的插件，并要求一个已启用插件的每一个依赖也必须是启用状态。
-    /// 已禁用的插件不会污染启动流程，一个已启用插件也不能悄悄依赖一个已禁用的插件。
+    /**
+    只解析已启用的插件，并要求一个已启用插件的每一个依赖也必须是启用状态。
+    已禁用的插件不会污染启动流程，一个已启用插件也不能悄悄依赖一个已禁用的插件。
+    */
     pub fn resolve_enabled_dependencies(&self) -> Result<Vec<PluginId>, String> {
         self.resolve_dependencies_matching(|entry| entry.enabled)
     }
@@ -1117,8 +1145,10 @@ impl PluginRegistry {
                         "Plugin '{id}' depends on '{dep_name}' which is disabled"
                     ));
                 }
-                // 强制执行声明的版本约束（P1 —— 此前的「名称存在即可」检查
-                // 完全忽略版本，导致任意版本都能满足依赖）。
+                /*
+                强制执行声明的版本约束（P1 —— 此前的「名称存在即可」检查
+                完全忽略版本，导致任意版本都能满足依赖）。
+                */
                 match dep.satisfies(dep_entry.manifest.version.as_deref()) {
                     Ok(true) => {}
                     Ok(false) => {

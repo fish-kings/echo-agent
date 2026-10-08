@@ -1,13 +1,15 @@
-//! demo61: Agent Factory — 工厂模式创建 Agent
-//!
-//! 演示 Agent Factory 抽象：
-//!
-//! 1. AgentFactoryConfig — 声明式配置：model + prompt + tools
-//! 2. DefaultAgentFactory — 根据配置创建 Agent
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo61_agent_factory --features testing
-//! ```
+/*!
+demo61: Agent Factory — 工厂模式创建 Agent
+
+演示 Agent Factory 抽象：
+
+1. AgentFactoryConfig — 声明式配置：model + prompt + tools
+2. DefaultAgentFactory — 根据配置创建 Agent
+
+```bash
+cargo run -p echo-agent-learning --example demo61_agent_factory --features testing
+```
+*/
 
 use echo_agent::agent::Agent;
 use echo_agent::agent::factory::{AgentFactory, AgentFactoryConfig, DefaultAgentFactory};
@@ -16,8 +18,10 @@ use echo_agent::prelude::ReactAgentBuilder;
 use echo_agent::testing::MockLlmClient;
 use std::sync::Arc;
 
-/// 演示通过 `AgentFactoryConfig` 声明式配置、`DefaultAgentFactory` 工厂创建 agent，
-/// 以及手动 Builder 配合 mock 客户端执行的三种方式。
+/**
+演示通过 `AgentFactoryConfig` 声明式配置、`DefaultAgentFactory` 工厂创建 agent，
+以及手动 Builder 配合 mock 客户端执行的三种方式。
+*/
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()

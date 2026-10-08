@@ -1,4 +1,4 @@
-/// Split a unified diff into independently readable file/hunk blocks.
+/// 将 unified diff 拆分为可独立阅读的文件/hunk 块。
 pub(crate) fn split_unified_diff(diff: &str) -> Vec<String> {
     let mut chunks = Vec::new();
     let mut file_header = Vec::new();
@@ -31,6 +31,7 @@ pub(crate) fn split_unified_diff(diff: &str) -> Vec<String> {
     chunks
 }
 
+/// 将当前 hunk 连同文件头作为一个块写入结果，并清空当前 hunk。
 fn flush_chunk(chunks: &mut Vec<String>, file_header: &[String], current_hunk: &mut Vec<String>) {
     if current_hunk.is_empty() {
         return;
@@ -44,6 +45,7 @@ fn flush_chunk(chunks: &mut Vec<String>, file_header: &[String], current_hunk: &
 mod tests {
     use super::*;
 
+    /// 每个 hunk 都重复文件头，且二进制文件条目被保留。
     #[test]
     fn repeats_headers_for_each_hunk_and_keeps_binary_files() {
         let diff = "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n@@ -9 +9 @@\n-x\n+y\ndiff --git a/image b/image\nBinary files differ";
@@ -60,6 +62,7 @@ mod tests {
         );
     }
 
+    /// 仅有 `---`/`+++` 头的 diff 也能按 hunk 拆分。
     #[test]
     fn splits_header_only_unified_diff_hunks() {
         let diff = "--- a.txt\n+++ b.txt\n@@ -1 +1 @@\n-old\n+new\n@@ -5 +5 @@\n-a\n+b";

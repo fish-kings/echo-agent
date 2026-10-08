@@ -1,4 +1,4 @@
-//! Structure-oriented code search over language symbols.
+//! 面向结构的代码搜索：按语言符号定义进行检索。
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::pagination::PageRequest;
@@ -11,16 +11,19 @@ use tokio::fs;
 
 // ── CodeSearchTool ──────────────────────────────────────────────────────────
 
-/// Search for named code symbols across the project.
+/// 在整个项目中按名称搜索代码符号定义（函数、结构体、类等）。
 pub struct CodeSearchTool {
+    /// 可选的基准目录，相对路径以此为根解析
     base_dir: Option<PathBuf>,
 }
 
 impl CodeSearchTool {
+    /// 创建不指定基准目录的代码搜索工具。
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建以指定目录为基准的代码搜索工具。
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -29,28 +32,34 @@ impl CodeSearchTool {
 }
 
 impl Default for CodeSearchTool {
+    /// 等价于 [`CodeSearchTool::new`]。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for CodeSearchTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "code_search"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Find code definitions by symbol name and kind; use grep for exact text lookup."
     }
 
+    /// 所需权限：只读。
     fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
         vec![echo_core::tools::permission::ToolPermission::Read]
     }
 
+    /// 风险等级：只读。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -87,6 +96,7 @@ impl Tool for CodeSearchTool {
         })
     }
 
+    /// 执行符号搜索并返回分页结果。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -130,7 +140,7 @@ impl Tool for CodeSearchTool {
                 Err(error) => return Ok(ToolResult::invalid_arguments(error.to_string())),
             };
 
-            // Resolve search path
+            // 解析搜索路径
             let search_path = super::resolve_path(
                 "code_search",
                 path_str,
@@ -183,6 +193,7 @@ impl Tool for CodeSearchTool {
     }
 }
 
+/// 对搜索记录分页并构造工具结果。
 fn paginated_search_result(
     request: &PageRequest,
     records: Vec<String>,
@@ -215,18 +226,24 @@ fn paginated_search_result(
     Ok(result)
 }
 
-// ── Symbol search implementation ─────────────────────────────────────────────
+// ── 符号搜索实现 ─────────────────────────────────────────────
 
+/// 单条符号搜索结果
 #[derive(Debug)]
 struct SymbolResult {
+    /// 符号所在文件
     file: PathBuf,
+    /// 行号（从 1 开始）
     line: usize,
+    /// 符号名称
     name: String,
+    /// 符号类型（function、struct 等）
     symbol_type: String,
+    /// 定义所在行的上下文文本
     context: Option<String>,
 }
 
-/// Search for symbols in the given path.
+/// 在给定路径下搜索符号。
 async fn search_symbols(
     path: &Path,
     symbol_pattern: &str,
@@ -235,7 +252,7 @@ async fn search_symbols(
 ) -> Result<Vec<SymbolResult>> {
     let mut results = Vec::new();
 
-    // Build symbol pattern regex
+    // 构建符号匹配正则
     let symbol_regex_str = if symbol_pattern.contains('*') {
         format!("^{}$", symbol_pattern.replace("*", ".*"))
     } else {
@@ -247,13 +264,13 @@ async fn search_symbols(
         message: format!("Invalid symbol pattern: {}", e),
     })?;
 
-    // Walk directory
+    // 遍历目录
     search_directory(path, &symbol_regex, symbol_type, file_filter, &mut results).await?;
 
     Ok(results)
 }
 
-/// Recursively search directory for symbols
+/// 递归遍历目录搜索符号
 async fn search_directory(
     dir: &Path,
     symbol_regex: &Regex,
@@ -266,7 +283,7 @@ async fn search_directory(
     while let Some(current_dir) = stack.pop() {
         let mut entries = match fs::read_dir(&current_dir).await {
             Ok(e) => e,
-            Err(_) => continue, // Skip unreadable directories
+            Err(_) => continue, // 跳过无法读取的目录
         };
 
         while let Some(entry) = match entries.next_entry().await {
@@ -275,7 +292,7 @@ async fn search_directory(
         } {
             let path = entry.path();
 
-            // Skip hidden directories and common build artifacts
+            // 跳过隐藏目录和常见的构建产物目录
             if let Some(name) = path.file_name().and_then(|n| n.to_str())
                 && (name.starts_with('.')
                     || name == "node_modules"
@@ -289,7 +306,7 @@ async fn search_directory(
             if path.is_dir() {
                 stack.push(path);
             } else if path.is_file() {
-                // Check file filter
+                // 检查文件过滤条件
                 if let Some(filter) = file_filter {
                     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !filter.is_match(file_name) {
@@ -297,7 +314,7 @@ async fn search_directory(
                     }
                 }
 
-                // Search file for symbols
+                // 在文件中搜索符号
                 search_file(&path, symbol_regex, symbol_type, results).await?;
             }
         }
@@ -306,28 +323,28 @@ async fn search_directory(
     Ok(())
 }
 
-/// Search a single file for symbol definitions
+/// 在单个文件中搜索符号定义
 async fn search_file(
     file: &Path,
     symbol_regex: &Regex,
     symbol_type: &str,
     results: &mut Vec<SymbolResult>,
 ) -> Result<()> {
-    // Detect language from extension
+    // 根据扩展名识别语言
     let extension = file.extension().and_then(|e| e.to_str()).unwrap_or("");
 
     let patterns = get_language_patterns(extension);
     if patterns.is_empty() {
-        return Ok(()); // Unsupported language
+        return Ok(()); // 不支持的语言
     }
 
-    // Read file
+    // 读取文件
     let content = match fs::read_to_string(file).await {
         Ok(c) => c,
-        Err(_) => return Ok(()), // Skip unreadable files
+        Err(_) => return Ok(()), // 跳过无法读取的文件
     };
 
-    // Search for each pattern
+    // 逐个模式进行搜索
     for (pattern, sym_type) in patterns {
         if symbol_type != "any" && sym_type != symbol_type {
             continue;
@@ -344,7 +361,7 @@ async fn search_file(
             {
                 let name = name_match.as_str();
 
-                // Check if symbol matches the search pattern
+                // 检查符号名是否匹配搜索模式
                 if symbol_regex.is_match(name) {
                     results.push(SymbolResult {
                         file: file.to_path_buf(),
@@ -361,7 +378,7 @@ async fn search_file(
     Ok(())
 }
 
-/// Get symbol patterns for a given language
+/// 获取指定语言（按扩展名）的符号匹配模式
 fn get_language_patterns(extension: &str) -> Vec<(&'static str, &'static str)> {
     match extension {
         "rs" => vec![
@@ -445,11 +462,11 @@ fn get_language_patterns(extension: &str) -> Vec<(&'static str, &'static str)> {
                 "class",
             ),
         ],
-        _ => vec![], // Unsupported language
+        _ => vec![], // 不支持的语言
     }
 }
 
-/// Convert a glob pattern to the symbol-search file filter.
+/// 将 glob 模式转换为符号搜索使用的文件名过滤正则。
 fn glob_to_regex(glob: &str) -> Result<Regex> {
     let regex_str = regex::escape(glob).replace(r"\*", ".*").replace(r"\?", ".");
     Regex::new(&format!("^{regex_str}$")).map_err(|error| {
@@ -466,6 +483,7 @@ mod tests {
     use super::*;
     use echo_core::tools::ToolContext;
 
+    /// 验证搜索的是符号定义而非文本中的提及。
     #[tokio::test]
     async fn searches_symbol_definitions_instead_of_text_mentions()
     -> std::result::Result<(), String> {

@@ -1,4 +1,4 @@
-//! Framework task relation tools backed by [`TaskRevisionService`].
+//! 基于 [`TaskRevisionService`] 的框架任务关系工具。
 
 use std::sync::Arc;
 
@@ -12,33 +12,41 @@ use super::{
     TaskRevisionError, TaskRevisionService, TaskSpecPatch, TaskStatus, TaskUpdateInput,
 };
 
+/// 原子创建完整任务图的 `task_create` 工具。
 pub struct TaskCreateTool {
+    /// 共享的任务修订服务。
     service: Arc<TaskRevisionService>,
 }
 
 impl TaskCreateTool {
+    /// 基于给定修订服务创建工具实例。
     pub fn new(service: Arc<TaskRevisionService>) -> Self {
         Self { service }
     }
 }
 
 impl Tool for TaskCreateTool {
+    /// 返回工具名称 `task_create`。
     fn name(&self) -> &str {
         "task_create"
     }
 
+    /// 返回面向模型的工具说明。
     fn description(&self) -> &str {
         "Atomically create the complete task graph in one call. Always put every task in the tasks array, including a single task; never split one graph across concurrent task_create calls. Dependencies are optional; use base_revision when adding tasks to an existing graph."
     }
 
+    /// 返回参数 JSON Schema，包含服务注册的扩展字段。
     fn parameters(&self) -> serde_json::Value {
         task_create_schema(&self.service)
     }
 
+    /// 禁止并行批量执行，避免同一任务图被拆分到并发调用中创建。
     fn allows_parallel_batch_execution(&self) -> bool {
         false
     }
 
+    /// 解析参数并通过修订服务创建（或追加到）任务图。
     fn execute_with_context<'a>(
         &'a self,
         params: ToolParameters,
@@ -79,33 +87,41 @@ impl Tool for TaskCreateTool {
     }
 }
 
+/// 以乐观并发方式修订任务图的 `task_update` 工具。
 pub struct TaskUpdateTool {
+    /// 共享的任务修订服务。
     service: Arc<TaskRevisionService>,
 }
 
 impl TaskUpdateTool {
+    /// 基于给定修订服务创建工具实例。
     pub fn new(service: Arc<TaskRevisionService>) -> Self {
         Self { service }
     }
 }
 
 impl Tool for TaskUpdateTool {
+    /// 返回工具名称 `task_update`。
     fn name(&self) -> &str {
         "task_update"
     }
 
+    /// 返回面向模型的工具说明。
     fn description(&self) -> &str {
         "Atomically update task specifications, dependency relations, ordering, or skip state using optimistic concurrency. Only pending or blocked task specifications may change while a run is active."
     }
 
+    /// 返回参数 JSON Schema，按服务配置决定是否包含 `set_status` 操作。
     fn parameters(&self) -> serde_json::Value {
         task_update_schema(&self.service)
     }
 
+    /// 禁止并行批量执行，保证修订按顺序提交。
     fn allows_parallel_batch_execution(&self) -> bool {
         false
     }
 
+    /// 解析修订操作并基于 `base_revision` 提交新的任务图修订。
     fn execute_with_context<'a>(
         &'a self,
         params: ToolParameters,
@@ -140,28 +156,36 @@ impl Tool for TaskUpdateTool {
     }
 }
 
+/// 分页列出当前 TaskRun 任务及其运行状态的 `task_list` 工具。
 pub struct TaskListTool {
+    /// 共享的任务修订服务。
     service: Arc<TaskRevisionService>,
 }
 
+/// 单页默认返回的任务数。
 const TASK_LIST_DEFAULT_LIMIT: usize = 20;
+/// 单页允许返回的最大任务数。
 const TASK_LIST_MAX_LIMIT: usize = 100;
 
 impl TaskListTool {
+    /// 基于给定修订服务创建工具实例。
     pub fn new(service: Arc<TaskRevisionService>) -> Self {
         Self { service }
     }
 }
 
 impl Tool for TaskListTool {
+    /// 返回工具名称 `task_list`。
     fn name(&self) -> &str {
         "task_list"
     }
 
+    /// 返回面向模型的工具说明。
     fn description(&self) -> &str {
         "List the current TaskRun's tasks, dependency-aware graph revision, and runtime status. Results are bounded; use limit, cursor, and detail_level=full to page through the same committed graph without creating another task store."
     }
 
+    /// 返回分页（`limit`/`cursor`）与详情级别参数的 JSON Schema。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -188,6 +212,7 @@ impl Tool for TaskListTool {
         })
     }
 
+    /// 加载当前已提交的任务图，并按分页参数渲染任务列表。
     fn execute_with_context<'a>(
         &'a self,
         params: ToolParameters,
@@ -254,6 +279,7 @@ impl Tool for TaskListTool {
     }
 }
 
+/// 构建全部任务工具（创建、更新、列表），三者共享同一修订服务。
 pub fn build_task_tools(service: Arc<TaskRevisionService>) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(TaskCreateTool::new(service.clone())),
@@ -262,18 +288,22 @@ pub fn build_task_tools(service: Arc<TaskRevisionService>) -> Vec<Box<dyn Tool>>
     ]
 }
 
+/// 构建单独的 `task_create` 工具。
 pub fn build_task_create_tool(service: Arc<TaskRevisionService>) -> Box<dyn Tool> {
     Box::new(TaskCreateTool::new(service))
 }
 
+/// 构建单独的 `task_update` 工具。
 pub fn build_task_update_tool(service: Arc<TaskRevisionService>) -> Box<dyn Tool> {
     Box::new(TaskUpdateTool::new(service))
 }
 
+/// 构建单独的 `task_list` 工具。
 pub fn build_task_list_tool(service: Arc<TaskRevisionService>) -> Box<dyn Tool> {
     Box::new(TaskListTool::new(service))
 }
 
+/// 构建 `task_create` 的参数 Schema。
 fn task_create_schema(service: &TaskRevisionService) -> serde_json::Value {
     let task_schema = task_input_schema(service);
     serde_json::json!({
@@ -300,6 +330,7 @@ fn task_create_schema(service: &TaskRevisionService) -> serde_json::Value {
     })
 }
 
+/// 构建 `task_update` 的参数 Schema；仅在允许手动进度更新时暴露 `set_status` 操作。
 fn task_update_schema(service: &TaskRevisionService) -> serde_json::Value {
     let task_schema = task_input_schema(service);
     let task_patch_schema = task_patch_schema(service);
@@ -370,6 +401,7 @@ fn task_update_schema(service: &TaskRevisionService) -> serde_json::Value {
     })
 }
 
+/// 构建单个任务输入的 Schema，并合并服务注册的扩展字段及其必填项。
 fn task_input_schema(service: &TaskRevisionService) -> serde_json::Value {
     let mut properties = serde_json::Map::from_iter([
         (
@@ -410,6 +442,7 @@ fn task_input_schema(service: &TaskRevisionService) -> serde_json::Value {
     })
 }
 
+/// 构建任务规格补丁的 Schema（字段均可选），并合并扩展字段。
 fn task_patch_schema(service: &TaskRevisionService) -> serde_json::Value {
     let mut properties = serde_json::Map::from_iter([
         (
@@ -439,6 +472,12 @@ fn task_patch_schema(service: &TaskRevisionService) -> serde_json::Value {
     })
 }
 
+/**
+ * 将 `task_create` 参数解析为 [`TaskCreateInput`]。
+ *
+ * 要求 `tasks` 为非空数组；`execution_mode` 缺省或无法识别时按并行处理。
+ * 解析失败时返回面向模型的错误消息。
+ */
 pub fn parse_task_create_input(
     params: &ToolParameters,
     extension_schemas: &serde_json::Map<String, serde_json::Value>,
@@ -478,6 +517,12 @@ pub fn parse_task_create_input(
     })
 }
 
+/**
+ * 将 `task_update` 参数解析为 [`TaskUpdateInput`]。
+ *
+ * `allow_manual_progress_updates` 为 false 时，`set_status` 操作按未知操作拒绝。
+ * 解析失败时返回面向模型的错误消息。
+ */
 pub fn parse_task_update_input(
     params: &ToolParameters,
     extension_schemas: &serde_json::Map<String, serde_json::Value>,
@@ -560,6 +605,7 @@ pub fn parse_task_update_input(
     })
 }
 
+/// 解析单个任务草稿；`max_retries` 缺省为 3，`extension` 键下的对象字段会展开合并到扩展中。
 fn parse_task_draft(
     value: &serde_json::Value,
     index: usize,
@@ -602,6 +648,7 @@ fn parse_task_draft(
     })
 }
 
+/// 解析任务规格补丁，仅填充参数中实际出现的字段。
 fn parse_task_spec_patch(
     value: &serde_json::Value,
     extension_schemas: &serde_json::Map<String, serde_json::Value>,
@@ -638,6 +685,7 @@ fn parse_task_spec_patch(
     })
 }
 
+/// 读取去除首尾空白后的非空字符串字段。
 fn optional_string_in(value: &serde_json::Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -647,6 +695,7 @@ fn optional_string_in(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 读取操作中必填的 `task_id` 字段。
 fn required_task_id(
     operation: &serde_json::Value,
     index: usize,
@@ -660,6 +709,7 @@ fn required_task_id(
         .ok_or_else(|| format!("operations[{index}].task_id is required"))
 }
 
+/// 读取字符串数组字段，忽略非字符串与空白项。
 fn string_array_in(value: &serde_json::Value, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -676,6 +726,7 @@ fn string_array_in(value: &serde_json::Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 与 [`string_array_in`] 相同，但作用于工具参数。
 fn string_array_in_parameters(value: &ToolParameters, key: &str) -> Vec<String> {
     value
         .get(key)
@@ -692,6 +743,7 @@ fn string_array_in_parameters(value: &ToolParameters, key: &str) -> Vec<String> 
         .unwrap_or_default()
 }
 
+/// 返回任务状态在列表中展示的名称。
 fn status_name(status: &TaskStatus) -> &'static str {
     match status {
         TaskStatus::Pending => "pending",
@@ -707,6 +759,7 @@ fn status_name(status: &TaskStatus) -> &'static str {
     }
 }
 
+/// 渲染单行任务列表；`full` 级别附加依赖、重试次数与状态详情。
 fn render_task_list_row(task: &Task, detail_level: &str) -> String {
     let mut row = format!(
         "[{}] {} — {}",
@@ -741,11 +794,13 @@ fn render_task_list_row(task: &Task, detail_level: &str) -> String {
     row
 }
 
+/// 任务工具单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tasks::{DefaultTaskToolPolicy, InMemoryRevisionedTaskStore};
 
+    /// 构建使用内存存储与默认策略的测试服务。
     fn service() -> Arc<TaskRevisionService> {
         Arc::new(TaskRevisionService::new(
             Arc::new(InMemoryRevisionedTaskStore::new()),
@@ -753,10 +808,12 @@ mod tests {
         ))
     }
 
+    /// 将 JSON 值转换为工具参数。
     fn parameters(value: serde_json::Value) -> std::result::Result<ToolParameters, String> {
         serde_json::from_value(value).map_err(|error| error.to_string())
     }
 
+    /// 验证创建、更新、列表三个工具作用于同一任务图。
     #[tokio::test]
     async fn tools_create_update_and_list_one_graph() -> std::result::Result<(), String> {
         let service = service();
@@ -799,6 +856,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 `task_list` 的 Schema 暴露有界分页与详情级别参数。
     #[test]
     fn task_list_schema_exposes_bounded_paging_and_detail() {
         let schema = TaskListTool::new(service()).parameters();
@@ -812,6 +870,7 @@ mod tests {
         }));
     }
 
+    /// 验证游标续页有界且结果精确不重叠。
     #[tokio::test]
     async fn task_list_cursor_continuation_is_bounded_and_exact() -> std::result::Result<(), String>
     {
@@ -860,6 +919,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证非法游标被拒绝。
     #[tokio::test]
     async fn task_list_rejects_invalid_cursor() -> std::result::Result<(), String> {
         let service = service();
@@ -885,12 +945,14 @@ mod tests {
         Ok(())
     }
 
+    /// 验证默认 Schema 暴露手动状态更新操作。
     #[test]
     fn default_schema_exposes_manual_status_updates() {
         let schema = task_update_schema(&service());
         assert!(schema.to_string().contains("set_status"));
     }
 
+    /// 验证默认 Schema 暴露产品中立的 `extension` 字段。
     #[test]
     fn default_schema_exposes_product_neutral_extension() {
         let schema = task_input_schema(&service());
@@ -901,6 +963,7 @@ mod tests {
         );
     }
 
+    /// 验证默认解析器保留产品中立的 `extension` 内容。
     #[test]
     fn default_parser_preserves_product_neutral_extension() -> std::result::Result<(), String> {
         let service = service();
@@ -920,6 +983,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 `task_create` Schema 只接受单个原子 `tasks` 数组，且禁止并行批量执行。
     #[test]
     fn task_create_schema_requires_one_atomic_tasks_array() {
         let tool = TaskCreateTool::new(service());
@@ -936,6 +1000,7 @@ mod tests {
         assert!(!tool.allows_parallel_batch_execution());
     }
 
+    /// 验证已移除的单任务 `task` 形式被拒绝。
     #[test]
     fn task_create_rejects_the_removed_singular_shape() -> std::result::Result<(), String> {
         let input = parameters(serde_json::json!({

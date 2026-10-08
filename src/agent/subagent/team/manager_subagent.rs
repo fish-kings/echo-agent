@@ -15,7 +15,9 @@ use std::collections::{HashMap, HashSet};
 
 use super::{CompiledTeamGraph, team_task};
 
+/// manager 规划任务的固定任务 ID。
 const PLAN_TASK_ID: &str = "team-plan";
+/// manager 汇总任务的固定任务 ID。
 const SYNTHESIS_TASK_ID: &str = "team-synthesis";
 
 /// manager 从 LLM 输出中解析出的原始计划。

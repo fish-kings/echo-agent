@@ -1,8 +1,12 @@
 //! LLM 客户端核心 trait 及请求/响应类型
 
+/// Prompt 缓存布局与诊断。
 pub mod cache;
+/// Provider 能力与模型档案（profile）。
 pub mod capabilities;
+/// 思考（推理）模式配置。
 pub mod thinking;
+/// LLM 请求/响应的公共数据类型。
 pub mod types;
 
 use crate::error::Result;
@@ -71,11 +75,13 @@ fn normalize_timeout(timeout: Duration) -> Option<Duration> {
     (!timeout.is_zero()).then_some(timeout)
 }
 
-/// 与具体 provider 无关的 LLM 请求及流式响应超时策略。
-///
-/// `request` 应用于非流式调用。流式调用则使用独立的首字节、空闲和
-/// 整体边界，以避免将一个健康的长流误判为请求卡死。边界值为 `None`
-/// 表示禁用该超时；零值会被归一化为 `None`。序列化后的值以毫秒为单位。
+/**
+与具体 provider 无关的 LLM 请求及流式响应超时策略。
+
+`request` 应用于非流式调用。流式调用则使用独立的首字节、空闲和
+整体边界，以避免将一个健康的长流误判为请求卡死。边界值为 `None`
+表示禁用该超时；零值会被归一化为 `None`。序列化后的值以毫秒为单位。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct LlmTimeouts {
@@ -97,6 +103,7 @@ pub struct LlmTimeouts {
 }
 
 impl Default for LlmTimeouts {
+    /// 默认超时：请求 120 秒、首字节 30 秒、空闲 60 秒，不设总体超时。
     fn default() -> Self {
         Self {
             request: default_request_timeout(),
@@ -177,11 +184,13 @@ impl LlmTimeouts {
     }
 }
 
+/// `LlmTimeouts` 相关测试。
 #[cfg(test)]
 mod timeout_tests {
     use super::LlmTimeouts;
     use std::time::Duration;
 
+    /// 验证默认超时值与以毫秒表示的线上格式保持稳定。
     #[test]
     fn timeout_defaults_and_millisecond_wire_shape_are_stable() -> Result<(), String> {
         let defaults = LlmTimeouts::default();
@@ -217,6 +226,7 @@ mod timeout_tests {
         Ok(())
     }
 
+    /// 验证值为 0 毫秒的超时反序列化后视为禁用。
     #[test]
     fn zero_millisecond_timeouts_deserialize_as_disabled() -> Result<(), String> {
         let decoded = serde_json::from_value::<LlmTimeouts>(serde_json::json!({
@@ -234,10 +244,12 @@ mod timeout_tests {
     }
 }
 
-/// 单个已配置模型所接受的输入模态。
-///
-/// Provider 传输层描述内容是如何编码的；而这个模型级别的集合
-/// 描述的是某个具体模型被允许接收哪些类型的输入。
+/**
+单个已配置模型所接受的输入模态。
+
+Provider 传输层描述内容是如何编码的；而这个模型级别的集合
+描述的是某个具体模型被允许接收哪些类型的输入。
+*/
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -265,10 +277,12 @@ impl ModelInputModality {
     }
 }
 
-/// LLM provider 端点所使用的 HTTP API 协议。
-///
-/// 这一概念被有意与 provider 身份区分开来。一个 provider 会选择一个
-/// 默认协议，而自定义或兼容端点则可以显式选择任意受支持的线上格式。
+/**
+LLM provider 端点所使用的 HTTP API 协议。
+
+这一概念被有意与 provider 身份区分开来。一个 provider 会选择一个
+默认协议，而自定义或兼容端点则可以显式选择任意受支持的线上格式。
+*/
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LlmApiProtocol {
@@ -291,11 +305,13 @@ impl LlmApiProtocol {
         }
     }
 
-    /// 根据一个完整的端点 URL 识别其所使用的协议。
-    ///
-    /// 对于像 `https://api.example.com/v1` 这样的 provider 根路径会返回
-    /// `None`，因为从一个不完整的路径中猜测线上协议，会把 Chat
-    /// Completions 这个兜底选项变成一个误判。
+    /**
+    根据一个完整的端点 URL 识别其所使用的协议。
+
+    对于像 `https://api.example.com/v1` 这样的 provider 根路径会返回
+    `None`，因为从一个不完整的路径中猜测线上协议，会把 Chat
+    Completions 这个兜底选项变成一个误判。
+    */
     pub fn try_from_endpoint(endpoint: &str) -> Option<Self> {
         let path = endpoint
             .split(['?', '#'])
@@ -330,10 +346,12 @@ impl LlmApiProtocol {
     }
 }
 
+/// `LlmApiProtocol` 推断相关测试。
 #[cfg(test)]
 mod protocol_tests {
     use super::LlmApiProtocol;
 
+    /// 验证可从完整端点推断所有受支持的线上协议。
     #[test]
     fn infers_all_supported_wire_protocols() {
         assert_eq!(
@@ -350,6 +368,7 @@ mod protocol_tests {
         );
     }
 
+    /// 验证完整端点识别不会根据 provider 根路径进行猜测。
     #[test]
     fn complete_endpoint_detection_does_not_guess_from_provider_roots() {
         assert_eq!(
@@ -387,6 +406,7 @@ pub struct SimpleChatOptions {
 }
 
 impl Default for SimpleChatOptions {
+    /// 默认选项：温度 0.7，最大 2048 个 token。
     fn default() -> Self {
         Self {
             temperature: Some(0.7),
@@ -414,23 +434,27 @@ pub trait LlmClient: Send + Sync {
     /// 执行一次非流式的聊天请求。
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>>;
 
-    /// 执行一次流式的聊天请求。
-    ///
-    /// 返回的流是 `'static` 的（不借用 `&self`）：所有 provider
-    /// 实现都会生成一个拥有所有权的、装箱的流，这样调用方就可以将它
-    /// 跨 await 点移动 / 移入被 spawn 的任务中。这也使得流式核心循环
-    /// 能够通过一个 trait object（`Arc<dyn LlmClient>`）进行路由，
-    /// 并让返回的流的生命周期超出该 trait 方法调用本身的借用 ——
-    /// 这正是让该循环可以用一个 mock 客户端进行测试的关键所在。
+    /**
+    执行一次流式的聊天请求。
+
+    返回的流是 `'static` 的（不借用 `&self`）：所有 provider
+    实现都会生成一个拥有所有权的、装箱的流，这样调用方就可以将它
+    跨 await 点移动 / 移入被 spawn 的任务中。这也使得流式核心循环
+    能够通过一个 trait object（`Arc<dyn LlmClient>`）进行路由，
+    并让返回的流的生命周期超出该 trait 方法调用本身的借用 ——
+    这正是让该循环可以用一个 mock 客户端进行测试的关键所在。
+    */
     fn chat_stream(
         &self,
         request: ChatRequest,
     ) -> BoxFuture<'_, Result<BoxStream<'static, Result<ChatChunk>>>>;
 
-    /// 用于简单纯文本调用的便捷辅助方法。
-    ///
-    /// 可通过 [`SimpleChatOptions`] 传入可选的覆盖参数；默认值为
-    /// `temperature: 0.7`、`max_tokens: 2048`。
+    /**
+    用于简单纯文本调用的便捷辅助方法。
+
+    可通过 [`SimpleChatOptions`] 传入可选的覆盖参数；默认值为
+    `temperature: 0.7`、`max_tokens: 2048`。
+    */
     fn chat_simple(&self, messages: Vec<Message>) -> BoxFuture<'_, Result<String>> {
         self.chat_simple_with_options(messages, SimpleChatOptions::default())
     }
@@ -457,20 +481,24 @@ pub trait LlmClient: Send + Sync {
     /// 该客户端使用的模型标识符。
     fn model_name(&self) -> &str;
 
-    /// 该客户端对应的 provider 能力集。
-    ///
-    /// 默认返回兼容 OpenAI 的能力集。对于 Anthropic、Ollama 或
-    /// 自定义 provider，需要重写此方法。
+    /**
+    该客户端对应的 provider 能力集。
+
+    默认返回兼容 OpenAI 的能力集。对于 Anthropic、Ollama 或
+    自定义 provider，需要重写此方法。
+    */
     fn capabilities(&self) -> capabilities::ProviderCapabilities {
         capabilities::ProviderCapabilities::openai_compatible()
     }
 }
 
-/// 控制模型在推理过程中如何使用工具。
-///
-/// 映射到各 provider 特定的 API：
-/// - OpenAI：`"auto"`、`"none"`、`"required"`、`{"type": "function", "function": {"name": "..."}}`
-/// - Anthropic：`{"type": "auto"}`、`{"type": "any"}`、`{"type": "tool", "name": "..."}`
+/**
+控制模型在推理过程中如何使用工具。
+
+映射到各 provider 特定的 API：
+- OpenAI：`"auto"`、`"none"`、`"required"`、`{"type": "function", "function": {"name": "..."}}`
+- Anthropic：`{"type": "auto"}`、`{"type": "any"}`、`{"type": "tool", "name": "..."}`
+*/
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ToolChoice {
     /// 由模型自行决定是否调用工具（默认值）。
@@ -493,8 +521,10 @@ impl ToolChoice {
         Self::Function { name: name.into() }
     }
 
-    /// 转换为 OpenAI 的线上格式（`"auto"`、`"none"`、`"required"`，
-    /// 或 `{"type":"function","function":{"name":"..."}}`）。
+    /**
+    转换为 OpenAI 的线上格式（`"auto"`、`"none"`、`"required"`，
+    或 `{"type":"function","function":{"name":"..."}}`）。
+    */
     pub fn to_openai_value(&self) -> serde_json::Value {
         match self {
             Self::Auto => serde_json::Value::String("auto".into()),
@@ -519,35 +549,47 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// 可选的、暴露给模型的工具定义。
     pub tools: Option<Vec<ToolDefinition>>,
-    /// 控制模型如何使用工具（OpenAI 线上格式）。
-    /// 优先使用 [`ToolChoice`] 以获得类型安全的构造方式；在构建
-    /// [`ChatCompletionRequest`] 时通过 [`ToolChoice::to_openai_value`] 转换。
+    /**
+    控制模型如何使用工具（OpenAI 线上格式）。
+    优先使用 [`ToolChoice`] 以获得类型安全的构造方式；在构建
+    [`ChatCompletionRequest`] 时通过 [`ToolChoice::to_openai_value`] 转换。
+    */
     pub tool_choice: Option<String>,
     /// 可选的结构化输出格式提示。
     pub response_format: Option<ResponseFormat>,
-    /// 可选的推理深度 / “思考”控制。
-    ///
-    /// 设置该字段后，各 provider 会将其转换为自身原生的思考线上字段
-    /// （OpenAI 推理模型对应 `reasoning_effort`，Claude 3.7–4.5 对应
-    /// `thinking.budget_tokens`，Qwen3/GLM 对应 `enable_thinking`）。
-    /// 不支持思考控制的模型会静默丢弃该字段（并输出一条 `warn!` 日志）。
-    /// `None`（默认值）表示“使用模型的默认行为” —— 不发送该字段。
+    /**
+    可选的推理深度 / “思考”控制。
+
+    设置该字段后，各 provider 会将其转换为自身原生的思考线上字段
+    （OpenAI 推理模型对应 `reasoning_effort`，Claude 3.7–4.5 对应
+    `thinking.budget_tokens`，Qwen3/GLM 对应 `enable_thinking`）。
+    不支持思考控制的模型会静默丢弃该字段（并输出一条 `warn!` 日志）。
+    `None`（默认值）表示“使用模型的默认行为” —— 不发送该字段。
+    */
     pub thinking: Option<ThinkingConfig>,
-    /// 用于中止进行中请求的可选取消令牌。
-    /// 设置并被取消后，流式响应会在下一个 SSE 边界处停止，非流式请求
-    /// 则会在等待响应头、读取响应体或解析 JSON 响应的过程中中止。
+    /**
+    用于中止进行中请求的可选取消令牌。
+    设置并被取消后，流式响应会在下一个 SSE 边界处停止，非流式请求
+    则会在等待响应头、读取响应体或解析 JSON 响应的过程中中止。
+    */
     pub cancel_token: Option<CancellationToken>,
-    /// 本次调用的可选超时覆盖值。
-    ///
-    /// `None` 表示使用 provider 客户端的默认配置。同一个值同时
-    /// 控制非流式与流式的超时边界。
+    /**
+    本次调用的可选超时覆盖值。
+
+    `None` 表示使用 provider 客户端的默认配置。同一个值同时
+    控制非流式与流式的超时边界。
+    */
     pub timeouts: Option<LlmTimeouts>,
-    /// 用于 KVCache 隔离的可选用户标识符（DeepSeek 等场景使用）。
-    /// 一个稳定的、绑定到会话的 ID 可以让 provider 在多次请求间
-    /// 复用 prompt 缓存条目。若不设置，缓存命中率可能会降到 1% 以下。
+    /**
+    用于 KVCache 隔离的可选用户标识符（DeepSeek 等场景使用）。
+    一个稳定的、绑定到会话的 ID 可以让 provider 在多次请求间
+    复用 prompt 缓存条目。若不设置，缓存命中率可能会降到 1% 以下。
+    */
     pub user_id: Option<String>,
-    /// 可选的缓存提示（断点目标、稳定前缀哈希、分段范围）。
-    /// Provider 使用这些信息来放置缓存断点并记录诊断日志。
+    /**
+    可选的缓存提示（断点目标、稳定前缀哈希、分段范围）。
+    Provider 使用这些信息来放置缓存断点并记录诊断日志。
+    */
     pub cache_hints: Option<crate::llm::cache::CacheHints>,
 }
 

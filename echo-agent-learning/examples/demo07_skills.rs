@@ -1,15 +1,17 @@
-//! demo07_skills.rs —— Skills（技能）系统演示
-//!
-//! 演示如何通过 Skill 为 Agent 快速装备能力组合，
-//! 与逐个 add_tool 相比，Skill 额外提供了：
-//! - 工具组的语义封装（"我懂文件操作" vs "我有 read/write 工具"）
-//! - 自动注入 System Prompt 指引片段（告诉 LLM 何时怎么用这组工具）
-//! - 技能元数据查询（list_skills / has_skill）
-//!
-//! # 运行
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo07_skills
-//! ```
+/*!
+demo07_skills.rs —— Skills（技能）系统演示
+
+演示如何通过 Skill 为 Agent 快速装备能力组合，
+与逐个 add_tool 相比，Skill 额外提供了：
+- 工具组的语义封装（"我懂文件操作" vs "我有 read/write 工具"）
+- 自动注入 System Prompt 指引片段（告诉 LLM 何时怎么用这组工具）
+- 技能元数据查询（list_skills / has_skill）
+
+# 运行
+```bash
+cargo run -p echo-agent-learning --example demo07_skills
+```
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::skills::Skill;
@@ -115,8 +117,10 @@ impl Skill for TextProcessingSkill {
 
 // ── 主程序 ────────────────────────────────────────────────────────────────────
 
-/// demo07 主入口：依次演示 Skill 元数据查看、Skill 安装与查询，
-/// 以及通过 Skill 驱动 Agent 执行真实任务。
+/**
+demo07 主入口：依次演示 Skill 元数据查看、Skill 安装与查询，
+以及通过 Skill 驱动 Agent 执行真实任务。
+*/
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();

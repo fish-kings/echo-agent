@@ -1,8 +1,10 @@
-//! AST-aware repository map with a lightweight text fallback.
-//!
-//! Tree-sitter extracts real declarations for the primary coding languages.
-//! Unsupported files and parser failures fall back to conservative line-based
-//! extraction so repo mapping remains available without a language server.
+/*!
+ * 基于 AST 的仓库地图，并带有轻量级文本回退。
+ *
+ * Tree-sitter 为主流编程语言提取真实的声明。
+ * 不受支持的文件或解析失败时，回退到保守的逐行提取，
+ * 使仓库地图在没有语言服务器的情况下依然可用。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::pagination::PageRequest;
@@ -15,17 +17,22 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tree_sitter::{Language, Node, Parser};
 
+/// 参与符号提取的源文件大小上限（2 MiB）。
 const MAX_SOURCE_BYTES: u64 = 2 * 1024 * 1024;
 
+/// 生成代码库目录树或符号地图的工具。
 pub struct RepoMapTool {
+    /// 可选的基准目录；设置后映射路径必须位于该目录内。
     base_dir: Option<PathBuf>,
 }
 
 impl RepoMapTool {
+    /// 创建不限制基准目录的仓库地图工具。
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基准目录内的仓库地图工具。
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -34,28 +41,34 @@ impl RepoMapTool {
 }
 
 impl Default for RepoMapTool {
+    /// 等同于 `Self::new()`。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for RepoMapTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "repo_map"
     }
 
+    /// 返回面向模型的工具描述。
     fn description(&self) -> &str {
         "Generate a codebase tree or AST-aware symbol map. Rust, Python, JavaScript/TypeScript, Go, and Java use Tree-sitter; unsupported syntax falls back to conservative text extraction."
     }
 
+    /// 返回工具所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -87,6 +100,7 @@ impl Tool for RepoMapTool {
         })
     }
 
+    /// 在给定工具上下文中执行工具。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -152,6 +166,7 @@ impl Tool for RepoMapTool {
     }
 }
 
+/// 解析映射根目录，并拒绝超出基准目录的路径。
 fn resolve_root(base: Option<&Path>, path_value: &str) -> Result<PathBuf> {
     let requested = Path::new(path_value);
     let Some(base) = base else {
@@ -172,6 +187,7 @@ fn resolve_root(base: Option<&Path>, path_value: &str) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// 生成带符号计数的目录树文本。
 async fn build_tree(root: &Path, max_depth: usize) -> Result<String> {
     let mut lines = Vec::new();
     let root_name = root
@@ -183,6 +199,7 @@ async fn build_tree(root: &Path, max_depth: usize) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+/// 递归遍历目录，按名称排序输出树形行。
 fn walk_tree<'a>(
     directory: &'a Path,
     prefix: &'a str,
@@ -245,6 +262,7 @@ fn walk_tree<'a>(
     })
 }
 
+/// 生成按文件分组的符号地图文本。
 async fn build_symbol_map(root: &Path, max_depth: usize) -> Result<String> {
     let mut symbols = BTreeMap::new();
     collect_symbols(root, max_depth, 0, &mut symbols).await?;
@@ -260,6 +278,7 @@ async fn build_symbol_map(root: &Path, max_depth: usize) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+/// 递归收集目录下各源文件的符号。
 fn collect_symbols<'a>(
     directory: &'a Path,
     max_depth: usize,
@@ -295,6 +314,7 @@ fn collect_symbols<'a>(
     })
 }
 
+/// 读取源文件并提取符号；优先使用 AST，失败时回退到文本提取。
 async fn extract_symbols(path: &Path) -> Vec<String> {
     let metadata = match fs::metadata(path).await {
         Ok(metadata) if metadata.len() <= MAX_SOURCE_BYTES => metadata,
@@ -314,6 +334,7 @@ async fn extract_symbols(path: &Path) -> Vec<String> {
     extract_ast_symbols(extension, &source).unwrap_or_else(|| extract_fallback_symbols(&source))
 }
 
+/// 使用 Tree-sitter 按扩展名解析源码并提取符号；不支持的语言返回 `None`。
 fn extract_ast_symbols(extension: &str, source: &str) -> Option<Vec<String>> {
     let language = language_for_extension(extension)?;
     let mut parser = Parser::new();
@@ -324,6 +345,7 @@ fn extract_ast_symbols(extension: &str, source: &str) -> Option<Vec<String>> {
     Some(symbols)
 }
 
+/// 根据文件扩展名选择 Tree-sitter 语言。
 fn language_for_extension(extension: &str) -> Option<Language> {
     match extension {
         "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
@@ -337,6 +359,7 @@ fn language_for_extension(extension: &str) -> Option<Language> {
     }
 }
 
+/// 深度优先遍历语法树并收集符号。
 fn collect_ast_symbols(node: Node<'_>, source: &str, extension: &str, output: &mut Vec<String>) {
     if let Some(symbol) = symbol_for_node(node, source, extension) {
         output.push(symbol);
@@ -347,6 +370,7 @@ fn collect_ast_symbols(node: Node<'_>, source: &str, extension: &str, output: &m
     }
 }
 
+/// 将语法节点转换为 `标签 名称 (line N)` 形式的符号描述。
 fn symbol_for_node(node: Node<'_>, source: &str, extension: &str) -> Option<String> {
     let kind = node.kind();
     let (label, name_node) = match extension {
@@ -418,6 +442,7 @@ fn symbol_for_node(node: Node<'_>, source: &str, extension: &str) -> Option<Stri
     Some(format!("{label} {name} (line {line})"))
 }
 
+/// 基于行前缀的保守符号提取回退方案。
 fn extract_fallback_symbols(source: &str) -> Vec<String> {
     let mut symbols = Vec::new();
     for (line_index, line) in source.lines().enumerate() {
@@ -454,6 +479,7 @@ fn extract_fallback_symbols(source: &str) -> Vec<String> {
     symbols
 }
 
+/// 判断是否跳过该目录或文件（隐藏项与常见构建/依赖目录）。
 fn should_skip(name: &str) -> bool {
     name.starts_with('.')
         || matches!(
@@ -472,6 +498,7 @@ fn should_skip(name: &str) -> bool {
         )
 }
 
+/// 判断文件是否为受支持的源代码文件。
 fn is_source_file(name: &str) -> bool {
     let extension = Path::new(name).extension().and_then(|value| value.to_str());
     extension.is_some_and(|extension| {
@@ -500,6 +527,7 @@ fn is_source_file(name: &str) -> bool {
     })
 }
 
+/// 构造 `repo_map` 执行失败错误。
 fn execution_error(message: String) -> ToolError {
     ToolError::ExecutionFailed {
         tool: "repo_map".to_string(),
@@ -511,6 +539,7 @@ fn execution_error(message: String) -> ToolError {
 mod tests {
     use super::*;
 
+    /// 从 Rust AST 中提取函数、结构体、枚举与 trait。
     #[test]
     fn extracts_rust_symbols_from_ast() -> Result<()> {
         let source = r#"
@@ -542,6 +571,7 @@ trait Service {}
         Ok(())
     }
 
+    /// 从 TypeScript 中提取箭头函数与接口。
     #[test]
     fn extracts_typescript_arrow_functions_and_interfaces() -> Result<()> {
         let source = "export interface User { id: string }\nexport const load = async () => 1;";
@@ -556,12 +586,14 @@ trait Service {}
         Ok(())
     }
 
+    /// 文本回退不依赖字节切片，可正确处理多字节字符。
     #[test]
     fn falls_back_without_byte_slicing() {
         let symbols = extract_fallback_symbols("class 研究结果:\n    pass\n");
         assert!(symbols.iter().any(|symbol| symbol.contains("研究结果")));
     }
 
+    /// 正确识别源文件与需跳过的目录。
     #[test]
     fn identifies_source_files_and_skipped_directories() {
         assert!(is_source_file("main.rs"));

@@ -1,12 +1,14 @@
-//! QQ 机器人 WebSocket Gateway —— 接收消息。
-//!
-//! 连接到官方 QQ WebSocket Gateway，解析事件并转发给 MessageHandler。
-//!
-//! QQ 机器人 WebSocket 协议：
-//! 1. 连接建立后，接收 HELLO 事件（包含 heartbeat_interval）
-//! 2. 发送 IDENTIFY（包含 token、intents 等）
-//! 3. 周期性发送 HEARTBEAT
-//! 4. 接收消息事件（C2C_MESSAGE_CREATE、GROUP_AT_MESSAGE_CREATE 等）
+/*!
+QQ 机器人 WebSocket Gateway —— 接收消息。
+
+连接到官方 QQ WebSocket Gateway，解析事件并转发给 MessageHandler。
+
+QQ 机器人 WebSocket 协议：
+1. 连接建立后，接收 HELLO 事件（包含 heartbeat_interval）
+2. 发送 IDENTIFY（包含 token、intents 等）
+3. 周期性发送 HEARTBEAT
+4. 接收消息事件（C2C_MESSAGE_CREATE、GROUP_AT_MESSAGE_CREATE 等）
+*/
 
 use super::super::super::types::*;
 use crate::redaction::text_with_secrets;
@@ -28,9 +30,11 @@ const OP_RECONNECT: u32 = 7; // 重连请求（服务端发送）
 const OP_HELLO: u32 = 10; // Hello（服务端发送，包含心跳间隔）
 const OP_HEARTBEAT_ACK: u32 = 11; // 心跳确认（服务端发送）
 
-/// QQ 机器人 intents（事件订阅位掩码）
-/// 参考：https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
-/// 重要：GROUP_AND_C2C_EVENT（1<<25）包含 QQ 私聊与群 @ 消息事件
+/**
+QQ 机器人 intents（事件订阅位掩码）
+参考：https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/event-emit.html
+重要：GROUP_AND_C2C_EVENT（1<<25）包含 QQ 私聊与群 @ 消息事件
+*/
 const INTENT_GUILDS: u32 = 1 << 0; // 频道事件（默认权限）
 const INTENT_GUILD_MEMBERS: u32 = 1 << 1; // 频道成员事件（默认权限）
 const INTENT_GROUP_AND_C2C_EVENT: u32 = 1 << 25; // QQ 私聊 + 群聊事件（关键！包含 C2C_MESSAGE_CREATE）

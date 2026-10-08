@@ -1,4 +1,4 @@
-//! LSP configuration loading from `.lsp.yaml` files.
+//! 从 `.lsp.yaml` 文件加载 LSP 配置。
 
 use echo_core::lsp::LspServerConfig;
 use std::collections::HashMap;
@@ -6,19 +6,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Top-level LSP configuration.
+/// 顶层 LSP 配置。
 #[derive(Debug, Clone, Default)]
 pub struct LspConfig {
-    /// Map from language name to server configuration.
+    /// 语言名称到语言服务器配置的映射。
     pub servers: HashMap<String, LspServerConfig>,
 }
 
 impl LspConfig {
-    /// Discover language servers already installed on the local machine.
-    ///
-    /// Discovery is deliberately conservative: a server is configured only
-    /// when the project contains the corresponding language and its executable
-    /// is present in `PATH`. Nothing is downloaded or installed.
+    /**
+    发现本机上已安装的语言服务器。
+
+    发现策略刻意保守：只有当项目包含对应语言、且其可执行文件存在于 `PATH`
+    中时才会配置该服务器。不会下载或安装任何东西。
+    */
     pub fn discover(project_root: &Path) -> Self {
         let search_paths = std::env::var_os("PATH")
             .map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
@@ -26,6 +27,7 @@ impl LspConfig {
         Self::discover_with_search_paths(project_root, &search_paths)
     }
 
+    /// 与 [`Self::discover`] 相同，但使用显式给定的搜索路径代替 `PATH`。
     pub fn discover_with_search_paths(project_root: &Path, search_paths: &[PathBuf]) -> Self {
         let mut config = Self::default();
         for definition in language_definitions() {
@@ -63,14 +65,14 @@ impl LspConfig {
         config
     }
 
-    /// Load configuration from a `.lsp.yaml` file.
+    /// 从 `.lsp.yaml` 文件加载配置。
     pub fn from_file(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read LSP config file {}: {e}", path.display()))?;
         Self::from_yaml(&content)
     }
 
-    /// Parse configuration from a YAML string.
+    /// 从 YAML 字符串解析配置。
     pub fn from_yaml(yaml: &str) -> Result<Self, String> {
         let file: echo_core::lsp::LspConfigFile = serde_yaml_ng::from_str(yaml)
             .map_err(|e| format!("Failed to parse LSP config YAML: {e}"))?;
@@ -79,12 +81,12 @@ impl LspConfig {
         })
     }
 
-    /// Get the configuration for a specific language.
+    /// 获取指定语言的配置。
     pub fn get(&self, language: &str) -> Option<&LspServerConfig> {
         self.servers.get(language)
     }
 
-    /// Get the configuration for a file extension.
+    /// 根据文件扩展名获取配置。
     pub fn get_for_extension(&self, ext: &str) -> Option<(&str, &LspServerConfig)> {
         let ext = if ext.starts_with('.') {
             ext
@@ -99,25 +101,35 @@ impl LspConfig {
         None
     }
 
-    /// Merge another config into this one (other takes precedence).
+    /// 将另一份配置合并进来（`other` 中的配置优先）。
     pub fn merge(&mut self, other: LspConfig) {
         self.servers.extend(other.servers);
     }
 }
 
+/// 候选语言服务器可执行文件的定义。
 struct ExecutableDefinition {
+    /// 可执行命令名或路径
     command: &'static str,
+    /// 启动语言服务器时传入的参数
     args: &'static [&'static str],
+    /// 探测可用性时使用的参数（`None` 表示不探测）
     probe_args: Option<&'static [&'static str]>,
 }
 
+/// 内置语言定义：用于判断项目是否使用某语言以及可选的服务器。
 struct LanguageDefinition {
+    /// 语言名称
     language: &'static str,
+    /// 表明项目使用该语言的标记文件（如 `Cargo.toml`）
     markers: &'static [&'static str],
+    /// 该语言的文件扩展名（带前导 `.`）
     extensions: &'static [&'static str],
+    /// 按优先级排列的候选可执行文件
     executables: &'static [ExecutableDefinition],
 }
 
+/// 返回内置的语言定义表。
 fn language_definitions() -> &'static [LanguageDefinition] {
     &[
         LanguageDefinition {
@@ -195,6 +207,7 @@ fn language_definitions() -> &'static [LanguageDefinition] {
     ]
 }
 
+/// 判断项目是否使用某语言：先查标记文件，再有限深度地扫描文件扩展名。
 fn project_uses_language(root: &Path, definition: &LanguageDefinition) -> bool {
     if definition
         .markers
@@ -248,6 +261,7 @@ fn project_uses_language(root: &Path, definition: &LanguageDefinition) -> bool {
     false
 }
 
+/// 判断候选可执行文件是否存在且（如需）探测成功。
 fn command_available(definition: &ExecutableDefinition, search_paths: &[PathBuf]) -> bool {
     let Some(command_path) = find_command(definition.command, search_paths) else {
         return false;
@@ -257,6 +271,7 @@ fn command_available(definition: &ExecutableDefinition, search_paths: &[PathBuf]
         .is_none_or(|args| command_probe_succeeds(&command_path, args))
 }
 
+/// 在搜索路径中查找命令；含路径分隔的命令直接检查文件是否存在。
 fn find_command(command: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
     let command_path = Path::new(command);
     if command_path.components().count() > 1 {
@@ -277,6 +292,7 @@ fn find_command(command: &str, search_paths: &[PathBuf]) -> Option<PathBuf> {
     })
 }
 
+/// 以探测参数运行命令，在 2 秒内成功退出则视为可用，超时则终止进程。
 fn command_probe_succeeds(command: &Path, args: &[&str]) -> bool {
     let mut child = match Command::new(command)
         .args(args)
@@ -309,6 +325,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// 验证 LSP 配置解析。
     #[test]
     fn test_parse_config() -> Result<(), String> {
         let yaml = r#"
@@ -355,6 +372,7 @@ languages:
         Ok(())
     }
 
+    /// 验证能为项目语言发现已安装的语言服务器。
     #[test]
     fn discovers_installed_server_for_project_language() -> Result<(), Box<dyn std::error::Error>> {
         let project = tempfile::tempdir()?;
@@ -379,6 +397,7 @@ languages:
         Ok(())
     }
 
+    /// 验证探测失败的可执行文件会被拒绝。
     #[test]
     fn rejects_executable_that_fails_probe() -> Result<(), Box<dyn std::error::Error>> {
         let project = tempfile::tempdir()?;

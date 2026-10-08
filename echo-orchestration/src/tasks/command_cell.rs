@@ -1,18 +1,18 @@
-//! Background command cells (Codex-style `shell(background=true)` + `wait`).
-//!
-//! [`BackgroundCommandManager`] implements the
-//! [`echo_core::tools::cell::CommandCellRegistry`] contract: long-running
-//! commands (hour-scale builds/tests) are launched as *cells* that return a
-//! `cell_id` immediately; callers long-poll via `wait(cell_id, cursor,
-//! yield_ms)` for incremental output and the terminal state.
-//!
-//! # Why not reuse `BackgroundTask::wait`?
-//!
-//! `BackgroundTask`'s result cell is `take()`n once — a single consumer gets
-//! the outcome. Cells must support **multiple waiters** (main agent + retained
-//! watcher) that can each re-read the same terminal state, so a cell keeps
-//! its own repeatedly-readable state (`RwLock<CellState>` + tail-retained
-//! output buffer + `Notify::notify_waiters` fan-out).
+/*!
+后台命令 cell（Codex 风格的 `shell(background=true)` + `wait`）。
+
+[`BackgroundCommandManager`] 实现了
+[`echo_core::tools::cell::CommandCellRegistry`] 契约：长时间运行的命令
+（小时级的构建/测试）以 *cell* 形式启动，并立即返回 `cell_id`；调用方通过
+`wait(cell_id, cursor, yield_ms)` 长轮询获取增量输出与终态。
+
+# 为什么不复用 `BackgroundTask::wait`？
+
+`BackgroundTask` 的结果槽只能被 `take()` 一次——只有单个消费者能拿到结果。
+cell 必须支持**多个等待者**（主 agent + 保留的 watcher），且每个等待者都能
+重复读取同一终态，因此 cell 维护自己的可重复读取状态
+（`RwLock<CellState>` + 尾部保留的输出缓冲区 + `Notify::notify_waiters` 广播唤醒）。
+*/
 
 use dashmap::DashMap;
 use echo_core::sandbox::{
@@ -40,33 +40,42 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-/// UTF-8 safe preview length for a cell's display name (chars).
+/// cell 显示名称的 UTF-8 安全预览长度（按字符计）。
 const NAME_PREVIEW_CHARS: usize = 80;
-/// Per-wait round byte cap for `new_output`.
-///
-/// The cursor is also byte-based, so advancing by exactly the returned raw
-/// byte count makes every retained byte drainable across repeated waits.
+/**
+每轮 wait 中 `new_output` 的字节上限。
+
+游标同样按字节计，因此按实际返回的原始字节数推进游标，
+可保证每个被保留的字节都能在多次 wait 中被完整读出。
+*/
 const MAX_DELTA_BYTES: usize = 16 * 1024;
-/// Reader task chunk size (bytes).
+/// 读取任务的单块大小（字节）。
 const READ_CHUNK_BYTES: usize = 16 * 1024;
-/// Maximum cleanup grace after explicit cancellation/shutdown.
+/// 显式取消/关闭后允许的最长清理宽限时间。
 const CANCEL_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
-/// Cancellation behavior for a deterministic command-cell watch.
+/// 确定性命令 cell 监视的取消行为。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandCellWatchCancellation {
-    /// Return [`CommandCellError::Cancelled`] as soon as cancellation wins.
+    /// 一旦取消胜出，立即返回 [`CommandCellError::Cancelled`]。
     Return,
-    /// Record cancellation but keep short-polling until the cell publishes its
-    /// real terminal state and all observable output is drained.
-    DrainToTerminal { yield_ms: u64 },
+    /**
+    记录取消，但继续短轮询，直到 cell 发布其真实终态且所有可观测输出都已读完。
+    */
+    DrainToTerminal {
+        /// 取消后每轮短轮询的 yield 时长（毫秒）。
+        yield_ms: u64,
+    },
 }
 
-/// Policy for [`CommandCellWatcher`].
+/// [`CommandCellWatcher`] 的策略配置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandCellWatchConfig {
+    /// 每轮 wait 的 yield 时长（毫秒），必须为正。
     pub yield_ms: u64,
+    /// 输出摘录保留的尾部最大字符数。
     pub excerpt_chars: usize,
+    /// 监视过程中遇到取消时的行为。
     pub cancellation: CommandCellWatchCancellation,
 }
 
@@ -80,25 +89,35 @@ impl Default for CommandCellWatchConfig {
     }
 }
 
-/// Terminal cell truth produced by a deterministic watch.
+/// 确定性监视产出的 cell 终态事实。
 #[derive(Debug, Clone)]
 pub struct CommandCellTerminalObservation {
+    /// cell 的终态快照。
     pub snapshot: CommandCellSnapshot,
+    /// 输出尾部摘录（受 `excerpt_chars` 限制）。
     pub output_excerpt: String,
+    /// 读完全部输出后的下一个游标位置。
     pub next_cursor: u64,
+    /// 监视期间是否有输出被省略（丢弃或截断）。
     pub output_elided: bool,
+    /// 监视期间是否观测到取消。
     pub cancellation_observed: bool,
 }
 
-/// Retained, deterministic observer for one command cell.
-///
-/// The watcher owns a framework observation lease for its complete lifetime
-/// and treats the registry's typed snapshot and cursor as the only terminal
-/// authority. No model invocation participates in this lifecycle.
+/**
+针对单个命令 cell 的保留式确定性观察者。
+
+watcher 在整个生命周期内持有框架的观察租约，并将注册表的类型化快照与游标
+视为唯一的终态权威来源。此生命周期中不涉及任何模型调用。
+*/
 pub struct CommandCellWatcher {
+    /// 被观察的 cell 注册表。
     registry: Arc<dyn CommandCellRegistry>,
+    /// 被观察的 cell ID。
     cell_id: String,
+    /// 监视策略。
     config: CommandCellWatchConfig,
+    /// 观察租约，保证 cell 在监视期间不会被保留策略清理。
     _observation: CommandCellObservationLease,
 }
 
@@ -113,7 +132,7 @@ impl std::fmt::Debug for CommandCellWatcher {
 }
 
 impl CommandCellWatcher {
-    /// Acquire a retained watch before reading any application projection.
+    /// 在读取任何应用层投影之前，先获取一个保留式监视。
     pub fn acquire(
         registry: Arc<dyn CommandCellRegistry>,
         cell_id: impl Into<String>,
@@ -144,12 +163,12 @@ impl CommandCellWatcher {
         })
     }
 
+    /// 返回被观察的 cell ID。
     pub fn cell_id(&self) -> &str {
         &self.cell_id
     }
 
-    /// Wait until the cell is terminal and every available byte has been
-    /// drained through the registry cursor.
+    /// 等待 cell 进入终态，且所有可用字节都已通过注册表游标读完。
     pub async fn wait_terminal(
         self,
         cancel: &CancellationToken,
@@ -199,6 +218,7 @@ impl CommandCellWatcher {
     }
 }
 
+/// 将新输出追加到摘录，并只保留最后 `max_chars` 个字符。
 fn append_excerpt_tail(target: &mut String, chunk: &str, max_chars: usize) {
     if max_chars == 0 {
         target.clear();
@@ -215,21 +235,23 @@ fn append_excerpt_tail(target: &mut String, chunk: &str, max_chars: usize) {
         .collect();
 }
 
-// ── Config ──────────────────────────────────────────────────────────
+// ── 配置 ──────────────────────────────────────────────────────────
 
-/// Configuration for [`BackgroundCommandManager`].
+/// [`BackgroundCommandManager`] 的配置。
 #[derive(Debug, Clone)]
 pub struct BackgroundCommandManagerConfig {
-    /// Maximum number of concurrently running cells.
+    /// 同时运行的 cell 最大数量。
     pub max_concurrent: usize,
-    /// Default cell lifetime in seconds (`timeout_secs: None`).
+    /// 默认 cell 生命周期（秒），用于 `timeout_secs: None` 的情况。
     pub default_timeout_secs: u64,
-    /// Upper bound for any cell lifetime.
+    /// 任意 cell 生命周期的上限（秒）。
     pub max_timeout_secs: u64,
-    /// In-memory output retention per cell (tail bytes kept).
+    /// 每个 cell 在内存中保留的输出量（保留尾部字节）。
     pub max_retained_output_bytes: usize,
-    /// Maximum number of terminal cells retained for `list`/`wait`.
-    /// Running cells are never removed by retention.
+    /**
+    为 `list`/`wait` 保留的终态 cell 最大数量。
+    运行中的 cell 永远不会被保留策略移除。
+    */
     pub max_terminal_history: usize,
 }
 
@@ -246,7 +268,7 @@ impl Default for BackgroundCommandManagerConfig {
 }
 
 impl BackgroundCommandManagerConfig {
-    /// Reject configurations that cannot ever admit a command cell.
+    /// 拒绝永远无法接纳任何命令 cell 的配置。
     pub fn validate(&self) -> std::result::Result<(), String> {
         if self.max_concurrent == 0 {
             return Err("background command max_concurrent must be greater than zero".to_string());
@@ -260,29 +282,34 @@ impl BackgroundCommandManagerConfig {
         Ok(())
     }
 
+    /// 总跟踪容量：并发上限 + 终态历史上限（饱和相加）。
     fn tracked_capacity(&self) -> usize {
         self.max_concurrent
             .saturating_add(self.max_terminal_history)
     }
 }
 
-// ── Output buffer ───────────────────────────────────────────────────
+// ── 输出缓冲区 ───────────────────────────────────────────────────
 
-/// Tail-retained output buffer.
-///
-/// `total_bytes` counts every byte ever written (monotonic cursor space);
-/// `retained` keeps at most `max_retained_output_bytes` tail bytes — bytes
-/// dropped from the head are still reflected in `total_bytes` and flagged
-/// via `truncated`.
+/**
+尾部保留的输出缓冲区。
+
+`total_bytes` 统计曾写入的所有字节（单调递增的游标空间）；
+`retained` 最多保留 `max_retained_output_bytes` 个尾部字节——从头部丢弃的字节
+仍计入 `total_bytes`，并通过 `truncated` 标记。
+*/
 #[derive(Default)]
 struct OutputBuffer {
+    /// 当前保留的尾部字节。
     retained: Vec<u8>,
+    /// 累计写入的总字节数。
     total_bytes: u64,
+    /// 是否曾从头部丢弃过字节。
     truncated: bool,
 }
 
 impl OutputBuffer {
-    /// Append bytes, keeping only the tail within `max_retained`.
+    /// 追加字节，只保留不超过 `max_retained` 的尾部。
     fn push(&mut self, bytes: &[u8], max_retained: usize) {
         self.total_bytes = self
             .total_bytes
@@ -297,73 +324,92 @@ impl OutputBuffer {
     }
 }
 
-// ── Cell handle ─────────────────────────────────────────────────────
+// ── Cell 句柄 ─────────────────────────────────────────────────────
 
-/// Terminal process state, atomically updated together.
+/// 进程终态信息，各字段一起原子更新。
 #[derive(Debug, Clone)]
 struct CellState {
+    /// 当前阶段。
     phase: CommandCellPhase,
+    /// 进程退出码（若有）。
     exit_code: Option<i32>,
+    /// 进入终态的原因。
     terminal_cause: Option<CommandCellTerminalCause>,
+    /// 终态附带的说明信息。
     terminal_message: Option<String>,
 }
 
+/// cell 完整输出落盘（artifact）的状态。
 struct CellArtifactState {
+    /// artifact 写入器；完成或失败后置为 `None`。
     writer: Option<ToolOutputArtifactWriter>,
+    /// stdout 的增量 UTF-8 解码器。
     stdout_decoder: IncrementalUtf8Decoder,
+    /// stderr 的增量 UTF-8 解码器。
     stderr_decoder: IncrementalUtf8Decoder,
+    /// 已完成 artifact 的引用。
     reference: Option<ToolOutputArtifactRef>,
+    /// artifact 的类型化状态。
     status: CommandCellArtifactStatus,
+    /// 状态附带的说明信息（如失败原因）。
     message: Option<String>,
 }
 
-/// Shared state of one command cell.
+/// 单个命令 cell 的共享状态。
 pub struct CommandCellHandle {
+    /// cell 唯一标识。
     cell_id: String,
+    /// 显示名称（命令的截断预览）。
     name: String,
-    /// Terminal-phase + exit code (write-once at completion).
+    /// 终态阶段 + 退出码（完成时只写一次）。
     state: RwLock<CellState>,
-    /// Tail-retained output; std Mutex (short critical sections, no await).
+    /// 尾部保留的输出；使用 std Mutex（临界区很短，其中不 await）。
     output: Mutex<OutputBuffer>,
-    /// Complete-output spill state. The lock is held only for one chunk or
-    /// finalization and keeps status/reference changes atomic.
+    /**
+    完整输出落盘状态。锁只在处理单个块或收尾时持有，
+    以保证状态/引用的变更是原子的。
+    */
     artifact: Mutex<CellArtifactState>,
-    /// Fan-out wakeup for waiters (output appended / phase finalized).
+    /// 向等待者广播唤醒（追加输出 / 阶段定稿时）。
     notify: Notify,
-    /// Kill switch for the child process.
+    /// 子进程的终止开关。
     cancel: CancellationToken,
-    /// Sync-readable terminal marker for history pruning.
+    /// 供历史清理同步读取的终态标记。
     terminal_flag: AtomicBool,
-    /// Active wait calls currently draining or snapshotting this cell.
+    /// 当前正在读取或快照此 cell 的活跃 wait 调用数。
     waiter_leases: AtomicU64,
-    /// Active observers that retain the cell across multiple wait rounds.
+    /// 跨多轮 wait 保留此 cell 的活跃观察者数。
     observation_leases: AtomicU64,
-    /// Total tracked-capacity permit, held until final entry removal.
+    /// 总跟踪容量许可，持有至条目最终被移除。
     _tracked_permit: Mutex<Option<OwnedSemaphorePermit>>,
-    /// Monotonic registration order for bounded terminal retention.
+    /// 单调递增的注册顺序，用于有界的终态保留。
     sequence: u64,
+    /// 测试专用：拦截 artifact 收尾过程的钩子。
     #[cfg(test)]
     artifact_finalize_hook: Mutex<Option<Arc<TestArtifactFinalizeHook>>>,
 }
 
+/// 测试专用：用于阻塞 artifact 收尾的钩子。
 #[cfg(test)]
 struct TestArtifactFinalizeHook {
+    /// 收尾流程进入钩子时通知。
     entered: Notify,
+    /// 通知后放行收尾流程。
     release: Notify,
 }
 
 impl CommandCellHandle {
-    /// Whether the cell has reached a terminal phase (sync, lock-free).
+    /// cell 是否已进入终态（同步、无锁）。
     fn is_terminal(&self) -> bool {
         self.terminal_flag.load(Ordering::Acquire)
     }
 
-    /// Current state (phase + terminal cause), cheap to clone.
+    /// 当前状态（阶段 + 终态原因），克隆开销低。
     async fn current_state(&self) -> CellState {
         self.state.read().await.clone()
     }
 
-    /// Non-blocking snapshot (state + output counters).
+    /// 非阻塞快照（状态 + 输出计数）。
     async fn snapshot(&self) -> CommandCellSnapshot {
         let state = self.current_state().await;
         let output = self
@@ -378,6 +424,7 @@ impl CommandCellHandle {
     }
 }
 
+/// 根据状态、输出缓冲区与 artifact 状态构建 cell 快照。
 fn build_snapshot(
     cell_id: &str,
     name: &str,
@@ -400,8 +447,10 @@ fn build_snapshot(
     }
 }
 
-/// Read the cell's output under lock and build the delta for `cursor`.
-/// (Keeps the `MutexGuard` scope minimal so callers can stay in async code.)
+/**
+在锁内读取 cell 的输出，并为 `cursor` 构建增量。
+（让 `MutexGuard` 的作用域尽量小，便于调用方留在异步代码中。）
+*/
 async fn snapshot_delta(
     handle: &CommandCellHandle,
     cursor: u64,
@@ -427,11 +476,12 @@ async fn snapshot_delta(
     )
 }
 
-/// Build one wait-round delta from a locked output view.
-///
-/// All slicing is byte-level on `&[u8]` (never panics via `get`). Valid UTF-8
-/// output is capped only at a character boundary; arbitrary process bytes are
-/// still supported through lossy conversion.
+/**
+基于已加锁的输出视图构建一轮 wait 的增量。
+
+所有切片都在 `&[u8]` 上按字节进行（通过 `get` 从不 panic）。合法的 UTF-8
+输出只在字符边界处截断；任意进程字节仍可通过有损转换得到支持。
+*/
 fn build_delta(
     cell_id: &str,
     name: &str,
@@ -450,8 +500,8 @@ fn build_delta(
     let mut output_elided = false;
     let mut prefix = String::new();
     let (bytes, output_start): (&[u8], u64) = if effective_cursor < retained_start {
-        // cursor 早于保留窗口起点: 头部字节已被丢弃, 只能从 retained 开头取,
-        // 并显式告知调用方该段增量之前有被丢弃的字节。
+        /* cursor 早于保留窗口起点: 头部字节已被丢弃, 只能从 retained 开头取,
+        并显式告知调用方该段增量之前有被丢弃的字节。 */
         output_elided = true;
         prefix = format!(
             "[... {} earlier output bytes were discarded (buffer retention cap) ...]\n",
@@ -485,38 +535,49 @@ fn build_delta(
     }
 }
 
+/// 计算本轮增量可返回的字节数：不超过上限，并尽量落在 UTF-8 字符边界上。
 fn capped_delta_len(bytes: &[u8]) -> usize {
     let candidate = bytes.len().min(MAX_DELTA_BYTES);
     let prefix = bytes.get(..candidate).unwrap_or_default();
     match std::str::from_utf8(prefix) {
         Ok(_) => candidate,
         Err(error) if error.error_len().is_none() && error.valid_up_to() > 0 => error.valid_up_to(),
-        // Invalid process bytes, or a retained window beginning mid-character,
-        // must still make byte-cursor progress.
+        /* 非法的进程字节，或保留窗口起点位于字符中间时，
+        仍必须推进字节游标。 */
         Err(_) => candidate,
     }
 }
 
-// ── Manager ─────────────────────────────────────────────────────────
+// ── 管理器 ─────────────────────────────────────────────────────────
 
-/// Registry of background command cells (see module docs).
-///
-/// `launch` must be called from within a tokio runtime. It may await bounded
-/// tracked capacity; `wait` returns within the caller's yield budget.
+/**
+后台命令 cell 的注册表（参见模块文档）。
+
+`launch` 必须在 tokio 运行时内调用。它可能会等待有界的跟踪容量；
+`wait` 会在调用方的 yield 预算内返回。
+*/
 pub struct BackgroundCommandManager {
+    /// 管理器实例标识，用于校验预留归属。
     manager_id: uuid::Uuid,
+    /// 所有已发布的 cell（按 cell ID 索引）。
     cells: Arc<DashMap<String, Arc<CommandCellHandle>>>,
+    /// 执行并发许可。
     execution: Arc<Semaphore>,
+    /// 总跟踪容量许可（运行中 + 保留的终态 cell）。
     tracked: Arc<Semaphore>,
+    /// 管理器配置。
     config: BackgroundCommandManagerConfig,
-    /// Optional executor used for launches that must preserve foreground
-    /// sandbox semantics.
+    /// 可选执行器，用于必须保持前台沙箱语义的启动。
     sandbox: Option<Arc<dyn SandboxExecutor>>,
-    /// Monotonic registration sequence for deterministic terminal retention.
+    /// 单调递增的注册序号，用于确定性的终态保留。
     next_sequence: AtomicU64,
+    /// 准入锁，串行化发布/启动与关闭。
     admission: AsyncMutex<()>,
+    /// 关闭信号。
     shutdown: CancellationToken,
+    /// 是否正在关闭。
     shutting_down: AtomicBool,
+    /// 跟踪所有 cell 监管任务。
     tasks: TaskTracker,
 }
 
@@ -527,11 +588,13 @@ impl Default for BackgroundCommandManager {
 }
 
 impl BackgroundCommandManager {
+    /// 校验配置后创建一个直接在宿主机上执行命令的管理器。
     pub fn new(config: BackgroundCommandManagerConfig) -> std::result::Result<Self, String> {
         config.validate()?;
         Ok(Self::from_validated_config(config, None))
     }
 
+    /// 基于已校验的配置构建管理器。
     fn from_validated_config(
         config: BackgroundCommandManagerConfig,
         sandbox: Option<Arc<dyn SandboxExecutor>>,
@@ -553,7 +616,7 @@ impl BackgroundCommandManager {
         }
     }
 
-    /// Create a manager whose cells execute through the supplied sandbox.
+    /// 创建一个通过给定沙箱执行 cell 的管理器。
     pub fn new_with_sandbox(
         config: BackgroundCommandManagerConfig,
         sandbox: Arc<dyn SandboxExecutor>,
@@ -562,12 +625,15 @@ impl BackgroundCommandManager {
         Ok(Self::from_validated_config(config, Some(sandbox)))
     }
 
-    /// Retain at most `max_terminal_history` terminal cells (oldest first).
-    /// Running cells are never selected. Mirrors `TaskSpawner::prune_terminal_history`.
+    /**
+    最多保留 `max_terminal_history` 个终态 cell（优先移除最旧的）。
+    运行中的 cell 永远不会被选中。与 `TaskSpawner::prune_terminal_history` 对应。
+    */
     fn prune_terminal_history(&self) {
         prune_terminal_history(&self.cells, self.config.max_terminal_history);
     }
 
+    /// 查找 cell 并获取一个 wait 租约，防止本轮 wait 期间被清理。
     fn acquire_waiter_lease(
         &self,
         cell_id: &str,
@@ -589,7 +655,7 @@ impl BackgroundCommandManager {
         Ok((handle, lease))
     }
 
-    /// Validate and publish a cell without allowing its runner to start.
+    /// 校验并发布一个 cell，但不允许其运行器启动。
     pub async fn prepare_launch(
         &self,
         request: CommandCellRequest,
@@ -740,7 +806,7 @@ impl BackgroundCommandManager {
         })
     }
 
-    /// Open a prepared cell's execution gate.
+    /// 打开已预备 cell 的执行闸门。
     pub async fn start_prepared(
         &self,
         mut reservation: CommandCellReservation,
@@ -778,7 +844,7 @@ impl BackgroundCommandManager {
         Ok(reservation.receipt.clone())
     }
 
-    /// Abort a prepared cell without starting a process.
+    /// 中止一个已预备的 cell，不启动任何进程。
     pub fn abort_prepared(
         &self,
         mut reservation: CommandCellReservation,
@@ -803,6 +869,7 @@ impl BackgroundCommandManager {
         Ok(reservation.receipt.clone())
     }
 
+    /// 校验启动请求的基本合法性。
     fn validate_request(
         &self,
         request: &CommandCellRequest,
@@ -831,15 +898,19 @@ impl BackgroundCommandManager {
     }
 }
 
-/// Single-use gate for one validated and published command cell.
+/// 针对单个已校验、已发布命令 cell 的一次性闸门。
 #[must_use]
 pub struct CommandCellReservation {
+    /// 所属管理器的标识。
     manager_id: uuid::Uuid,
+    /// 启动回执。
     receipt: CommandCellLaunchReceipt,
+    /// 发往监管任务的动作通道；消费后为 `None`。
     action: Option<oneshot::Sender<PreparedCellAction>>,
 }
 
 impl CommandCellReservation {
+    /// 返回该预留对应的启动回执。
     pub fn receipt(&self) -> &CommandCellLaunchReceipt {
         &self.receipt
     }
@@ -865,14 +936,21 @@ impl Drop for CommandCellReservation {
     }
 }
 
+/// 发给已预备 cell 监管任务的动作。
 enum PreparedCellAction {
+    /// 开始执行；启动后通过该发送端确认。
     Start(oneshot::Sender<()>),
+    /// 以给定消息中止。
     Abort(String),
 }
 
+/// 单轮 wait 的租约，释放时重新执行终态保留清理。
 struct CellWaiterLease {
+    /// 被租用的 cell。
     handle: Arc<CommandCellHandle>,
+    /// cell 注册表，用于释放后清理。
     cells: Arc<DashMap<String, Arc<CommandCellHandle>>>,
+    /// 终态历史保留上限。
     max_terminal_history: usize,
 }
 
@@ -883,6 +961,7 @@ impl Drop for CellWaiterLease {
     }
 }
 
+/// 按注册顺序移除超出 `max_terminal_history` 的最旧终态 cell。
 fn prune_terminal_history(
     cells: &DashMap<String, Arc<CommandCellHandle>>,
     max_terminal_history: usize,
@@ -898,6 +977,7 @@ fn prune_terminal_history(
     }
 }
 
+/// 收集可被清理的终态 cell（无 wait/观察租约）及其注册序号。
 fn terminal_retention_candidates(
     cells: &DashMap<String, Arc<CommandCellHandle>>,
 ) -> Vec<(u64, String)> {
@@ -912,10 +992,10 @@ fn terminal_retention_candidates(
         .collect()
 }
 
+/// 在持有分片锁的情况下复核条件后移除候选 cell。
 fn remove_terminal_candidate(cells: &DashMap<String, Arc<CommandCellHandle>>, cell_id: &str) {
-    // The candidate scan is only a retention snapshot. A waiter/observer can
-    // acquire a lease after the scan, so removal must re-check the predicates
-    // while DashMap holds the shard lock.
+    /* 候选扫描只是保留策略的一次快照。等待者/观察者可能在扫描之后获取租约，
+    因此移除时必须在 DashMap 持有分片锁的情况下重新检查条件。 */
     let _ = cells.remove_if(cell_id, |_id, handle| {
         handle.is_terminal()
             && handle.waiter_leases.load(Ordering::Acquire) == 0
@@ -942,15 +1022,14 @@ impl CommandCellRegistry for BackgroundCommandManager {
     ) -> BoxFuture<'_, std::result::Result<CommandCellDelta, CommandCellError>> {
         let cell_id = cell_id.to_string();
         Box::pin(async move {
-            // Holding the DashMap entry while incrementing the lease closes
-            // the lookup/prune race. Dropping `_lease` acknowledges this wait
-            // round and immediately re-runs bounded terminal retention.
+            /* 在持有 DashMap 条目的同时递增租约，消除了查找与清理之间的竞争。
+            丢弃 `_lease` 即确认本轮 wait，并立即重新执行有界的终态保留。 */
             let (handle, _lease) = self.acquire_waiter_lease(&cell_id)?;
 
             loop {
-                // 先注册 waiter 再快照: 否则 snapshot 与 await 之间的
-                // notify_waiters() 会丢失唤醒。用 noop waker 强制完成一次
-                // poll 以完成注册。
+                /* 先注册 waiter 再快照: 否则 snapshot 与 await 之间的
+                notify_waiters() 会丢失唤醒。用 noop waker 强制完成一次
+                poll 以完成注册。 */
                 let mut notified = std::pin::pin!(handle.notify.notified());
                 let registered_pending = {
                     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
@@ -1083,6 +1162,7 @@ impl Drop for BackgroundCommandManager {
     }
 }
 
+/// 等待请求方的取消令牌触发；未提供时永不完成。
 async fn request_cancelled(cancel: Option<&Arc<CancellationToken>>) {
     match cancel {
         Some(cancel) => cancel.cancelled().await,
@@ -1090,6 +1170,10 @@ async fn request_cancelled(cancel: Option<&Arc<CancellationToken>>) {
     }
 }
 
+/**
+监管一个已预备的 cell：等待启动/中止/取消/超时，运行后完成 artifact 收尾，
+并一次性写入终态、唤醒等待者、执行保留清理。
+*/
 #[allow(clippy::too_many_arguments)]
 async fn supervise_prepared_cell(
     handle: Arc<CommandCellHandle>,
@@ -1172,33 +1256,42 @@ async fn supervise_prepared_cell(
     );
 }
 
-// ── Runner ──────────────────────────────────────────────────────────
+// ── 运行器 ──────────────────────────────────────────────────────────
 
-/// Run one cell to completion and return its final phase + exit code.
-///
-/// Every path (normal exit / timeout / cancel / launch failure / semaphore
-/// closed) funnels into a single return so the caller can write the terminal
-/// state exactly once.
+/// 运行单个 cell 所需的参数。
 struct CellRunSpec {
+    /// 要执行的 shell 命令。
     command: String,
+    /// 工作目录。
     working_dir: Option<PathBuf>,
-    /// Absolute wall-clock deadline computed when `launch` accepts the cell.
-    /// Semaphore admission and execution consume the same budget.
+    /**
+    `launch` 接受 cell 时计算出的绝对截止时间。
+    信号量准入与执行共享同一预算。
+    */
     deadline: Instant,
+    /// 可选的沙箱执行器。
     sandbox: Option<Arc<dyn SandboxExecutor>>,
+    /// 所属运行的取消令牌。
     owner_cancel: Option<Arc<CancellationToken>>,
+    /// 内存中保留的输出字节上限。
     max_retained: usize,
 }
 
+/// 单个 cell 运行的最终结果。
 #[derive(Debug)]
 struct CellOutcome {
+    /// 终态阶段。
     phase: CommandCellPhase,
+    /// 进程退出码（若有）。
     exit_code: Option<i32>,
+    /// 终态原因。
     cause: CommandCellTerminalCause,
+    /// 附加说明信息。
     message: Option<String>,
 }
 
 impl CellOutcome {
+    /// 进程正常退出，根据是否成功决定阶段。
     fn exited(exit_code: Option<i32>, success: bool) -> Self {
         Self {
             phase: if success {
@@ -1212,6 +1305,7 @@ impl CellOutcome {
         }
     }
 
+    /// 超时导致的失败。
     fn timed_out() -> Self {
         Self {
             phase: CommandCellPhase::Failed,
@@ -1221,6 +1315,7 @@ impl CellOutcome {
         }
     }
 
+    /// 被取消。
     fn cancelled() -> Self {
         Self {
             phase: CommandCellPhase::Cancelled,
@@ -1230,6 +1325,7 @@ impl CellOutcome {
         }
     }
 
+    /// 运行时失败；启动失败映射为 `LaunchFailed` 阶段，其余为 `Failed`。
     fn runtime_failure(cause: CommandCellTerminalCause, message: String) -> Self {
         let phase = if cause == CommandCellTerminalCause::LaunchFailed {
             CommandCellPhase::LaunchFailed
@@ -1245,6 +1341,12 @@ impl CellOutcome {
     }
 }
 
+/**
+运行单个 cell 直至结束，返回其最终阶段 + 退出码。
+
+所有路径（正常退出 / 超时 / 取消 / 启动失败 / 信号量关闭）都汇聚到同一个
+返回点，使调用方只需写入一次终态。
+*/
 async fn run_cell(
     handle: Arc<CommandCellHandle>,
     semaphore: Arc<Semaphore>,
@@ -1258,8 +1360,8 @@ async fn run_cell(
         owner_cancel,
         max_retained,
     } = spec;
-    // 并发许可: 满则排队等待(不阻塞 launch 调用方)。取消必须能打断
-    // 排队本身,不能等前一个小时级命令释放许可后才进入终态。
+    /* 并发许可: 满则排队等待(不阻塞 launch 调用方)。取消必须能打断
+    排队本身,不能等前一个小时级命令释放许可后才进入终态。 */
     let acquire = semaphore.acquire_owned();
     tokio::pin!(acquire);
     let _permit = match tokio::select! {
@@ -1314,9 +1416,9 @@ async fn run_cell(
         .await;
     }
 
-    // env_clear + allowlist: 防止把密钥泄漏给后台进程; PATH/HOME 必需,
-    // LANG/LC_ALL 保证 UTF-8 输出不被 C locale 破坏, TMPDIR/TZ 是安全的
-    // 功能性变量。(与旧 spawn_task 的策略一致。)
+    /* env_clear + allowlist: 防止把密钥泄漏给后台进程; PATH/HOME 必需,
+    LANG/LC_ALL 保证 UTF-8 输出不被 C locale 破坏, TMPDIR/TZ 是安全的
+    功能性变量。(与旧 spawn_task 的策略一致。) */
     let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(&command).env_clear();
     for var in ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ"] {
@@ -1379,9 +1481,8 @@ async fn run_cell(
         },
     };
 
-    // Drain reader tasks under the same absolute deadline. A descendant can
-    // keep inherited pipes open after the shell exits, so process status alone
-    // is not a safe completion boundary.
+    /* 在同一绝对截止时间下读完读取任务。子孙进程可能在 shell 退出后仍保持
+    继承的管道打开，因此仅凭进程状态并不是安全的完成边界。 */
     let drain_deadline = if outcome.cause == CommandCellTerminalCause::Cancelled {
         Instant::now()
             .checked_add(CANCEL_DRAIN_GRACE)
@@ -1412,6 +1513,7 @@ async fn run_cell(
     outcome
 }
 
+/// 通过沙箱执行器以流式方式运行 cell。
 async fn run_sandbox_cell(
     handle: Arc<CommandCellHandle>,
     command: String,
@@ -1421,8 +1523,8 @@ async fn run_sandbox_cell(
     owner_cancel: Option<Arc<CancellationToken>>,
     max_retained: usize,
 ) -> CellOutcome {
-    // SandboxCommand has a concrete timeout; the outer absolute deadline is
-    // authoritative for queueing, execution, and stream drain.
+    /* SandboxCommand 自带具体的超时；外层绝对截止时间才是排队、执行
+    与流读取的权威依据。 */
     let backend_timeout = deadline.saturating_duration_since(Instant::now());
     if backend_timeout.is_zero() {
         return CellOutcome::timed_out();
@@ -1543,12 +1645,12 @@ async fn run_sandbox_cell(
     }
 }
 
+/// 等待到达截止时间。
 async fn wait_for_deadline(deadline: Instant) {
     tokio::time::sleep_until(deadline).await;
 }
 
-/// Read a pipe to EOF, appending chunks into the cell's output buffer and
-/// waking all waiters after each append.
+/// 读取管道直到 EOF，把每块数据追加到 cell 输出缓冲区，并在每次追加后唤醒所有等待者。
 async fn read_pipe<R: tokio::io::AsyncRead + Unpin>(
     mut pipe: R,
     handle: Arc<CommandCellHandle>,
@@ -1568,12 +1670,16 @@ async fn read_pipe<R: tokio::io::AsyncRead + Unpin>(
     }
 }
 
+/// 管道读取任务的收尾结果。
 enum PipeFinish {
+    /// 已结束；附带失败信息（若有）。
     Finished(Option<String>),
+    /// 截止时间到达前未能结束。
     TimedOut,
 }
 
 impl PipeFinish {
+    /// 返回失败信息（若有）；超时不视为失败信息。
     fn failure(&self) -> Option<String> {
         match self {
             Self::Finished(failure) => failure.clone(),
@@ -1582,6 +1688,7 @@ impl PipeFinish {
     }
 }
 
+/// 在截止时间内等待管道读取任务结束，超时则中止该任务。
 async fn finish_pipe_reader(
     channel: &str,
     join: Option<tokio::task::JoinHandle<std::result::Result<(), String>>>,
@@ -1606,6 +1713,7 @@ async fn finish_pipe_reader(
     }
 }
 
+/// 等待 cell 自身或所属运行的取消信号，任一触发即完成。
 async fn cancellation_requested(
     cell_cancel: &CancellationToken,
     owner_cancel: Option<&Arc<CancellationToken>>,
@@ -1621,6 +1729,7 @@ async fn cancellation_requested(
     }
 }
 
+/// 追加输出到保留缓冲区与 artifact，并唤醒所有等待者。
 fn append_output(
     handle: &CommandCellHandle,
     bytes: &[u8],
@@ -1655,14 +1764,20 @@ fn append_output(
     handle.notify.notify_waiters();
 }
 
+/// artifact 收尾的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactFinalizeOutcome {
+    /// 收尾正常完成（无论写入成功与否）。
     Finished,
+    /// 截止时间到达，收尾被打断。
     DeadlineElapsed,
+    /// 管理器关闭，收尾被打断。
     Shutdown,
+    /// cell 被取消，收尾被打断。
     Cancelled,
 }
 
+/// 刷新解码器残余内容并完成输出 artifact，可被关闭/取消/截止时间打断。
 async fn finish_output_artifact(
     handle: &CommandCellHandle,
     deadline: Instant,
@@ -1759,6 +1874,7 @@ async fn finish_output_artifact(
     ArtifactFinalizeOutcome::Finished
 }
 
+/// 将仍处于写入中的 artifact 标记为因收尾被打断而失败。
 fn mark_artifact_finalize_interrupted(
     handle: &CommandCellHandle,
     outcome: ArtifactFinalizeOutcome,
@@ -1785,6 +1901,7 @@ fn mark_artifact_finalize_interrupted(
     });
 }
 
+/// 向 artifact 写入一段文本；写入失败时标记失败并返回 `false`。
 fn push_artifact_text(
     artifact: &mut CellArtifactState,
     channel: ToolOutputChannel,
@@ -1804,8 +1921,7 @@ fn push_artifact_text(
     true
 }
 
-/// Kill the child's whole process group, then reap the child. Best-effort:
-/// errors are ignored (the cell still converges to a terminal phase).
+/// 杀死子进程所在的整个进程组并回收子进程。尽力而为：忽略错误（cell 仍会收敛到终态）。
 async fn kill_process_group(child: &mut tokio::process::Child) {
     kill_process_group_id(child.id());
     let _ = tokio::time::timeout(CANCEL_DRAIN_GRACE, async {
@@ -1815,6 +1931,7 @@ async fn kill_process_group(child: &mut tokio::process::Child) {
     .await;
 }
 
+/// 向指定进程组发送 SIGKILL（仅 Unix）。
 fn kill_process_group_id(pid: Option<u32>) {
     #[cfg(unix)]
     if let Some(pid) = pid {
@@ -1828,7 +1945,7 @@ fn kill_process_group_id(pid: Option<u32>) {
     let _ = pid;
 }
 
-// ── Tests ───────────────────────────────────────────────────────────
+// ── 测试 ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1836,10 +1953,12 @@ mod tests {
     use echo_core::sandbox::{ExecutionResult, IsolationLevel};
     use echo_core::tools::cell::CommandCellRegistry;
 
+    /// 立即返回成功结果并记录执行次数的测试沙箱。
     struct TestSandbox {
         executions: AtomicU64,
     }
 
+    /// 在被放行前一直阻塞的测试沙箱。
     struct BlockingSandbox {
         executions: AtomicU64,
         started: Notify,
@@ -1918,14 +2037,17 @@ mod tests {
         }
     }
 
+    /// 使用默认配置构建管理器。
     fn manager() -> BackgroundCommandManager {
         BackgroundCommandManager::default()
     }
 
+    /// 构建序号为 0 的测试 cell 句柄。
     fn test_handle(cell_id: &str) -> Arc<CommandCellHandle> {
         test_handle_with_sequence(cell_id, 0)
     }
 
+    /// 构建指定注册序号的测试 cell 句柄。
     fn test_handle_with_sequence(cell_id: &str, sequence: u64) -> Arc<CommandCellHandle> {
         Arc::new(CommandCellHandle {
             cell_id: cell_id.to_string(),
@@ -1956,6 +2078,7 @@ mod tests {
         })
     }
 
+    /// 构建给定命令的默认启动请求。
     fn request(command: &str) -> CommandCellRequest {
         CommandCellRequest {
             command: command.to_string(),
@@ -1965,6 +2088,7 @@ mod tests {
         }
     }
 
+    /// 启动命令并返回 cell ID。
     async fn launch_cell(
         manager: &BackgroundCommandManager,
         request: CommandCellRequest,
@@ -1976,6 +2100,7 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
+    /// 启动一个 artifact 收尾会被测试钩子阻塞的 cell。
     async fn launch_with_blocking_artifact_finalizer(
         manager: &BackgroundCommandManager,
         root: &std::path::Path,
@@ -2023,8 +2148,10 @@ mod tests {
         Ok((cell_id, hook))
     }
 
-    /// 循环 wait 直到终态, 拼接全部增量输出。wait 会在"有新输出"时就返回
-    /// (可能尚未终态), 因此测试里用它收集完整结果。
+    /**
+    循环 wait 直到终态, 拼接全部增量输出。wait 会在"有新输出"时就返回
+    (可能尚未终态), 因此测试里用它收集完整结果。
+    */
     async fn drain_to_terminal(
         manager: &BackgroundCommandManager,
         cell_id: &str,
@@ -2172,8 +2299,8 @@ mod tests {
     #[tokio::test]
     async fn long_unicode_output_is_incrementally_drainable_without_panic() {
         let manager = manager();
-        // 多字节输出超过单轮 16 KiB；每一轮都必须推进真实字节游标，不能
-        // 因终态或字符截断直接跳到 total 而永久漏掉中间输出。
+        /* 多字节输出超过单轮 16 KiB；每一轮都必须推进真实字节游标，不能
+        因终态或字符截断直接跳到 total 而永久漏掉中间输出。 */
         let cell_id = launch_cell(
             &manager,
             request("for i in $(seq 1 3000); do echo \"中文输出🦀行$i\"; done"),
@@ -2662,8 +2789,8 @@ mod tests {
             .map_err(|error| error.to_string())?;
         let foreign_id = foreign.receipt().cell_id.clone();
         assert!(manager.start_prepared(foreign).await.is_err());
-        // The rejected reservation is dropped and aborts on its owning manager.
-        // Its receipt cannot appear in this manager's registry.
+        /* 被拒绝的预留会被丢弃，并在其所属管理器上中止。
+        它的回执不可能出现在本管理器的注册表中。 */
         assert!(!manager.cells.contains_key(&foreign_id));
         let (_, foreign_terminal) = drain_to_terminal(&foreign_manager, &foreign_id).await;
         assert_eq!(
@@ -3036,8 +3163,7 @@ mod tests {
         handle.terminal_flag.store(true, Ordering::Release);
         manager.cells.insert("racing-terminal".to_string(), handle);
 
-        // Snapshot candidates first, then acquire the lease in the same window
-        // that production prune has between its scan and remove step.
+        /* 先快照候选，然后在生产清理逻辑“扫描”与“移除”之间的同一窗口内获取租约。 */
         let candidates = terminal_retention_candidates(&manager.cells);
         assert_eq!(
             candidates.first().map(|(_, id)| id.as_str()),

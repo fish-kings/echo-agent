@@ -1,27 +1,29 @@
-//! demo64_tool_pipeline —— ToolExecutionPipeline 综合演示
-//!
-//! 展示工具执行管线的完整架构：
-//!
-//! **ToolExecutionPipeline 的 16 个阶段**（按执行顺序）：
-//!
-//!  1. `InterventionStage`    — 干预回调（block / cancel / redirect / modify）
-//!  2. `ToolVisibilityStage`  — 工具可见性检查
-//!  3. `PlanModeStage`        — 计划模式：阻止写操作
-//!  4. `PreToolUseHookStage`  — PreToolUse 钩子
-//!  5. `PermissionStage`      — 权限检查（PermissionService）
-//!  6. `ReadBeforeEditStage`  — 编辑前必须读取文件
-//!  7. `SkillPermissionStage` — 激活技能的工具权限
-//!  8. `InvocationStage`      — 发布 canonical invocation
-//!  9. `CallbackStage(Start)` — on_tool_start 回调
-//! 10. `ExecuteStage`         — ToolManager 校验并执行工具
-//! 11. `PostToolUseHookStage` — 成功/失败后置钩子
-//! 12. `OutputGuardStage`    — 输出与审计错误投影的守卫
-//! 13. `TruncationStage`     — 输出预算与 artifact 处理
-//! 14. `TraceRecordingStage` — ToolResult / ToolError
-//! 15. `AuditStage`          — 结算后工具终态审计
-//! 16. `CallbackStage(End)`  — on_tool_end / on_tool_error 分流
-//!
-//! Contract test: `contract_demo64_tool_pipeline`.
+/*!
+demo64_tool_pipeline —— ToolExecutionPipeline 综合演示
+
+展示工具执行管线的完整架构：
+
+**ToolExecutionPipeline 的 16 个阶段**（按执行顺序）：
+
+ 1. `InterventionStage`    — 干预回调（block / cancel / redirect / modify）
+ 2. `ToolVisibilityStage`  — 工具可见性检查
+ 3. `PlanModeStage`        — 计划模式：阻止写操作
+ 4. `PreToolUseHookStage`  — PreToolUse 钩子
+ 5. `PermissionStage`      — 权限检查（PermissionService）
+ 6. `ReadBeforeEditStage`  — 编辑前必须读取文件
+ 7. `SkillPermissionStage` — 激活技能的工具权限
+ 8. `InvocationStage`      — 发布 canonical invocation
+ 9. `CallbackStage(Start)` — on_tool_start 回调
+10. `ExecuteStage`         — ToolManager 校验并执行工具
+11. `PostToolUseHookStage` — 成功/失败后置钩子
+12. `OutputGuardStage`    — 输出与审计错误投影的守卫
+13. `TruncationStage`     — 输出预算与 artifact 处理
+14. `TraceRecordingStage` — 记录 ToolResult / ToolError 轨迹
+15. `AuditStage`          — 结算后工具终态审计
+16. `CallbackStage(End)`  — on_tool_end / on_tool_error 分流
+
+契约测试：`contract_demo64_tool_pipeline`。
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::testing::MockLlmClient;
@@ -33,6 +35,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── 工具定义 ──────────────────────────────────────────────────────────────────
 
+/// 两数相加，返回 `a + b` 的结果。
 #[tool(name = "add", description = "两数相加")]
 async fn add(
     /// 第一个数
@@ -45,6 +48,7 @@ async fn add(
 
 // ── 入口 ──────────────────────────────────────────────────────────────────────
 
+/// demo64 契约测试：依次演示管线阶段总览、干预回调、管线观测回调与工具执行配置。
 #[tokio::test]
 async fn contract_demo64_tool_pipeline() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -81,6 +85,7 @@ async fn contract_demo64_tool_pipeline() -> echo_agent::error::Result<()> {
 
 // ── Part 1: Pipeline 阶段总览 ─────────────────────────────────────────────────
 
+/// Part 1：打印 ToolExecutionPipeline 16 个阶段的总览与关键要点。
 fn demo_pipeline_stages() {
     let stages = [
         (
@@ -165,14 +170,16 @@ fn demo_pipeline_stages() {
     println!("  → Pipeline 阶段总览 ✓");
 }
 
-// ── Part 2: InterventionCallback ──────────────────────────────────────────────
+// ── Part 2: 干预回调 InterventionCallback ──────────────────────────────────────────────
 
 /// 自定义干预回调：阻止 shell 工具，为 web_search 注入额外上下文
 struct DemoIntervention {
+    /// 已收到的工具调用干预次数。
     call_count: AtomicUsize,
 }
 
 impl DemoIntervention {
+    /// 创建调用计数为 0 的干预回调。
     fn new() -> Self {
         Self {
             call_count: AtomicUsize::new(0),
@@ -181,6 +188,7 @@ impl DemoIntervention {
 }
 
 impl InterventionCallback for DemoIntervention {
+    /// 工具调用前的干预决策：阻止 shell，为 web_search 注入提示，其余放行。
     fn on_tool_call<'a>(
         &'a self,
         _agent: &'a str,
@@ -197,6 +205,7 @@ impl InterventionCallback for DemoIntervention {
     }
 }
 
+/// Part 2：演示 InterventionResult 的各构造方法及干预回调在管线第一阶段的拦截效果。
 async fn demo_intervention_callback() -> echo_agent::error::Result<()> {
     // ── 2a. InterventionResult 各构造方法 ──
     let allow = InterventionResult::allow();
@@ -273,14 +282,20 @@ async fn demo_intervention_callback() -> echo_agent::error::Result<()> {
 
 /// 追踪管线事件的回调
 struct PipelineTracker {
+    /// 所有工具的开始回调次数。
     tool_starts: AtomicUsize,
+    /// 所有工具的结束回调次数。
     tool_ends: AtomicUsize,
+    /// `add` 工具的开始回调次数。
     add_starts: AtomicUsize,
+    /// `add` 工具的结束回调次数。
     add_ends: AtomicUsize,
+    /// ReAct 迭代次数。
     iterations: AtomicUsize,
 }
 
 impl PipelineTracker {
+    /// 创建所有计数器均为 0 的追踪器。
     fn new() -> Self {
         Self {
             tool_starts: AtomicUsize::new(0),
@@ -293,6 +308,7 @@ impl PipelineTracker {
 }
 
 impl AgentCallback for PipelineTracker {
+    /// 工具开始执行时计数并打印事件。
     fn on_tool_start<'a>(
         &'a self,
         agent: &'a str,
@@ -307,6 +323,7 @@ impl AgentCallback for PipelineTracker {
         Box::pin(async {})
     }
 
+    /// 工具执行结束时计数并打印输出预览。
     fn on_tool_end<'a>(
         &'a self,
         agent: &'a str,
@@ -322,6 +339,7 @@ impl AgentCallback for PipelineTracker {
         Box::pin(async {})
     }
 
+    /// 工具执行出错时打印错误信息。
     fn on_tool_error<'a>(
         &'a self,
         agent: &'a str,
@@ -332,12 +350,14 @@ impl AgentCallback for PipelineTracker {
         Box::pin(async {})
     }
 
+    /// 输出最终答案时打印答案预览。
     fn on_final_answer<'a>(&'a self, _agent: &'a str, answer: &'a str) -> BoxFuture<'a, ()> {
         let preview: String = answer.chars().take(50).collect();
         println!("    📍 FinalAnswer → \"{preview}\"");
         Box::pin(async {})
     }
 
+    /// 每轮 ReAct 迭代结束时计数并打印轮次。
     fn on_iteration<'a>(&'a self, _agent: &'a str, iteration: usize) -> BoxFuture<'a, ()> {
         self.iterations.fetch_add(1, Ordering::SeqCst);
         println!("    📍 Iteration #{iteration}");
@@ -345,6 +365,7 @@ impl AgentCallback for PipelineTracker {
     }
 }
 
+/// Part 3：创建带 AgentCallback 的 Agent，观察并校验管线各阶段触发的回调事件。
 async fn demo_agent_callback() -> echo_agent::error::Result<()> {
     println!("  创建带 AgentCallback 的 Agent，观察管线回调事件\n");
 
@@ -402,8 +423,9 @@ async fn demo_agent_callback() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 4: ToolExecutionConfig ───────────────────────────────────────────────
+// ── Part 4: 工具执行配置 ToolExecutionConfig ───────────────────────────────────────────────
 
+/// Part 4：展示 ToolExecutionConfig 各配置项与管线阶段之间的关系。
 fn demo_execution_config() -> echo_agent::error::Result<()> {
     println!("  ToolExecutionConfig 的各配置项与管线阶段的关系\n");
 
@@ -488,6 +510,7 @@ fn demo_execution_config() -> echo_agent::error::Result<()> {
 
 // ── 辅助 ──────────────────────────────────────────────────────────────────────
 
+/// 打印 demo 标题横幅。
 fn print_banner() {
     println!("{}", "═".repeat(64));
     println!("      Echo Agent × Tool Pipeline (demo64)");
@@ -495,6 +518,7 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线与小节标题。
 fn separator(title: &str) {
     println!("{}", "─".repeat(64));
     println!("{title}\n");

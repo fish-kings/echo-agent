@@ -1,13 +1,15 @@
-//! ReactAgent 执行引擎
-//!
-//! 包含 ReAct 循环的全部内部实现：
-//! - `retry` —— LLM 重试逻辑 + 工具并发超时计算
-//! - `context` —— 上下文管理 + 长期记忆 + 持久化 + 审计
-//! - `react_loop` —— ReAct 循环入口与上下文准备
-//! - `direct` —— 直接执行入口（run_direct / run_chat_direct）
-//! - `stream_channel` —— 基于 channel 的流式执行（主路径）
-//! - `processor` —— SSE 分片 → AgentEvent 的转换
-//! - `types` —— 共享类型（StreamMode、StreamInit）
+/*!
+ReactAgent 执行引擎
+
+包含 ReAct 循环的全部内部实现：
+- `retry` —— LLM 重试逻辑 + 工具并发超时计算
+- `context` —— 上下文管理 + 长期记忆 + 持久化 + 审计
+- `react_loop` —— ReAct 循环入口与上下文准备
+- `direct` —— 直接执行入口（run_direct / run_chat_direct）
+- `stream_channel` —— 基于 channel 的流式执行（主路径）
+- `processor` —— SSE 分片 → AgentEvent 的转换
+- `types` —— 共享类型（StreamMode、StreamInit）
+*/
 
 use std::time::Duration;
 

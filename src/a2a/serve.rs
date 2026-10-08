@@ -52,9 +52,11 @@ struct AppState {
     server: Arc<A2AServer>,
 }
 
-/// 启动 A2A HTTP 服务器（不鉴权，默认 1 MB 请求体上限）。
-///
-/// 绑定到给定地址，提供 Agent Card 发现、JSON-RPC 任务处理、健康检查等能力。
+/**
+ * 启动 A2A HTTP 服务器（不鉴权，默认 1 MB 请求体上限）。
+ *
+ * 绑定到给定地址，提供 Agent Card 发现、JSON-RPC 任务处理、健康检查等能力。
+ */
 pub async fn serve(server: A2AServer, bind_addr: &str) -> crate::error::Result<()> {
     serve_inner(
         server,
@@ -65,10 +67,12 @@ pub async fn serve(server: A2AServer, bind_addr: &str) -> crate::error::Result<(
     .await
 }
 
-/// 启动 A2A HTTP 服务器（带 JWT 鉴权，默认 1 MB 请求体上限）。
-///
-/// 所有 `/` 端点请求都必须携带合法的 `Authorization: Bearer <token>` 请求头。
-/// `/health` 与 `/ready` 端点不受鉴权约束。
+/**
+ * 启动 A2A HTTP 服务器（带 JWT 鉴权，默认 1 MB 请求体上限）。
+ *
+ * 所有 `/` 端点请求都必须携带合法的 `Authorization: Bearer <token>` 请求头。
+ * `/health` 与 `/ready` 端点不受鉴权约束。
+ */
 pub async fn serve_with_auth(
     server: A2AServer,
     bind_addr: &str,
@@ -185,7 +189,7 @@ async fn shutdown_signal() {
 
 // ── 端点处理函数 ─────────────────────────────────────────────────────────
 
-/// `GET /.well-known/agent.json`
+/// 处理 `GET /.well-known/agent.json`：返回本服务的 Agent Card。
 async fn agent_card(State(state): State<AppState>) -> Response {
     match state.server.agent_card_json() {
         Ok(json) => (
@@ -203,9 +207,11 @@ async fn agent_card(State(state): State<AppState>) -> Response {
     }
 }
 
-/// `GET /health` —— K8s 存活探针。
-///
-/// 只要进程存活就返回 200。
+/**
+ * `GET /health` —— K8s 存活探针。
+ *
+ * 只要进程存活就返回 200。
+ */
 async fn health() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -214,9 +220,11 @@ async fn health() -> impl IntoResponse {
     )
 }
 
-/// `GET /ready` —— K8s 就绪探针。
-///
-/// 返回 200 表示服务已准备好接受请求。
+/**
+ * `GET /ready` —— K8s 就绪探针。
+ *
+ * 返回 200 表示服务已准备好接受请求。
+ */
 async fn ready(State(state): State<AppState>) -> impl IntoResponse {
     let _ = state.server.agent_card();
     (
@@ -304,6 +312,7 @@ fn parse_method(body: &str) -> Option<String> {
     None
 }
 
+/// A2A HTTP 服务的单元测试与属性测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,58 +320,68 @@ mod tests {
 
     // ── 确定性单元测试 ──────────────────────────────────────────────
 
+    /// 验证可解析出 `tasks/send` 方法。
     #[test]
     fn test_parse_method_tasks_send() {
         let body = r#"{"jsonrpc":"2.0","id":"1","method":"tasks/send","params":{}}"#;
         assert_eq!(parse_method(body), Some("tasks/send".to_string()));
     }
 
+    /// 验证可解析出 `tasks/sendSubscribe` 方法。
     #[test]
     fn test_parse_method_send_subscribe() {
         let body = r#"{"jsonrpc":"2.0","id":"1","method":"tasks/sendSubscribe","params":{}}"#;
         assert_eq!(parse_method(body), Some("tasks/sendSubscribe".to_string()));
     }
 
+    /// 验证可解析出 `tasks/get` 方法。
     #[test]
     fn test_parse_method_tasks_get() {
         let body = r#"{"jsonrpc":"2.0","id":"1","method":"tasks/get","params":{}}"#;
         assert_eq!(parse_method(body), Some("tasks/get".to_string()));
     }
 
+    /// 验证非法 JSON 不会解析出方法。
     #[test]
     fn test_parse_method_invalid_json() {
         assert_eq!(parse_method("not json"), None);
     }
 
+    /// 验证空输入不会解析出方法。
     #[test]
     fn test_parse_method_empty() {
         assert_eq!(parse_method(""), None);
     }
 
+    /// 验证缺少 `method` 字段时不会解析出方法。
     #[test]
     fn test_parse_method_no_method_field() {
         let body = r#"{"jsonrpc":"2.0","id":"1","params":{}}"#;
         assert_eq!(parse_method(body), None);
     }
 
+    /// 验证 `method` 值为空时不会解析出方法。
     #[test]
     fn test_parse_method_empty_method_value() {
         let body = r#"{"jsonrpc":"2.0","method":"","params":{}}"#;
         assert_eq!(parse_method(body), Some("".to_string()));
     }
 
+    /// 验证冒号两侧存在空白时仍可解析出方法。
     #[test]
     fn test_parse_method_whitespace_around_colon() {
         let body = r#"{"jsonrpc":"2.0","method" : "tasks/send","params":{}}"#;
         assert_eq!(parse_method(body), Some("tasks/send".to_string()));
     }
 
+    /// 验证 `method` 不是首个字段时仍可解析出方法。
     #[test]
     fn test_parse_method_method_not_first_field() {
         let body = r#"{"jsonrpc":"2.0","params":{},"method":"tasks/get","id":"1"}"#;
         assert_eq!(parse_method(body), Some("tasks/get".to_string()));
     }
 
+    /// 验证嵌套对象中的 `method` 键不会被误识别。
     #[test]
     fn test_parse_method_nested_object_with_method_key() {
         // 嵌套 params 内部的 "method" 不应被提取出来

@@ -1,18 +1,20 @@
-//! 技能加载器 —— 多作用域发现，并遵循 agentskills.io 规范进行解析。
-//!
-//! 支持 [agentskills.io](https://agentskills.io/specification) 的目录约定:
-//! 仅接受官方 frontmatter 字段;路由完全由 description 驱动,
-//! 单技能文件不定义私有钩子扩展。
-//!
-//! # 发现作用域
-//!
-//! | 作用域 | 扫描路径 |
-//! |-------|--------------|
-//! | 项目级 | `./skills/`、`./.agents/skills/` |
-//! | 用户级 | `~/.agents/skills/` |
-//! | 自定义 | 任意用户指定路径 |
-//!
-//! 当名称冲突时,项目级技能会覆盖用户级技能。
+/*!
+技能加载器 —— 多作用域发现，并遵循 agentskills.io 规范进行解析。
+
+支持 [agentskills.io](https://agentskills.io/specification) 的目录约定:
+仅接受官方 frontmatter 字段;路由完全由 description 驱动,
+单技能文件不定义私有钩子扩展。
+
+# 发现作用域
+
+| 作用域 | 扫描路径 |
+|-------|--------------|
+| 项目级 | `./skills/`、`./.agents/skills/` |
+| 用户级 | `~/.agents/skills/` |
+| 自定义 | 任意用户指定路径 |
+
+当名称冲突时,项目级技能会覆盖用户级技能。
+*/
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -25,7 +27,9 @@ use tracing::{debug, info, warn};
 use echo_core::error::{ReactError, Result};
 
 use super::types::{RawFrontmatter, SkillDescriptor, SkillDocument};
+/// 技能定义文件名。
 const SKILL_FILE: &str = "SKILL.md";
+/// 递归扫描技能目录的最大深度。
 const MAX_SCAN_DEPTH: usize = 4;
 
 /// 扫描过程中需要跳过的目录名。
@@ -52,29 +56,35 @@ pub enum DiscoveryScope {
     Custom(PathBuf),
 }
 
-/// 由产品方提供的权威判定,用于决定已发现的技能是否可以被加载。
-///
-/// 框架本身刻意不了解产品的生命周期文件。调用方可以基于自己的
-/// 启用/禁用状态或审核状态实现该 trait,而加载器本身仍是一个
-/// 可复用的发现原语。
+/**
+由产品方提供的权威判定,用于决定已发现的技能是否可以被加载。
+
+框架本身刻意不了解产品的生命周期文件。调用方可以基于自己的
+启用/禁用状态或审核状态实现该 trait,而加载器本身仍是一个
+可复用的发现原语。
+*/
 pub trait SkillLoadPolicy: Send + Sync {
-    /// 当该描述符可以进入运行时目录时返回 `true`。
-    ///
-    /// 该判定是异步的,这样嵌入方应用或来源 SDK 可以作为实时的
-    /// 策略权威,而不会阻塞 Agent 运行时。
+    /**
+    当该描述符可以进入运行时目录时返回 `true`。
+
+    该判定是异步的,这样嵌入方应用或来源 SDK 可以作为实时的
+    策略权威,而不会阻塞 Agent 运行时。
+    */
     fn allows<'a>(&'a self, descriptor: &'a SkillDescriptor) -> BoxFuture<'a, bool>;
 }
 
 // -- SkillLoader --
 
-/// 支持多作用域发现、并遵循 agentskills.io 规范解析的技能加载器。
-///
-/// # 解析行为
-///
-/// - **当前格式**: YAML frontmatter(`name`、`description` 为必填),
-///   Markdown 正文即为说明文本。
-/// - **严格文件校验**: 未知字段、类型错误、名称不匹配以及描述为空
-///   都会在注册前拒绝该文档。
+/**
+支持多作用域发现、并遵循 agentskills.io 规范解析的技能加载器。
+
+# 解析行为
+
+- **当前格式**: YAML frontmatter(`name`、`description` 为必填),
+  Markdown 正文即为说明文本。
+- **严格文件校验**: 未知字段、类型错误、名称不匹配以及描述为空
+  都会在注册前拒绝该文档。
+*/
 pub struct SkillLoader {
     /// 已发现的描述符,以技能名称为键。
     descriptors: HashMap<String, SkillDescriptor>,
@@ -115,10 +125,12 @@ impl SkillLoader {
         self
     }
 
-    /// 从多个作用域发现技能。
-    ///
-    /// 返回所有成功解析的 `SkillDescriptor`。名称冲突按顺序解决:
-    /// 更靠前的作用域优先。当某个技能被遮蔽时会记录警告日志。
+    /**
+    从多个作用域发现技能。
+
+    返回所有成功解析的 `SkillDescriptor`。名称冲突按顺序解决:
+    更靠前的作用域优先。当某个技能被遮蔽时会记录警告日志。
+    */
     pub async fn discover(&mut self, scopes: &[DiscoveryScope]) -> Result<Vec<SkillDescriptor>> {
         let mut results = Vec::new();
 
@@ -175,10 +187,12 @@ impl SkillLoader {
         Ok(results)
     }
 
-    /// 仅从直接子目录中发现 Agent Plugin 技能。
-    ///
-    /// Agent Plugins 1.0 将组件固定在 `skills/<name>/SKILL.md`,
-    /// 不会递归搜索分类目录。
+    /**
+    仅从直接子目录中发现 Agent Plugin 技能。
+
+    Agent Plugins 1.0 将组件固定在 `skills/<name>/SKILL.md`,
+    不会递归搜索分类目录。
+    */
     pub async fn discover_agent_plugin_skills(
         &mut self,
         dir: impl Into<PathBuf>,
@@ -320,11 +334,11 @@ impl SkillLoader {
                     }
                 }
             } else if recursive {
-                // 该直接子目录下没有 SKILL.md:递归进入以支持嵌套分类
-                // 布局(skills/<category>/<name>/SKILL.md)。
-                // 如果没有这一步,只能发现扁平的 skills/<name>/SKILL.md。
-                // MAX_SCAN_DEPTH 用于限制递归深度,避免无限循环/过大的目录树。
-                // 使用 Box::pin 是因为 async fn 不能直接递归调用自身(Rust 的限制)。
+                /* 该直接子目录下没有 SKILL.md:递归进入以支持嵌套分类
+                布局(skills/<category>/<name>/SKILL.md)。
+                如果没有这一步,只能发现扁平的 skills/<name>/SKILL.md。
+                MAX_SCAN_DEPTH 用于限制递归深度,避免无限循环/过大的目录树。
+                使用 Box::pin 是因为 async fn 不能直接递归调用自身(Rust 的限制)。 */
                 let nested = Box::pin(self.scan_directory(&path, depth + 1, true)).await?;
                 found.extend(nested);
             }
@@ -395,14 +409,15 @@ impl Default for SkillLoader {
 
 // -- 解析 --
 
-/// 将单个 SKILL.md 文件解析为目录元数据及其已准备好的文档。
-///
-/// 强制执行 agentskills.io 校验中与文件格式相关的部分:
-/// - 名称必须与所在的技能目录名一致
-/// - 名称必须满足小写 kebab-case 约束
-/// - 描述必须存在且非空
-/// - 未知字段和非法 YAML 会被拒绝
-///
+/**
+将单个 SKILL.md 文件解析为目录元数据及其已准备好的文档。
+
+强制执行 agentskills.io 校验中与文件格式相关的部分:
+- 名称必须与所在的技能目录名一致
+- 名称必须满足小写 kebab-case 约束
+- 描述必须存在且非空
+- 未知字段和非法 YAML 会被拒绝
+*/
 async fn parse_skill_file_with_variables(
     path: &Path,
     parent_dir_name: &str,
@@ -445,9 +460,11 @@ impl SkillDocument {
     }
 }
 
-/// 校验所有基于文件的入口共用的官方 agentskills.io 限制。
-/// 将这些检查集中在此处,可以防止运行时发现、SkillsHub、
-/// 安装流程以及独立校验器各自接受不同的格式。
+/**
+校验所有基于文件的入口共用的官方 agentskills.io 限制。
+将这些检查集中在此处,可以防止运行时发现、SkillsHub、
+安装流程以及独立校验器各自接受不同的格式。
+*/
 fn validate_official_descriptor(descriptor: &SkillDescriptor) -> Result<()> {
     let name_errors = descriptor.validate_name();
     if !name_errors.is_empty() {
@@ -495,10 +512,10 @@ fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
         .trim_start_matches('\r')
         .trim_start_matches('\n');
 
-    // 查找结束的 ---,它必须独占一行。
-    // 这可以防止 Markdown 的水平分隔线(例如文档中间出现的 `---`)
-    // 被误认为是 frontmatter 的结束符。
-    // 结束的 --- 必须出现在某一行的行首。
+    /* 查找结束的 ---,它必须独占一行。
+    这可以防止 Markdown 的水平分隔线(例如文档中间出现的 `---`)
+    被误认为是 frontmatter 的结束符。
+    结束的 --- 必须出现在某一行的行首。 */
     let close_idx = after_open
         .find("\n---")
         .ok_or_else(|| ReactError::Other("SKILL.md frontmatter missing closing ---".to_string()))?;
@@ -506,13 +523,13 @@ fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
     // 校验结束的 --- 确实位于行首(而非行中间)
     let yaml_str = after_open.get(..close_idx).unwrap_or_default();
 
-    // 确保结束的 --- 所在行没有多余内容
-    // (--- 之后应当只跟随空白字符、\r 或 \n)
+    /* 确保结束的 --- 所在行没有多余内容
+    (--- 之后应当只跟随空白字符、\r 或 \n) */
     let after_close_start = after_open
         .get(close_idx.saturating_add(4)..)
         .unwrap_or_default(); // 跳过 "\n---"
-    // "---" 之后第一个非空白字符应当是 Markdown 正文或文件结尾
-    // 如果 "---" 同一行还有其他文本,说明它不是一个合法的分隔符
+    /* "---" 之后第一个非空白字符应当是 Markdown 正文或文件结尾
+    如果 "---" 同一行还有其他文本,说明它不是一个合法的分隔符 */
     let close_line_end = after_close_start
         .find('\n')
         .unwrap_or(after_close_start.len());
@@ -536,8 +553,10 @@ fn parse_document(content: &str) -> Result<(RawFrontmatter, String)> {
     Ok((raw, instructions))
 }
 
-/// 在 serde 的 `Option<T>` 默认值机制抹去"字段缺省"与"显式非法值"
-/// 之间的区别之前,拒绝那些存在但为 null 或其他非字符串类型的值。
+/**
+在 serde 的 `Option<T>` 默认值机制抹去"字段缺省"与"显式非法值"
+之间的区别之前,拒绝那些存在但为 null 或其他非字符串类型的值。
+*/
 fn validate_official_frontmatter_types(yaml: &str) -> Result<()> {
     let value: Value = serde_yaml_ng::from_str(yaml)
         .map_err(|error| ReactError::Other(format!("SKILL.md YAML parse error: {error}")))?;
@@ -583,11 +602,13 @@ fn validate_official_frontmatter_types(yaml: &str) -> Result<()> {
 
 // -- 依赖校验 --
 
-/// 校验技能依赖关系,并对发现的问题记录警告日志。
-///
-/// 在所有已发现的技能之间执行基于 DFS 的环检测。
-/// 循环依赖和缺失依赖都会被记录为警告,但不会阻止技能加载
-/// (它们会在激活阶段被处理)。
+/**
+校验技能依赖关系,并对发现的问题记录警告日志。
+
+在所有已发现的技能之间执行基于 DFS 的环检测。
+循环依赖和缺失依赖都会被记录为警告,但不会阻止技能加载
+(它们会在激活阶段被处理)。
+*/
 fn validate_and_sort_dependencies(skills: &[SkillDescriptor]) {
     let name_set: HashSet<&str> = skills.iter().map(|s| s.name.as_str()).collect();
 
@@ -673,6 +694,7 @@ fn scope_to_dirs(scope: &DiscoveryScope) -> Vec<PathBuf> {
 
 // -- 测试 --
 
+// 单元测试：技能加载、目录扫描与加载策略。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,8 +725,10 @@ Instructions here.
         Ok(())
     }
 
-    /// 验证已移除的旧版 echo-agent 专有字段(version、author、tags 等)
-    /// 会导致解析失败。
+    /**
+    验证已移除的旧版 echo-agent 专有字段(version、author、tags 等)
+    会导致解析失败。
+    */
     #[test]
     fn test_skill_document_rejects_removed_echo_agent_fields() {
         let content = r#"---
@@ -731,8 +755,10 @@ resources:
         assert!(SkillDocument::parse(content).is_err());
     }
 
-    /// 验证官方规定的长度限制及字段类型约束(description/compatibility 长度、
-    /// license/compatibility/allowed-tools/metadata 字段的类型)均被强制执行。
+    /**
+    验证官方规定的长度限制及字段类型约束(description/compatibility 长度、
+    license/compatibility/allowed-tools/metadata 字段的类型)均被强制执行。
+    */
     #[test]
     fn test_skill_document_enforces_official_limits_and_types() {
         let long_description = "x".repeat(1025);
@@ -778,14 +804,17 @@ resources:
         Ok(())
     }
 
-    /// 验证 scan_directory 递归:嵌套布局 skills/<category>/<name>/SKILL.md
-    /// 必须能被发现(B2 修复前只能找到扁平 skills/<name>/SKILL.md)。
+    /**
+    验证 scan_directory 递归:嵌套布局 skills/<category>/<name>/SKILL.md
+    必须能被发现(B2 修复前只能找到扁平 skills/<name>/SKILL.md)。
+    */
     #[tokio::test]
     async fn scan_directory_finds_nested_category_skills()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // 用 std 临时目录避免为单个测试增加 dev-dependency。用进程 id + 原子计数
-        // 保证唯一,测试结束清理。
+        /* 用 std 临时目录避免为单个测试增加 dev-dependency。用进程 id + 原子计数
+        保证唯一,测试结束清理。 */
         use std::sync::atomic::{AtomicU64, Ordering};
+        // 进程内递增计数器，用于生成唯一的临时目录名
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let uid = COUNTER.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(
@@ -797,9 +826,10 @@ resources:
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        // cleanup guard
+        // 清理守卫：测试结束时删除临时目录
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -856,16 +886,20 @@ resources:
     #[tokio::test]
     async fn load_policy_excludes_disallowed_descriptor()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
+        /// 拒绝名为 `blocked` 的技能的测试策略。
         struct DenyBlocked;
         impl SkillLoadPolicy for DenyBlocked {
+            /// 仅当技能名不是 `blocked` 时允许加载。
             fn allows<'a>(&'a self, descriptor: &'a SkillDescriptor) -> BoxFuture<'a, bool> {
                 Box::pin(async move { descriptor.name != "blocked" })
             }
         }
 
         let root = std::env::temp_dir().join(format!("echo_skill_policy_{}", uuid::Uuid::new_v4()));
+        /// 测试结束时删除临时目录的清理守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -890,13 +924,16 @@ resources:
         Ok(())
     }
 
+    /// 验证 Agent Plugin 技能发现只扫描直接子目录，不递归进入分类目录。
     #[tokio::test]
     async fn agent_plugin_discovery_uses_only_immediate_children()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root =
             std::env::temp_dir().join(format!("echo_agent_plugin_skills_{}", uuid::Uuid::new_v4()));
+        /// 测试结束时删除临时目录的清理守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -927,6 +964,7 @@ resources:
         Ok(())
     }
 
+    /// 验证插件变量会同时应用于 frontmatter 与正文。
     #[tokio::test]
     async fn plugin_variables_apply_to_frontmatter_and_body()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -934,8 +972,10 @@ resources:
             "echo_plugin_skill_variables_{}",
             uuid::Uuid::new_v4()
         ));
+        /// 测试结束时删除临时目录的清理守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -966,13 +1006,16 @@ resources:
         Ok(())
     }
 
+    /// 验证标准 frontmatter 在无私有扩展时能被正确解析。
     #[tokio::test]
     async fn standard_frontmatter_parses_without_private_extensions()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root =
             std::env::temp_dir().join(format!("echo_standard_skill_{}", uuid::Uuid::new_v4()));
+        /// 测试结束时删除临时目录的清理守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -998,12 +1041,15 @@ resources:
         Ok(())
     }
 
+    /// 验证技能目录中的私有 hooks.json 在发现阶段被拒绝并记录错误诊断。
     #[tokio::test]
     async fn private_hook_sidecar_is_rejected_during_discovery()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let root = std::env::temp_dir().join(format!("echo_private_hook_{}", uuid::Uuid::new_v4()));
+        /// 测试结束时删除临时目录的清理守卫。
         struct Guard(std::path::PathBuf);
         impl Drop for Guard {
+            /// 删除守卫持有的临时目录。
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
@@ -1029,6 +1075,7 @@ resources:
         Ok(())
     }
 
+    /// 验证项目级作用域解析为 skills/ 与 .agents/skills/ 两个目录。
     #[test]
     fn test_scope_to_dirs_project() {
         let dirs = scope_to_dirs(&DiscoveryScope::Project(PathBuf::from("/my/project")));
@@ -1040,12 +1087,14 @@ resources:
         );
     }
 
+    /// 验证自定义作用域按原样解析为给定路径。
     #[test]
     fn test_scope_to_dirs_custom() {
         let dirs = scope_to_dirs(&DiscoveryScope::Custom(PathBuf::from("/custom/path")));
         assert_eq!(dirs, vec![PathBuf::from("/custom/path")]);
     }
 
+    /// 验证 allowed-tools 字符串按空白切分为工具列表。
     #[test]
     fn test_allowed_tools_string() -> std::result::Result<(), String> {
         let content = "---\nname: test\ndescription: Test\nallowed-tools: Bash(git:*) Read\n---\n";

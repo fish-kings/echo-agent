@@ -1,15 +1,19 @@
-//! 护栏（Guardrails）与安全子系统
-//!
-//! 集中管理护栏检查、审计日志、熔断器等
-//! 与安全相关的组件。
+/*!
+护栏（Guardrails）与安全子系统
+
+集中管理护栏检查、审计日志、熔断器等
+与安全相关的组件。
+*/
 
 use crate::guard::GuardManager;
 use echo_core::circuit_breaker::CircuitBreaker;
 use std::sync::Arc;
 
-/// 护栏（Guardrails）与安全子系统
-///
-/// 汇聚了输入/输出护栏、审计日志记录以及 LLM 熔断器。
+/**
+护栏（Guardrails）与安全子系统
+
+汇聚了输入/输出护栏、审计日志记录以及 LLM 熔断器。
+*/
 pub(crate) struct GuardSubsystem {
     /// 可选的护栏管理器，负责执行输入/输出内容检查。
     pub(crate) guard_manager: Option<GuardManager>,

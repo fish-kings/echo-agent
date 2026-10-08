@@ -144,8 +144,10 @@ pub struct ReviewCandidate {
     pub evidence: String,
     /// 置信度（0.0-1.0）。
     pub confidence: f32,
-    /// 是否已被持久化：`Some(true)` 已保存、`Some(false)` 仅提议未保存、
-    /// `None` 表示持久化结果未知（例如写入过程中发生 panic 或部分失败）。
+    /**
+     * 是否已被持久化：`Some(true)` 已保存、`Some(false)` 仅提议未保存、
+     * `None` 表示持久化结果未知（例如写入过程中发生 panic 或部分失败）。
+     */
     pub persisted: Option<bool>,
 }
 
@@ -345,8 +347,10 @@ impl BackgroundReviewer {
         }
     }
 
-    /// 判断本次审查是否应被跳过（未启用，或预算已耗尽）；
-    /// 需要跳过时返回相应的空结果，否则返回 `None`。
+    /**
+     * 判断本次审查是否应被跳过（未启用，或预算已耗尽）；
+     * 需要跳过时返回相应的空结果，否则返回 `None`。
+     */
     fn skip_review(&self, run_id: &str) -> Option<ReviewOutcome> {
         if !self.config.enabled {
             Some(Self::empty_outcome(run_id, None))
@@ -360,8 +364,10 @@ impl BackgroundReviewer {
         }
     }
 
-    /// 构造一个不包含候选信息的结果；`error` 为 `None` 时表示这是一次
-    /// 正常的“无内容可保存”的结果，否则表示审查因错误而未能给出结论。
+    /**
+     * 构造一个不包含候选信息的结果；`error` 为 `None` 时表示这是一次
+     * 正常的“无内容可保存”的结果，否则表示审查因错误而未能给出结论。
+     */
     fn empty_outcome(run_id: &str, error: Option<String>) -> ReviewOutcome {
         ReviewOutcome {
             run_id: run_id.to_string(),
@@ -517,8 +523,10 @@ impl BackgroundReviewer {
     }
 }
 
-/// 校验 LLM 返回的候选信息是否满足长度、置信度与“证据须为原文精确引用”
-/// 等约束；校验通过时返回裁剪后的 `(content, evidence)`。
+/**
+ * 校验 LLM 返回的候选信息是否满足长度、置信度与“证据须为原文精确引用”
+ * 等约束；校验通过时返回裁剪后的 `(content, evidence)`。
+ */
 fn validate_candidate(
     kind: ReviewCandidateKind,
     content: String,
@@ -1064,8 +1072,9 @@ mod tests {
             review_skills: true,
             ..Default::default()
         };
-        // 没有 LLM 客户端时很难构造出一个真正的 reviewer，
-        // 但我们仍然可以单独测试提示词选择逻辑
+        /* 没有 LLM 客户端时很难构造出一个真正的 reviewer，
+         * 但我们仍然可以单独测试提示词选择逻辑
+         */
         let prompt = match (config.review_memory, config.review_skills) {
             (true, true) => COMBINED_REVIEW_PROMPT,
             (true, false) => MEMORY_REVIEW_PROMPT,

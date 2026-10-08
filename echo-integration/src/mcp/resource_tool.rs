@@ -61,8 +61,10 @@ impl McpResourceDirectory {
         self.clients.is_empty()
     }
 
-    /// 按可选的服务器选择器筛选客户端：指定服务器时只返回该服务器（未连接则报错），
-    /// 未指定时返回目录中所有已连接的客户端。
+    /**
+    按可选的服务器选择器筛选客户端：指定服务器时只返回该服务器（未连接则报错），
+    未指定时返回目录中所有已连接的客户端。
+    */
     fn select(
         &self,
         server: Option<&str>,
@@ -82,10 +84,12 @@ impl McpResourceDirectory {
     }
 }
 
-/// 构建三个标准的、可跨服务器使用的 MCP 资源工具。
-///
-/// 返回的工具共享一份连接管理器当前客户端的不可变快照。
-/// 当连接拓扑发生变化时，调用方需要重新生成并替换这些工具。
+/**
+构建三个标准的、可跨服务器使用的 MCP 资源工具。
+
+返回的工具共享一份连接管理器当前客户端的不可变快照。
+当连接拓扑发生变化时，调用方需要重新生成并替换这些工具。
+*/
 pub fn build_mcp_resource_tools(clients: HashMap<String, Arc<McpClient>>) -> Vec<Box<dyn Tool>> {
     build_mcp_resource_tools_by_id(
         clients
@@ -193,8 +197,10 @@ struct ServerError {
     message: String,
 }
 
-/// 将完整的条目列表裁剪为一页（最多 `PAGE_SIZE` 条），并构建包含分页元数据
-/// （总数、本页返回数、是否被截断、下一页游标等）的工具结果。
+/**
+将完整的条目列表裁剪为一页（最多 `PAGE_SIZE` 条），并构建包含分页元数据
+（总数、本页返回数、是否被截断、下一页游标等）的工具结果。
+*/
 fn paginated_result<T: Serialize>(
     key: &str,
     items: Vec<T>,
@@ -252,8 +258,10 @@ fn paginated_result<T: Serialize>(
     Ok(result)
 }
 
-/// 构建“列出资源”与“列出资源模板”两个工具共用的 JSON Schema 参数定义
-/// （可选的 `server` 与 `cursor` 参数）。
+/**
+构建“列出资源”与“列出资源模板”两个工具共用的 JSON Schema 参数定义
+（可选的 `server` 与 `cursor` 参数）。
+*/
 fn list_parameters() -> Value {
     json!({
         "type": "object",
@@ -298,9 +306,11 @@ impl Tool for ListMcpResourcesTool {
         ToolRiskLevel::ReadOnly
     }
 
-    /// 执行资源列表查询：可选按 `server` 过滤，支持通过 `cursor` 分页；
-    /// 未指定服务器时并发查询所有已连接服务器并合并结果，单个服务器失败仅记录为错误项，
-    /// 而指定服务器查询失败时直接返回失败结果。
+    /**
+    执行资源列表查询：可选按 `server` 过滤，支持通过 `cursor` 分页；
+    未指定服务器时并发查询所有已连接服务器并合并结果，单个服务器失败仅记录为错误项，
+    而指定服务器查询失败时直接返回失败结果。
+    */
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let server = match optional_string(&parameters, "server") {
@@ -382,9 +392,11 @@ impl Tool for ListMcpResourceTemplatesTool {
         ToolRiskLevel::ReadOnly
     }
 
-    /// 执行资源模板列表查询：可选按 `server` 过滤，支持通过 `cursor` 分页；
-    /// 未指定服务器时并发查询所有已连接服务器并合并结果，单个服务器失败仅记录为错误项，
-    /// 而指定服务器查询失败时直接返回失败结果。
+    /**
+    执行资源模板列表查询：可选按 `server` 过滤，支持通过 `cursor` 分页；
+    未指定服务器时并发查询所有已连接服务器并合并结果，单个服务器失败仅记录为错误项，
+    而指定服务器查询失败时直接返回失败结果。
+    */
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let server = match optional_string(&parameters, "server") {
@@ -482,8 +494,10 @@ impl Tool for ReadMcpResourceTool {
         ToolRiskLevel::ReadOnly
     }
 
-    /// 执行单个资源的读取：校验服务器已连接后调用其 `resources/read`，
-    /// 并在返回的 JSON 负载中附加 `server`、`uri` 字段方便调用方核对来源。
+    /**
+    执行单个资源的读取：校验服务器已连接后调用其 `resources/read`，
+    并在返回的 JSON 负载中附加 `server`、`uri` 字段方便调用方核对来源。
+    */
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let server = match required_string(&parameters, "server") {
@@ -541,8 +555,10 @@ mod tests {
         JsonRpcResponse,
     };
 
-    /// 测试用的假 MCP 传输层：对 `resources/list`、`resources/templates/list`、
-    /// `resources/read` 请求返回预设的成功响应，用于验证资源工具的正常路径。
+    /**
+    测试用的假 MCP 传输层：对 `resources/list`、`resources/templates/list`、
+    `resources/read` 请求返回预设的成功响应，用于验证资源工具的正常路径。
+    */
     struct ResourceTransport;
 
     /// 测试用的假 MCP 传输层：对任意请求都返回错误响应，用于验证资源工具的失败处理路径。
@@ -839,8 +855,10 @@ mod tests {
         Ok(())
     }
 
-    /// 验证不指定服务器时，聚合列表会保留健康服务器的结果并将失败服务器记为错误项；
-    /// 而明确指定失败服务器时，则直接返回“不可用”的失败结果。
+    /**
+    验证不指定服务器时，聚合列表会保留健康服务器的结果并将失败服务器记为错误项；
+    而明确指定失败服务器时，则直接返回“不可用”的失败结果。
+    */
     #[tokio::test]
     async fn all_server_listing_keeps_successes_and_targeted_failure_is_explicit()
     -> std::result::Result<(), String> {
@@ -887,8 +905,10 @@ mod tests {
         Ok(())
     }
 
-    /// 验证当两个不同插件提供的服务器暴露相同的资源 URI 时，各自的选择器仍保持唯一区分，
-    /// 聚合列表中不会互相覆盖，且各自的资源都能被正确读取。
+    /**
+    验证当两个不同插件提供的服务器暴露相同的资源 URI 时，各自的选择器仍保持唯一区分，
+    聚合列表中不会互相覆盖，且各自的资源都能被正确读取。
+    */
     #[tokio::test]
     async fn same_resource_uri_from_two_plugin_owners_keeps_distinct_selectors()
     -> std::result::Result<(), String> {

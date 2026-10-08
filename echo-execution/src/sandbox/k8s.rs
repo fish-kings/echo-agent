@@ -1,13 +1,15 @@
-//! Kubernetes Pod 沙箱执行器
-//!
-//! 通过 `kubectl` CLI 在 K8s 集群中创建临时 Pod 执行代码：
-//! - Pod 级隔离（SecurityContext + ResourceQuota）
-//! - Detached owner 显式结算临时 Pod（success / error / timeout / cancel / caller drop）
-//! - 支持 Pod SecurityPolicy / SecurityStandards
-//!
-//! 适用于大规模并发和企业级部署。需要 `kubectl` 已配置集群访问。
-//! 当前实现不能像 Docker 一样逐 Pod 强制断网；因此当
-//! `ResourceLimits.network=false` 时会拒绝执行，避免违反调用方声明的隔离契约。
+/*!
+ * Kubernetes Pod 沙箱执行器
+ *
+ * 通过 `kubectl` CLI 在 K8s 集群中创建临时 Pod 执行代码：
+ * - Pod 级隔离（SecurityContext + ResourceQuota）
+ * - 分离的所属任务（detached owner）显式结算临时 Pod（success / error / timeout / cancel / caller drop）
+ * - 支持 Pod SecurityPolicy / SecurityStandards
+ *
+ * 适用于大规模并发和企业级部署。需要 `kubectl` 已配置集群访问。
+ * 当前实现不能像 Docker 一样逐 Pod 强制断网；因此当
+ * `ResourceLimits.network=false` 时会拒绝执行，避免违反调用方声明的隔离契约。
+ */
 
 use super::{
     CommandKind, ExecutionResult, IsolationLevel, ResourceLimits, SandboxCommand, SandboxExecutor,
@@ -24,11 +26,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+/// kubectl 控制命令的默认超时
 const DEFAULT_K8S_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// 清理 Pod 时的轮询间隔
 const K8S_CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// 终态错误信息的最大字符数
 const MAX_K8S_TERMINAL_FACT_CHARS: usize = 1_024;
+/// kubectl 启动失败时的最大重试次数
 const K8S_CONTROL_START_RETRY_LIMIT: usize = 2;
+/// kubectl 启动重试之间的延迟
 const K8S_CONTROL_START_RETRY_DELAY: Duration = Duration::from_millis(5);
+/// ETXTBSY（文本文件忙）的系统错误码
 const ETXTBSY_OS_ERROR: i32 = 26;
 
 /// K8s 沙箱配置
@@ -50,16 +58,19 @@ pub struct K8sConfig {
     pub memory_request: String,
     /// Memory limit（如 "256Mi"）
     pub memory_limit: String,
-    /// 预留的集群侧清理时间（秒）
-    ///
-    /// 当前执行路径使用显式 `kubectl delete` 清理临时 Pod，
-    /// 该字段保留给未来可能的 Job/TTL 控制策略。
+    /**
+     * 预留的集群侧清理时间（秒）
+     *
+     * 当前执行路径使用显式 `kubectl delete` 清理临时 Pod，
+     * 该字段保留给未来可能的 Job/TTL 控制策略。
+     */
     pub ttl_seconds: u32,
     /// 节点选择器
     pub node_selector: std::collections::HashMap<String, String>,
 }
 
 impl Default for K8sConfig {
+    /// 默认配置：内置常见语言镜像，namespace 为 echo-sandbox
     fn default() -> Self {
         let mut language_images = std::collections::HashMap::new();
         language_images.insert("python".to_string(), "python:3.12-slim".to_string());
@@ -88,37 +99,54 @@ impl Default for K8sConfig {
 /// Kubernetes Pod 沙箱
 #[derive(Debug, Clone)]
 pub struct K8sSandbox {
+    /// K8s 沙箱配置
     config: K8sConfig,
+    /// kubectl 可执行程序路径
     kubectl_program: PathBuf,
+    /// kubectl 控制命令超时
     control_timeout: Duration,
 }
 
+/// 交给 Pod 生命周期所属任务的执行请求
 struct K8sOwnerRequest {
+    /// 待执行的命令
     command: SandboxCommand,
+    /// 可选资源限制
     limits: Option<ResourceLimits>,
+    /// 可选取消令牌
     cancel: Option<Arc<CancellationToken>>,
+    /// 执行超时
     timeout: Duration,
+    /// 临时 Pod 名称
     pod_name: String,
+    /// `kubectl run` 参数
     run_args: Vec<String>,
+    /// 调用方放弃等待时触发的令牌
     caller_abandoned: CancellationToken,
 }
 
+/// 调用方放弃守卫：未解除时在 drop 时触发放弃令牌
 struct K8sCallerAbandonmentGuard {
+    /// 调用方放弃令牌
     token: CancellationToken,
+    /// 是否仍处于激活状态
     armed: bool,
 }
 
 impl K8sCallerAbandonmentGuard {
+    /// 创建处于激活状态的守卫
     fn new(token: CancellationToken) -> Self {
         Self { token, armed: true }
     }
 
+    /// 解除守卫，drop 时不再触发令牌
     fn disarm(&mut self) {
         self.armed = false;
     }
 }
 
 impl Drop for K8sCallerAbandonmentGuard {
+    /// 若守卫仍激活，则取消放弃令牌
     fn drop(&mut self) {
         if self.armed {
             self.token.cancel();
@@ -126,34 +154,52 @@ impl Drop for K8sCallerAbandonmentGuard {
     }
 }
 
+/// 执行被中断的原因
 #[derive(Clone, Copy)]
 enum K8sInterruption {
+    /// 超时
     TimedOut,
+    /// 被取消
     Cancelled,
 }
 
+/// 写入 stdin 的结果
 enum K8sStdinOutcome {
+    /// 写入完成（可能出错）
     Written(std::io::Result<()>),
+    /// 写入期间超时
     TimedOut,
+    /// 写入期间被取消
     Cancelled,
 }
 
+/// 等待 kubectl 进程退出的结果
 enum K8sWaitOutcome {
+    /// 进程已退出
     Completed(std::io::Result<std::process::ExitStatus>),
+    /// 等待期间超时
     TimedOut,
+    /// 等待期间被取消
     Cancelled,
 }
 
+/// 读取输出管道的结果
 enum K8sPipeOutcome {
+    /// 读取任务已结束
     Completed(std::result::Result<std::io::Result<Vec<u8>>, tokio::task::JoinError>),
+    /// 读取期间超时
     TimedOut,
+    /// 调用方已放弃
     CallerAbandoned,
 }
 
+/// 输出管道读取任务句柄
 type K8sPipeReader = Option<tokio::task::JoinHandle<std::io::Result<Vec<u8>>>>;
+/// stdout/stderr 读取结果
 type K8sPipeOutput = std::result::Result<(Vec<u8>, Vec<u8>), String>;
 
 impl K8sSandbox {
+    /// 使用给定配置创建 K8s 沙箱
     pub fn new(config: K8sConfig) -> Self {
         Self {
             config,
@@ -162,13 +208,14 @@ impl K8sSandbox {
         }
     }
 
+    /// 测试用：指定 kubectl 程序路径创建沙箱
     #[cfg(test)]
     fn with_program(config: K8sConfig, kubectl_program: PathBuf) -> Self {
         Self {
             config,
             kubectl_program,
-            // The fake client starts several real child processes per cleanup.
-            // Leave scheduler headroom when the all-feature suite runs in parallel.
+            /* 假客户端每次清理会启动多个真实子进程。
+            在全特性测试套件并行运行时为调度器预留余量。 */
             control_timeout: Duration::from_secs(1),
         }
     }
@@ -212,6 +259,7 @@ impl K8sSandbox {
         }
     }
 
+    /// 生成 `kubectl delete` 的超时参数（控制超时的 3/4）
     fn deletion_timeout_arg(&self) -> String {
         let milliseconds = self
             .control_timeout
@@ -223,6 +271,7 @@ impl K8sSandbox {
         format!("--timeout={milliseconds}ms")
     }
 
+    /// 构建删除 Pod 的 kubectl 参数
     fn pod_delete_args(&self, pod_name: &str) -> Vec<String> {
         vec![
             "delete".to_string(),
@@ -238,6 +287,7 @@ impl K8sSandbox {
         ]
     }
 
+    /// 构建查询 Pod 的 kubectl 参数
     fn pod_get_args(&self, pod_name: &str) -> Vec<String> {
         vec![
             "get".to_string(),
@@ -250,10 +300,12 @@ impl K8sSandbox {
         ]
     }
 
+    /// 计算控制命令的截止时间
     fn control_deadline(&self) -> tokio::time::Instant {
         tokio::time::sleep(self.control_timeout).deadline()
     }
 
+    /// 在默认截止时间内运行 kubectl 控制命令
     async fn run_kubectl_control(
         &self,
         args: &[String],
@@ -263,6 +315,7 @@ impl K8sSandbox {
             .await
     }
 
+    /// 在指定截止时间前运行 kubectl 控制命令，启动失败时有限重试
     async fn run_kubectl_control_until(
         &self,
         args: &[String],
@@ -311,6 +364,7 @@ impl K8sSandbox {
         }
     }
 
+    /// 删除 Pod 并确认其已不存在
     async fn delete_pod(&self, pod_name: &str) -> Result<()> {
         let deadline = self.control_deadline();
         loop {
@@ -349,6 +403,7 @@ impl K8sSandbox {
         }
     }
 
+    /// 在截止时间前查询 Pod 是否仍存在
     async fn pod_is_present_until(
         &self,
         pod_name: &str,
@@ -373,6 +428,7 @@ impl K8sSandbox {
         Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
     }
 
+    /// 在两次清理观察之间等待，超出截止时间则报错
     async fn wait_for_cleanup_observation(
         &self,
         pod_name: &str,
@@ -390,6 +446,7 @@ impl K8sSandbox {
         Ok(())
     }
 
+    /// 在后台任务中清理 Pod，失败时记录清理欠账
     fn spawn_pod_cleanup(
         &self,
         pod_name: String,
@@ -493,7 +550,7 @@ impl K8sSandbox {
             args.push(format!("--serviceaccount={sa}"));
         }
 
-        // SecurityContext overrides
+        // SecurityContext 覆盖配置
         args.push("--overrides".to_string());
         args.push(
             serde_json::json!({
@@ -579,6 +636,7 @@ impl K8sSandbox {
         }
     }
 
+    /// Pod 生命周期所属任务：执行 kubectl run 并在任何结局下结算 Pod
     async fn run_pod_owner(&self, request: K8sOwnerRequest) -> Result<ExecutionResult> {
         let K8sOwnerRequest {
             command,
@@ -747,6 +805,7 @@ impl K8sSandbox {
         self.finish_with_cleanup(&pod_name, terminal).await
     }
 
+    /// 在控制超时内收集清理阶段的管道输出
     async fn collect_cleanup_pipes(
         &self,
         stdout: K8sPipeReader,
@@ -762,6 +821,7 @@ impl K8sSandbox {
         .await
     }
 
+    /// 删除 Pod 并将清理结果与主终态合并
     async fn finish_with_cleanup(
         &self,
         pod_name: &str,
@@ -847,6 +907,7 @@ impl K8sSandbox {
     }
 }
 
+/// 在后台任务中读取管道全部内容
 fn spawn_k8s_pipe_reader<R>(pipe: Option<R>) -> K8sPipeReader
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -860,6 +921,7 @@ where
     })
 }
 
+/// 在截止时间前收集 stdout 与 stderr
 async fn collect_k8s_pipes_until(
     stdout: K8sPipeReader,
     stderr: K8sPipeReader,
@@ -880,6 +942,7 @@ async fn collect_k8s_pipes_until(
     }
 }
 
+/// 在截止时间前收集单个管道输出，超时或调用方放弃时中止读取
 async fn collect_k8s_pipe_until(
     name: &str,
     reader: K8sPipeReader,
@@ -913,6 +976,7 @@ async fn collect_k8s_pipe_until(
     }
 }
 
+/// 根据 kubectl 正常退出构造执行结果
 fn k8s_completed_terminal(
     status: std::process::ExitStatus,
     output: K8sPipeOutput,
@@ -940,6 +1004,7 @@ fn k8s_completed_terminal(
     Ok(result)
 }
 
+/// 构造超时或取消后的终态结果
 fn k8s_interrupted_terminal(
     interruption: K8sInterruption,
     duration: Duration,
@@ -976,6 +1041,7 @@ fn k8s_interrupted_terminal(
     Ok(result)
 }
 
+/// 构造 kubectl 客户端失败错误，附带清理与输出信息
 fn k8s_client_failure(
     primary: &str,
     client_cleanup: std::result::Result<(), String>,
@@ -1005,6 +1071,7 @@ fn k8s_client_failure(
     )))
 }
 
+/// 构造未产生输出的中断结果
 fn empty_k8s_interrupted_result(
     interruption: K8sInterruption,
     duration: Duration,
@@ -1026,6 +1093,7 @@ fn empty_k8s_interrupted_result(
     }
 }
 
+/// 等待外部取消或调用方放弃信号；二者均无时永久挂起
 async fn wait_for_k8s_cancel(
     cancel: Option<&Arc<CancellationToken>>,
     caller_abandoned: Option<&CancellationToken>,
@@ -1043,6 +1111,7 @@ async fn wait_for_k8s_cancel(
     }
 }
 
+/// 构造控制命令超出截止时间的错误
 fn k8s_control_deadline_error(stage: &str, timeout: Duration) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Sandbox(Box::new(SandboxError::IoError(format!(
         "kubectl {stage} did not settle within the shared {}ms control deadline",
@@ -1050,10 +1119,12 @@ fn k8s_control_deadline_error(stage: &str, timeout: Duration) -> echo_core::erro
     ))))
 }
 
+/// 判断 kubectl 启动错误是否可重试（仅 ETXTBSY）
 fn is_retryable_kubectl_start_error(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(ETXTBSY_OS_ERROR)
 }
 
+/// 构造无法确认 Pod 已消失的错误
 fn k8s_ambiguous_absence_error(pod_name: &str, timeout: Duration) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Sandbox(Box::new(SandboxError::IoError(format!(
         "K8s Pod cleanup could not confirm {pod_name} absence within {}ms after an ambiguous delete; the create request may still commit",
@@ -1061,6 +1132,7 @@ fn k8s_ambiguous_absence_error(pod_name: &str, timeout: Duration) -> echo_core::
     ))))
 }
 
+/// 合并主错误与 Pod 清理失败信息
 fn combined_k8s_cleanup_failure(primary: &str, cleanup: &str) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Sandbox(Box::new(SandboxError::IoError(format!(
         "{}; Pod cleanup also failed: {}",
@@ -1069,6 +1141,7 @@ fn combined_k8s_cleanup_failure(primary: &str, cleanup: &str) -> echo_core::erro
     ))))
 }
 
+/// 记录 Pod 清理欠账日志
 fn log_k8s_cleanup_debt(pod_name: &str, primary: &str, cleanup: &str) {
     tracing::error!(
         pod = pod_name,
@@ -1078,6 +1151,7 @@ fn log_k8s_cleanup_debt(pod_name: &str, primary: &str, cleanup: &str) {
     );
 }
 
+/// 将执行结果摘要为可读的事实字符串
 fn k8s_result_facts(result: &ExecutionResult) -> String {
     format!(
         "exit_code={}, timed_out={}, cancelled={}, stdout_bytes={}, stderr_bytes={}, output_truncated={}",
@@ -1090,6 +1164,7 @@ fn k8s_result_facts(result: &ExecutionResult) -> String {
     )
 }
 
+/// 将字符串截断到最大长度
 fn bounded_k8s_fact(value: &str) -> String {
     let mut fact = value
         .chars()
@@ -1101,6 +1176,7 @@ fn bounded_k8s_fact(value: &str) -> String {
     fact
 }
 
+/// 格式化进程退出状态
 fn format_exit_status(status: &std::process::ExitStatus) -> String {
     status
         .code()
@@ -1109,26 +1185,32 @@ fn format_exit_status(status: &std::process::ExitStatus) -> String {
 }
 
 impl SandboxExecutor for K8sSandbox {
+    /// 执行器名称
     fn name(&self) -> &str {
         "k8s"
     }
 
+    /// 返回隔离级别（编排级）
     fn isolation_level(&self) -> IsolationLevel {
         IsolationLevel::Orchestrated
     }
 
+    /// 检查 kubectl 是否可用
     fn is_available(&self) -> BoxFuture<'_, bool> {
         Box::pin(self.check_kubectl())
     }
 
+    /// 清理所有沙箱 Pod
     fn cleanup(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(self.cleanup_sandbox_pods())
     }
 
+    /// 在临时 Pod 中执行命令
     fn execute(&self, command: SandboxCommand) -> BoxFuture<'_, Result<ExecutionResult>> {
         Box::pin(async move { self.run_pod(&command, None, None).await })
     }
 
+    /// 按资源限制在临时 Pod 中执行命令
     fn execute_with_limits(
         &self,
         command: SandboxCommand,
@@ -1137,6 +1219,7 @@ impl SandboxExecutor for K8sSandbox {
         Box::pin(async move { self.run_pod(&command, Some(&limits), None).await })
     }
 
+    /// 按资源限制执行命令，并支持外部取消
     fn execute_with_limits_and_cancel(
         &self,
         command: SandboxCommand,
@@ -1153,6 +1236,7 @@ impl SandboxExecutor for K8sSandbox {
 mod tests {
     use super::*;
 
+    /// 验证仅 ETXTBSY 启动错误可重试
     #[test]
     fn only_etxtbsy_is_retryable_when_starting_kubectl() {
         assert!(is_retryable_kubectl_start_error(
@@ -1163,15 +1247,20 @@ mod tests {
         ));
     }
 
+    /// 测试用的假 kubectl 脚本
     #[cfg(unix)]
     struct FakeKubectl {
+        /// 临时目录
         directory: PathBuf,
+        /// 假 kubectl 可执行文件路径
         program: PathBuf,
+        /// 操作日志文件路径
         log: PathBuf,
     }
 
     #[cfg(unix)]
     impl FakeKubectl {
+        /// 按指定模式生成假 kubectl 脚本
         fn new(mode: &str) -> std::result::Result<Self, Box<dyn std::error::Error>> {
             use std::os::unix::fs::PermissionsExt;
 
@@ -1269,10 +1358,12 @@ exit 64
             })
         }
 
+        /// 创建使用该假 kubectl 的沙箱
         fn sandbox(&self) -> K8sSandbox {
             K8sSandbox::with_program(K8sConfig::default(), self.program.clone())
         }
 
+        /// 读取已记录的 kubectl 操作序列
         fn operations(&self) -> std::result::Result<Vec<String>, std::io::Error> {
             std::fs::read_to_string(&self.log).map(|contents| {
                 contents
@@ -1282,6 +1373,7 @@ exit 64
             })
         }
 
+        /// 查询延迟可见的 Pod 是否存在
         async fn probe_pod(&self) -> std::result::Result<String, std::io::Error> {
             let output = Command::new(&self.program)
                 .args(["get", "pod", "echo-sandbox-delayed", "-o", "name"])
@@ -1293,11 +1385,13 @@ exit 64
 
     #[cfg(unix)]
     impl Drop for FakeKubectl {
+        /// 删除临时目录
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
 
+    /// 等待日志中出现指定操作
     #[cfg(unix)]
     async fn wait_for_operation(log: &std::path::Path, operation: &str) -> Result<()> {
         for _ in 0..100 {
@@ -1313,12 +1407,14 @@ exit 64
         )))
     }
 
+    /// 验证 K8s 沙箱不支持实时流式输出（使用缓冲回退）
     #[test]
     fn k8s_streaming_is_explicitly_buffered_fallback() {
         let sandbox = K8sSandbox::new(K8sConfig::default());
         assert!(!sandbox.supports_streaming());
     }
 
+    /// 验证默认配置
     #[test]
     fn test_k8s_config_default() {
         let config = K8sConfig::default();
@@ -1327,6 +1423,7 @@ exit 64
         assert_eq!(config.memory_limit, "256Mi");
     }
 
+    /// 验证 Pod 清理参数会等待 API 优雅删除
     #[test]
     fn pod_cleanup_waits_for_graceful_api_removal() {
         let sandbox = K8sSandbox::new(K8sConfig::default());
@@ -1338,6 +1435,7 @@ exit 64
         assert!(!args.iter().any(|arg| arg == "--force"));
     }
 
+    /// 验证延迟提交的 Pod 在清理返回前被删除
     #[cfg(unix)]
     #[tokio::test]
     async fn delayed_api_commit_is_deleted_before_cleanup_returns()
@@ -1362,6 +1460,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证无法确认 Pod 消失时报告为清理欠账
     #[cfg(unix)]
     #[tokio::test]
     async fn ambiguous_absence_exhaustion_is_typed_cleanup_debt()
@@ -1380,6 +1479,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证成功与非零退出时均在返回前删除 Pod
     #[cfg(unix)]
     #[tokio::test]
     async fn success_and_nonzero_completion_remove_pod_before_return()
@@ -1399,6 +1499,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证超时与取消时均在返回前删除 Pod
     #[cfg(unix)]
     #[tokio::test]
     async fn timeout_and_cancellation_remove_pod_before_return()
@@ -1439,6 +1540,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证清理失败时保留主终态信息
     #[cfg(unix)]
     #[tokio::test]
     async fn cleanup_failure_preserves_primary_terminal_facts()
@@ -1503,6 +1605,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证清理命令启动失败与超时对调用方可见
     #[cfg(unix)]
     #[tokio::test]
     async fn cleanup_spawn_and_timeout_failures_are_visible()
@@ -1528,6 +1631,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证 Pod 提交后调用方中止时清理所属任务仍会运行
     #[cfg(unix)]
     #[tokio::test]
     async fn caller_abort_after_pod_submission_keeps_cleanup_owner()
@@ -1550,6 +1654,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证主进程退出后调用方中止仍会清理管道持有者与 Pod
     #[cfg(unix)]
     #[tokio::test]
     async fn caller_abort_after_leader_exit_cleans_pipe_holder_and_pod()
@@ -1569,6 +1674,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证 stdin 写入失败与阻塞时调用方丢弃均能完成清理
     #[cfg(unix)]
     #[tokio::test]
     async fn stdin_failure_and_blocked_stdin_caller_drop_reach_settled_cleanup()
@@ -1601,6 +1707,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证调用方丢弃不会隐藏清理失败或中断恢复清理
     #[cfg(unix)]
     #[tokio::test]
     async fn caller_drop_cannot_hide_cleanup_failure_or_interrupt_join_recovery()
@@ -1631,6 +1738,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证默认镜像选择
     #[test]
     fn test_select_image_default() {
         let sandbox = K8sSandbox::new(K8sConfig::default());
@@ -1638,6 +1746,7 @@ exit 64
         assert_eq!(sandbox.select_image(&cmd), "ubuntu:22.04");
     }
 
+    /// 验证代码模式的容器内命令
     #[test]
     fn test_inner_command_code() {
         let cmd = SandboxCommand::code("python", "print('hello')");
@@ -1645,6 +1754,7 @@ exit 64
         assert_eq!(inner, vec!["python3", "-c", "print('hello')"]);
     }
 
+    /// 验证程序模式的容器内命令
     #[test]
     fn test_inner_command_program() {
         let cmd = SandboxCommand::program("ls", vec!["-la".to_string()]);
@@ -1652,6 +1762,7 @@ exit 64
         assert_eq!(inner, vec!["ls", "-la"]);
     }
 
+    /// 验证 PHP 代码的容器内命令
     #[test]
     fn test_inner_command_php() {
         let cmd = SandboxCommand::code("php", "echo 'hi';");
@@ -1659,6 +1770,7 @@ exit 64
         assert_eq!(inner, vec!["php", "-r", "echo 'hi';"]);
     }
 
+    /// 验证 network=false 时在调用 kubectl 前即拒绝执行
     #[tokio::test]
     async fn network_denial_fails_closed_before_kubectl() {
         let sandbox = K8sSandbox::new(K8sConfig::default());

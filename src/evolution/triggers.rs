@@ -300,8 +300,10 @@ impl TriggerDetector {
         let failure = ctx.last_tool_failure.as_ref()?;
         let success = ctx.last_tool_success.as_ref()?;
 
-        // 该成功必须发生在失败之后，并且使用了不同的方式
-        // （不同的工具或不同的输入）
+        /*
+        该成功必须发生在失败之后，并且使用了不同的方式
+        （不同的工具或不同的输入）
+        */
         let different_approach = success.tool_name != failure.tool_name
             || success.input_summary != failure.input_summary;
 

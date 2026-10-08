@@ -1,14 +1,18 @@
-//! 统一的工具名模式匹配
-//!
-//! 提供单一的模式匹配函数，供 `ApprovalRule`、`RuleClassifier` 等共用，
-//! 避免三处重复实现。
+/*!
+统一的工具名模式匹配
 
-/// 检查工具名是否匹配指定的模式
-///
-/// 支持的匹配方式：
-/// - `"*"` — 匹配所有工具
-/// - `"Bash"` — 精确匹配 `Bash`，前缀匹配 `Bash(rm:*)`
-/// - `"Bash(rm:*)"` — 前缀匹配 `Bash(rm:rf)` 等
+提供单一的模式匹配函数，供 `ApprovalRule`、`RuleClassifier` 等共用，
+避免三处重复实现。
+*/
+
+/**
+检查工具名是否匹配指定的模式
+
+支持的匹配方式：
+- `"*"` — 匹配所有工具
+- `"Bash"` — 精确匹配 `Bash`，前缀匹配 `Bash(rm:*)`
+- `"Bash(rm:*)"` — 前缀匹配 `Bash(rm:rf)` 等
+*/
 pub fn matches_tool_pattern(pattern: &str, tool_name: &str) -> bool {
     // 通配符
     if pattern == "*" {

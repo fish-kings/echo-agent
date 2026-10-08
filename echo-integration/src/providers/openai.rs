@@ -1,3 +1,9 @@
+/*!
+OpenAI 兼容 provider 实现。
+
+适用于任何兼容 OpenAI Chat Completions API 的服务（OpenAI、DeepSeek、通义千问、Ollama 等）。
+*/
+
 use echo_core::error::{LlmError, ReactError, Result};
 use echo_core::llm::types::{ChatCompletionRequest, ContentPart, Message, MessageContent};
 use echo_core::llm::{ChatChunk, ChatRequest, ChatResponse, LlmClient};
@@ -12,6 +18,12 @@ use super::client::{ensure_request_not_cancelled, post, stream_post};
 use super::config::LlmConfig;
 use super::thinking_translate::translate_thinking_openai_compat;
 
+/**
+根据模型选择 token 上限字段。
+
+o 系列与 GPT-5 推理模型只接受 `max_completion_tokens`，其他模型使用 `max_tokens`。
+返回 `(max_tokens, max_completion_tokens)`。
+*/
 fn token_limits(model: &str, limit: Option<u32>) -> (Option<u32>, Option<u32>) {
     let lower = model.to_ascii_lowercase();
     if lower.starts_with("gpt-5")
@@ -25,26 +37,25 @@ fn token_limits(model: &str, limit: Option<u32>) -> (Option<u32>, Option<u32>) {
     }
 }
 
-// ── Convenience Functions ─────────────────────────────────────────────────────
+// ── 便捷函数 ─────────────────────────────────────────────────────
 
-/// Normalize message content for the OpenAI Chat Completions API.
-///
-/// OpenAI's content-part schema only recognizes `text` and `image_url`. Our
-/// `ContentPart::File` (used for PDF/document attachments) serializes to
-/// `{"type":"file",...}`, which OpenAI-compatible gateways (DeepSeek, etc.)
-/// reject or silently drop — losing the attachment entirely.
-///
-/// This replaces any `ContentPart::File` with a text fallback (decoded inline
-/// for text-class files, a name-only placeholder for binary), mirroring the
-/// Anthropic provider's `file_to_content_block` behaviour. `Text` and
-/// `ImageUrl` parts already match the OpenAI spec and pass through untouched.
+/**
+为 OpenAI Chat Completions API 规范化消息内容。
+
+OpenAI 的内容片段 schema 只识别 `text` 和 `image_url`。我们的
+`ContentPart::File`（用于 PDF/文档附件）会序列化为 `{"type":"file",...}`，
+OpenAI 兼容网关（DeepSeek 等）会拒绝或静默丢弃它——导致附件完全丢失。
+
+本函数把所有 `ContentPart::File` 替换为文本回退（文本类文件解码后内联，
+二进制文件仅保留文件名占位），与 Anthropic provider 的 `file_to_content_block`
+行为保持一致。`Text` 与 `ImageUrl` 片段本就符合 OpenAI 规范，原样透传。
+*/
 fn normalize_messages(messages: Vec<Message>) -> Vec<Message> {
     messages
         .into_iter()
         .map(|mut msg| {
-            // Signed/redacted reasoning blocks are Anthropic protocol state.
-            // Preserve them in provider-neutral history, but do not leak these
-            // extension fields to OpenAI-compatible endpoints.
+            /* 带签名/脱敏的推理块属于 Anthropic 协议状态。
+            在与 provider 无关的历史中保留它们，但不要把这些扩展字段泄露给 OpenAI 兼容端点。 */
             msg.reasoning_blocks = None;
             if let MessageContent::Parts(parts) = &mut msg.content {
                 let mut rewritten: Vec<ContentPart> = Vec::with_capacity(parts.len());
@@ -58,7 +69,7 @@ fn normalize_messages(messages: Vec<Message>) -> Vec<Message> {
         .collect()
 }
 
-/// Convert a single content part to an OpenAI-compatible form.
+/// 将单个内容片段转换为 OpenAI 兼容形式。
 fn normalize_content_part(part: ContentPart) -> ContentPart {
     match part {
         ContentPart::Text { .. } | ContentPart::ImageUrl { .. } => part,
@@ -66,10 +77,8 @@ fn normalize_content_part(part: ContentPart) -> ContentPart {
             text: resource.model_text(),
         },
         ContentPart::File { name, content } => {
-            // Same dispatch as the Anthropic provider: text-class files are
-            // decoded and inlined so the model can read them; everything else
-            // (including PDFs, since OpenAI has no document block here) becomes
-            // a name-only placeholder.
+            /* 与 Anthropic provider 相同的分派逻辑：文本类文件解码后内联，便于模型阅读；
+            其余文件（包括 PDF，因为此处 OpenAI 没有文档块）都变为仅含文件名的占位符。 */
             if is_text_class_filename(&name) {
                 let decoded =
                     base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content)
@@ -89,8 +98,7 @@ fn normalize_content_part(part: ContentPart) -> ContentPart {
     }
 }
 
-/// Whether a filename looks like a text-class file (mirrors the Anthropic
-/// provider's allowlist so both gateways behave identically).
+/// 判断文件名是否为文本类文件（与 Anthropic provider 的白名单一致，保证两个网关行为相同）。
 fn is_text_class_filename(name: &str) -> bool {
     matches!(
         name.rsplit('.')
@@ -127,7 +135,7 @@ fn is_text_class_filename(name: &str) -> bool {
     )
 }
 
-/// Assemble request headers
+/// 组装请求头（Authorization 与 Content-Type）
 pub fn assemble_req_header(model: &LlmConfig) -> Result<HeaderMap> {
     let mut header_map = HeaderMap::new();
     header_map.insert(
@@ -145,19 +153,24 @@ pub fn assemble_req_header(model: &LlmConfig) -> Result<HeaderMap> {
     Ok(header_map)
 }
 
-// ── OpenAI Client Implementation ───────────────────────────────────────────────
+// ── OpenAI 客户端实现 ───────────────────────────────────────────────
 
-/// OpenAI-compatible client.
-///
-/// Supports any service compatible with the OpenAI Chat Completions API.
+/**
+OpenAI 兼容客户端。
+
+支持任何兼容 OpenAI Chat Completions API 的服务。
+*/
 pub struct OpenAiClient {
+    /// 共享的 HTTP 客户端。
     client: Arc<Client>,
+    /// LLM 配置（模型、地址、密钥等）。
     config: LlmConfig,
+    /// 预先组装好的请求头。
     header_map: HeaderMap,
 }
 
 impl OpenAiClient {
-    /// Create a client with a custom configuration
+    /// 使用自定义配置创建客户端
     pub fn new(config: LlmConfig) -> Result<Self> {
         let header_map = assemble_req_header(&config)?;
         Ok(Self {
@@ -167,7 +180,7 @@ impl OpenAiClient {
         })
     }
 
-    /// Create a client with a shared HTTP client
+    /// 使用共享的 HTTP 客户端创建客户端
     pub fn with_client(client: Arc<Client>, config: LlmConfig) -> Result<Self> {
         let header_map = assemble_req_header(&config)?;
         Ok(Self {
@@ -177,12 +190,14 @@ impl OpenAiClient {
         })
     }
 
+    /// 构建默认 HTTP 客户端。
     fn build_http_client() -> Client {
         Client::new()
     }
 }
 
 impl LlmClient for OpenAiClient {
+    /// 发送非流式聊天请求。
     fn chat(&self, request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
         let model = self.config.model.clone();
         Box::pin(
@@ -200,7 +215,7 @@ impl LlmClient for OpenAiClient {
                 let req = ChatCompletionRequest {
                     model: self.config.model.clone(),
                     messages: normalize_messages(request.messages),
-                    // o-series / GPT-5 reasoning models reject temperature.
+                    // o 系列 / GPT-5 推理模型不接受 temperature 参数。
                     temperature: if t.drop_temperature {
                         None
                     } else {
@@ -246,6 +261,7 @@ impl LlmClient for OpenAiClient {
         )
     }
 
+    /// 发送流式聊天请求，返回增量块流。
     fn chat_stream(
         &self,
         request: ChatRequest,
@@ -311,6 +327,7 @@ impl LlmClient for OpenAiClient {
         )
     }
 
+    /// 返回当前配置的模型名。
     fn model_name(&self) -> &str {
         &self.config.model
     }
@@ -322,12 +339,14 @@ mod tests {
     use base64::Engine as _;
     use echo_core::llm::types::ChatCompletionChunk;
 
+    /// 构造包含多模态片段的用户消息。
     fn multimodal_msg(parts: Vec<ContentPart>) -> Message {
         let mut msg = Message::user(String::new());
         msg.content = MessageContent::Parts(parts);
         msg
     }
 
+    /// 验证文本与图片片段原样透传。
     #[test]
     fn text_and_image_parts_pass_through_unchanged() -> std::result::Result<(), String> {
         let msg = multimodal_msg(vec![
@@ -355,6 +374,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证文本类文件被解码并内联为文本。
     #[test]
     fn text_class_file_is_inlined_as_text() -> std::result::Result<(), String> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"hello notes");
@@ -378,6 +398,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证二进制文件被替换为文件名占位符。
     #[test]
     fn binary_file_becomes_placeholder() -> std::result::Result<(), String> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(b"\x00\x01zip");
@@ -400,6 +421,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证资源链接在 provider 边界转换为纯文本。
     #[test]
     fn linked_resource_becomes_text_only_at_provider_boundary() -> std::result::Result<(), String> {
         let resource = echo_core::llm::types::LinkedResource {
@@ -431,6 +453,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证纯文本消息不受影响。
     #[test]
     fn plain_text_message_is_untouched() -> std::result::Result<(), String> {
         let msg = Message::user("hello".to_string());
@@ -442,6 +465,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 Anthropic 推理块不会转发给 OpenAI 兼容端点。
     #[test]
     fn anthropic_reasoning_blocks_are_not_forwarded() {
         use echo_core::llm::types::ReasoningBlock;
@@ -459,6 +483,7 @@ mod tests {
         );
     }
 
+    /// 验证流式块保留工具调用标识与结尾用量信息。
     #[test]
     fn literal_stream_chunks_preserve_tool_identity_and_terminal_usage()
     -> std::result::Result<(), serde_json::Error> {

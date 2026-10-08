@@ -38,25 +38,27 @@ pub enum LspError {
 /// LSP 操作统一使用的结果类型别名。
 pub type LspResult<T> = Result<T, LspError>;
 
-/// 与 LSP 语言服务器通信的 trait。
-///
-/// 实现方负责管理单个语言服务器进程的生命周期，并在 EchoAgent 的
-/// 简化类型与完整的 LSP JSON-RPC 协议之间进行转换。
-///
-/// ## 生命周期
-///
-/// ```text
-/// new() → initialize() → [did_open/did_change/did_save]* → shutdown()
-/// ```
-///
-/// ## 线程安全
-///
-/// 由于 LSP 操作可能被多个异步任务并发调用，实现方必须满足 `Send + Sync`。
-///
-/// ## 对象安全
-///
-/// 本 trait 使用 `BoxFuture` 作为返回类型以保持对象安全，
-/// 从而可以作为 `dyn LspClient` 使用。
+/**
+与 LSP 语言服务器通信的 trait。
+
+实现方负责管理单个语言服务器进程的生命周期，并在 EchoAgent 的
+简化类型与完整的 LSP JSON-RPC 协议之间进行转换。
+
+## 生命周期
+
+```text
+new() → initialize() → [did_open/did_change/did_save]* → shutdown()
+```
+
+## 线程安全
+
+由于 LSP 操作可能被多个异步任务并发调用，实现方必须满足 `Send + Sync`。
+
+## 对象安全
+
+本 trait 使用 `BoxFuture` 作为返回类型以保持对象安全，
+从而可以作为 `dyn LspClient` 使用。
+*/
 pub trait LspClient: Send + Sync {
     /// 语言标识符（例如 "python"、"typescript"、"rust"）。
     fn language(&self) -> &str;
@@ -67,17 +69,21 @@ pub trait LspClient: Send + Sync {
     /// 服务器是否已完成 `initialize` 握手。
     fn is_initialized(&self) -> bool;
 
-    /// 启动服务器进程并执行初始化握手。
-    ///
-    /// `root_uri` 是工作区根目录（例如 `file:///path/to/project`）。
+    /**
+    启动服务器进程并执行初始化握手。
+
+    `root_uri` 是工作区根目录（例如 `file:///path/to/project`）。
+    */
     fn initialize<'a>(&'a mut self, root_uri: &'a str) -> BoxFuture<'a, LspResult<()>>;
 
     /// 优雅地关闭服务器。
     fn shutdown(&mut self) -> BoxFuture<'_, LspResult<()>>;
 
-    /// 获取某个文件的诊断信息。
-    ///
-    /// 返回服务器报告的错误、警告及其他诊断信息。
+    /**
+    获取某个文件的诊断信息。
+
+    返回服务器报告的错误、警告及其他诊断信息。
+    */
     fn diagnostics<'a>(&'a self, uri: &'a str) -> BoxFuture<'a, LspResult<Vec<Diagnostic>>>;
 
     /// 查找指定位置符号的定义。

@@ -57,8 +57,10 @@ impl ReactAgent {
             }
         }
 
-        // Trace 身份标识独立于产品层的 run 身份标识，会在第一个可观察的
-        // 执行阶段之前建立。
+        /*
+        Trace 身份标识独立于产品层的 run 身份标识，会在第一个可观察的
+        执行阶段之前建立。
+        */
         self.start_legacy_trace_run(&effective_message, legacy)
             .await;
 
@@ -116,14 +118,17 @@ impl ReactAgent {
         self.run_react_loop_mode(message, StreamMode::Chat).await
     }
 
+    /// 按指定流式模式运行 ReAct 循环，并返回最终答案。
     pub(crate) async fn run_react_loop_mode(
         &self,
         message: &str,
         mode: StreamMode,
     ) -> Result<String> {
-        // 在排队之前先捕获旧版可变上下文。后续的调用方可能会在本次调用
-        // 等待执行互斥锁期间更新或清除共享的 setter，但无法改变本次
-        // 调用所持有的所有权。
+        /*
+        在排队之前先捕获旧版可变上下文。后续的调用方可能会在本次调用
+        等待执行互斥锁期间更新或清除共享的 setter，但无法改变本次
+        调用所持有的所有权。
+        */
         let mut legacy_runtime = self.capture_legacy_external_context();
         let (mut turn_lease, lifecycle_cancel) = self
             .close_authority
@@ -138,9 +143,11 @@ impl ReactAgent {
                 ),
             )));
         }
-        // 从这一点开始，调用方 future 的取消可能会中止已经可观察到的准备
-        // 工作。只有显式的返回路径才能在不留下债务记录的情况下结算
-        // close lease。
+        /*
+        从这一点开始，调用方 future 的取消可能会中止已经可观察到的准备
+        工作。只有显式的返回路径才能在不留下债务记录的情况下结算
+        关闭租约（close lease）。
+        */
         turn_lease.mark_started();
 
         let admission_snapshot =
@@ -249,8 +256,10 @@ impl ReactAgent {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let active_turn_lease = self.turn_steer_mailbox.begin(turn_id.clone());
 
-        // 意图路由（Intent routing）可能会激活一个技能。直接回答仍然走
-        // 标准的 ReAct 生命周期，从而共享相同的终止与持久化语义。
+        /*
+        意图路由（Intent routing）可能会激活一个技能。直接回答仍然走
+        标准的 ReAct 生命周期，从而共享相同的终止与持久化语义。
+        */
         if let Some(ref router) = self.intent_router {
             let messages = self.memory.context.lock().await.messages().to_vec();
             let cancel = legacy_runtime
@@ -301,8 +310,10 @@ impl ReactAgent {
             .map(|cancel| cancel.as_ref().clone());
         let failure_snapshot = snap.clone();
 
-        // 核心任务持有 close lease。即使调用方丢弃了这个外层 future，
-        // Agent::close 仍然可以取消该任务并等待 lease 释放。
+        /*
+        核心任务持有 close lease。即使调用方丢弃了这个外层 future，
+        Agent::close 仍然可以取消该任务并等待 lease 释放。
+        */
         let context = self.memory.context.clone();
         let text = effective_message;
         let core = tokio::spawn(async move {
@@ -343,7 +354,7 @@ impl ReactAgent {
                     terminal = Some(Err(e));
                     break;
                 }
-                _ => {} // Ignore intermediate events (Token, ToolCall, etc.)
+                _ => {} // 忽略中间事件（Token、ToolCall 等）
             }
         }
 
@@ -404,6 +415,7 @@ impl ReactAgent {
     }
 }
 
+/// `react_loop` 的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,22 +428,30 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 在 drop 时递增计数器的资源守卫，用于观测守卫的释放时机。
     struct QueuedGuardDrop(Arc<AtomicUsize>);
 
     impl Drop for QueuedGuardDrop {
+        /// drop 时将共享计数器加一。
         fn drop(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    /// 在第二次运行时阻塞的上下文投影器，用于构造并发排队场景。
     struct SecondRunBarrierProjection {
+        /// 投影调用次数。
         calls: AtomicUsize,
+        /// 记录每次调用收到的投影上下文。
         contexts: std::sync::Mutex<Vec<crate::compression::ProjectionContext>>,
+        /// 第二次运行开始投影时发出通知。
         second_started: tokio::sync::Notify,
+        /// 用于放行第二次运行的通知。
         release_second: tokio::sync::Notify,
     }
 
     impl SecondRunBarrierProjection {
+        /// 创建一个处于初始状态的屏障投影器。
         fn new() -> Self {
             Self {
                 calls: AtomicUsize::new(0),
@@ -443,6 +463,7 @@ mod tests {
     }
 
     impl crate::compression::PreModelContextProjector for SecondRunBarrierProjection {
+        /// 记录上下文，并在第二次调用时等待放行信号。
         fn project<'a>(
             &'a self,
             context: &'a crate::compression::ProjectionContext,
@@ -463,6 +484,7 @@ mod tests {
         }
     }
 
+    /// 构造带有指定标签与资源守卫的旧版外部运行上下文。
     fn legacy_guard_context(
         label: &str,
         drops: Arc<AtomicUsize>,
@@ -485,6 +507,7 @@ mod tests {
         }
     }
 
+    /// 验证排队中的非流式调用各自保留其捕获的资源守卫，彼此隔离。
     #[tokio::test]
     async fn queued_nonstream_invocations_keep_captured_resource_guards_isolated() -> Result<()> {
         let llm = Arc::new(MockLlmClient::new().with_responses(["first", "second"]));
@@ -594,6 +617,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证被 hook 阻塞的非流式 steer 调用会在排空之前被标记为失败。
     #[tokio::test]
     async fn tracked_steer_nonstream_hook_block_is_failed_before_drain() -> Result<()> {
         let hook_entered = Arc::new(tokio::sync::Notify::new());

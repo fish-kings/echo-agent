@@ -1,18 +1,20 @@
-//! 技能目录校验 —— echo-agent 中对应 `skills-ref validate` 的实现。
-//!
-//! [agentskills.io 规范](https://agentskills.io/specification)
-//! 自带一个参考校验器（`skills-ref validate`）。本模块以进程内 API 的形式
-//! 提供同样的校验能力，使得嵌入方应用和 CI 无需依赖外部工具即可强制执行规范：
-//!
-//! - frontmatter 只能使用官方顶层字段；
-//! - `allowed-tools` 必须是空格分隔的字符串（而非 YAML 序列）；
-//! - `name` 需符合规范定义的模式，并且与技能目录名一致；
-//! - `description` 必须存在，且不超过 1024 个字符的限制；
-//! - `metadata` 必须是字符串键到字符串值的映射；
-//! - 技能文件只能包含官方格式；Hooks 属于应用/运行时配置，
-//!   而不是 Agent Skills 文件格式的一部分。
-//!
-//! 违规项（violations）会导致目录校验硬性失败；警告项（warnings）仅作提示，不会阻断校验。
+/*!
+技能目录校验 —— echo-agent 中对应 `skills-ref validate` 的实现。
+
+[agentskills.io 规范](https://agentskills.io/specification)
+自带一个参考校验器（`skills-ref validate`）。本模块以进程内 API 的形式
+提供同样的校验能力，使得嵌入方应用和 CI 无需依赖外部工具即可强制执行规范：
+
+- frontmatter 只能使用官方顶层字段；
+- `allowed-tools` 必须是空格分隔的字符串（而非 YAML 序列）；
+- `name` 需符合规范定义的模式，并且与技能目录名一致；
+- `description` 必须存在，且不超过 1024 个字符的限制；
+- `metadata` 必须是字符串键到字符串值的映射；
+- 技能文件只能包含官方格式；Hooks 属于应用/运行时配置，
+  而不是 Agent Skills 文件格式的一部分。
+
+违规项（violations）会导致目录校验硬性失败；警告项（warnings）仅作提示，不会阻断校验。
+*/
 
 use std::path::{Path, PathBuf};
 
@@ -64,10 +66,12 @@ impl SkillValidationReport {
     }
 }
 
-/// 依据官方规范校验一份 `SKILL.md` 文档。
-///
-/// `dir_name` 是规范要求 `name` 字段必须匹配的父目录名；
-/// 若是内存中的文档、无需做该项检查，可传入空字符串跳过。
+/**
+依据官方规范校验一份 `SKILL.md` 文档。
+
+`dir_name` 是规范要求 `name` 字段必须匹配的父目录名；
+若是内存中的文档、无需做该项检查，可传入空字符串跳过。
+*/
 pub fn validate_skill_markdown(content: &str, dir_name: &str) -> SkillValidationReport {
     let mut report = SkillValidationReport::default();
 
@@ -79,8 +83,10 @@ pub fn validate_skill_markdown(content: &str, dir_name: &str) -> SkillValidation
         }
     };
 
-    // 完整的类型化解析：强制校验必填字段、description 非空、metadata 为字符串类型，
-    // 以及未知顶层字段（deny_unknown_fields）
+    /*
+    完整的类型化解析：强制校验必填字段、description 非空、metadata 为字符串类型，
+    以及未知顶层字段（deny_unknown_fields）
+    */
     let parsed = SkillDocument::parse(content);
     if let Err(error) = &parsed {
         report.violation(format!("SKILL.md does not parse: {error}"));
@@ -357,8 +363,10 @@ mod tests {
         );
     }
 
-    /// 验证 `validate_skill_dir` 能正确处理合法技能目录、存在非官方
-    /// `hooks.json` 文件，以及缺失 `SKILL.md` 文件这几种场景。
+    /**
+    验证 `validate_skill_dir` 能正确处理合法技能目录、存在非官方
+    `hooks.json` 文件，以及缺失 `SKILL.md` 文件这几种场景。
+    */
     #[test]
     fn skill_dir_validates_required_skill_file() -> std::result::Result<(), String> {
         let root = std::env::temp_dir().join(format!(

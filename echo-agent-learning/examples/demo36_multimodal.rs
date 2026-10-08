@@ -1,27 +1,30 @@
-//! demo36_multimodal —— 多模态支持（Image / File 输入）完整演示
-//!
-//! 演示真实 LLM 多模态调用能力：
-//! - 单图分析
-//! - 图文多轮对话
-//! - 多图对比分析
-//!
-//! # 前置条件
-//!
-//! 在 `application configuration` 中把 `model.name` 指向一个支持视觉的模型，并在
-//! `models.*` 中声明对应 provider 配置。密钥仍可通过 YAML 里的 `${ENV}` 注入。
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! # 使用默认搜索路径中的 application configuration
-//! cargo run -p echo-agent-learning --example demo36_multimodal
-//!
-//! # 或者显式指定配置文件路径
-//! ECHO_AGENT_CONFIG=/path/to/application configuration cargo run -p echo-agent-learning --example demo36_multimodal
-//! ```
+/*!
+demo36_multimodal —— 多模态支持（Image / File 输入）完整演示
+
+演示真实 LLM 多模态调用能力：
+- 单图分析
+- 图文多轮对话
+- 多图对比分析
+
+# 前置条件
+
+在 `application configuration` 中把 `model.name` 指向一个支持视觉的模型，并在
+`models.*` 中声明对应 provider 配置。密钥仍可通过 YAML 里的 `${ENV}` 注入。
+
+# 运行方式
+
+```bash
+# 使用默认搜索路径中的 application configuration
+cargo run -p echo-agent-learning --example demo36_multimodal
+
+# 或者显式指定配置文件路径
+ECHO_AGENT_CONFIG=/path/to/application configuration cargo run -p echo-agent-learning --example demo36_multimodal
+```
+*/
 use echo_agent::prelude::*;
 mod support;
 
+/// 程序入口：加载视觉模型配置，依次演示单图分析、图文多轮对话与多图对比分析。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -51,6 +54,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 3: LLM 图片分析 ─────────────────────────────────────────────────────────
 
+/// Part 1：调用真实视觉模型分析单张图片。
 async fn demo_live_image_analysis(config: &LlmConfig) -> echo_agent::error::Result<()> {
     let model_name = config.model.as_str();
     println!("─────────────────────────────────────────────");
@@ -73,6 +77,7 @@ async fn demo_live_image_analysis(config: &LlmConfig) -> echo_agent::error::Resu
 
 // ── Part 4: Chat 模式连续对话 ───────────────────────────────────────────────────
 
+/// Part 2：在 Chat 模式下围绕图片进行多轮连续对话。
 async fn demo_live_chat_mode(config: &LlmConfig) -> echo_agent::error::Result<()> {
     let model_name = config.model.as_str();
     println!("─────────────────────────────────────────────");
@@ -104,6 +109,7 @@ async fn demo_live_chat_mode(config: &LlmConfig) -> echo_agent::error::Result<()
 
 // ── Part 5: 多图分析示例 ─────────────────────────────────────────────────────────
 
+/// Part 3：在一次请求中传入多张图片进行对比分析。
 async fn demo_live_multiple_images(config: &LlmConfig) -> echo_agent::error::Result<()> {
     let model_name = config.model.as_str();
     println!("─────────────────────────────────────────────");
@@ -139,6 +145,7 @@ async fn demo_live_multiple_images(config: &LlmConfig) -> echo_agent::error::Res
     Ok(())
 }
 
+/// 从 YAML 配置加载 LLM 配置，并要求模型声明支持图片输入，否则返回错误。
 fn require_yaml_model() -> echo_agent::error::Result<LlmConfig> {
     let config = support::llm_config(None).map_err(|error| {
         echo_agent::error::ReactError::Other(format!(
@@ -154,6 +161,7 @@ fn require_yaml_model() -> echo_agent::error::Result<LlmConfig> {
     Ok(config)
 }
 
+/// 基于给定 LLM 配置构建多模态 ReactAgent。
 fn build_live_agent(config: &LlmConfig) -> echo_agent::error::Result<ReactAgent> {
     ReactAgentBuilder::new()
         .name("multimodal-live-agent")
@@ -162,6 +170,7 @@ fn build_live_agent(config: &LlmConfig) -> echo_agent::error::Result<ReactAgent>
         .build()
 }
 
+/// 将多模态调用失败包装为带排查提示的 `ReactError`。
 fn multimodal_call_error(
     model_name: &str,
     err: impl std::fmt::Display,
@@ -171,6 +180,7 @@ fn multimodal_call_error(
     ))
 }
 
+/// 校验模型回复确实处理了图片输入；若像纯文本模型的兜底回复则返回错误。
 fn ensure_vision_response(model_name: &str, response: String) -> echo_agent::error::Result<String> {
     let normalized = response.trim();
     let looks_like_text_only_fallback = normalized.is_empty()
@@ -189,6 +199,7 @@ fn ensure_vision_response(model_name: &str, response: String) -> echo_agent::err
     Ok(response)
 }
 
+/// 第一张示例图片 URL：优先读取环境变量 `ECHO_MULTIMODAL_IMAGE_URL`，否则使用内置默认值。
 fn live_image_url() -> &'static str {
     std::env::var("ECHO_MULTIMODAL_IMAGE_URL")
         .ok()
@@ -199,6 +210,7 @@ fn live_image_url() -> &'static str {
         )
 }
 
+/// 第二张示例图片 URL：优先读取环境变量 `ECHO_MULTIMODAL_IMAGE_URL_2`，否则使用内置默认值。
 fn live_second_image_url() -> &'static str {
     std::env::var("ECHO_MULTIMODAL_IMAGE_URL_2")
         .ok()

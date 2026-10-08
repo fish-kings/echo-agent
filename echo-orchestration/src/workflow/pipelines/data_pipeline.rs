@@ -1,37 +1,35 @@
-//! Code-first, file-backed data analysis pipeline.
-//!
-//! The pipeline gives a tool-capable [`SharedAgent`] one analysis contract to
-//! complete: inspect the real dataset, write a reviewable Python or R script,
-//! execute that persisted script, and record reproducibility artifacts. It does
-//! not split statistical work across text-only prompting stages and does not
-//! implement inference algorithms inside the framework.
-//!
-//! # Example
-//!
-//! ```ignore
-//! // This doctest is ignored because echo_orchestration cannot depend back on
-//! // echo_agent without creating a dependency cycle. The root crate examples
-//! // exercise the public re-export.
-//! use echo_agent::workflow::pipelines::{
-//!     DataPipelineConfig, DataPipelineLanguage, run_data_pipeline,
-//! };
-//! use echo_agent::workflow::SharedAgent;
-//!
-//! # async fn example(agent: SharedAgent) -> echo_core::error::Result<()> {
-//! let config = DataPipelineConfig::new("data/sales_2024.csv")
-//!     .with_objective("Identify revenue trends")
-//!     .with_artifact_dir("analysis/revenue-trends")
-//!     .with_language(DataPipelineLanguage::Python)
-//!     .with_random_seed(42);
-//!
-//! let result = run_data_pipeline(&agent, config).await?;
-//! println!(
-//!     "Summary: {}",
-//!     result.state.get::<String>("summary").unwrap_or_default()
-//! );
-//! # Ok(())
-//! # }
-//! ```
+/*!
+代码优先、基于文件的数据分析流水线。
+
+该流水线给具备工具能力的 [`SharedAgent`] 一份完整的分析契约：检查真实数据集、
+编写可审阅的 Python 或 R 脚本、执行该持久化脚本并记录可复现性产物。
+它不会把统计工作拆分到纯文本提示阶段，也不在框架内部实现推断算法。
+
+# 示例
+
+```ignore
+// 此 doctest 被忽略：echo_orchestration 反向依赖 echo_agent 会形成依赖环，根 crate 示例覆盖公开重导出。
+use echo_agent::workflow::pipelines::{
+    DataPipelineConfig, DataPipelineLanguage, run_data_pipeline,
+};
+use echo_agent::workflow::SharedAgent;
+
+# async fn example(agent: SharedAgent) -> echo_core::error::Result<()> {
+let config = DataPipelineConfig::new("data/sales_2024.csv")
+    .with_objective("Identify revenue trends")
+    .with_artifact_dir("analysis/revenue-trends")
+    .with_language(DataPipelineLanguage::Python)
+    .with_random_seed(42);
+
+let result = run_data_pipeline(&agent, config).await?;
+println!(
+    "Summary: {}",
+    result.state.get::<String>("summary").unwrap_or_default()
+);
+# Ok(())
+# }
+```
+*/
 
 use std::path::{Component, Path};
 
@@ -41,19 +39,20 @@ use crate::workflow::state::SharedState;
 use echo_core::error::{ConfigError, ReactError, Result};
 use serde_json::{Map, Value};
 
+/// 数据分析契约的版本号，记录在 manifest 中
 const DATA_ANALYSIS_CONTRACT_VERSION: u32 = 1;
 
-/// Script language used by the persisted analysis.
+/// 持久化分析脚本所使用的语言。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataPipelineLanguage {
-    /// Python script executed through `run_code`.
+    /// 通过 `run_code` 执行的 Python 脚本。
     Python,
-    /// R script executed through `run_code`.
+    /// 通过 `run_code` 执行的 R 脚本。
     R,
 }
 
 impl DataPipelineLanguage {
-    /// Language value accepted by the `run_code` tool.
+    /// `run_code` 工具接受的语言取值。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Python => "python",
@@ -61,7 +60,7 @@ impl DataPipelineLanguage {
         }
     }
 
-    /// Required script filename inside the artifact directory.
+    /// 产物目录中要求的脚本文件名。
     pub fn script_name(self) -> &'static str {
         match self {
             Self::Python => "analysis.py",
@@ -70,26 +69,27 @@ impl DataPipelineLanguage {
     }
 }
 
-/// Configuration for a reproducible data analysis pipeline.
+/// 可复现数据分析流水线的配置。
 #[derive(Debug, Clone)]
 pub struct DataPipelineConfig {
-    /// Workspace-relative path to the input dataset.
+    /// 输入数据集相对于工作区的路径。
     pub dataset_path: String,
-    /// Optional analysis objective or question.
+    /// 可选的分析目标或问题。
     pub objective: Option<String>,
-    /// Workspace-relative directory that owns the script and run artifacts.
+    /// 存放脚本与运行产物的目录（相对于工作区）。
     pub artifact_dir: String,
-    /// Persisted script language.
+    /// 持久化脚本的语言。
     pub language: DataPipelineLanguage,
-    /// Maximum number of charts to generate.
+    /// 最多生成的图表数量。
     pub max_charts: u32,
-    /// Random seed recorded by the manifest and applied by the script.
+    /// 记录在 manifest 中并由脚本应用的随机种子。
     pub random_seed: Option<u64>,
-    /// Structured parameters recorded by the manifest.
+    /// 记录在 manifest 中的结构化参数。
     pub parameters: Value,
 }
 
 impl Default for DataPipelineConfig {
+    /// 创建默认配置：Python 脚本、默认产物目录、最多 3 张图表、随机种子 42
     fn default() -> Self {
         Self {
             dataset_path: String::new(),
@@ -104,7 +104,7 @@ impl Default for DataPipelineConfig {
 }
 
 impl DataPipelineConfig {
-    /// Create a config and derive a stable artifact directory from the dataset name.
+    /// 创建配置，并根据数据集名称推导出稳定的产物目录。
     pub fn new(dataset_path: impl Into<String>) -> Self {
         let dataset_path = dataset_path.into();
         let artifact_dir = default_artifact_dir(&dataset_path);
@@ -115,48 +115,49 @@ impl DataPipelineConfig {
         }
     }
 
-    /// Set the analysis objective.
+    /// 设置分析目标。
     pub fn with_objective(mut self, objective: impl Into<String>) -> Self {
         self.objective = Some(objective.into());
         self
     }
 
-    /// Set the workspace-relative artifact directory.
+    /// 设置相对于工作区的产物目录。
     pub fn with_artifact_dir(mut self, artifact_dir: impl Into<String>) -> Self {
         self.artifact_dir = artifact_dir.into();
         self
     }
 
-    /// Select Python or R for the persisted script.
+    /// 为持久化脚本选择 Python 或 R。
     pub fn with_language(mut self, language: DataPipelineLanguage) -> Self {
         self.language = language;
         self
     }
 
-    /// Set the maximum number of charts.
+    /// 设置最大图表数量。
     pub fn with_max_charts(mut self, max: u32) -> Self {
         self.max_charts = max;
         self
     }
 
-    /// Set the reproducibility seed.
+    /// 设置用于可复现性的随机种子。
     pub fn with_random_seed(mut self, random_seed: u64) -> Self {
         self.random_seed = Some(random_seed);
         self
     }
 
-    /// Remove the seed when the analysis is strictly deterministic.
+    /// 当分析严格确定时移除随机种子。
     pub fn without_random_seed(mut self) -> Self {
         self.random_seed = None;
         self
     }
 
-    /// Set structured analysis parameters persisted in `manifest.json`.
+    /// 设置持久化到 `manifest.json` 中的结构化分析参数。
     pub fn with_parameters(mut self, parameters: Value) -> Self {
         self.parameters = parameters;
         self
     }
 
+    /// 校验配置：路径必须位于工作区内，图表数量不超过 100。
     fn validate(&self) -> Result<()> {
         validate_workspace_relative_path("dataset_path", &self.dataset_path)?;
         validate_workspace_relative_path("artifact_dir", &self.artifact_dir)?;
@@ -169,6 +170,7 @@ impl DataPipelineConfig {
     }
 }
 
+/// 根据数据集文件名生成默认产物目录（`analysis/<slug>`）。
 fn default_artifact_dir(dataset_path: &str) -> String {
     let stem = Path::new(dataset_path)
         .file_stem()
@@ -195,6 +197,7 @@ fn default_artifact_dir(dataset_path: &str) -> String {
     format!("analysis/{slug}")
 }
 
+/// 校验路径非空、非绝对路径且不包含 `..` 等越出工作区的组件。
 fn validate_workspace_relative_path(field: &str, value: &str) -> Result<()> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -216,14 +219,17 @@ fn validate_workspace_relative_path(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// 构造配置错误。
 fn invalid_config(message: String) -> ReactError {
     ReactError::Config(Box::new(ConfigError::ConfigFileError(message)))
 }
 
+/// 将字符串序列化为 JSON 字符串字面量，便于在提示词中作为数据引用。
 fn json_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
+/// 构建交给 Agent 的分析契约提示词。
 fn build_analysis_prompt(config: &DataPipelineConfig) -> String {
     let objective = config
         .objective
@@ -286,6 +292,7 @@ fn build_analysis_prompt(config: &DataPipelineConfig) -> String {
     )
 }
 
+/// 构建只含单个分析执行节点的流水线图。
 fn build_data_graph(agent: &SharedAgent) -> Result<Graph> {
     GraphBuilder::new("data_pipeline")
         .add_shared_agent_node(
@@ -299,14 +306,15 @@ fn build_data_graph(agent: &SharedAgent) -> Result<Graph> {
         .build()
 }
 
-/// Run a code-first data analysis pipeline.
-///
-/// The supplied Agent must have the file tools and `run_code` capability needed
-/// to satisfy the contract. The returned state contains:
-///
-/// - `analysis_execution` and `summary`: the Agent's artifact-grounded report;
-/// - `dataset_path`, `artifact_dir`, `analysis_language`, and `script_path`;
-/// - `contract_version`, `parameters`, `random_seed`, and `max_charts`.
+/**
+运行代码优先的数据分析流水线。
+
+传入的 Agent 必须具备满足契约所需的文件工具与 `run_code` 能力。返回的状态包含：
+
+- `analysis_execution` 和 `summary`：Agent 基于产物给出的报告；
+- `dataset_path`、`artifact_dir`、`analysis_language` 和 `script_path`；
+- `contract_version`、`parameters`、`random_seed` 和 `max_charts`。
+*/
 pub async fn run_data_pipeline(
     agent: &SharedAgent,
     config: DataPipelineConfig,
@@ -368,15 +376,19 @@ mod tests {
     use super::*;
     use crate::workflow::shared_agent;
 
+    /// 记录收到的提示词的测试用 Agent。
     struct RecordingAgent {
+        /// 已记录的提示词列表。
         prompts: Arc<Mutex<Vec<String>>>,
     }
 
     impl RecordingAgent {
+        /// 使用共享的提示词记录列表创建测试 Agent。
         fn new(prompts: Arc<Mutex<Vec<String>>>) -> Self {
             Self { prompts }
         }
 
+        /// 记录一条提示词，锁中毒时仍继续写入。
         fn record(&self, task: &str) {
             match self.prompts.lock() {
                 Ok(mut prompts) => prompts.push(task.to_string()),
@@ -386,18 +398,22 @@ mod tests {
     }
 
     impl Agent for RecordingAgent {
+        /// 返回测试 Agent 名称
         fn name(&self) -> &str {
             "recording-analyst"
         }
 
+        /// 返回模拟模型名称
         fn model_name(&self) -> &str {
             "mock-model"
         }
 
+        /// 返回模拟系统提示词
         fn system_prompt(&self) -> &str {
             "Record the analysis contract"
         }
 
+        /// 执行任务并返回模拟结果
         fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
             Box::pin(async move {
                 self.record(task);
@@ -405,6 +421,7 @@ mod tests {
             })
         }
 
+        /// 以流式方式执行任务，返回模拟事件流
         fn execute_stream<'a>(
             &'a self,
             task: &'a str,
@@ -421,6 +438,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证流水线只使用一个代码优先、具备工具能力的阶段，并写入预期状态与提示词。
     async fn data_pipeline_uses_one_code_first_tool_capable_stage() -> Result<()> {
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let agent = shared_agent(RecordingAgent::new(prompts.clone()));
@@ -461,6 +479,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证配置能从含 Unicode 的文件名推导出安全的产物目录。
     fn config_derives_unicode_safe_artifact_directory() {
         let config = DataPipelineConfig::new("data/销售 明细.csv");
         assert_eq!(config.artifact_dir, "analysis/销售-明细");
@@ -469,6 +488,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证越出工作目录的数据集路径会被拒绝。
     async fn data_pipeline_rejects_paths_outside_working_directory() -> Result<()> {
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let agent = shared_agent(RecordingAgent::new(prompts));
@@ -482,6 +502,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证超出上限的图表数量会被拒绝。
     async fn data_pipeline_rejects_excessive_chart_counts() -> Result<()> {
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let agent = shared_agent(RecordingAgent::new(prompts));

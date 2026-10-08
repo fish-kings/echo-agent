@@ -15,6 +15,7 @@ let store = Arc::new(InMemoryRunStore::new());
 ```
 */
 
+/// Trace 分析器：基于已记录的 run 生成统计与诊断报告。
 pub mod analyzer;
 
 use chrono::{DateTime, Utc};
@@ -1151,6 +1152,7 @@ fn trace_decode_error(error: serde_json::Error) -> crate::error::ReactError {
     ))
 }
 
+/// 将无法解析的 run 日志重命名隔离，避免后续加载反复失败。
 fn quarantine_corrupt_run_log(path: &Path, _error: &dyn std::fmt::Display) {
     let target = path.with_extension(format!("jsonl.corrupt-{}", uuid::Uuid::new_v4()));
     match std::fs::rename(path, &target) {
@@ -1168,6 +1170,7 @@ fn quarantine_corrupt_run_log(path: &Path, _error: &dyn std::fmt::Display) {
 
 #[async_trait::async_trait]
 impl RunStore for JsonlRunStore {
+    /// 合并并持久化整个 run，写入缓存与 JSONL 文件。
     async fn save(&self, run: Run) -> Result<()> {
         let store = self.clone();
         tokio::spawn(async move {
@@ -1181,6 +1184,7 @@ impl RunStore for JsonlRunStore {
         })?
     }
 
+    /// 按 run ID 加载 run：优先查缓存，未命中时从磁盘读取。
     async fn load(&self, run_id: &str) -> Result<Option<Run>> {
         // 优先查缓存
         if let Some(mut run) = self.shared.cache.read().await.get(run_id).cloned() {
@@ -1207,6 +1211,7 @@ impl RunStore for JsonlRunStore {
         Ok(None)
     }
 
+    /// 列出指定会话下所有 run 的摘要。
     async fn list_by_session(&self, session_id: &str) -> Result<Vec<RunSummary>> {
         let cache = self.shared.cache.read().await;
         let mut summaries: Vec<RunSummary> = cache
@@ -1223,6 +1228,7 @@ impl RunStore for JsonlRunStore {
         Ok(summaries)
     }
 
+    /// 列出最近的 run 摘要，最多返回 `limit` 条。
     async fn list_all(&self, limit: usize) -> Result<Vec<RunSummary>> {
         let cache = self.shared.cache.read().await;
         let mut summaries: Vec<RunSummary> = cache
@@ -1281,6 +1287,7 @@ impl RunStore for JsonlRunStore {
         })?
     }
 
+    /// 以终止状态结算 run 并持久化；run 不存在时返回 `false`。
     async fn finalize_run(
         &self,
         run_id: &str,
@@ -1315,6 +1322,7 @@ impl RunStore for JsonlRunStore {
     }
 }
 
+/// 把终止状态、输出与错误写入 run，并应用内容保留策略；已终止的 run 保持不变。
 fn apply_run_finalization(
     run: &mut Run,
     status: RunStatus,
@@ -1341,6 +1349,7 @@ fn apply_run_finalization(
     apply_run_retention(run, retention);
 }
 
+/// 合并已有 run 与新写入的 run，保留更完整的事件列表与既有终止状态。
 fn merge_run(existing: Option<Run>, mut incoming: Run) -> Run {
     let Some(existing) = existing else {
         return incoming;
@@ -1359,6 +1368,7 @@ fn merge_run(existing: Option<Run>, mut incoming: Run) -> Run {
     incoming
 }
 
+/// 判断 run 状态是否为终止状态（完成、失败或取消）。
 fn is_terminal(status: RunStatus) -> bool {
     matches!(
         status,
@@ -1366,6 +1376,7 @@ fn is_terminal(status: RunStatus) -> bool {
     )
 }
 
+/// 校验结算所用的状态必须是终止状态。
 fn validate_terminal_status(status: RunStatus) -> Result<()> {
     if is_terminal(status) {
         Ok(())
@@ -1376,7 +1387,7 @@ fn validate_terminal_status(status: RunStatus) -> Result<()> {
     }
 }
 
-// ── Unit tests ───────────────────────────────────────────────────────
+// ── 单元测试 ───────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

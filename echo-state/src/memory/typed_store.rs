@@ -1,8 +1,9 @@
-//! Typed memory store — wraps a `Store` with structured metadata support.
-//!
-//! Provides typed read/write operations that automatically serialize/deserialize
-//! `MemoryMeta` alongside content in `StoreItem.value`. Backward-compatible:
-//! untyped entries (raw JSON without the `meta` field) are read with default metadata.
+/*!
+类型化记忆存储——为 `Store` 包装一层结构化元数据支持。
+
+提供类型化的读写操作，会在 `StoreItem.value` 中随内容一并自动序列化/反序列化
+`MemoryMeta`。向后兼容：未类型化的条目（不含 `meta` 字段的原始 JSON）会以默认元数据读取。
+*/
 
 use echo_core::error::Result;
 use echo_core::memory::store::{Store, StoreCompareAndPutOutcome, StoreItem};
@@ -14,66 +15,66 @@ use std::sync::Arc;
 
 // ── MemoryFilter ────────────────────────────────────────────────────────
 
-/// Filter criteria for searching typed memories.
+/// 检索类型化记忆时使用的过滤条件。
 #[derive(Debug, Clone, Default)]
 pub struct MemoryFilter {
-    /// Filter by memory type.
+    /// 按记忆类型过滤。
     pub memory_type: Option<MemoryType>,
-    /// Filter by status.
+    /// 按状态过滤。
     pub status: Option<MemoryStatus>,
-    /// Minimum confidence threshold.
+    /// 最低置信度阈值。
     pub min_confidence: Option<f32>,
-    /// Filter by topic (exact match).
+    /// 按主题过滤（精确匹配）。
     pub topic: Option<String>,
-    /// Filter by source.
+    /// 按来源过滤。
     pub source: Option<MemorySource>,
-    /// Maximum risk level (inclusive).
+    /// 允许的最高风险等级（含）。
     pub max_risk: Option<MemoryRisk>,
 }
 
 impl MemoryFilter {
-    /// Create an empty filter (matches everything).
+    /// 创建空过滤器（匹配所有条目）。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Filter by memory type.
+    /// 设置按记忆类型过滤。
     pub fn with_type(mut self, memory_type: MemoryType) -> Self {
         self.memory_type = Some(memory_type);
         self
     }
 
-    /// Filter by status.
+    /// 设置按状态过滤。
     pub fn with_status(mut self, status: MemoryStatus) -> Self {
         self.status = Some(status);
         self
     }
 
-    /// Filter by minimum confidence.
+    /// 设置最低置信度过滤。
     pub fn with_min_confidence(mut self, confidence: f32) -> Self {
         self.min_confidence = Some(confidence);
         self
     }
 
-    /// Filter by topic.
+    /// 设置按主题过滤。
     pub fn with_topic(mut self, topic: impl Into<String>) -> Self {
         self.topic = Some(topic.into());
         self
     }
 
-    /// Filter by source.
+    /// 设置按来源过滤。
     pub fn with_source(mut self, source: MemorySource) -> Self {
         self.source = Some(source);
         self
     }
 
-    /// Filter by maximum risk level.
+    /// 设置最高风险等级过滤。
     pub fn with_max_risk(mut self, risk: MemoryRisk) -> Self {
         self.max_risk = Some(risk);
         self
     }
 
-    /// Check if a memory entry matches this filter.
+    /// 判断记忆条目是否满足本过滤器的全部条件。
     pub fn matches(&self, entry: &TypedMemoryEntry) -> bool {
         if let Some(ref mt) = self.memory_type
             && entry.meta.memory_type != *mt
@@ -111,28 +112,28 @@ impl MemoryFilter {
 
 // ── TypedMemoryEntry ────────────────────────────────────────────────────
 
-/// A typed memory entry with its key, content, metadata, and raw StoreItem.
+/// 类型化记忆条目，包含键、内容、元数据以及原始 StoreItem。
 #[derive(Debug, Clone)]
 pub struct TypedMemoryEntry {
-    /// The key within the namespace.
+    /// 命名空间内的键。
     pub key: String,
-    /// The memory content text.
+    /// 记忆内容文本。
     pub content: String,
-    /// Structured metadata.
+    /// 结构化元数据。
     pub meta: MemoryMeta,
-    /// The raw StoreItem (for access to timestamps, importance, etc.).
+    /// 原始 StoreItem（用于访问时间戳、重要度等信息）。
     pub raw: StoreItem,
 }
 
 impl TypedMemoryEntry {
-    /// Create a TypedMemoryEntry from a StoreItem, parsing the typed value.
-    ///
-    /// If the StoreItem value doesn't contain the typed format (no `meta` field),
-    /// creates an entry with default metadata, treating the entire value as content.
+    /** 从 StoreItem 创建 TypedMemoryEntry，并解析其中的类型化值。
+
+    如果 StoreItem 的值不是类型化格式（没有 `meta` 字段），
+    则使用默认元数据创建条目，并将整个值视为内容。 */
     pub fn from_store_item(item: StoreItem) -> Self {
         let key = item.key.clone();
 
-        // Try to parse as TypedMemoryValue
+        // 尝试解析为 TypedMemoryValue
         if let Ok(typed) = TypedMemoryValue::from_value(&item.value) {
             Self {
                 key,
@@ -141,8 +142,8 @@ impl TypedMemoryEntry {
                 raw: item,
             }
         } else {
-            // Backward compatibility: treat as untyped entry
-            // Try to extract a string content from the value
+            /* 向后兼容：视为未类型化条目，
+            尝试从值中提取字符串内容 */
             let content = extract_content_fallback(&item.value);
             Self {
                 key,
@@ -154,25 +155,25 @@ impl TypedMemoryEntry {
     }
 }
 
-/// Extract a human-readable content string from a non-typed StoreItem value.
+/// 从非类型化的 StoreItem 值中提取人类可读的内容字符串。
 fn extract_content_fallback(value: &serde_json::Value) -> String {
-    // If it's a simple string
+    // 如果是简单字符串
     if let Some(s) = value.as_str() {
         return s.to_string();
     }
-    // If it has a "content" field
+    // 如果含有 "content" 字段
     if let Some(content) = value.get("content").and_then(|v| v.as_str()) {
         return content.to_string();
     }
-    // If it has a "review" field (from BackgroundReviewer)
+    // 如果含有 "review" 字段（来自 BackgroundReviewer）
     if let Some(review) = value.get("review").and_then(|v| v.as_str()) {
         return review.to_string();
     }
-    // Fall back to JSON string
+    // 回退为 JSON 字符串
     value.to_string()
 }
 
-/// Numeric ordering for risk comparison (Low=0 < Medium=1 < High=2).
+/// 用于风险比较的数值序（Low=0 < Medium=1 < High=2）。
 fn risk_order(risk: &MemoryRisk) -> u8 {
     match risk {
         MemoryRisk::Low => 0,
@@ -183,27 +184,29 @@ fn risk_order(risk: &MemoryRisk) -> u8 {
 
 // ── TypedMemoryStore ────────────────────────────────────────────────────
 
-/// A typed wrapper around any `Store` that adds structured metadata support.
-///
-/// Typed memories are stored as JSON in `StoreItem.value` with the format:
-/// ```json
-/// { "content": "...", "meta": { "memory_type": "...", ... } }
-/// ```
-///
-/// The underlying `Store` is unchanged — `TypedMemoryStore` is a thin
-/// serialization/deserialization layer on top.
+/**
+对任意 `Store` 的类型化包装，增加结构化元数据支持。
+
+类型化记忆以 JSON 形式存储在 `StoreItem.value` 中，格式如下：
+```json
+{ "content": "...", "meta": { "memory_type": "...", ... } }
+```
+
+底层 `Store` 保持不变——`TypedMemoryStore` 只是其上的一层轻量序列化/反序列化层。
+*/
 #[derive(Clone)]
 pub struct TypedMemoryStore {
+    /// 被包装的底层存储。
     inner: Arc<dyn Store>,
 }
 
 impl TypedMemoryStore {
-    /// Create a new typed store wrapping the given Store.
+    /// 创建包装给定 Store 的类型化存储。
     pub fn new(store: Arc<dyn Store>) -> Self {
         Self { inner: store }
     }
 
-    /// Write a typed memory entry.
+    /// 写入一条类型化记忆条目。
     pub fn put_typed<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -223,7 +226,7 @@ impl TypedMemoryStore {
         self.inner.put(namespace, key, json_value)
     }
 
-    /// Atomically project a typed value when the raw current value matches.
+    /// 当原始当前值与期望值匹配时，原子地写入类型化值。
     pub fn compare_and_put_typed<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -245,7 +248,7 @@ impl TypedMemoryStore {
             .compare_and_put(namespace, key, expected, json_value)
     }
 
-    /// Read a typed memory entry by key.
+    /// 按键读取类型化记忆条目。
     pub async fn get_typed(
         &self,
         namespace: &[&str],
@@ -257,7 +260,7 @@ impl TypedMemoryStore {
         }
     }
 
-    /// Search typed memories with keyword query and optional filter.
+    /// 使用关键字查询及可选过滤器检索类型化记忆。
     pub async fn search_typed(
         &self,
         namespace: &[&str],
@@ -272,7 +275,7 @@ impl TypedMemoryStore {
             .filter(|e| filter.matches(e))
             .collect();
 
-        // Sort by confidence descending, then by recency
+        // 按置信度降序排序，其次按新近程度
         entries.sort_by(|a, b| {
             b.meta
                 .confidence
@@ -284,7 +287,7 @@ impl TypedMemoryStore {
         Ok(entries)
     }
 
-    /// List all typed memories in a namespace, with optional filter.
+    /// 列出命名空间内的全部类型化记忆，可选过滤。
     pub async fn list_typed(
         &self,
         namespace: &[&str],
@@ -298,14 +301,14 @@ impl TypedMemoryStore {
             .collect())
     }
 
-    /// Delete a typed memory entry.
+    /// 删除一条类型化记忆条目。
     pub async fn delete_typed(&self, namespace: &[&str], key: &str) -> Result<bool> {
         self.inner.delete(namespace, key).await
     }
 
-    /// Update the metadata of an existing typed memory entry.
-    ///
-    /// Returns `Ok(false)` if the entry doesn't exist.
+    /** 更新已有类型化记忆条目的元数据。
+
+    若条目不存在则返回 `Ok(false)`。 */
     pub async fn update_meta(
         &self,
         namespace: &[&str],
@@ -314,7 +317,7 @@ impl TypedMemoryStore {
     ) -> Result<bool> {
         match self.inner.get(namespace, key).await? {
             Some(item) => {
-                // Parse existing content
+                // 解析已有内容
                 let content = if let Ok(typed) = TypedMemoryValue::from_value(&item.value) {
                     typed.content
                 } else {
@@ -332,23 +335,26 @@ impl TypedMemoryStore {
         }
     }
 
-    /// Get a reference to the underlying Store.
+    /// 获取底层 Store 的引用。
     pub fn inner(&self) -> &Arc<dyn Store> {
         &self.inner
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────
+// ── 测试 ───────────────────────────────────────────────────────────────
 
+/// 类型化记忆存储的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use echo_core::memory::types::{MemoryRisk, MemorySource, MemoryStatus, MemoryType};
 
+    /// 创建用于测试的内存存储。
     fn make_state_store() -> Arc<dyn Store> {
         Arc::new(crate::memory::store::InMemoryStore::new())
     }
 
+    /// 测试类型化条目的写入与读取。
     #[tokio::test]
     async fn test_put_and_get_typed() {
         let store = make_state_store();
@@ -376,12 +382,13 @@ mod tests {
         assert_eq!(entry.meta.topic, "build");
     }
 
+    /// 测试带过滤器的检索。
     #[tokio::test]
     async fn test_search_with_filter() {
         let store = make_state_store();
         let typed = TypedMemoryStore::new(store);
 
-        // Insert two memories with different types
+        // 插入两条不同类型的记忆
         let meta1 = MemoryMeta::new(
             MemoryType::DebuggingLesson,
             MemorySource::ErrorResolution,
@@ -407,7 +414,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Filter by type
+        // 按类型过滤
         let filter = MemoryFilter::new().with_type(MemoryType::UserPreference);
         let results = typed
             .search_typed(&["test", "memories"], "answers", 10, &filter)
@@ -417,6 +424,7 @@ mod tests {
         assert_eq!(results[0].meta.memory_type, MemoryType::UserPreference);
     }
 
+    /// 测试带过滤器的列举。
     #[tokio::test]
     async fn test_list_with_filter() {
         let store = make_state_store();
@@ -445,7 +453,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Filter by min_confidence
+        // 按 min_confidence 过滤
         let filter = MemoryFilter::new().with_min_confidence(0.8);
         let results = typed
             .list_typed(&["test", "memories"], &filter)
@@ -455,18 +463,19 @@ mod tests {
         assert_eq!(results[0].content, "Uses npm");
     }
 
+    /// 测试读取未类型化条目的向后兼容性。
     #[tokio::test]
     async fn test_backward_compat_read() {
         let store = make_state_store();
 
-        // Write a raw (untyped) entry
+        // 写入一条原始（未类型化）条目
         let raw_value = serde_json::json!({
             "review": "Some review content",
             "run_id": "test-123"
         });
         store.put(&["test", "raw"], "r1", raw_value).await.unwrap();
 
-        // Read through TypedMemoryStore
+        // 通过 TypedMemoryStore 读取
         let typed = TypedMemoryStore::new(store);
         let entry = typed
             .get_typed(&["test", "raw"], "r1")
@@ -474,11 +483,12 @@ mod tests {
             .unwrap()
             .expect("entry should exist");
 
-        // Should parse with default metadata
+        // 应以默认元数据解析
         assert!(entry.content.contains("Some review content"));
-        assert_eq!(entry.meta.memory_type, MemoryType::ProjectFact); // default
+        assert_eq!(entry.meta.memory_type, MemoryType::ProjectFact); // 默认值
     }
 
+    /// 测试更新元数据且内容保持不变。
     #[tokio::test]
     async fn test_update_meta() {
         let store = make_state_store();
@@ -494,7 +504,7 @@ mod tests {
             .await
             .unwrap();
 
-        // Update status to Superseded
+        // 将状态更新为 Superseded
         let new_meta = MemoryMeta::new(
             MemoryType::DebuggingLesson,
             MemorySource::ErrorResolution,
@@ -514,9 +524,10 @@ mod tests {
             .unwrap()
             .expect("entry should exist");
         assert_eq!(entry.meta.status, MemoryStatus::Superseded);
-        assert_eq!(entry.content, "Maven needs Java 8"); // content preserved
+        assert_eq!(entry.content, "Maven needs Java 8"); // 内容被保留
     }
 
+    /// 测试删除类型化条目。
     #[tokio::test]
     async fn test_delete_typed() {
         let store = make_state_store();
@@ -538,6 +549,7 @@ mod tests {
         assert!(entry.is_none());
     }
 
+    /// 测试过滤器的各项匹配条件。
     #[test]
     fn test_memory_filter_matches() {
         let meta = MemoryMeta::new(
@@ -559,26 +571,27 @@ mod tests {
             ),
         };
 
-        // Should match type filter
+        // 应匹配类型过滤
         assert!(
             MemoryFilter::new()
                 .with_type(MemoryType::DebuggingLesson)
                 .matches(&entry)
         );
-        // Should not match different type
+        // 不应匹配不同类型
         assert!(
             !MemoryFilter::new()
                 .with_type(MemoryType::UserPreference)
                 .matches(&entry)
         );
-        // Should match min_confidence
+        // 应匹配 min_confidence
         assert!(MemoryFilter::new().with_min_confidence(0.8).matches(&entry));
         assert!(!MemoryFilter::new().with_min_confidence(0.9).matches(&entry));
-        // Should match topic
+        // 应匹配主题
         assert!(MemoryFilter::new().with_topic("build").matches(&entry));
         assert!(!MemoryFilter::new().with_topic("style").matches(&entry));
     }
 
+    /// 测试风险等级的数值排序。
     #[test]
     fn test_risk_ordering() {
         assert!(risk_order(&MemoryRisk::Low) < risk_order(&MemoryRisk::Medium));

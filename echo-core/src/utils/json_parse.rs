@@ -1,13 +1,17 @@
-//! JSON 解析工具函数
-//!
-//! 提供从 LLM 输出中提取和修复 JSON 的常用函数。
+/*!
+JSON 解析工具函数
 
-/// 从 Markdown 代码块或纯文本中提取 JSON
-///
-/// 支持以下格式：
-/// - ````json ... ````
-/// - ```` ... ````
-/// - 纯 JSON 文本
+提供从 LLM 输出中提取和修复 JSON 的常用函数。
+*/
+
+/**
+从 Markdown 代码块或纯文本中提取 JSON
+
+支持以下格式：
+- ````json ... ````
+- ```` ... ````
+- 纯 JSON 文本
+*/
 pub fn extract_json_from_markdown(content: &str) -> String {
     if let Some(start) = content.find("```json") {
         let rest = &content[start + 7..];
@@ -24,12 +28,14 @@ pub fn extract_json_from_markdown(content: &str) -> String {
     content.trim().to_string()
 }
 
-/// 清理常见的 JSON 格式问题
-///
-/// - 修复 `}` 或 `]` 之前的多余逗号，但仅在引号字符串之外生效。
-///
-/// 有意不处理单引号伪 JSON：纯词法层面的全局替换无法区分内容中的
-/// 分隔符与撇号。
+/**
+清理常见的 JSON 格式问题
+
+- 修复 `}` 或 `]` 之前的多余逗号，但仅在引号字符串之外生效。
+
+有意不处理单引号伪 JSON：纯词法层面的全局替换无法区分内容中的
+分隔符与撇号。
+*/
 pub fn clean_json(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut cleaned = String::with_capacity(s.len());
@@ -74,6 +80,7 @@ pub fn clean_json(s: &str) -> String {
     cleaned
 }
 
+// 单元测试：JSON 提取与清洗。
 #[cfg(test)]
 mod tests {
     use super::*;

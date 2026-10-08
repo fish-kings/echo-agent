@@ -86,8 +86,10 @@ struct ConnectionCloseContext<P: AcpConnectionProfile> {
 impl<P: AcpConnectionProfile> AcpCloseContext for ConnectionCloseContext<P> {
     fn close(&self) -> BoxFuture<'_, agent_client_protocol::Result<()>> {
         Box::pin(async move {
-            // 这个 gate 只用于串行化清理尝试。资源等待期间既不会复制也不会
-            // 锁定 Session 或 Run 的状态。
+            /*
+            这个 gate 只用于串行化清理尝试。资源等待期间既不会复制也不会
+            锁定 Session 或 Run 的状态。
+            */
             let _attempt = self.gate.lock().await;
             if self.settled.load(Ordering::Acquire) {
                 return Ok(());
@@ -210,15 +212,19 @@ impl AcpAgentAdapter {
         &self.config
     }
 
-    /// 在调用 `ConnectTo::connect_to` 或把此 adapter 交给官方 Client 之前，
-    /// 先保留该连接可重试的关闭持有者。要一直持有该句柄，直到连接返回，
-    /// 并且清理成功为止。
+    /**
+    在调用 `ConnectTo::connect_to` 或把此 adapter 交给官方 Client 之前，
+    先保留该连接可重试的关闭持有者。要一直持有该句柄，直到连接返回，
+    并且清理成功为止。
+    */
     pub fn close_owner(&self) -> AcpAdapterCloseHandle {
         self.close_owner.clone()
     }
 
-    /// 在连接 future 可被轮询之前就返回 close owner。
-    /// 丢弃或中止该 future 都不会导致调用方的句柄被丢弃。
+    /**
+    在连接 future 可被轮询之前就返回 close owner。
+    丢弃或中止该 future 都不会导致调用方的句柄被丢弃。
+    */
     pub fn connect_retaining_close_owner(
         self,
         client: impl ConnectTo<AcpRole>,
@@ -232,9 +238,11 @@ impl AcpAgentAdapter {
         })
     }
 
-    /// 挂载一个已协商的扩展 profile。该 profile 贡献能力声明、hello 决策、
-    /// 逐 run 的观察者、`_meta` 桥接以及类型化的处理器；而官方连接、标准
-    /// 处理器与关闭链路仍然只会被构建一次。
+    /**
+    挂载一个已协商的扩展 profile。该 profile 贡献能力声明、hello 决策、
+    逐 run 的观察者、`_meta` 桥接以及类型化的处理器；而官方连接、标准
+    处理器与关闭链路仍然只会被构建一次。
+    */
     pub fn with_profile<P: AcpConnectionProfile>(
         self,
         profile: P,
@@ -253,8 +261,10 @@ pub struct AcpAgentAdapterWithProfile<P: AcpConnectionProfile> {
 }
 
 impl<P: AcpConnectionProfile> AcpAgentAdapterWithProfile<P> {
-    /// 保留标准 ACP 处理器所使用的同一个 close owner。
-    /// 要一直持有它，直到连接返回，并且清理成功为止。
+    /**
+    保留标准 ACP 处理器所使用的同一个 close owner。
+    要一直持有它，直到连接返回，并且清理成功为止。
+    */
     pub fn close_owner(&self) -> AcpAdapterCloseHandle {
         self.adapter.close_owner()
     }
@@ -292,8 +302,10 @@ impl ConnectTo<Client> for AcpAgentAdapter {
     }
 }
 
-/// 仅标准路径所使用的 profile：从不声明能力、从不协商，也不贡献任何
-/// 处理器或观察者。它存在的意义在于让两条连接路径共享同一个泛型实现。
+/**
+仅标准路径所使用的 profile：从不声明能力、从不协商，也不贡献任何
+处理器或观察者。它存在的意义在于让两条连接路径共享同一个泛型实现。
+*/
 #[derive(Clone, Copy, Default)]
 struct NoProfile;
 
@@ -343,21 +355,27 @@ async fn run_connection<P: AcpConnectionProfile>(
     });
     adapter.close_owner.bind(close_context.clone())?;
 
-    // `initialize`：唯一的注册点。profile 的能力声明借助
-    // `agentCapabilities._meta` 传递，其 hello 决策会把整个连接升级为
-    // Extended 模式。普通 Client（没有 `_meta` 条目）以及协商失败的情况，
-    // 都会停留在 Standard 模式，且不会破坏标准的 initialize 流程。
+    /*
+    `initialize`：唯一的注册点。profile 的能力声明借助
+    `agentCapabilities._meta` 传递，其 hello 决策会把整个连接升级为
+    Extended 模式。普通 Client（没有 `_meta` 条目）以及协商失败的情况，
+    都会停留在 Standard 模式，且不会破坏标准的 initialize 流程。
+    */
     let initialize_services = services.clone();
     let initialize_profile = profile.clone();
     let initialize_registry = registry.clone();
     let initialize_config = config.clone();
-    // `new`：标准处理器始终是 `session/new` 的唯一实现；扩展 profile
-    // 通过 `_meta` 桥接自己的句柄。
+    /*
+    `new`：标准处理器始终是 `session/new` 的唯一实现；扩展 profile
+    通过 `_meta` 桥接自己的句柄。
+    */
     let new_session_services = services.clone();
     let new_session_profile = profile.clone();
-    // `session/prompt`：和任何扩展 Run 一样进入共享的 run authority，
-    // 因此两种 profile 观察到的都是相同的 run id 以及“同一时刻只有一个
-    // 活跃 run”的约束。
+    /*
+    `session/prompt`：和任何扩展 Run 一样进入共享的 run authority，
+    因此两种 profile 观察到的都是相同的 run id 以及“同一时刻只有一个
+    活跃 run”的约束。
+    */
     let prompt_services = services.clone();
     let prompt_profile = profile.clone();
     let prompt_registry = registry.clone();
@@ -530,8 +548,10 @@ async fn close_connection<P: AcpConnectionProfile>(
             .await
             .unwrap_or_else(|_| Err("profile settlement timed out".to_string()));
         let flush = profile.flush_before_agents();
-        // profile 持久化失败必须保持可见，但一旦所有调用和回执都已排空，
-        // 就不能跳过显式的 Agent 关闭。
+        /*
+        profile 持久化失败必须保持可见，但一旦所有调用和回执都已排空，
+        就不能跳过显式的 Agent 关闭。
+        */
         let agents = if leaked_extensions == 0 && unsettled_runs == 0 {
             tokio::time::timeout(stage, services.close_sessions())
                 .await

@@ -1,59 +1,61 @@
-//! 权限服务 (PermissionService)
-//!
-//! 统一的权限检查入口，整合：
-//! - PermissionMode: 权限模式
-//! - RuleRegistry: 规则注册表
-//! - SessionApprovalCache: 会话级审批缓存
-//! - DenialTracker: 连续拒绝升级
-//! - Classifier: AI 分类器（auto 模式）
-//! - PermissionRequestHandler: 权限请求处理
-//!
-//! ## 审批管线
-//!
-//! ```text
-//! check() → check_with_permissions()
-//!   1. BypassPermissions → Allow
-//!   2. Plan 模式 → 按 permissions 过滤
-//!   3. 规则匹配 → Allow/Deny/Ask
-//!   4. 缓存检查 → 命中则 AutoApprove
-//!   5. DenialTracker → 连续拒绝则升级
-//!   6. 模式分发:
-//!      - Auto → Classifier
-//!      - Default → RequestHandler
-//!   7. 缓存写入（带 scope 的审批）
-//! ```
-//!
-//! ## 使用示例
-//!
-//! ```rust,no_run
-//! use async_trait::async_trait;
-//! use echo_core::error::Result;
-//! use echo_core::tools::permission::PermissionMode;
-//! use echo_orchestration::human_loop::{
-//!     PermissionRequest, PermissionRequestHandler, PermissionResponse, PermissionService,
-//! };
-//! use std::sync::Arc;
-//!
-//! struct AllowAllHandler;
-//!
-//! #[async_trait]
-//! impl PermissionRequestHandler for AllowAllHandler {
-//!     async fn handle(&self, _request: PermissionRequest) -> Result<PermissionResponse> {
-//!         Ok(PermissionResponse::allowed())
-//!     }
-//! }
-//!
-//! # async fn example(handler: Arc<dyn PermissionRequestHandler>) -> Result<()> {
-//! let service = PermissionService::new()
-//!     .with_mode(PermissionMode::Auto)
-//!     .with_request_handler(handler);
-//!
-//! let decision = service.check("Bash", &serde_json::json!({"command": "ls"})).await?;
-//! # Ok(())
-//! # }
-//! # let handler: Arc<dyn PermissionRequestHandler> = Arc::new(AllowAllHandler);
-//! # let _ = example(handler);
-//! ```
+/*!
+ * 权限服务 (PermissionService)
+ *
+ * 统一的权限检查入口，整合：
+ * - PermissionMode: 权限模式
+ * - RuleRegistry: 规则注册表
+ * - SessionApprovalCache: 会话级审批缓存
+ * - DenialTracker: 连续拒绝升级
+ * - Classifier: AI 分类器（auto 模式）
+ * - PermissionRequestHandler: 权限请求处理
+ *
+ * ## 审批管线
+ *
+ * ```text
+ * check() → check_with_permissions()
+ *   1. BypassPermissions → Allow
+ *   2. Plan 模式 → 按 permissions 过滤
+ *   3. 规则匹配 → Allow/Deny/Ask
+ *   4. 缓存检查 → 命中则 AutoApprove
+ *   5. DenialTracker → 连续拒绝则升级
+ *   6. 模式分发:
+ *      - Auto → Classifier
+ *      - Default → RequestHandler
+ *   7. 缓存写入（带 scope 的审批）
+ * ```
+ *
+ * ## 使用示例
+ *
+ * ```rust,no_run
+ * use async_trait::async_trait;
+ * use echo_core::error::Result;
+ * use echo_core::tools::permission::PermissionMode;
+ * use echo_orchestration::human_loop::{
+ *     PermissionRequest, PermissionRequestHandler, PermissionResponse, PermissionService,
+ * };
+ * use std::sync::Arc;
+ *
+ * struct AllowAllHandler;
+ *
+ * #[async_trait]
+ * impl PermissionRequestHandler for AllowAllHandler {
+ *     async fn handle(&self, _request: PermissionRequest) -> Result<PermissionResponse> {
+ *         Ok(PermissionResponse::allowed())
+ *     }
+ * }
+ *
+ * # async fn example(handler: Arc<dyn PermissionRequestHandler>) -> Result<()> {
+ * let service = PermissionService::new()
+ *     .with_mode(PermissionMode::Auto)
+ *     .with_request_handler(handler);
+ *
+ * let decision = service.check("Bash", &serde_json::json!({"command": "ls"})).await?;
+ * # Ok(())
+ * # }
+ * # let handler: Arc<dyn PermissionRequestHandler> = Arc::new(AllowAllHandler);
+ * # let _ = example(handler);
+ * ```
+ */
 
 use async_trait::async_trait;
 use echo_core::tools::permission::{
@@ -93,6 +95,7 @@ pub struct PermissionServiceConfig {
 }
 
 impl Default for PermissionServiceConfig {
+    /// 默认模式、默认拒绝阈值、允许 Bypass、缓存 TTL 30 分钟。
     fn default() -> Self {
         Self {
             mode: PermissionMode::Default,
@@ -105,20 +108,22 @@ impl Default for PermissionServiceConfig {
 
 // ── 权限服务 ────────────────────────────────────────────────────────────────────
 
-/// 权限服务 - 统一的权限检查入口
-///
-/// 审批管线：
-/// 1. BypassPermissions → Allow
-/// 2. Plan 模式 → 按 permissions 过滤
-/// 3. 规则匹配 → Allow/Deny/Ask
-/// 4. 缓存检查 → 命中则 AutoApprove
-/// 5. DenialTracker → 连续拒绝则升级
-/// 6. 模式分发 → Classifier / Handler
-/// 7. 缓存写入（带 scope 的审批）
+/**
+ * 权限服务 - 统一的权限检查入口
+ *
+ * 审批管线：
+ * 1. BypassPermissions → Allow
+ * 2. Plan 模式 → 按 permissions 过滤
+ * 3. 规则匹配 → Allow/Deny/Ask
+ * 4. 缓存检查 → 命中则 AutoApprove
+ * 5. DenialTracker → 连续拒绝则升级
+ * 6. 模式分发 → Classifier / Handler
+ * 7. 缓存写入（带 scope 的审批）
+ */
 pub struct PermissionService {
     /// 配置
     config: RwLock<PermissionServiceConfig>,
-    /// Synchronously readable mode authority used by invocation hard gates.
+    /// 可同步读取的权限模式权威值，供调用硬门控使用。
     mode: AtomicU8,
     /// 规则注册表
     rules: RwLock<RuleRegistry>,
@@ -136,26 +141,36 @@ pub struct PermissionService {
     audit_sink: Option<Arc<dyn PermissionAuditSink>>,
 }
 
-/// Atomic result of one permission check.
+/// 一次权限检查的原子结果。
 #[derive(Debug, Clone)]
 pub struct PermissionCheck {
+    /// 权限决策。
     pub decision: PermissionDecision,
+    /// 用户修改后的工具输入（与本次决策绑定）。
     pub updated_input: Option<Value>,
 }
 
-/// Immutable identity and environment snapshot for one permission decision.
+/// 一次权限决策所用的不可变身份与环境快照。
 #[derive(Debug, Clone, Default)]
 pub struct PermissionInvocationContext {
+    /// 审批缓存作用域 ID。
     pub scope_id: Option<String>,
+    /// 请求 ID。
     pub request_id: Option<String>,
+    /// 会话 ID。
     pub session_id: Option<String>,
+    /// 发起调用的 Agent 名称。
     pub agent_name: Option<String>,
+    /// 人工审批超时时间。
     pub timeout: Option<Duration>,
+    /// 传给权限请求处理器的上下文。
     pub permission: PermissionContext,
+    /// 传给自动分类器的上下文。
     pub classifier: ClassifierContext,
 }
 
 impl PermissionCheck {
+    /// 由决策构造结果，不携带修改后的输入。
     fn from_decision(decision: PermissionDecision) -> Self {
         Self {
             decision,
@@ -165,6 +180,7 @@ impl PermissionCheck {
 }
 
 impl PermissionService {
+    /// 将权限模式编码为原子存储用的 u8。
     const fn mode_code(mode: PermissionMode) -> u8 {
         match mode {
             PermissionMode::Default => 0,
@@ -178,6 +194,7 @@ impl PermissionService {
         }
     }
 
+    /// 将 u8 编码还原为权限模式，未知值回退为 Default。
     fn mode_from_code(code: u8) -> PermissionMode {
         match code {
             1 => PermissionMode::Plan,
@@ -191,6 +208,7 @@ impl PermissionService {
         }
     }
 
+    /// Default 模式下是否需要确认：写、执行、网络或敏感权限。
     fn default_confirmation_required(permissions: &[ToolPermission]) -> bool {
         permissions.contains(&ToolPermission::Write)
             || permissions.contains(&ToolPermission::Execute)
@@ -198,12 +216,14 @@ impl PermissionService {
             || permissions.contains(&ToolPermission::Sensitive)
     }
 
+    /// AcceptEdits 模式下是否需要确认：执行、网络或敏感权限。
     fn accept_edits_confirmation_required(permissions: &[ToolPermission]) -> bool {
         permissions.contains(&ToolPermission::Execute)
             || permissions.contains(&ToolPermission::Network)
             || permissions.contains(&ToolPermission::Sensitive)
     }
 
+    /// StrictConfirm 模式下是否需要确认：写、执行、网络或敏感权限。
     fn strict_confirmation_required(permissions: &[ToolPermission]) -> bool {
         permissions.contains(&ToolPermission::Write)
             || permissions.contains(&ToolPermission::Execute)
@@ -236,9 +256,11 @@ impl PermissionService {
         }
     }
 
-    /// 从 `HumanLoopProvider` 创建权限服务
-    ///
-    /// 便捷构造方法，自动将 Provider 适配为 `PermissionRequestHandler`。
+    /**
+     * 从 `HumanLoopProvider` 创建权限服务
+     *
+     * 便捷构造方法，自动将 Provider 适配为 `PermissionRequestHandler`。
+     */
     pub fn from_provider(provider: Arc<dyn super::HumanLoopProvider>) -> Self {
         let handler: Arc<dyn PermissionRequestHandler> = Arc::new(DynProviderHandler { provider });
         Self::new().with_request_handler(handler)
@@ -265,20 +287,24 @@ impl PermissionService {
         self
     }
 
-    /// 是否已配置真实的权限请求处理器（非 NullHandler）
-    /// 使用 trait method 标记而非 type_name 字符串匹配
+    /**
+     * 是否已配置真实的权限请求处理器（非 NullHandler）
+     * 使用 trait method 标记而非 type_name 字符串匹配
+     */
     fn has_real_handler(&self) -> bool {
         if let Ok(handler) = self.request_handler.read() {
             return !handler.is_null_handler();
         }
-        true // lock poisoned — assume real handler
+        true // 锁已中毒——假定存在真实处理器
     }
 
-    /// 原地替换权限请求处理器（provider），不重建整个 PermissionService。
-    ///
-    /// 这是 `set_human_loop_provider` 的正确底层调用：它保留了 mode、
-    /// bypass_disabled、classifier、audit_sink、protected_paths、缓存等所有配置，
-    /// 只替换 handler。避免了 `build_permission_service` 全量重建导致的状态丢失。
+    /**
+     * 原地替换权限请求处理器（provider），不重建整个 PermissionService。
+     *
+     * 这是 `set_human_loop_provider` 的正确底层调用：它保留了 mode、
+     * bypass_disabled、classifier、audit_sink、protected_paths、缓存等所有配置，
+     * 只替换 handler。避免了 `build_permission_service` 全量重建导致的状态丢失。
+     */
     pub fn replace_provider(&self, provider: Arc<dyn super::HumanLoopProvider>) {
         let handler: Arc<dyn PermissionRequestHandler> = Arc::new(DynProviderHandler { provider });
         if let Ok(mut guard) = self.request_handler.write() {
@@ -288,11 +314,12 @@ impl PermissionService {
         self.cache.clear();
     }
 
-    /// Replace only the UI/provider transport and keep existing session approvals.
-    ///
-    /// desktop UI/Tauri installs a per-run provider before each message so concurrent
-    /// conversations stay isolated. That provider swap is not a permission
-    /// boundary and must not erase approvals such as "approve for this session".
+    /**
+     * 只替换 UI/provider 传输层，保留现有的会话级审批。
+     *
+     * 桌面 UI/Tauri 会在每条消息前安装按运行隔离的 provider，以保证并发会话相互隔离。
+     * 这种 provider 切换不是权限边界，不得清除诸如“本会话内批准”之类的审批。
+     */
     pub fn replace_provider_preserving_cache(&self, provider: Arc<dyn super::HumanLoopProvider>) {
         let handler: Arc<dyn PermissionRequestHandler> = Arc::new(DynProviderHandler { provider });
         if let Ok(mut guard) = self.request_handler.write() {
@@ -333,7 +360,7 @@ impl PermissionService {
         registry.add_rules(rules);
     }
 
-    /// Remove one exact rule while preserving unrelated session and policy rules.
+    /// 精确移除一条规则，同时保留无关的会话规则与策略规则。
     pub async fn remove_rule(&self, rule: &PermissionRule) -> bool {
         self.rules.write().await.remove_rule(rule)
     }
@@ -373,10 +400,12 @@ impl PermissionService {
         self.config.write().await.mode = mode;
     }
 
-    /// 同步设置权限模式（用于非 async 上下文，如 slash 命令回调）。
-    ///
-    /// 使用 `try_write()` 避免阻塞 — 在 agent 锁内调用时 PermissionService
-    /// 不会有并发写入竞争，因此 `try_write` 几乎不会失败。
+    /**
+     * 同步设置权限模式（用于非 async 上下文，如 slash 命令回调）。
+     *
+     * 使用 `try_write()` 避免阻塞 — 在 agent 锁内调用时 PermissionService
+     * 不会有并发写入竞争，因此 `try_write` 几乎不会失败。
+     */
     pub fn set_mode_sync(&self, mode: PermissionMode) {
         self.mode.store(Self::mode_code(mode), Ordering::Release);
         if let Ok(mut cfg) = self.config.try_write() {
@@ -389,18 +418,17 @@ impl PermissionService {
         self.current_mode()
     }
 
-    /// Return the current mode without awaiting the mutable config projection.
+    /// 返回当前权限模式，无需等待可变配置投影。
     pub fn current_mode(&self) -> PermissionMode {
         Self::mode_from_code(self.mode.load(Ordering::Acquire))
     }
 
-    /// Pure, side-effect-free prediction used only to split tool batches into
-    /// concurrent vs approval-serialized groups.
-    ///
-    /// This must never call the request handler: batch planning does not have
-    /// the real tool arguments and must not show a human approval dialog.
-    /// The execution path still calls [`Self::check_with_permissions`] with the real
-    /// input before running the tool.
+    /**
+     * 纯粹、无副作用的预测，仅用于将工具批次拆分为可并发组与需串行审批组。
+     *
+     * 本方法绝不能调用请求处理器：批次规划阶段没有真实的工具参数，也不得弹出人工审批对话框。
+     * 执行路径在运行工具前仍会使用真实输入调用 [`Self::check_with_permissions`]。
+     */
     pub async fn would_request_human_for_permissions(
         &self,
         tool_name: &str,
@@ -442,10 +470,12 @@ impl PermissionService {
         self.cache.revoke(scope_id, tool_name);
     }
 
-    /// 检查会话级审批缓存是否覆盖一次具体的工具调用。
-    ///
-    /// 这是 `SessionApprovalCache` 的 service-owned 薄封装；权限匹配、TTL
-    /// 和缓存范围仍由缓存本身决定，调用方不应复制这些规则。
+    /**
+     * 检查会话级审批缓存是否覆盖一次具体的工具调用。
+     *
+     * 这是 `SessionApprovalCache` 的 service-owned 薄封装；权限匹配、TTL
+     * 和缓存范围仍由缓存本身决定，调用方不应复制这些规则。
+     */
     pub fn is_approved(&self, scope_id: &str, tool_name: &str, args: &Value) -> bool {
         self.cache.is_approved(scope_id, tool_name, args)
     }
@@ -511,16 +541,18 @@ impl PermissionService {
             .await
     }
 
-    /// 带权限类型的检查
-    ///
-    /// 审批管线：
-    /// 1. BypassPermissions → Allow
-    /// 2. Plan 模式 → 按 permissions 过滤
-    /// 3. 规则匹配 → Allow/Deny/Ask
-    /// 4. 缓存检查 → 命中则 AutoApprove
-    /// 5. DenialTracker → 连续拒绝则升级
-    /// 6. 模式分发（Classifier / Handler）
-    /// 7. 结果后处理（缓存写入、拒绝跟踪、modified args）
+    /**
+     * 带权限类型的检查
+     *
+     * 审批管线：
+     * 1. BypassPermissions → Allow
+     * 2. Plan 模式 → 按 permissions 过滤
+     * 3. 规则匹配 → Allow/Deny/Ask
+     * 4. 缓存检查 → 命中则 AutoApprove
+     * 5. DenialTracker → 连续拒绝则升级
+     * 6. 模式分发（Classifier / Handler）
+     * 7. 结果后处理（缓存写入、拒绝跟踪、modified args）
+     */
     pub async fn check_with_permissions(
         &self,
         tool_name: &str,
@@ -531,10 +563,11 @@ impl PermissionService {
             .await
     }
 
-    /// Check permissions with an optional call-scoped mode override.
-    ///
-    /// The override is not written into the service configuration, so
-    /// concurrent tool calls cannot leak a hook-selected mode into each other.
+    /**
+     * 使用可选的调用级模式覆盖执行权限检查。
+     *
+     * 覆盖值不会写入服务配置，因此并发的工具调用之间不会相互泄漏由 hook 选定的模式。
+     */
     pub async fn check_with_permissions_in_mode(
         &self,
         tool_name: &str,
@@ -553,7 +586,7 @@ impl PermissionService {
             .decision)
     }
 
-    /// Check permissions and keep any user-updated input bound to this decision.
+    /// 执行权限检查，并将用户修改后的输入与本次决策绑定返回。
     pub async fn check_with_permissions_result_in_mode(
         &self,
         tool_name: &str,
@@ -571,7 +604,7 @@ impl PermissionService {
         .await
     }
 
-    /// Check permissions with invocation context for automatic classification.
+    /// 携带调用上下文执行权限检查，供自动分类使用。
     pub async fn check_with_permissions_result_in_mode_and_context(
         &self,
         tool_name: &str,
@@ -581,10 +614,11 @@ impl PermissionService {
         invocation: Option<&PermissionInvocationContext>,
     ) -> Result<PermissionCheck> {
         let pipeline_start = std::time::Instant::now();
-        // Snapshot configuration before touching rules, the denial tracker or
-        // a user-provided handler. Holding the read guard across those awaits
-        // would deadlock a concurrent `apply_update(SetMode)` (rules -> config)
-        // or a re-entrant permission update from a HumanLoopProvider callback.
+        /*
+         * 在访问规则、拒绝跟踪器或用户提供的处理器之前先快照配置。
+         * 若跨这些 await 持有读锁，会与并发的 `apply_update(SetMode)`（先规则后配置）
+         * 或来自 HumanLoopProvider 回调的重入权限更新发生死锁。
+         */
         let config = self.config.read().await.clone();
         let effective_mode = mode_override.unwrap_or_else(|| self.current_mode());
         let scope_id = invocation.and_then(|context| context.scope_id.as_deref());
@@ -606,8 +640,10 @@ impl PermissionService {
             }};
         }
 
-        // 0. 受保护路径检查（最高优先级，在任何权限模式之前）
-        // 即使在 BypassPermissions 模式下，.git/.ssh/.env 等也必须被保护
+        /*
+         * 0. 受保护路径检查（最高优先级，在任何权限模式之前）
+         * 即使在 BypassPermissions 模式下，.git/.ssh/.env 等也必须被保护
+         */
         match self.protected_paths.check(tool_name, tool_input) {
             ProtectedPathResult::Protected {
                 matched_pattern,
@@ -766,8 +802,10 @@ impl PermissionService {
                 }
             }
             PermissionMode::DontAsk => PermissionCheck::from_decision(
-                // 静默模式：只放行有明确 allow 规则的操作，其他静默拒绝
-                // 注意：到这里规则已检查过且无匹配，直接拒绝
+                /*
+                 * 静默模式：只放行有明确 allow 规则的操作，其他静默拒绝
+                 * 注意：到这里规则已检查过且无匹配，直接拒绝
+                 */
                 PermissionDecision::Deny {
                     reason: format!(
                         "DontAsk 模式下工具 '{}' 未匹配任何允许规则，已静默拒绝",
@@ -975,6 +1013,7 @@ impl PermissionService {
 }
 
 impl Default for PermissionService {
+    /// 等价于 [`PermissionService::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -982,14 +1021,17 @@ impl Default for PermissionService {
 
 // ── Null Handler ────────────────────────────────────────────────────────────────
 
-/// 空权限请求处理器（默认占位实现）
-///
-/// 不应该被直接调用 — `check_with_permissions` 会检测到此 handler 并短路返回
-/// `RequireApproval`，避免静默拒绝所有工具调用。
+/**
+ * 空权限请求处理器（默认占位实现）
+ *
+ * 不应该被直接调用 — `check_with_permissions` 会检测到此 handler 并短路返回
+ * `RequireApproval`，避免静默拒绝所有工具调用。
+ */
 struct NullPermissionRequestHandler;
 
 #[async_trait]
 impl PermissionRequestHandler for NullPermissionRequestHandler {
+    /// 兜底返回拒绝。
     async fn handle(&self, _request: PermissionRequest) -> Result<PermissionResponse> {
         // 不应到达此路径，但作为安全保障返回拒绝
         Ok(PermissionResponse::denied(Some(
@@ -997,6 +1039,7 @@ impl PermissionRequestHandler for NullPermissionRequestHandler {
         )))
     }
 
+    /// 标记为空处理器。
     fn is_null_handler(&self) -> bool {
         true
     }
@@ -1004,15 +1047,19 @@ impl PermissionRequestHandler for NullPermissionRequestHandler {
 
 // ── Dyn Provider Handler (桥接 dyn HumanLoopProvider) ─────────────────────────
 
-/// 将 `dyn HumanLoopProvider` 桥接到 `PermissionRequestHandler`
-///
-/// 解决 `DefaultPermissionRequestHandler<P>` 无法直接接受 `dyn HumanLoopProvider` 的问题。
+/**
+ * 将 `dyn HumanLoopProvider` 桥接到 `PermissionRequestHandler`
+ *
+ * 解决 `DefaultPermissionRequestHandler<P>` 无法直接接受 `dyn HumanLoopProvider` 的问题。
+ */
 struct DynProviderHandler {
+    /// 被桥接的人机交互 provider。
     provider: Arc<dyn super::HumanLoopProvider>,
 }
 
 #[async_trait]
 impl PermissionRequestHandler for DynProviderHandler {
+    /// 将权限请求转发给 provider，并把其响应映射为权限响应。
     async fn handle(&self, request: PermissionRequest) -> Result<PermissionResponse> {
         use super::HumanLoopResponse;
 
@@ -1045,6 +1092,7 @@ impl PermissionRequestHandler for DynProviderHandler {
     }
 }
 
+/// 根据审批范围构造允许响应。
 fn response_with_scope(_tool_name: &str, scope: ApprovalScope) -> PermissionResponse {
     match scope {
         ApprovalScope::Once => PermissionResponse::allowed(),
@@ -1069,14 +1117,20 @@ fn response_with_scope(_tool_name: &str, scope: ApprovalScope) -> PermissionResp
 
 /// 权限服务构建器
 pub struct PermissionServiceBuilder {
+    /// 服务配置。
     config: PermissionServiceConfig,
+    /// 初始规则。
     rules: RuleRegistry,
+    /// 可选分类器。
     classifier: Option<Arc<dyn Classifier>>,
+    /// 可选权限请求处理器；未设置时使用空处理器。
     request_handler: Option<Arc<dyn PermissionRequestHandler>>,
+    /// 受保护路径检查器。
     protected_paths: ProtectedPathChecker,
 }
 
 impl PermissionServiceBuilder {
+    /// 创建使用默认配置的构建器。
     pub fn new() -> Self {
         Self {
             config: PermissionServiceConfig::default(),
@@ -1087,36 +1141,43 @@ impl PermissionServiceBuilder {
         }
     }
 
+    /// 设置权限模式。
     pub fn mode(mut self, mode: PermissionMode) -> Self {
         self.config.mode = mode;
         self
     }
 
+    /// 设置最大连续拒绝次数。
     pub fn max_consecutive_denials(mut self, max: u32) -> Self {
         self.config.max_consecutive_denials = max;
         self
     }
 
+    /// 添加一条规则。
     pub fn rule(mut self, rule: PermissionRule) -> Self {
         self.rules.add_rule(rule);
         self
     }
 
+    /// 设置分类器。
     pub fn classifier(mut self, classifier: Arc<dyn Classifier>) -> Self {
         self.classifier = Some(classifier);
         self
     }
 
+    /// 设置权限请求处理器。
     pub fn request_handler(mut self, handler: Arc<dyn PermissionRequestHandler>) -> Self {
         self.request_handler = Some(handler);
         self
     }
 
+    /// 设置受保护路径检查器。
     pub fn protected_paths(mut self, checker: ProtectedPathChecker) -> Self {
         self.protected_paths = checker;
         self
     }
 
+    /// 构建权限服务。
     pub fn build(self) -> PermissionService {
         let max_denials = self.config.max_consecutive_denials;
         let mode = self.config.mode;
@@ -1140,6 +1201,7 @@ impl PermissionServiceBuilder {
 }
 
 impl Default for PermissionServiceBuilder {
+    /// 等价于 [`PermissionServiceBuilder::new`]。
     fn default() -> Self {
         Self::new()
     }

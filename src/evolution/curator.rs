@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::error::Result;
 use fs2::FileExt;
 
+/// 在路径末尾追加后缀，得到派生的私有文件路径。
 fn append_path_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut suffixed = path.as_os_str().to_os_string();
     suffixed.push(suffix);
@@ -94,6 +95,7 @@ pub struct CuratorConfig {
 }
 
 impl Default for CuratorConfig {
+    /// 返回默认的 curator 配置。
     fn default() -> Self {
         Self {
             stale_days: 30,
@@ -157,12 +159,15 @@ impl CuratorState {
     }
 }
 
+/// 候选项名称与其生命周期权限标识之间的绑定状态。
 #[derive(Default, Serialize, Deserialize)]
 struct CandidateAuthorityState {
+    /// 候选名称到权限标识的映射。
     bindings: HashMap<String, String>,
 }
 
 impl CandidateAuthorityState {
+    /// 从磁盘加载绑定状态；文件不存在时返回空状态。
     fn try_load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(data) => serde_json::from_str(&data).map_err(Into::into),
@@ -171,6 +176,7 @@ impl CandidateAuthorityState {
         }
     }
 
+    /// 以原子方式将绑定状态保存到磁盘。
     fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -199,13 +205,18 @@ impl CandidateAuthorityState {
 所有使用同一状态路径的 `Curator` 实例都共享这把锁。
 */
 pub struct Curator {
+    /// curator 配置。
     config: CuratorConfig,
+    /// JSON 状态文件路径。
     state_path: PathBuf,
 }
 
-// P2-9: 需要 Clone 以便在 spawn_blocking 闭包里使用 (touch_skill 是同步阻塞,
-// 移到阻塞线程池)。Curator 是无状态句柄 (touch_skill 内部 flock), Clone 成本极低。
+/*
+ * P2-9: 需要 Clone 以便在 spawn_blocking 闭包里使用 (touch_skill 是同步阻塞,
+ * 移到阻塞线程池)。Curator 是无状态句柄 (touch_skill 内部 flock), Clone 成本极低。
+ */
 impl Clone for Curator {
+    /// 复制 curator 句柄（仅克隆配置与路径）。
     fn clone(&self) -> Self {
         Self {
             config: self.config.clone(),
@@ -275,10 +286,12 @@ impl Curator {
         })
     }
 
+    /// 返回候选权限绑定文件的路径。
     fn candidate_authority_path(&self) -> PathBuf {
         append_path_suffix(&self.state_path, ".candidate-authorities.json")
     }
 
+    /// 返回旁路锁文件的路径。
     fn lock_path(&self) -> PathBuf {
         append_path_suffix(&self.state_path, ".lock")
     }
@@ -347,9 +360,11 @@ impl Curator {
             std::fs::create_dir_all(parent)?;
         }
 
-        // 确保旁路文件存在（若已存在则不会失败）。
-        // `truncate(false)` 会保留任何既有内容（对 flock 而言无所谓，
-        // 但可以避免破坏另一个进程刚创建的文件）。
+        /*
+         * 确保旁路文件存在（若已存在则不会失败）。
+         * `truncate(false)` 会保留任何既有内容（对 flock 而言无所谓，
+         * 但可以避免破坏另一个进程刚创建的文件）。
+         */
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -357,7 +372,9 @@ impl Curator {
             .truncate(false)
             .open(&lock_path)?;
 
+        // 获取文件锁的最大尝试次数。
         const MAX_ATTEMPTS: u32 = 25;
+        // 每次尝试获取文件锁失败后的等待间隔。
         const BACKOFF: std::time::Duration = std::time::Duration::from_millis(40);
 
         let mut last_err = None;
@@ -468,8 +485,10 @@ impl Curator {
         })
     }
 
-    /// 使用一个生命周期权限（authority）标识注册技能候选项，防止不同权限
-    /// 主体争用同一个候选名；若名称已存在，仅当权限标识匹配时才视为成功。
+    /**
+     * 使用一个生命周期权限（authority）标识注册技能候选项，防止不同权限
+     * 主体争用同一个候选名；若名称已存在，仅当权限标识匹配时才视为成功。
+     */
     pub(crate) fn register_candidate_with_authority(
         &self,
         name: &str,
@@ -691,10 +710,12 @@ impl Curator {
                     continue;
                 }
 
-                // `num_days()` 返回 i64，在时钟偏差下可能为负
-                // （last_used_at 晚于 now）。`.max(0)` 可以防止 `as u64`
-                // 转换把负数环绕成一个巨大的值，那样会让所有不活跃阈值
-                // 瞬间被满足，从而错误地归档刚被使用过的技能（N9）。
+                /*
+                 * `num_days()` 返回 i64，在时钟偏差下可能为负
+                 * （last_used_at 晚于 now）。`.max(0)` 可以防止 `as u64`
+                 * 转换把负数环绕成一个巨大的值，那样会让所有不活跃阈值
+                 * 瞬间被满足，从而错误地归档刚被使用过的技能（N9）。
+                 */
                 let idle_days = (now - meta.last_used_at).num_days().max(0) as u64;
 
                 let new_lifecycle = match meta.lifecycle {
@@ -799,6 +820,7 @@ struct CuratorLockGuard {
 }
 
 impl Drop for CuratorLockGuard {
+    /// 释放锁文件：先尽力解锁，再关闭文件描述符。
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
             // 先尽力显式解锁；下面关闭 fd 同样会释放操作系统层面的 advisory 锁。
@@ -813,16 +835,19 @@ fn normalize_skill_path(path: &std::path::Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// curator 生命周期管理的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 在临时目录中创建一个用于测试的 curator。
     fn temp_curator() -> Curator {
         let dir = std::env::temp_dir().join(format!("echo_curator_test_{}", uuid::Uuid::new_v4()));
         let path = dir.join("curator_state.json");
         Curator::new(CuratorConfig::default(), path)
     }
 
+    /// 验证同名不同扩展名的技能映射到互不相同的私有路径。
     #[test]
     fn same_stem_different_extensions_have_injective_private_paths() {
         let root = std::env::temp_dir().join(format!(
@@ -857,6 +882,7 @@ mod tests {
         );
     }
 
+    /// 验证 touch 之后能查询到技能状态。
     #[test]
     fn test_touch_and_status() -> Result<()> {
         let curator = temp_curator();
@@ -870,6 +896,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证技能按具体路径进行跟踪。
     #[test]
     fn test_tracks_skill_by_concrete_path() -> Result<()> {
         let curator = temp_curator();
@@ -888,6 +915,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证技能的固定与取消固定。
     #[test]
     fn test_pin_unpin() -> Result<()> {
         let curator = temp_curator();
@@ -913,6 +941,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证新鲜的技能不会发生状态迁移。
     #[test]
     fn test_no_transition_when_fresh() -> Result<()> {
         let curator = temp_curator();
@@ -926,6 +955,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证非 Agent 创建的技能会被跳过。
     #[test]
     fn test_skip_non_agent_created() -> Result<()> {
         let curator = temp_curator();
@@ -946,6 +976,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证长期未使用的技能会迁移为陈旧状态。
     #[test]
     fn test_stale_transition() -> Result<()> {
         let curator = temp_curator();
@@ -970,6 +1001,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已固定的技能会跳过状态迁移。
     #[test]
     fn test_pinned_skips_transition() -> Result<()> {
         let curator = temp_curator();
@@ -994,6 +1026,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证候选到草稿再到激活的迁移流程。
     #[test]
     fn test_candidate_to_draft_to_active() -> Result<()> {
         let curator = temp_curator();
@@ -1026,6 +1059,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证技能可以被弃用。
     #[test]
     fn test_deprecate_skill() -> Result<()> {
         let curator = temp_curator();
@@ -1049,6 +1083,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证完整的技能生命周期。
     #[test]
     fn test_full_lifecycle() -> Result<()> {
         let curator = temp_curator();
@@ -1099,6 +1134,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证候选状态不会自动迁移。
     #[test]
     fn test_candidate_no_auto_transition() -> Result<()> {
         let curator = temp_curator();
@@ -1125,6 +1161,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证重复注册候选项是幂等的。
     #[test]
     fn test_register_candidate_idempotent() -> Result<()> {
         let curator = temp_curator();
@@ -1226,6 +1263,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证损坏的状态文件会报错且不会被重写。
     #[test]
     fn corrupt_state_is_reported_and_not_rewritten() -> Result<()> {
         let curator = temp_curator();

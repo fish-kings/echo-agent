@@ -1,13 +1,15 @@
-//! Skill 系统 —— 对齐 agentskills.io（核心部分从 echo_core + echo_execution 重新导出）
-//!
-//! 支持两种 Skill：
-//!
-//! | 类型 | 注册方式 | 渐进式披露 |
-//! |------|-------------|----------------------|
-//! | **代码型** | `agent.add_skill(Box::new(MySkill))` | 即时（工具与提示词立刻注入） |
-//! | **文件型** | `agent.discover_skills(path)` | 三层式（目录 → 激活 → 资源） |
-//!
-//! 文件型 Skill 遵循 [agentskills.io 规范](https://agentskills.io/specification)。
+/*!
+Skill 系统 —— 对齐 agentskills.io（核心部分从 echo_core + echo_execution 重新导出）
+
+支持两种 Skill：
+
+| 类型 | 注册方式 | 渐进式披露 |
+|------|-------------|----------------------|
+| **代码型** | `agent.add_skill(Box::new(MySkill))` | 即时（工具与提示词立刻注入） |
+| **文件型** | `agent.discover_skills(path)` | 三层式（目录 → 激活 → 资源） |
+
+文件型 Skill 遵循 [agentskills.io 规范](https://agentskills.io/specification)。
+*/
 
 /// Echo Agent 框架提供的内置 Skill（从 echo_execution 重新导出）。
 pub mod builtin {

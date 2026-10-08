@@ -1,23 +1,25 @@
-//! 长时间运行任务的进度追踪。
-//!
-//! 提供基于加权阶段的进度计算，以及通过 `tokio::sync::watch`
-//! channel 实现的实时进度广播。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use echo_orchestration::tasks::progress::{Phase, PhasePlan, ProgressReporter};
-//!
-//! let plan = PhasePlan::new(vec![
-//!     Phase::new("search", "Search", 2.0),
-//!     Phase::new("analyze", "Analyze", 3.0),
-//!     Phase::new("report", "Report", 1.0),
-//! ]);
-//!
-//! let mut reporter = ProgressReporter::new("task-1".into(), plan);
-//! reporter.enter_phase(0, Some("Starting search".into()));
-//! let sub = reporter.subscribe();
-//! ```
+/*!
+长时间运行任务的进度追踪。
+
+提供基于加权阶段的进度计算，以及通过 `tokio::sync::watch`
+channel 实现的实时进度广播。
+
+# 示例
+
+```rust,ignore
+use echo_orchestration::tasks::progress::{Phase, PhasePlan, ProgressReporter};
+
+let plan = PhasePlan::new(vec![
+    Phase::new("search", "Search", 2.0),
+    Phase::new("analyze", "Analyze", 3.0),
+    Phase::new("report", "Report", 1.0),
+]);
+
+let mut reporter = ProgressReporter::new("task-1".into(), plan);
+reporter.enter_phase(0, Some("Starting search".into()));
+let sub = reporter.subscribe();
+```
+*/
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -96,10 +98,12 @@ impl PhasePlan {
         }
     }
 
-    /// 根据当前阶段索引及阶段内部进度（0.0–1.0），计算总体进度百分比（0.0–100.0）。
-    ///
-    /// `current_phase_idx` 之前的所有阶段都视为已完成 100%。
-    /// 当前阶段贡献 `phase_internal_pct * current_weight`。
+    /**
+    根据当前阶段索引及阶段内部进度（0.0–1.0），计算总体进度百分比（0.0–100.0）。
+
+    `current_phase_idx` 之前的所有阶段都视为已完成 100%。
+    当前阶段贡献 `phase_internal_pct * current_weight`。
+    */
     pub fn progress_pct(&self, current_phase_idx: usize, phase_internal_pct: f64) -> f64 {
         if self.total_weight <= 0.0 || self.phases.is_empty() {
             return 0.0;
@@ -135,9 +139,11 @@ impl PhasePlan {
 
 // ── TaskProgress ───────────────────────────────────────────────────
 
-/// 长时间运行任务的实时进度快照。
-///
-/// 可序列化，便于通过 SSE、WebSocket 或其他 channel 传输。
+/**
+长时间运行任务的实时进度快照。
+
+可序列化，便于通过 SSE、WebSocket 或其他 channel 传输。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskProgress {
     /// 该进度所属的任务。
@@ -161,10 +167,12 @@ pub struct TaskProgress {
 
 // ── ProgressReporter ───────────────────────────────────────────────
 
-/// 通过 `watch` channel 向订阅者广播进度更新。
-///
-/// 采用“最新值”语义：订阅者总能拿到最新的快照。
-/// 这与使用广播（全事件）语义的 `TaskEventBus` 形成互补。
+/**
+通过 `watch` channel 向订阅者广播进度更新。
+
+采用“最新值”语义：订阅者总能拿到最新的快照。
+这与使用广播（全事件）语义的 `TaskEventBus` 形成互补。
+*/
 pub struct ProgressReporter {
     /// 进度更新的发送端
     sender: watch::Sender<TaskProgress>,
@@ -240,9 +248,11 @@ impl ProgressReporter {
         });
     }
 
-    /// 订阅进度更新（用于 SSE/WebSocket 流式推送）。
-    ///
-    /// 返回一个始终持有最新快照的 `watch::Receiver`。
+    /**
+    订阅进度更新（用于 SSE/WebSocket 流式推送）。
+
+    返回一个始终持有最新快照的 `watch::Receiver`。
+    */
     pub fn subscribe(&self) -> watch::Receiver<TaskProgress> {
         self.receiver.clone()
     }
@@ -263,7 +273,7 @@ impl ProgressReporter {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -278,6 +288,7 @@ mod tests {
         ])
     }
 
+    /// 验证起始时进度为 0%。
     #[test]
     fn test_phase_plan_progress_at_start() {
         let plan = sample_plan();
@@ -285,6 +296,7 @@ mod tests {
         assert!((pct - 0.0).abs() < 0.01, "Expected 0%, got {pct}%");
     }
 
+    /// 验证处于第一阶段中途时的进度。
     #[test]
     fn test_phase_plan_progress_mid_first_phase() {
         let plan = sample_plan();
@@ -293,6 +305,7 @@ mod tests {
         assert!((pct - 16.67).abs() < 0.5, "Expected ~16.67%, got {pct}%");
     }
 
+    /// 验证第一阶段结束后的进度。
     #[test]
     fn test_phase_plan_progress_after_first_phase() {
         let plan = sample_plan();
@@ -302,6 +315,7 @@ mod tests {
         assert!((pct - 33.33).abs() < 0.5, "Expected ~33.33%, got {pct}%");
     }
 
+    /// 验证全部完成时进度为 100%。
     #[test]
     fn test_phase_plan_progress_complete() {
         let plan = sample_plan();
@@ -310,6 +324,7 @@ mod tests {
         assert!((pct - 100.0).abs() < 0.01, "Expected 100%, got {pct}%");
     }
 
+    /// 验证空计划的进度计算。
     #[test]
     fn test_phase_plan_empty() {
         let plan = PhasePlan::new(vec![]);
@@ -317,6 +332,7 @@ mod tests {
         assert!(plan.is_empty());
     }
 
+    /// 验证订阅者能收到进度更新。
     #[tokio::test]
     async fn test_progress_reporter_subscribe() {
         let plan = sample_plan();

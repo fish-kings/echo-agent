@@ -8,8 +8,10 @@ use std::sync::{Arc, Mutex};
 /// 引导（steer）操作失败时返回的错误类型。
 pub type TurnSteerError = echo_core::agent::AgentSteerError;
 
-/// 当前正在进行的轮次的状态：轮次身份、是否可引导、
-/// 待处理的引导消息队列，以及所有已接受消息的生命周期句柄。
+/**
+当前正在进行的轮次的状态：轮次身份、是否可引导、
+待处理的引导消息队列，以及所有已接受消息的生命周期句柄。
+*/
 #[derive(Default)]
 struct ActiveTurn {
     /// 轮次 ID

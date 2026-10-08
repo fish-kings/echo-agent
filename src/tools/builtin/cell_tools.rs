@@ -17,8 +17,10 @@ use tracing::debug;
 
 /// 默认的长轮询让出时间预算（30 秒）。
 const DEFAULT_YIELD_MS: u64 = 30_000;
-/// 单轮 wait 的耗时上限（1 小时），与 Codex 的
-/// `background_terminal_max_timeout = 3600000` 保持一致。
+/**
+单轮 wait 的耗时上限（1 小时），与 Codex 的
+`background_terminal_max_timeout = 3600000` 保持一致。
+*/
 const MAX_YIELD_MS: u64 = 3_600_000;
 
 /**
@@ -268,8 +270,10 @@ mod tests {
     use echo_orchestration::tasks::BackgroundCommandManager;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// 会统计 wait 调用次数的 registry 包装器，便于测试断言 wait 工具
-    /// 确实查询过共享的 registry。
+    /**
+    会统计 wait 调用次数的 registry 包装器，便于测试断言 wait 工具
+    确实查询过共享的 registry。
+    */
     struct CountingRegistry {
         /// 被包装的底层后台命令管理器。
         inner: BackgroundCommandManager,

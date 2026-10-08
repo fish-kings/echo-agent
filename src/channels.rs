@@ -196,8 +196,9 @@ impl AgentChannelHandler {
     }
 }
 
-/// 将一份 Turn 回执转换为可回复给渠道的文本；若回执处于失败/取消/未投递
-/// 等状态，或缺少最终回答，则返回错误
+/** 将一份 Turn 回执转换为可回复给渠道的文本；若回执处于失败/取消/未投递
+ * 等状态，或缺少最终回答，则返回错误
+ */
 fn channel_reply_from_receipt(receipt: TurnReceipt) -> Result<String> {
     match (receipt.outcome, receipt.delivery, receipt.final_answer) {
         (TurnOutcome::Completed, TurnDeliveryOutcome::Delivered, Some(reply)) => Ok(reply),

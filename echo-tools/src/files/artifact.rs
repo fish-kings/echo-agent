@@ -1,3 +1,9 @@
+/*!
+ * 工具输出制品（artifact）的分页读取实现。
+ *
+ * 提供经过校验、UTF-8 安全的分页读取能力，以及面向模型的 `read_artifact` 工具。
+ */
+
 use echo_core::error::ToolError;
 use echo_core::tokenizer::{HeuristicTokenizer, Tokenizer};
 use echo_core::tools::artifact::{ToolOutputArtifactConfig, ToolOutputArtifactRef};
@@ -13,53 +19,72 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// 单页默认的内容 token 上限。
 const DEFAULT_ARTIFACT_CONTENT_TOKENS: usize = 3_500;
+/// 单页允许的内容 token 硬上限。
 const MAX_ARTIFACT_CONTENT_TOKENS: usize = 3_500;
+/// 每次预读 / 哈希时使用的缓冲区字节数。
 const ARTIFACT_READ_AHEAD_BYTES: usize = 64 * 1024;
 
-/// The caller-selected bound for one artifact page.
+/// 调用方为单个制品分页选择的边界。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtifactPageLimit {
-    /// Bound the page by UTF-8 bytes. A single scalar value may exceed the limit.
+    /// 按 UTF-8 字节数限制分页；单个 Unicode 标量值可能超过该限制。
     Bytes(usize),
-    /// Bound the page using the framework's heuristic tokenizer.
+    /// 使用框架的启发式分词器按 token 数限制分页。
     Tokens(usize),
 }
 
-/// One verified, UTF-8-safe page of an immutable tool-output artifact.
+/// 不可变工具输出制品中经过校验、UTF-8 安全的一页内容。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactPage {
+    /// 本页的文本内容。
     pub content: String,
+    /// 读取下一页所用的不透明游标；已读完时为 `None`。
     pub next_cursor: Option<String>,
+    /// 是否已读到制品末尾。
     pub complete: bool,
+    /// 制品完整内容的 SHA-256（小写十六进制）。
     pub sha256: String,
+    /// 本页在文件中的起始字节偏移（含）。
     pub start_byte: u64,
+    /// 本页在文件中的结束字节偏移（不含）。
     pub end_byte: u64,
+    /// 制品文件总字节数。
     pub total_bytes: u64,
 }
 
-/// Stable error classes for artifact-page consumers.
+/// 供制品分页消费者使用的稳定错误分类。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArtifactReadErrorKind {
+    /// 制品引用无效（路径越界、不是文件、哈希格式错误等）。
     InvalidReference,
+    /// 游标无效（格式错误、越界或不在字符边界上）。
     InvalidCursor,
+    /// 制品在引用生成后或读取期间被修改。
     Changed,
+    /// 制品内容不是合法的 UTF-8。
     InvalidUtf8,
+    /// 底层 I/O 错误。
     Io,
 }
 
-/// A fail-closed artifact verification or read failure.
+/// 失败即关闭（fail-closed）的制品校验或读取错误。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactReadError {
+    /// 错误分类。
     kind: ArtifactReadErrorKind,
+    /// 面向人类的错误描述。
     message: String,
 }
 
 impl ArtifactReadError {
+    /// 返回错误分类。
     pub fn kind(&self) -> ArtifactReadErrorKind {
         self.kind
     }
 
+    /// 以指定分类和消息构造错误。
     fn new(kind: ArtifactReadErrorKind, message: impl Into<String>) -> Self {
         Self {
             kind,
@@ -76,17 +101,25 @@ impl fmt::Display for ArtifactReadError {
 
 impl std::error::Error for ArtifactReadError {}
 
+/// 分页游标：绑定偏移量与制品快照身份，防止跨快照复用。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactCursor {
+    /// 下一页的起始字节偏移。
     offset: u64,
+    /// 签发游标时的文件字节数。
     file_bytes: u64,
+    /// 签发游标时的文件修改时间（纳秒）。
     modified_nanos: u128,
+    /// 文件身份摘要（大小、修改时间、inode 等）。
     file_id: String,
+    /// 快照身份摘要（根目录、路径与内容哈希）。
     snapshot_id: String,
+    /// 期望的制品内容 SHA-256。
     expected_sha256: String,
 }
 
 impl ArtifactCursor {
+    /// 将游标编码为 `v4:` 前缀的字符串。
     fn encode(self) -> String {
         format!(
             "v4:{}:{}:{}:{}:{}:{}",
@@ -99,6 +132,7 @@ impl ArtifactCursor {
         )
     }
 
+    /// 解析 `v4:` 格式的游标字符串，字段缺失或多余均视为错误。
     fn parse(value: &str) -> Result<Self, String> {
         let mut parts = value.split(':');
         if parts.next() != Some("v4") {
@@ -124,6 +158,7 @@ impl ArtifactCursor {
     }
 }
 
+/// 解析游标中的 64 位十六进制哈希字段，并统一转为小写。
 fn parse_cursor_hash(value: Option<&str>, label: &str) -> Result<String, String> {
     value
         .filter(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
@@ -131,6 +166,7 @@ fn parse_cursor_hash(value: Option<&str>, label: &str) -> Result<String, String>
         .ok_or_else(|| format!("artifact cursor has an invalid {label}"))
 }
 
+/// 解析游标中的数值字段。
 fn parse_cursor_number<T>(value: Option<&str>, label: &str) -> Result<T, String>
 where
     T: std::str::FromStr,
@@ -141,6 +177,7 @@ where
         .map_err(|_| format!("artifact cursor has an invalid {label}"))
 }
 
+/// 从参数中读取正整数 `max_tokens`，缺省时使用默认值，并截断到硬上限。
 fn positive_token_limit(parameters: &ToolParameters) -> Result<usize, String> {
     let Some(value) = parameters.get("max_tokens") else {
         return Ok(DEFAULT_ARTIFACT_CONTENT_TOKENS);
@@ -153,6 +190,7 @@ fn positive_token_limit(parameters: &ToolParameters) -> Result<usize, String> {
     Ok(requested.min(MAX_ARTIFACT_CONTENT_TOKENS))
 }
 
+/// 将修改时间转换为自 UNIX 纪元以来的纳秒数，失败时返回 0。
 fn modified_nanos(modified: SystemTime) -> u128 {
     modified
         .duration_since(UNIX_EPOCH)
@@ -160,6 +198,7 @@ fn modified_nanos(modified: SystemTime) -> u128 {
         .unwrap_or(0)
 }
 
+/// 规范化制品路径，并确保其位于配置的制品根目录内且为普通文件。
 fn resolve_artifact_path(
     config: &ToolOutputArtifactConfig,
     requested_path: &Path,
@@ -205,6 +244,7 @@ fn resolve_artifact_path(
     Ok(path)
 }
 
+/// 解码 UTF-8 字节；若末尾是被截断的不完整字符则丢弃该部分，其余非法序列报错。
 fn decode_utf8_prefix(bytes: Vec<u8>) -> Result<String, String> {
     match String::from_utf8(bytes) {
         Ok(text) => Ok(text),
@@ -219,6 +259,7 @@ fn decode_utf8_prefix(bytes: Vec<u8>) -> Result<String, String> {
     }
 }
 
+/// 通过二分查找取出不超过 `max_tokens` 的最长字符前缀（至少保留一个字符）。
 fn token_bounded_prefix(text: &str, max_tokens: usize) -> String {
     let tokenizer = HeuristicTokenizer;
     if tokenizer.count_tokens(text) <= max_tokens {
@@ -240,6 +281,7 @@ fn token_bounded_prefix(text: &str, max_tokens: usize) -> String {
     text.chars().take(character_limit).collect()
 }
 
+/// 取出不超过 `max_bytes` 字节的最长字符前缀（至少保留一个字符）。
 fn byte_bounded_prefix(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
@@ -254,13 +296,18 @@ fn byte_bounded_prefix(text: &str, max_bytes: usize) -> String {
     content
 }
 
+/// 由文件元数据推导出的文件身份，用于检测读取期间的变化。
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ArtifactFileIdentity {
+    /// 文件字节数。
     file_bytes: u64,
+    /// 文件修改时间（纳秒）。
     modified_nanos: u128,
+    /// 综合大小、修改时间及平台相关元数据（设备号、inode、ctime）的摘要。
     file_id: String,
 }
 
+/// 根据文件元数据计算 [`ArtifactFileIdentity`]。
 fn file_identity(metadata: &std::fs::Metadata) -> ArtifactFileIdentity {
     let file_bytes = metadata.len();
     let modified_nanos = metadata.modified().map(modified_nanos).unwrap_or(0);
@@ -282,6 +329,7 @@ fn file_identity(metadata: &std::fs::Metadata) -> ArtifactFileIdentity {
     }
 }
 
+/// 以只读、不跟随符号链接 / 重解析点的方式打开制品，并确认其为普通文件。
 fn open_artifact_readonly(path: &Path) -> Result<File, ArtifactReadError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -339,6 +387,7 @@ fn open_artifact_readonly(path: &Path) -> Result<File, ArtifactReadError> {
     Ok(file)
 }
 
+/// 从当前位置读取文件剩余内容并计算 SHA-256；可选地累加哈希次数计数器（测试用）。
 fn sha256_reader(
     file: &mut File,
     hash_passes: Option<&AtomicUsize>,
@@ -365,6 +414,7 @@ fn sha256_reader(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// 校验 SHA-256 字符串为 64 位十六进制并转为小写。
 fn validate_sha256(value: &str) -> Result<String, ArtifactReadError> {
     if value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit()) {
         Ok(value.to_ascii_lowercase())
@@ -376,6 +426,7 @@ fn validate_sha256(value: &str) -> Result<String, ArtifactReadError> {
     }
 }
 
+/// 由规范化根目录、制品路径和内容哈希计算快照身份摘要。
 fn artifact_snapshot_id(
     config: &ToolOutputArtifactConfig,
     path: &Path,
@@ -396,6 +447,7 @@ fn artifact_snapshot_id(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// 计算单次读取的字节窗口大小；限制值为 0 时报错。
 fn read_window_bytes(limit: ArtifactPageLimit) -> Result<usize, ArtifactReadError> {
     let requested = match limit {
         ArtifactPageLimit::Bytes(value) | ArtifactPageLimit::Tokens(value) => value,
@@ -413,6 +465,7 @@ fn read_window_bytes(limit: ArtifactPageLimit) -> Result<usize, ArtifactReadErro
     .min(ARTIFACT_READ_AHEAD_BYTES))
 }
 
+/// 从头计算整个文件的哈希并与期望值比较，同时确认哈希期间文件身份未变化。
 fn verify_artifact_digest(
     file: &mut File,
     expected_sha256: &str,
@@ -449,11 +502,13 @@ fn verify_artifact_digest(
     Ok(())
 }
 
-/// Read one verified page from a persisted tool-output artifact.
-///
-/// The configured root and the complete artifact reference are both required.
-/// The function rejects path escapes, symlink escapes, stale lengths, digest
-/// mismatches, and cursors issued for a different artifact snapshot.
+/**
+ * 从已持久化的工具输出制品中读取一页经过校验的内容。
+ *
+ * 必须同时提供配置的根目录与完整的制品引用。
+ * 本函数会拒绝路径逃逸、符号链接逃逸、过期长度、摘要不匹配，
+ * 以及为其它制品快照签发的游标。
+ */
 pub fn read_artifact_page(
     config: &ToolOutputArtifactConfig,
     artifact: &ToolOutputArtifactRef,
@@ -463,6 +518,12 @@ pub fn read_artifact_page(
     read_artifact_page_inner(config, artifact, cursor, limit, None, None)
 }
 
+/**
+ * 分页读取的内部实现。
+ *
+ * `initial_verified_identity` 表示调用方已完成首次摘要校验时的文件身份，可避免重复哈希；
+ * `hash_passes` 用于测试中统计完整哈希次数。首页与末页会做完整摘要校验。
+ */
 fn read_artifact_page_inner(
     config: &ToolOutputArtifactConfig,
     artifact: &ToolOutputArtifactRef,
@@ -615,6 +676,12 @@ fn read_artifact_page_inner(
     })
 }
 
+/**
+ * 根据工具请求构造制品引用。
+ *
+ * 若提供了期望哈希则直接采用（后续读取时校验）；否则现场计算哈希，
+ * 并返回已校验的文件身份以便首页跳过重复哈希。
+ */
 fn artifact_ref_for_tool_request(
     config: &ToolOutputArtifactConfig,
     requested: &Path,
@@ -660,26 +727,31 @@ fn artifact_ref_for_tool_request(
     ))
 }
 
-/// Read immutable tool-output artifacts by an opaque byte cursor.
+/// 通过不透明字节游标分页读取不可变工具输出制品的工具。
 pub struct ReadArtifactTool;
 
 impl Tool for ReadArtifactTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "read_artifact"
     }
 
+    /// 面向模型的工具描述。
     fn description(&self) -> &str {
         "Read the complete spilled output of a previous tool call in bounded UTF-8 pages. Use the returned next_cursor until complete."
     }
 
+    /// 所需权限：只读。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 风险等级：只读。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -708,6 +780,7 @@ impl Tool for ReadArtifactTool {
         })
     }
 
+    /// 执行一次分页读取：校验参数后在阻塞线程中读取，并在结果元数据中附带分页信息。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -847,6 +920,7 @@ mod tests {
     use super::*;
     use echo_core::tools::artifact::{ToolOutputArtifactIdentity, persist_tool_output};
 
+    /// 生成带进程号与时间戳的唯一临时根目录。
     fn test_root(label: &str) -> PathBuf {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -859,6 +933,7 @@ mod tests {
         ))
     }
 
+    /// 在指定根目录下持久化一段内容并返回制品引用。
     fn create_artifact(
         root: &Path,
         content: &str,

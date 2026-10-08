@@ -1,8 +1,10 @@
-//! 与具体产品无关的持久化投递账本（delivery ledger）原语。
-//!
-//! 该账本对有序的投递生命周期建模，而不关心应用层的路由（route）、Agent、
-//! 工作区或负载（payload）具体代表什么。调用方提供自己的路由和负载类型，
-//! 框架则负责生命周期身份、尝试顺序、终态以及一个有界的可重放投影。
+/*!
+与具体产品无关的持久化投递账本（delivery ledger）原语。
+
+该账本对有序的投递生命周期建模，而不关心应用层的路由（route）、Agent、
+工作区或负载（payload）具体代表什么。调用方提供自己的路由和负载类型，
+框架则负责生命周期身份、尝试顺序、终态以及一个有界的可重放投影。
+*/
 
 use crate::journal::{
     ApplyBatchReceipt, ApplyReceipt, CheckpointStore, CheckpointedApplyError, CheckpointedReducer,
@@ -20,10 +22,12 @@ use std::sync::Arc;
 /// 框架投递事件契约的版本号。
 pub const DELIVERY_LEDGER_SCHEMA_VERSION: u16 = 1;
 
-/// 类型化投递账本所接受的路由值。
-///
-/// 框架只需要一个稳定、可序列化并带有少量校验能力的路由。产品代码可以为
-/// 自己的地址类型实现此契约，而无需把该地址转换成框架自有的字符串类型。
+/**
+类型化投递账本所接受的路由值。
+
+框架只需要一个稳定、可序列化并带有少量校验能力的路由。产品代码可以为
+自己的地址类型实现此契约，而无需把该地址转换成框架自有的字符串类型。
+*/
 pub trait DeliveryRoute:
     Clone + PartialEq + Serialize + for<'de> Deserialize<'de> + Send + Sync + fmt::Debug + 'static
 {
@@ -32,6 +36,7 @@ pub trait DeliveryRoute:
 }
 
 impl DeliveryRoute for String {
+    /// 字符串路由仅要求去除空白后非空。
     fn validate(&self) -> Result<()> {
         if self.trim().is_empty() {
             return Err(ReactError::Other("delivery route is empty".to_string()));
@@ -87,21 +92,28 @@ impl DeliveryOutcome {
     }
 }
 
-/// Durable phase of one delivery record.
+/// 单条投递记录的持久化阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryPhase {
+    /// 已持久化入队，尚未被认领。
     Persisted,
+    /// 已被某次尝试认领。
     Claimed,
+    /// 副作用（effect）已开始执行。
     EffectStarted,
+    /// 输入已被邮箱（mailbox）接收。
     MailboxAccepted,
+    /// 输入已被上下文消费（drained）。
     Drained,
+    /// 已延后，等待下一次可尝试时间。
     Deferred,
+    /// 本轮已结算（终态）。
     TurnSettled,
 }
 
 impl DeliveryPhase {
-    /// Stable snake-case spelling for logs and wire clients.
+    /// 用于日志和线上客户端的稳定 snake_case 拼写形式。
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Persisted => "persisted",
@@ -115,20 +127,22 @@ impl DeliveryPhase {
     }
 }
 
-/// Product-neutral typed message envelope.
+/// 与具体产品无关的类型化消息信封。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryEnvelope<Route = String, Payload = Value> {
-    /// Stable idempotency identity chosen by the application.
+    /// 由应用选定的稳定幂等身份。
     pub message_id: String,
-    /// Caller-owned route identity.
+    /// 调用方拥有的路由身份。
     pub route: Route,
-    /// Caller-owned payload retained without a JSON round trip.
+    /// 调用方拥有的负载，保留原值而不经过 JSON 往返转换。
     pub payload: Payload,
-    /// Stable metadata used for correlation and caller policy.
+    /// 用于关联追踪和调用方策略的稳定元数据。
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
+    /// 可选的关联 ID，用于串联同一业务链路的消息。
     pub correlation_id: Option<String>,
+    /// 可选的因果 ID，指向触发本消息的上游消息。
     pub causation_id: Option<String>,
 }
 
@@ -136,7 +150,7 @@ impl<Route, Payload> DeliveryEnvelope<Route, Payload>
 where
     Route: DeliveryRoute,
 {
-    /// Construct a typed envelope without duplicating route or payload values.
+    /// 构造一个类型化信封，不复制路由或负载值。
     pub fn new(message_id: impl Into<String>, route: Route, payload: Payload) -> Self {
         Self {
             message_id: message_id.into(),
@@ -148,7 +162,7 @@ where
         }
     }
 
-    /// Validate the identity and route without applying product policy.
+    /// 校验身份与路由，但不应用任何产品层策略。
     pub fn validate(&self) -> Result<()> {
         if self.message_id.trim().is_empty() {
             return Err(ReactError::Other(
@@ -159,67 +173,110 @@ where
     }
 }
 
-/// Durable lifecycle facts for one envelope.
+/// 单个信封的持久化生命周期事实。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 pub enum DeliveryEvent<Route = String, Payload = Value> {
+    /// 信封已持久化入队。
     Persisted {
+        /// 被持久化的信封。
         envelope: DeliveryEnvelope<Route, Payload>,
+        /// 持久化时间。
         persisted_at: DateTime<Utc>,
     },
+    /// 某次尝试认领了该消息。
     Claimed {
+        /// 消息 ID。
         message_id: String,
+        /// 本次尝试的唯一 ID。
         attempt_id: String,
+        /// 尝试序号（从 1 开始递增）。
         attempt: u32,
+        /// 认领时间。
         claimed_at: DateTime<Utc>,
     },
+    /// 副作用已针对某个 turn 开始执行。
     EffectStarted {
+        /// 消息 ID。
         message_id: String,
+        /// 尝试 ID。
         attempt_id: String,
+        /// 执行该副作用的 turn ID。
         turn_id: String,
+        /// 开始时间。
         started_at: DateTime<Utc>,
     },
+    /// 邮箱已接收该副作用的输入。
     MailboxAccepted {
+        /// 消息 ID。
         message_id: String,
+        /// 尝试 ID。
         attempt_id: String,
+        /// 所属 turn ID。
         turn_id: String,
+        /// 接收时间。
         accepted_at: DateTime<Utc>,
     },
+    /// 输入已被上下文消费。
     Drained {
+        /// 消息 ID。
         message_id: String,
+        /// 尝试 ID。
         attempt_id: String,
+        /// 所属 turn ID。
         turn_id: String,
+        /// 消费时间。
         drained_at: DateTime<Utc>,
     },
+    /// 尝试被延后。
     Deferred {
+        /// 消息 ID。
         message_id: String,
+        /// 尝试 ID。
         attempt_id: String,
+        /// 延后原因。
         reason: String,
+        /// 延后发生时间。
         deferred_at: DateTime<Utc>,
+        /// 下一次可尝试时间。
         next_attempt_at: DateTime<Utc>,
     },
+    /// 本轮已结算。
     TurnSettled {
+        /// 消息 ID。
         message_id: String,
+        /// 尝试 ID。
         attempt_id: String,
+        /// 所属 turn ID（若有）。
         turn_id: Option<String>,
+        /// 结算结果。
         outcome: DeliveryOutcome,
+        /// 输入是否已被消费（`None` 表示保持原值）。
         drained: Option<bool>,
+        /// 结算原因。
         reason: Option<String>,
+        /// 是否可重试（为真时重新入队）。
         retryable: bool,
+        /// 可重试时的下一次尝试时间。
         next_attempt_at: Option<DateTime<Utc>>,
+        /// 回复消息 ID（若有）。
         reply_message_id: Option<String>,
+        /// 结算时间。
         settled_at: DateTime<Utc>,
     },
 }
 
-/// Logical bounds for terminal records retained in the hot projection.
+/// 热投影中所保留终态记录的逻辑上限。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryLedgerConfig {
+    /// 最多保留的终态记录条数。
     pub terminal_retention: usize,
+    /// 终态记录最多占用的字节数。
     pub terminal_retention_bytes: usize,
 }
 
 impl Default for DeliveryLedgerConfig {
+    /// 默认保留 256 条、256 KiB 的终态记录。
     fn default() -> Self {
         Self {
             terminal_retention: 256,
@@ -228,33 +285,56 @@ impl Default for DeliveryLedgerConfig {
     }
 }
 
-/// One projected delivery record.
+/// 一条投影后的投递记录。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryRecord<Route = String, Payload = Value> {
+    /// 消息 ID。
     pub message_id: String,
+    /// 路由。
     pub route: Route,
+    /// 负载。
     pub payload: Payload,
+    /// 元数据。
     #[serde(default)]
     pub metadata: BTreeMap<String, String>,
+    /// 关联 ID。
     pub correlation_id: Option<String>,
+    /// 因果 ID。
     pub causation_id: Option<String>,
+    /// 持久化时间。
     pub persisted_at: DateTime<Utc>,
+    /// 当前生命周期阶段。
     pub phase: DeliveryPhase,
+    /// 结算结果（若已结算）。
     pub outcome: Option<DeliveryOutcome>,
+    /// 输入是否已被消费。
     pub drained: bool,
+    /// 最近一次延后或结算的原因。
     pub reason: Option<String>,
+    /// 当前尝试 ID。
     pub attempt_id: Option<String>,
+    /// 当前尝试序号。
     pub attempt: u32,
+    /// 认领时间。
     pub claimed_at: Option<DateTime<Utc>>,
+    /// 副作用开始时间。
     pub effect_started_at: Option<DateTime<Utc>>,
+    /// 邮箱接收时间。
     pub mailbox_accepted_at: Option<DateTime<Utc>>,
+    /// 消费时间。
     pub drained_at: Option<DateTime<Utc>>,
+    /// 结算时间。
     pub turn_settled_at: Option<DateTime<Utc>>,
+    /// 当前 turn ID。
     pub turn_id: Option<String>,
+    /// 回复消息 ID。
     pub reply_message_id: Option<String>,
+    /// 下一次可尝试时间。
     pub next_attempt_at: Option<DateTime<Utc>>,
+    /// 是否已处于终态。
     pub terminal: bool,
+    /// 该记录计入保留配额的字节数（信封序列化后大小）。
     pub retained_bytes: usize,
 }
 
@@ -263,6 +343,7 @@ where
     Route: DeliveryRoute,
     Payload: DeliveryPayload,
 {
+    /// 由信封构造初始的 `Persisted` 记录，并计算其保留字节数。
     fn new(
         envelope: DeliveryEnvelope<Route, Payload>,
         persisted_at: DateTime<Utc>,
@@ -297,11 +378,12 @@ where
         })
     }
 
+    /// 判断记录是否对应指定消息的指定尝试。
     fn matches_attempt(&self, message_id: &str, attempt_id: &str) -> bool {
         self.message_id == message_id && self.attempt_id.as_deref() == Some(attempt_id)
     }
 
-    /// Reconstruct the event envelope when a caller needs the event shape.
+    /// 当调用方需要事件形态时，重建事件信封。
     pub fn envelope(&self) -> DeliveryEnvelope<Route, Payload> {
         DeliveryEnvelope {
             message_id: self.message_id.clone(),
@@ -314,54 +396,73 @@ where
     }
 }
 
-/// One exact delivery attempt selected from the FIFO frontier.
+/// 从 FIFO 前沿中选出的一次确切投递尝试。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryClaim<Route = String, Payload = Value> {
-    /// The caller-owned payload selected from the FIFO frontier.
+    /// 从 FIFO 前沿中选出的、由调用方拥有的负载。
     pub payload: Payload,
+    /// 消息 ID。
     pub message_id: String,
+    /// 路由。
     pub route: Route,
+    /// 尝试 ID。
     pub attempt_id: String,
+    /// 尝试序号。
     pub attempt: u32,
+    /// 认领时间。
     pub claimed_at: DateTime<Utc>,
 }
 
-/// A claim and its validated lifecycle event before physical commit.
-///
-/// Hosts with custom durability can append `event` through
-/// [`DeliveryLedger::apply_prepared_with`] and then return `claim` to their
-/// caller. The framework has already selected the FIFO item and assigned its
-/// exact attempt identity.
+/**
+一次认领及其在物理提交前已校验过的生命周期事件。
+
+具有自定义持久化能力的宿主可以通过 [`DeliveryLedger::apply_prepared_with`]
+追加 `event`，然后把 `claim` 返回给自己的调用方。框架已经选定了 FIFO 条目
+并分配了确切的尝试身份。
+*/
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeliveryClaimDraft<Route = String, Payload = Value> {
+    /// 认领信息。
     pub claim: DeliveryClaim<Route, Payload>,
+    /// 对应的已校验认领事件。
     pub event: DeliveryEvent<Route, Payload>,
 }
 
-/// Durable state needed to reconcile an attempt whose effect has started.
+/// 对副作用已开始的尝试进行对账所需的持久化状态。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeliveryInFlight<Route = String, Payload = Value> {
+    /// 认领信息。
     pub claim: DeliveryClaim<Route, Payload>,
+    /// 当前阶段。
     pub phase: DeliveryPhase,
+    /// 副作用是否已开始。
     pub effect_started: bool,
+    /// 所属 turn ID。
     pub turn_id: String,
 }
 
-/// Terminal facts for one delivery attempt.
+/// 一次投递尝试的终态事实。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeliverySettlement {
+    /// 所属 turn ID。
     pub turn_id: Option<String>,
+    /// 结算结果。
     pub outcome: DeliveryOutcome,
+    /// 输入是否已被消费。
     pub drained: Option<bool>,
+    /// 结算原因。
     pub reason: Option<String>,
+    /// 是否可重试。
     pub retryable: bool,
+    /// 下一次可尝试时间（仅可重试时有效）。
     pub next_attempt_at: Option<DateTime<Utc>>,
+    /// 回复消息 ID。
     pub reply_message_id: Option<String>,
 }
 
 impl DeliverySettlement {
-    /// Construct a terminal settlement that does not requeue the delivery.
+    /// 构造一个不会重新入队的终态结算。
     pub fn terminal(
         turn_id: Option<String>,
         outcome: DeliveryOutcome,
@@ -380,7 +481,7 @@ impl DeliverySettlement {
         }
     }
 
-    /// Construct a retryable settlement with the next eligible attempt time.
+    /// 构造一个可重试的结算，并附带下一次可尝试时间。
     pub fn retry(
         turn_id: Option<String>,
         outcome: DeliveryOutcome,
@@ -400,52 +501,67 @@ impl DeliverySettlement {
     }
 }
 
-/// One lifecycle transition for an exact delivery claim.
-///
-/// Applications can pass this value through their own physical journal
-/// authority without defining a second enum that mirrors the framework
-/// lifecycle. The transition describes only framework facts; route policy,
-/// wake-up behavior, and surface receipts remain application concerns.
+/**
+针对一次确切投递认领的单个生命周期转换。
+
+应用可以把该值传入自己的物理日志权威，而无需再定义一个镜像框架生命周期的
+枚举。该转换只描述框架层事实；路由策略、唤醒行为和对外回执仍属于应用关注点。
+*/
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum DeliveryTransition {
+    /// 副作用开始。
     EffectStarted {
+        /// 执行副作用的 turn ID。
         turn_id: String,
     },
+    /// 邮箱已接收。
     MailboxAccepted {
+        /// 所属 turn ID。
         turn_id: String,
     },
+    /// 输入已消费。
     Drained {
+        /// 所属 turn ID。
         turn_id: String,
     },
+    /// 延后。
     Deferred {
+        /// 延后原因。
         reason: String,
+        /// 下一次可尝试时间。
         next_attempt_at: DateTime<Utc>,
     },
+    /// 结算。
     Settled {
+        /// 结算事实。
         settlement: DeliverySettlement,
     },
 }
 
 impl DeliveryTransition {
+    /// 构造“副作用开始”转换。
     pub fn effect_started(turn_id: impl Into<String>) -> Self {
         Self::EffectStarted {
             turn_id: turn_id.into(),
         }
     }
 
+    /// 构造“邮箱已接收”转换。
     pub fn mailbox_accepted(turn_id: impl Into<String>) -> Self {
         Self::MailboxAccepted {
             turn_id: turn_id.into(),
         }
     }
 
+    /// 构造“输入已消费”转换。
     pub fn drained(turn_id: impl Into<String>) -> Self {
         Self::Drained {
             turn_id: turn_id.into(),
         }
     }
 
+    /// 构造“延后”转换。
     pub fn deferred(reason: impl Into<String>, next_attempt_at: DateTime<Utc>) -> Self {
         Self::Deferred {
             reason: reason.into(),
@@ -453,22 +569,29 @@ impl DeliveryTransition {
         }
     }
 
+    /// 构造“结算”转换。
     pub fn settled(settlement: DeliverySettlement) -> Self {
         Self::Settled { settlement }
     }
 }
 
-/// Rebuildable FIFO and lifecycle projection for a delivery ledger.
+/// 投递账本可重建的 FIFO 与生命周期投影。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeliveryLedgerProjection<Route = String, Payload = Value> {
+    /// 所有保留记录的 FIFO 顺序。
     order: VecDeque<String>,
+    /// 非终态记录的 FIFO 前沿。
     frontier: VecDeque<String>,
+    /// 按消息 ID 索引的记录。
     entries: HashMap<String, DeliveryRecord<Route, Payload>>,
+    /// 终态记录累计占用的字节数。
     terminal_retained_bytes: usize,
+    /// 事件折叠失败时记录的首个错误；一旦设置，投影即视为无效。
     invalid: Option<String>,
 }
 
+/// 判断候选记录当前是否可被认领：副作用未开始且已到可尝试时间。
 fn claim_is_eligible<Route, Payload>(candidate: &DeliveryRecord<Route, Payload>) -> bool {
     candidate.effect_started_at.is_none()
         && !matches!(
@@ -481,6 +604,7 @@ fn claim_is_eligible<Route, Payload>(candidate: &DeliveryRecord<Route, Payload>)
 }
 
 impl<Route, Payload> Default for DeliveryLedgerProjection<Route, Payload> {
+    /// 创建空投影。
     fn default() -> Self {
         Self {
             order: VecDeque::new(),
@@ -497,8 +621,10 @@ where
     Route: DeliveryRoute,
     Payload: DeliveryPayload,
 {
+    /// 投影折叠的事件类型。
     type Event = DeliveryEvent<Route, Payload>;
 
+    /// 折叠事件；首次失败后记录错误并停止继续折叠。
     fn apply(&mut self, event: &Self::Event) {
         if self.invalid.is_none()
             && let Err(error) = self.apply_checked(event)
@@ -507,6 +633,7 @@ where
         }
     }
 
+    /// 折叠日志记录中的事件。
     fn apply_record(&mut self, record: &JournalRecord<Self::Event>) {
         self.apply(&record.event);
     }
@@ -517,7 +644,7 @@ where
     Route: DeliveryRoute,
     Payload: DeliveryPayload,
 {
-    /// Rehydrate a projection from retained records.
+    /// 从保留的记录重新构建投影。
     pub fn from_records(
         records: impl IntoIterator<Item = DeliveryRecord<Route, Payload>>,
         config: DeliveryLedgerConfig,
@@ -545,6 +672,7 @@ where
         Ok(projection)
     }
 
+    /// 按配置的条数和字节上限，从最早的终态记录开始淘汰。
     fn enforce_retention(&mut self, config: DeliveryLedgerConfig) {
         loop {
             let terminal_count = self.entries.values().filter(|entry| entry.terminal).count();
@@ -570,6 +698,7 @@ where
         }
     }
 
+    /// 获取指定消息记录的可变引用，不存在时返回错误。
     fn entry_mut(
         &mut self,
         message_id: &str,
@@ -579,6 +708,7 @@ where
             .ok_or_else(|| format!("delivery message {message_id} is unknown"))
     }
 
+    /// 校验事件是否针对记录当前的尝试，否则视为过期认领。
     fn check_attempt(
         entry: &DeliveryRecord<Route, Payload>,
         message_id: &str,
@@ -590,6 +720,7 @@ where
         Ok(())
     }
 
+    /// 校验并折叠单个事件，违反生命周期约束时返回错误描述。
     fn apply_checked(
         &mut self,
         event: &DeliveryEvent<Route, Payload>,
@@ -834,7 +965,7 @@ where
         Ok(())
     }
 
-    /// Validate projection invariants and logical retention bounds.
+    /// 校验投影不变式以及逻辑保留上限。
     pub fn validate(&self, config: DeliveryLedgerConfig) -> Result<()> {
         if let Some(error) = &self.invalid {
             return Err(ReactError::Other(error.clone()));
@@ -920,22 +1051,23 @@ where
         Ok(())
     }
 
-    /// Return the current FIFO frontier in order.
+    /// 按顺序返回当前 FIFO 前沿。
     pub fn frontier(&self) -> impl Iterator<Item = &DeliveryRecord<Route, Payload>> {
         self.frontier.iter().filter_map(|id| self.entries.get(id))
     }
 
-    /// Return an exact record if its identity is retained.
+    /// 若该身份的记录仍被保留，则返回之。
     pub fn record(&self, message_id: &str) -> Option<&DeliveryRecord<Route, Payload>> {
         self.entries.get(message_id)
     }
 
-    /// Return all retained records in FIFO order.
+    /// 按 FIFO 顺序返回所有保留的记录。
     pub fn records(&self) -> impl Iterator<Item = &DeliveryRecord<Route, Payload>> {
         self.order.iter().filter_map(|id| self.entries.get(id))
     }
 }
 
+/// 校验单条记录各字段与其阶段之间的一致性。
 fn validate_record_state<Route, Payload>(entry: &DeliveryRecord<Route, Payload>) -> Result<()>
 where
     Route: DeliveryRoute,
@@ -1076,106 +1208,120 @@ where
     Ok(())
 }
 
-/// Generic journal-backed delivery ledger.
-///
-/// # Example
-///
-/// A framework consumer keeps its domain route and payload types throughout
-/// the lifecycle. The payload only needs `PartialEq`, so ordinary values such
-/// as floating-point fields remain usable.
-///
-/// ```
-/// use echo_state::delivery::{
-///     DeliveryEnvelope, DeliveryLedger, DeliveryLedgerConfig, DeliveryLedgerProjection,
-///     DeliveryOutcome, DeliveryRoute, DeliverySettlement, DeliveryEvent,
-/// };
-/// use echo_state::journal::{CheckpointStore, MemoryCheckpointStore, MemoryEventJournal};
-/// use echo_core::error::{ReactError, Result};
-/// use serde::{Deserialize, Serialize};
-/// use std::sync::Arc;
-///
-/// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-/// struct Route(String);
-///
-/// impl DeliveryRoute for Route {
-///     fn validate(&self) -> Result<()> {
-///         if self.0.trim().is_empty() {
-///             return Err(ReactError::Other("route is empty".to_string()));
-///         }
-///         Ok(())
-///     }
-/// }
-///
-/// #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-/// struct Payload {
-///     text: String,
-///     score: f64,
-/// }
-///
-/// # fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-/// type Event = DeliveryEvent<Route, Payload>;
-/// type Journal = MemoryEventJournal<Event>;
-/// type Projection = DeliveryLedgerProjection<Route, Payload>;
-/// type Ledger = DeliveryLedger<Journal, Route, Payload>;
-///
-/// let journal = Arc::new(Journal::new());
-/// let checkpoints: Arc<dyn CheckpointStore<Projection>> =
-///     Arc::new(MemoryCheckpointStore::new());
-/// let ledger = Ledger::new(
-///     journal,
-///     checkpoints,
-///     DeliveryLedgerConfig::default(),
-///     16,
-/// );
-/// ledger.enqueue(DeliveryEnvelope::new(
-///     "message-1",
-///     Route("conversation-1".to_string()),
-///     Payload { text: "hello".to_string(), score: 0.95 },
-/// ))?;
-/// let claim = ledger
-///     .claim_next()?
-///     .ok_or_else(|| ReactError::Other("delivery frontier is empty".to_string()))?;
-/// ledger.begin_effect(&claim, "turn-1")?;
-/// ledger.accept_mailbox(&claim, "turn-1")?;
-/// ledger.mark_drained(&claim, "turn-1")?;
-/// ledger.settle(
-///     &claim,
-///     DeliverySettlement::terminal(
-///         Some("turn-1".to_string()),
-///         DeliveryOutcome::Completed,
-///         Some(true),
-///         None,
-///         None,
-///     ),
-/// )?;
-/// assert!(ledger.with_projection(|projection| projection.frontier().next().is_none()));
-/// # Ok(())
-/// # }
-/// ```
+/**
+基于日志（journal）的通用投递账本。
+
+# 示例
+
+框架使用方在整个生命周期中都保留自己的领域路由与负载类型。负载只需实现
+`PartialEq`，因此像浮点字段这样的普通值依然可用。
+
+```
+use echo_state::delivery::{
+    DeliveryEnvelope, DeliveryLedger, DeliveryLedgerConfig, DeliveryLedgerProjection,
+    DeliveryOutcome, DeliveryRoute, DeliverySettlement, DeliveryEvent,
+};
+use echo_state::journal::{CheckpointStore, MemoryCheckpointStore, MemoryEventJournal};
+use echo_core::error::{ReactError, Result};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Route(String);
+
+impl DeliveryRoute for Route {
+    fn validate(&self) -> Result<()> {
+        if self.0.trim().is_empty() {
+            return Err(ReactError::Other("route is empty".to_string()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Payload {
+    text: String,
+    score: f64,
+}
+
+# fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+type Event = DeliveryEvent<Route, Payload>;
+type Journal = MemoryEventJournal<Event>;
+type Projection = DeliveryLedgerProjection<Route, Payload>;
+type Ledger = DeliveryLedger<Journal, Route, Payload>;
+
+let journal = Arc::new(Journal::new());
+let checkpoints: Arc<dyn CheckpointStore<Projection>> =
+    Arc::new(MemoryCheckpointStore::new());
+let ledger = Ledger::new(
+    journal,
+    checkpoints,
+    DeliveryLedgerConfig::default(),
+    16,
+);
+ledger.enqueue(DeliveryEnvelope::new(
+    "message-1",
+    Route("conversation-1".to_string()),
+    Payload { text: "hello".to_string(), score: 0.95 },
+))?;
+let claim = ledger
+    .claim_next()?
+    .ok_or_else(|| ReactError::Other("delivery frontier is empty".to_string()))?;
+ledger.begin_effect(&claim, "turn-1")?;
+ledger.accept_mailbox(&claim, "turn-1")?;
+ledger.mark_drained(&claim, "turn-1")?;
+ledger.settle(
+    &claim,
+    DeliverySettlement::terminal(
+        Some("turn-1".to_string()),
+        DeliveryOutcome::Completed,
+        Some(true),
+        None,
+        None,
+    ),
+)?;
+assert!(ledger.with_projection(|projection| projection.frontier().next().is_none()));
+# Ok(())
+# }
+```
+*/
 pub struct DeliveryLedger<J, Route = String, Payload = Value> {
+    /// 带检查点的投影归约器。
     reducer: CheckpointedReducer<J, DeliveryLedgerProjection<Route, Payload>>,
+    /// 底层事件日志。
     journal: Arc<J>,
+    /// 保留配置。
     config: DeliveryLedgerConfig,
+    /// 串行化预检与提交操作的互斥锁。
     operation: std::sync::Mutex<()>,
 }
 
-/// Errors returned by a delivery ledger before or after journal commit.
+/// 投递账本在日志提交之前或之后返回的错误。
 #[derive(Debug)]
 pub enum DeliveryLedgerError<Route = String, Payload = Value> {
-    /// The event violates the current projection and was not persisted.
+    /// 事件违反当前投影，未被持久化。
     InvalidEvent {
+        /// 被拒绝的事件。
         event: Box<DeliveryEvent<Route, Payload>>,
+        /// 拒绝原因。
         error: String,
     },
-    /// The prepared batch violates the current projection and was not persisted.
+    /// 预备批次违反当前投影，未被持久化。
     InvalidBatch {
+        /// 被拒绝的批次。
         batch: Box<PreparedJournalBatch<DeliveryEvent<Route, Payload>>>,
+        /// 拒绝原因。
         error: String,
     },
-    /// The underlying journal/checkpoint authority rejected the append.
+    /// 底层日志/检查点权威拒绝了追加操作。
     Apply(Box<CheckpointedApplyError<DeliveryEvent<Route, Payload>>>),
-    /// A committed receipt did not satisfy projection invariants.
-    CommittedInvariant { batch_id: String, error: String },
+    /// 已提交的回执不满足投影不变式。
+    CommittedInvariant {
+        /// 已提交批次的 ID。
+        batch_id: String,
+        /// 违反的不变式描述。
+        error: String,
+    },
 }
 
 impl<Route, Payload> fmt::Display for DeliveryLedgerError<Route, Payload>
@@ -1183,6 +1329,7 @@ where
     Route: DeliveryRoute,
     Payload: DeliveryPayload,
 {
+    /// 输出错误的可读描述。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidEvent { error, .. } => {
@@ -1216,12 +1363,14 @@ where
 impl<Route, Payload> From<CheckpointedApplyError<DeliveryEvent<Route, Payload>>>
     for DeliveryLedgerError<Route, Payload>
 {
+    /// 把检查点应用错误包装为 `Apply` 变体。
     fn from(error: CheckpointedApplyError<DeliveryEvent<Route, Payload>>) -> Self {
         Self::Apply(Box::new(error))
     }
 }
 
 impl<J, Route, Payload> fmt::Debug for DeliveryLedger<J, Route, Payload> {
+    /// 仅输出配置，省略内部归约器等字段。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("DeliveryLedger")
@@ -1236,7 +1385,7 @@ where
     Payload: DeliveryPayload,
     J: EventJournal<DeliveryEvent<Route, Payload>>,
 {
-    /// Create a ledger over an existing framework journal and checkpoint store.
+    /// 基于已有的框架日志和检查点存储创建账本。
     pub fn new(
         journal: Arc<J>,
         checkpoints: Arc<dyn CheckpointStore<DeliveryLedgerProjection<Route, Payload>>>,
@@ -1251,7 +1400,7 @@ where
         }
     }
 
-    /// Recover the projection from its checkpoint and journal tail.
+    /// 从检查点和日志尾部恢复投影。
     pub fn recover(&self) -> Result<RecoveryReceipt> {
         let _operation = self
             .operation
@@ -1264,7 +1413,7 @@ where
         Ok(receipt)
     }
 
-    /// Enqueue one typed envelope at the current time.
+    /// 以当前时间入队一个类型化信封。
     pub fn enqueue(
         &self,
         envelope: DeliveryEnvelope<Route, Payload>,
@@ -1272,7 +1421,7 @@ where
         self.apply(self.prepare_enqueue(envelope)?)
     }
 
-    /// Build and preflight an enqueue event without physically committing it.
+    /// 构建并预检一个入队事件，但不进行物理提交。
     pub fn prepare_enqueue(
         &self,
         envelope: DeliveryEnvelope<Route, Payload>,
@@ -1284,7 +1433,7 @@ where
         })
     }
 
-    /// Claim the next eligible FIFO delivery and assign its attempt identity.
+    /// 认领下一个可认领的 FIFO 投递，并为其分配尝试身份。
     pub fn claim_next(
         &self,
     ) -> std::result::Result<
@@ -1298,12 +1447,12 @@ where
         Ok(Some(draft.claim))
     }
 
-    /// Claim the earliest eligible delivery after any predecessors whose
-    /// effects have already started.
-    ///
-    /// This preserves FIFO effect admission while allowing independent effects
-    /// to settle concurrently. Consumers that require exactly one in-flight
-    /// delivery should continue using [`Self::claim_next`].
+    /**
+    在所有副作用已开始的前驱之后，认领最早一个可认领的投递。
+
+    这样既保持了 FIFO 的副作用准入顺序，又允许相互独立的副作用并发结算。
+    需要严格同一时刻只有一个在途投递的使用方，应继续使用 [`Self::claim_next`]。
+    */
     pub fn claim_next_available(
         &self,
     ) -> std::result::Result<
@@ -1317,7 +1466,7 @@ where
         Ok(Some(draft.claim))
     }
 
-    /// Prepare the earliest concurrently admissible FIFO claim.
+    /// 预备最早一个可并发准入的 FIFO 认领。
     pub fn prepare_claim_next_available(
         &self,
     ) -> std::result::Result<
@@ -1327,8 +1476,8 @@ where
         let candidate = self.with_projection(|projection| {
             projection
                 .frontier()
-                // Only the first unstarted record can be admitted. A deferred
-                // predecessor still owns the FIFO frontier until it is due.
+                /* 只有第一个未开始的记录可以被准入。被延后的前驱在到期前
+                仍然占据 FIFO 前沿。 */
                 .find(|candidate| candidate.effect_started_at.is_none())
                 .filter(|candidate| claim_is_eligible(candidate))
                 .cloned()
@@ -1339,7 +1488,7 @@ where
         self.prepare_claim(candidate)
     }
 
-    /// Select and preflight the next eligible FIFO claim without committing it.
+    /// 选出并预检下一个可认领的 FIFO 认领，但不提交。
     pub fn prepare_claim_next(
         &self,
     ) -> std::result::Result<
@@ -1356,6 +1505,7 @@ where
         self.prepare_claim(candidate)
     }
 
+    /// 为候选记录分配新的尝试身份，并预检对应的认领事件。
     fn prepare_claim(
         &self,
         candidate: DeliveryRecord<Route, Payload>,
@@ -1385,7 +1535,7 @@ where
         }))
     }
 
-    /// Record that the claimed effect has started for a concrete turn.
+    /// 记录已认领的副作用已针对某个具体 turn 开始执行。
     pub fn begin_effect(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1394,7 +1544,7 @@ where
         self.apply(self.prepare_begin_effect(claim, turn_id)?)
     }
 
-    /// Build and preflight an effect-start event for one exact claim.
+    /// 为一次确切认领构建并预检“副作用开始”事件。
     pub fn prepare_begin_effect(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1404,7 +1554,7 @@ where
         self.prepare_transition(claim, DeliveryTransition::effect_started(turn_id))
     }
 
-    /// Record that the effect's input was accepted by the mailbox.
+    /// 记录副作用的输入已被邮箱接收。
     pub fn accept_mailbox(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1413,7 +1563,7 @@ where
         self.apply(self.prepare_accept_mailbox(claim, turn_id)?)
     }
 
-    /// Build and preflight a mailbox-accepted event for one exact claim.
+    /// 为一次确切认领构建并预检“邮箱已接收”事件。
     pub fn prepare_accept_mailbox(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1423,7 +1573,7 @@ where
         self.prepare_transition(claim, DeliveryTransition::mailbox_accepted(turn_id))
     }
 
-    /// Record that the effect's input was consumed by the context.
+    /// 记录副作用的输入已被上下文消费。
     pub fn mark_drained(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1432,7 +1582,7 @@ where
         self.apply(self.prepare_mark_drained(claim, turn_id)?)
     }
 
-    /// Build and preflight a drained event for one exact claim.
+    /// 为一次确切认领构建并预检“已消费”事件。
     pub fn prepare_mark_drained(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1442,7 +1592,7 @@ where
         self.prepare_transition(claim, DeliveryTransition::drained(turn_id))
     }
 
-    /// Defer an unaccepted effect until the supplied retry time.
+    /// 将尚未被接收的副作用延后到给定的重试时间。
     pub fn defer(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1452,7 +1602,7 @@ where
         self.apply(self.prepare_defer(claim, reason, next_attempt_at)?)
     }
 
-    /// Build and preflight a deferred event for one exact claim.
+    /// 为一次确切认领构建并预检“延后”事件。
     pub fn prepare_defer(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1463,7 +1613,7 @@ where
         self.prepare_transition(claim, DeliveryTransition::deferred(reason, next_attempt_at))
     }
 
-    /// Settle one claimed delivery, optionally requeueing it for retry.
+    /// 结算一次已认领的投递，可选择重新入队以便重试。
     pub fn settle(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1472,7 +1622,7 @@ where
         self.apply(self.prepare_settle(claim, settlement)?)
     }
 
-    /// Build and preflight terminal facts for one exact claim.
+    /// 为一次确切认领构建并预检终态事实。
     pub fn prepare_settle(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1482,7 +1632,7 @@ where
         self.prepare_transition(claim, DeliveryTransition::settled(settlement))
     }
 
-    /// Apply one lifecycle transition through the journal authority.
+    /// 通过日志权威应用单个生命周期转换。
     pub fn transition(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1491,7 +1641,7 @@ where
         self.apply(self.prepare_transition(claim, transition)?)
     }
 
-    /// Build and preflight any lifecycle transition for one exact claim.
+    /// 为一次确切认领构建并预检任意生命周期转换。
     pub fn prepare_transition(
         &self,
         claim: &DeliveryClaim<Route, Payload>,
@@ -1543,6 +1693,7 @@ where
         self.prepare_event(event)
     }
 
+    /// 在投影副本上试应用事件并校验，通过后返回该事件。
     fn prepare_event(
         &self,
         event: DeliveryEvent<Route, Payload>,
@@ -1560,7 +1711,7 @@ where
         Ok(event)
     }
 
-    /// Apply one lifecycle event through the journal authority.
+    /// 通过日志权威应用单个生命周期事件。
     pub fn apply(
         &self,
         event: DeliveryEvent<Route, Payload>,
@@ -1585,8 +1736,7 @@ where
         })
     }
 
-    /// Apply a prevalidated batch while retaining its stable identity for
-    /// retry and reconciliation by the caller.
+    /// 应用一个已预校验的批次，同时保留其稳定身份，供调用方重试与对账。
     pub fn apply_prepared(
         &self,
         batch: PreparedJournalBatch<DeliveryEvent<Route, Payload>>,
@@ -1594,12 +1744,12 @@ where
         self.apply_prepared_with(batch, |batch| self.journal.append_batch(batch))
     }
 
-    /// Apply a prepared batch using a caller-owned physical commit authority.
-    ///
-    /// The callback may provide custom retry, reopen, or durability handling,
-    /// but it must return the framework journal receipt for the exact prepared
-    /// identity. Projection preflight, folding, checkpointing, retention, and
-    /// post-commit validation remain owned by this ledger.
+    /**
+    使用调用方拥有的物理提交权威来应用预备批次。
+
+    回调可以提供自定义的重试、重新打开或持久化处理，但必须为该确切的预备身份
+    返回框架日志回执。投影预检、折叠、检查点、保留以及提交后校验仍由本账本负责。
+    */
     pub fn apply_prepared_with<F>(
         &self,
         batch: PreparedJournalBatch<DeliveryEvent<Route, Payload>>,
@@ -1656,7 +1806,7 @@ where
         Ok(receipt)
     }
 
-    /// Reconcile a prepared identity without writing or invoking durability.
+    /// 在不写入、不触发持久化的前提下，按预备身份进行对账查询。
     pub fn lookup_batch(
         &self,
         batch: &PreparedJournalBatch<DeliveryEvent<Route, Payload>>,
@@ -1664,13 +1814,12 @@ where
         self.journal.lookup_batch(batch)
     }
 
-    /// Persist the current projected state so a caller can safely prune old
-    /// physical journal segments after logical retention has been applied.
+    /// 持久化当前投影状态，使调用方在应用逻辑保留后可以安全地裁剪旧的物理日志段。
     pub fn checkpoint(&self) -> Result<()> {
         self.reducer.checkpoint()
     }
 
-    /// Read the current projection without exposing reducer internals.
+    /// 读取当前投影，而不暴露归约器内部细节。
     pub fn with_projection<T>(
         &self,
         operation: impl FnOnce(&DeliveryLedgerProjection<Route, Payload>) -> T,
@@ -1678,22 +1827,25 @@ where
         self.reducer.with_state(operation)
     }
 
-    /// Validate the current projection against configured retention bounds.
+    /// 按配置的保留上限校验当前投影。
     pub fn validate(&self) -> Result<()> {
         self.reducer
             .with_state(|projection| projection.validate(self.config))
     }
 }
 
+/// 投递账本的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::journal::{MemoryCheckpointStore, MemoryEventJournal};
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    /// 测试用路由类型。
     struct TestRoute(String);
 
     impl DeliveryRoute for TestRoute {
+        /// 空路由视为无效。
         fn validate(&self) -> Result<()> {
             if self.0.trim().is_empty() {
                 return Err(ReactError::Other("test route is empty".to_string()));
@@ -1703,10 +1855,13 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    /// 测试用负载类型。
     struct TestPayload {
+        /// 负载文本。
         text: String,
     }
 
+    /// 构造测试用 JSON 负载信封。
     fn envelope(id: &str) -> DeliveryEnvelope {
         DeliveryEnvelope {
             message_id: id.to_string(),
@@ -1718,6 +1873,7 @@ mod tests {
         }
     }
 
+    /// 构造基于内存日志与检查点的测试账本。
     fn ledger() -> DeliveryLedger<MemoryEventJournal<DeliveryEvent>> {
         DeliveryLedger::new(
             Arc::new(MemoryEventJournal::new()),
@@ -1728,9 +1884,13 @@ mod tests {
     }
 
     #[test]
+    /// 类型化账本应原样保留路由与负载，不经过 JSON 映射。
     fn typed_ledger_preserves_route_and_payload_without_json_mapping() -> Result<()> {
+        /// 测试用类型化投递事件。
         type TypedEvent = DeliveryEvent<TestRoute, TestPayload>;
+        /// 测试用类型化内存事件日志。
         type TypedJournal = MemoryEventJournal<TypedEvent>;
+        /// 测试用类型化投递账本。
         type TypedLedger = DeliveryLedger<TypedJournal, TestRoute, TestPayload>;
 
         let journal = Arc::new(MemoryEventJournal::<TypedEvent>::new());
@@ -1773,6 +1933,7 @@ mod tests {
     }
 
     #[test]
+    /// 生命周期保持 FIFO 顺序，并拒绝过期认领。
     fn lifecycle_keeps_fifo_and_rejects_stale_claim() -> Result<()> {
         let ledger = ledger();
         let now = Utc::now();
@@ -1827,6 +1988,7 @@ mod tests {
     }
 
     #[test]
+    /// 已完成的投递离开前沿，重试结算后可重新认领。
     fn completed_delivery_leaves_frontier_and_reopens_after_retry() -> Result<()> {
         let ledger = ledger();
         let now = Utc::now();
@@ -1892,6 +2054,7 @@ mod tests {
     }
 
     #[test]
+    /// 类型化拒绝可以在邮箱接收前延后副作用准入。
     fn typed_rejection_can_defer_effect_admission_before_mailbox_acceptance() -> Result<()> {
         let ledger = ledger();
         let now = Utc::now();
@@ -1947,6 +2110,7 @@ mod tests {
     }
 
     #[test]
+    /// 邮箱接收之后不允许再延后。
     fn typed_rejection_cannot_defer_after_mailbox_acceptance() -> Result<()> {
         let ledger = ledger();
         let now = Utc::now();
@@ -1996,6 +2160,7 @@ mod tests {
     }
 
     #[test]
+    /// 副作用、邮箱、消费与结算全程使用同一尝试身份。
     fn effect_mailbox_drain_and_settlement_keep_one_attempt_identity() -> Result<()> {
         let ledger = ledger();
         let now = Utc::now();
@@ -2057,6 +2222,7 @@ mod tests {
     }
 
     #[test]
+    /// 恢复时可从日志重放出投递投影。
     fn recovery_replays_delivery_projection_from_journal() -> Result<()> {
         let journal = Arc::new(MemoryEventJournal::new());
         let checkpoints = Arc::new(MemoryCheckpointStore::new());
@@ -2082,6 +2248,7 @@ mod tests {
     }
 
     #[test]
+    /// 终态保留同时受条数与字节数限制。
     fn terminal_retention_is_bounded_by_count_and_bytes() -> Result<()> {
         let config = DeliveryLedgerConfig {
             terminal_retention: 1,
@@ -2135,6 +2302,7 @@ mod tests {
     }
 
     #[test]
+    /// 预备批次保持单一身份以便对账。
     fn prepared_batch_keeps_one_identity_for_reconciliation() -> Result<()> {
         let journal = Arc::new(MemoryEventJournal::new());
         let checkpoints = Arc::new(MemoryCheckpointStore::new());
@@ -2161,6 +2329,7 @@ mod tests {
     }
 
     #[test]
+    /// 并发认领只跳过副作用已开始的前驱。
     fn concurrent_claim_skips_only_predecessors_whose_effect_started() -> Result<()> {
         let ledger = ledger();
         for id in ["first", "second"] {
@@ -2191,6 +2360,7 @@ mod tests {
     }
 
     #[test]
+    /// 并发认领不会越过被延后的前驱。
     fn concurrent_claim_does_not_bypass_a_deferred_predecessor() -> Result<()> {
         let ledger = ledger();
         for id in ["first", "second"] {

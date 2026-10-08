@@ -1,10 +1,10 @@
-//! Unified task-runtime service and claim state transitions.
-//!
-//! [`RuntimeTaskService`] is the framework entry point around the canonical
-//! private DAG executor. Persistence adapters retain their own atomic
-//! transaction and event formats, but call the pure mutation functions in this
-//! module while holding that transaction. This keeps claim/CAS/retry semantics
-//! identical across in-memory and product file stores.
+/*!
+统一的任务运行时服务与认领（claim）状态迁移。
+
+[`RuntimeTaskService`] 是包裹规范私有 DAG 执行器的框架入口。持久化适配器
+保留各自的原子事务与事件格式，但在持有该事务时调用本模块中的纯变更函数。
+这样可以保证内存存储与产品文件存储之间的 claim/CAS/重试语义完全一致。
+*/
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,58 +24,120 @@ use super::{
 use super::{RuntimeTaskResolution, RuntimeTaskResolutionRequest};
 use crate::planning::PlanValidator;
 
-/// Rejected mutation of the framework-owned runtime task state.
+/// 对框架所有的运行时任务状态的变更被拒绝时返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuntimeTaskMutationError {
+    /// 任务规格无效，无法被认领。
     #[error("task specification cannot be claimed: {message}")]
-    InvalidTaskSpec { message: String },
+    InvalidTaskSpec {
+        /// 错误说明。
+        message: String,
+    },
+    /// 非法的运行时任务状态迁移。
     #[error("invalid runtime task transition: {message}")]
-    InvalidTransition { message: String },
+    InvalidTransition {
+        /// 错误说明。
+        message: String,
+    },
+    /// 认领不能被结算为活跃状态。
     #[error("claim cannot be settled to active state {status:?}")]
-    SettlementRequiresInactiveStatus { status: TaskStatus },
+    SettlementRequiresInactiveStatus {
+        /// 请求结算到的状态。
+        status: TaskStatus,
+    },
+    /// 任务仍持有运行时认领时不能被显式重试。
     #[error("task '{task_id}' cannot be explicitly retried while it owns a runtime claim")]
-    ExplicitRetryRequiresUnclaimedTask { task_id: String },
+    ExplicitRetryRequiresUnclaimedTask {
+        /// 任务 ID。
+        task_id: String,
+    },
+    /// 任务当前状态不可显式重试。
     #[error("task '{task_id}' in state {status:?} cannot be explicitly retried")]
-    ExplicitRetryRequiresRestartableStatus { task_id: String, status: TaskStatus },
+    ExplicitRetryRequiresRestartableStatus {
+        /// 任务 ID。
+        task_id: String,
+        /// 任务当前状态。
+        status: TaskStatus,
+    },
+    /// 只有 Paused 状态的任务才能恢复。
     #[error("task '{task_id}' in state {status:?} cannot be resumed; expected Paused")]
-    ResumeRequiresPausedStatus { task_id: String, status: TaskStatus },
+    ResumeRequiresPausedStatus {
+        /// 任务 ID。
+        task_id: String,
+        /// 任务当前状态。
+        status: TaskStatus,
+    },
+    /// 重试计数器溢出。
     #[error("task '{task_id}' retry counter overflowed")]
-    RetryCounterOverflow { task_id: String },
+    RetryCounterOverflow {
+        /// 任务 ID。
+        task_id: String,
+    },
+    /// 尝试计数器溢出。
     #[error("task '{task_id}' attempt counter overflowed")]
-    AttemptCounterOverflow { task_id: String },
+    AttemptCounterOverflow {
+        /// 任务 ID。
+        task_id: String,
+    },
+    /// 已消耗的重试次数超过重试预算，违反不变量。
     #[error("task '{task_id}' retry_count {retry_count} exceeds max_retries {max_retries}")]
     RetryBudgetInvariant {
+        /// 任务 ID。
         task_id: String,
+        /// 已消耗的重试次数。
         retry_count: u32,
+        /// 最大重试次数。
         max_retries: u32,
     },
+    /// 任务持有的运行时认领无效。
     #[error("task '{task_id}' has an invalid runtime claim: {message}")]
-    InvalidClaim { task_id: String, message: String },
+    InvalidClaim {
+        /// 任务 ID。
+        task_id: String,
+        /// 错误说明。
+        message: String,
+    },
 }
 
-/// Immediate result of requesting cancellation for one exact claimed attempt.
+/// 为某个精确的已认领尝试请求取消后立即得到的结果回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeTaskAttemptInterruptReceipt {
+    /// 运行 ID。
     pub run_id: String,
+    /// 任务 ID。
     pub task_id: TaskId,
+    /// 该尝试的执行 ID。
     pub execution_id: String,
+    /// 认领所属的图修订号。
     pub revision: u64,
+    /// 尝试序号。
     pub attempt: u32,
+    /// 本次请求是否真正发起了取消。
     pub requested: bool,
+    /// 中断请求在进程内的处置结果。
     pub disposition: RuntimeTaskAttemptInterruptDisposition,
 }
 
-/// Typed process-local result of projecting one durable exact interrupt.
+/// 将一条持久化的精确中断投影到进程内后得到的类型化结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeTaskAttemptInterruptDisposition {
+    /// 尝试尚未预留，中断已排队等待预留时生效。
     QueuedBeforeReservation,
+    /// 尝试已预留，已请求取消。
     ReservedRequested,
+    /// 尝试正在运行，已请求取消。
     ActiveRequested,
+    /// 尝试正在运行，且此前已请求过取消。
     ActiveAlreadyRequested,
-    AlreadySettled { status: String },
+    /// 尝试已结算，无需再取消。
+    AlreadySettled {
+        /// 结算后的状态描述。
+        status: String,
+    },
 }
 
 impl RuntimeTaskAttemptInterruptDisposition {
+    /// 该处置是否会开始一次新的取消。
     fn starts_cancellation(&self) -> bool {
         matches!(
             self,
@@ -84,51 +146,86 @@ impl RuntimeTaskAttemptInterruptDisposition {
     }
 }
 
+/// 请求中断某个精确运行时尝试失败时返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuntimeTaskAttemptInterruptError {
+    /// 认领已过期或已结算。
     #[error("runtime attempt claim is stale or settled: {run_id}/{task_id}/{execution_id}")]
     StaleOrSettledClaim {
+        /// 运行 ID。
         run_id: String,
+        /// 任务 ID。
         task_id: String,
+        /// 执行 ID。
         execution_id: String,
     },
+    /// 待处理中断的容量已满。
     #[error("runtime interrupt pending capacity exceeded (limit {limit})")]
-    PendingCapacityExceeded { limit: usize },
+    PendingCapacityExceeded {
+        /// 容量上限。
+        limit: usize,
+    },
+    /// 同一尝试的执行身份冲突。
     #[error(
         "runtime task '{task_id}' attempt {attempt} execution identity conflict: expected {expected_execution_id}, actual {actual_execution_id}"
     )]
     IdentityConflict {
+        /// 任务 ID。
         task_id: String,
+        /// 尝试序号。
         attempt: u32,
+        /// 期望的执行 ID。
         expected_execution_id: String,
+        /// 实际的执行 ID。
         actual_execution_id: String,
     },
+    /// 持久化权威源不可用。
     #[error("runtime attempt durable authority unavailable: {message}")]
-    DurableAuthority { message: String },
+    DurableAuthority {
+        /// 错误说明。
+        message: String,
+    },
+    /// 进程内实时控制不可用。
     #[error("runtime attempt live control unavailable: {message}")]
-    LiveControl { message: String },
+    LiveControl {
+        /// 错误说明。
+        message: String,
+    },
 }
 
-/// Rejection produced while a controller projects a durable exact command
-/// into its process-local live-control registry.
+/// 控制器将一条持久化的精确命令投影到其进程内实时控制注册表时产生的拒绝错误。
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RuntimeTaskAttemptInterruptProjectionError {
+    /// 待处理中断的容量已满。
     #[error("runtime interrupt pending capacity exceeded (limit {limit})")]
-    PendingCapacityExceeded { limit: usize },
+    PendingCapacityExceeded {
+        /// 容量上限。
+        limit: usize,
+    },
+    /// 同一尝试的执行身份冲突。
     #[error(
         "runtime task '{task_id}' attempt {attempt} execution identity conflict: expected {expected_execution_id}, actual {actual_execution_id}"
     )]
     IdentityConflict {
+        /// 任务 ID。
         task_id: String,
+        /// 尝试序号。
         attempt: u32,
+        /// 期望的执行 ID。
         expected_execution_id: String,
+        /// 实际的执行 ID。
         actual_execution_id: String,
     },
+    /// 实时控制不可用。
     #[error("runtime attempt live control unavailable: {message}")]
-    Unavailable { message: String },
+    Unavailable {
+        /// 错误说明。
+        message: String,
+    },
 }
 
 impl From<RuntimeTaskAttemptInterruptProjectionError> for RuntimeTaskAttemptInterruptError {
+    /// 将投影错误转换为中断错误。
     fn from(error: RuntimeTaskAttemptInterruptProjectionError) -> Self {
         match error {
             RuntimeTaskAttemptInterruptProjectionError::PendingCapacityExceeded { limit } => {
@@ -153,104 +250,116 @@ impl From<RuntimeTaskAttemptInterruptProjectionError> for RuntimeTaskAttemptInte
 }
 
 impl From<RuntimeTaskAttemptInterruptError> for echo_core::error::ReactError {
+    /// 将中断错误包装为通用的 `ReactError::Other`。
     fn from(error: RuntimeTaskAttemptInterruptError) -> Self {
         Self::Other(error.to_string())
     }
 }
 
-/// Typed compare-and-set result for one exact physical claim settlement.
+/// 针对某个精确物理认领结算的类型化 CAS（比较并交换）结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTaskSettlementOutcome {
-    /// The exact claim was current and its state transition was committed.
+    /// 精确认领仍为当前认领，其状态迁移已提交。
     Settled,
-    /// The claim identity, attempt, specification, or lifecycle was replaced.
+    /// 认领身份、尝试、规格或生命周期已被替换。
     Superseded,
 }
 
-/// Result of atomically resolving one requested retry.
+/// 原子地处理一次重试请求的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTaskRequeueOutcome {
-    /// The exact claim was returned to Pending and consumed one retry.
+    /// 精确认领已回到 Pending，并消耗了一次重试。
     Requeued,
-    /// The retry budget was already exhausted; the exact claim reached the
-    /// requested typed failure state.
+    /// 重试预算已耗尽；精确认领进入了请求的类型化失败状态。
     Exhausted,
-    /// The physical claim is no longer current, so no state changed.
+    /// 物理认领已不是当前认领，状态未发生变化。
     Superseded,
 }
 
-/// Result of explicitly restarting one unclaimed task.
-///
-/// This differs from [`RuntimeTaskRequeueOutcome`]: requeue resolves a live
-/// claimed attempt, while explicit retry restarts a persisted failed, timed
-/// out, or explicitly blocked task after an operator or product policy asks for
-/// another attempt. Paused work uses [`RuntimeTaskResumeOutcome`].
+/**
+显式重启一个未被认领任务的结果。
+
+它与 [`RuntimeTaskRequeueOutcome`] 不同：requeue 处理的是一个活跃的已认领尝试，
+而显式重试是在运维人员或产品策略要求再试一次后，重启一个已持久化的失败、超时
+或被显式阻塞的任务。暂停的工作使用 [`RuntimeTaskResumeOutcome`]。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTaskRetryOutcome {
-    /// The task returned to Pending and consumed one retry.
-    Retried { retry_count: u32 },
-    /// No retry budget remains; the existing state was preserved.
-    Exhausted { retry_count: u32, max_retries: u32 },
-    /// The revision or expected task changed, so no state changed.
+    /// 任务已回到 Pending，并消耗了一次重试。
+    Retried {
+        /// 重试后的已消耗重试次数。
+        retry_count: u32,
+    },
+    /// 已无剩余重试预算；保留现有状态。
+    Exhausted {
+        /// 已消耗的重试次数。
+        retry_count: u32,
+        /// 最大重试次数。
+        max_retries: u32,
+    },
+    /// 修订号或期望任务已变化，状态未发生变化。
     Superseded,
 }
 
-/// Result of resuming one exact paused task without consuming retry budget.
+/// 在不消耗重试预算的情况下恢复一个精确暂停任务的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeTaskResumeOutcome {
-    /// The exact paused task returned to Pending without a retry increment.
+    /// 精确暂停任务已回到 Pending，且未增加重试计数。
     Resumed,
-    /// The graph revision or expected task changed, so no state changed.
+    /// 图修订号或期望任务已变化，状态未发生变化。
     Superseded,
 }
 
-/// Durable task effects of settling a runtime interruption at a safe point.
+/// 在安全点结算运行时中断后产生的持久化任务效果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeInterruptionReceipt {
-    /// The exact cancellation or pause policy that was applied.
+    /// 实际应用的取消或暂停策略。
     pub disposition: RuntimeInterruptionDisposition,
-    /// Unfinished tasks whose lifecycle changed during settlement.
+    /// 在结算期间生命周期发生变化的未完成任务。
     pub interrupted_task_ids: Vec<TaskId>,
-    /// Terminal siblings retained without replay or overwrite.
+    /// 被保留、既不重放也不覆盖的终态兄弟任务。
     pub retained_terminal_task_ids: Vec<TaskId>,
-    /// Unstarted tasks retained by a resumable pause.
+    /// 因可恢复暂停而保留的未启动任务。
     pub pending_task_ids: Vec<TaskId>,
 }
 
-/// Optimistic-concurrency result of a run-level interruption settlement.
+/// 运行级中断结算的乐观并发结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeInterruptionSettlementOutcome {
-    /// The exact revision was settled and produced a typed receipt.
+    /// 精确修订已结算，并生成了类型化回执。
     Settled(RuntimeInterruptionReceipt),
-    /// The graph revision changed before settlement; reload and retry.
+    /// 结算前图修订号已变化；需重新加载后重试。
     ReloadSnapshot,
 }
 
-/// Public framework entry point for a revisioned runtime task graph.
-///
-/// The service is the only construction boundary for the canonical DAG
-/// executor. Framework-owned mechanisms are dependency projection, exact claim
-/// identity, bounded waves, retry bookkeeping, interruption settlement, and
-/// revision safe points. Applications inject persistence and dispatch plus the
-/// product decision that maps a stop request to [`RuntimeInterruptionDisposition`].
-/// UI projection, review policy, worktrees, and product run status stay outside
-/// this service.
+/**
+带修订号的运行时任务图的公开框架入口。
+
+该服务是规范 DAG 执行器的唯一构造边界。框架负责的机制包括：依赖投影、精确认领身份、
+有界波次、重试记账、中断结算以及修订安全点。应用方注入持久化与分发实现，以及将停止
+请求映射为 [`RuntimeInterruptionDisposition`] 的产品决策。UI 投影、审查策略、worktree
+和产品运行状态均不在本服务范围内。
+*/
 pub struct RuntimeTaskService<C: RuntimeDagController> {
+    /// 底层的规范 DAG 执行器。
     executor: RuntimeDagExecutor<C>,
 }
 
 impl<C: RuntimeDagController> RuntimeTaskService<C> {
+    /// 使用给定控制器与配置创建服务。
     pub fn new(controller: Arc<C>, config: RuntimeTaskServiceConfig) -> Self {
         Self {
             executor: RuntimeDagExecutor::new(controller, config),
         }
     }
 
+    /// 为执行器设置计划校验器。
     pub fn with_validator(mut self, validator: PlanValidator) -> Self {
         self.executor = self.executor.with_validator(validator);
         self
     }
 
+    /// 先协调尝试控制状态，再执行指定运行的任务图。
     pub async fn execute(
         &self,
         run_id: &str,
@@ -260,8 +369,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
         self.executor.execute(run_id, cancel).await
     }
 
-    /// Reconcile live attempt projections from the durable TaskClaim snapshot.
-    /// This is safe to replay on process recovery and before command replay.
+    /// 依据持久化的 TaskClaim 快照协调实时尝试投影；可在进程恢复时及命令重放前安全地重复执行。
     pub async fn reconcile_attempt_control(&self, run_id: &str) -> Result<()> {
         let snapshot = self.executor.controller.load_snapshot(run_id).await?;
         validate_runtime_snapshot_claims(&snapshot).map_err(|error| {
@@ -287,9 +395,11 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
             .await
     }
 
-    /// Request cancellation for one exact current claim without affecting
-    /// sibling task children. The durable claim check is the authority; the
-    /// process-local token map is only the live cancellation projection.
+    /**
+    为某个精确的当前认领请求取消，不影响兄弟任务的子项。
+
+    持久化认领检查是权威来源；进程内的令牌表只是实时取消的投影。
+    */
     pub async fn request_attempt_interrupt(
         &self,
         run_id: &str,
@@ -405,10 +515,11 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
             },
         };
         let requested = disposition.starts_cancellation();
-        // The claim can be superseded between the first precondition check and
-        // the live-token write. Re-read the durable authority and retire only
-        // the exact projection just written; never let a stale command claim a
-        // future attempt or turn the race into a second task transition.
+        /*
+        在第一次前置检查与写入实时令牌之间，认领可能已被替换。
+        这里重新读取持久化权威源，只撤销刚写入的那条精确投影；
+        绝不能让过期命令认领未来的尝试，也不能把竞态变成第二次任务迁移。
+        */
         if !self
             .executor
             .controller
@@ -450,6 +561,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
         })
     }
 
+    /// 测试用：返回尚未生效的待处理尝试中断数量。
     #[cfg(test)]
     pub(crate) fn pending_attempt_interrupt_count(&self) -> usize {
         self.executor
@@ -459,6 +571,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
             .unwrap_or_default()
     }
 
+    /// 测试用：读取指定执行 ID 当前的结算观测值。
     #[cfg(test)]
     pub(crate) fn attempt_settlement_observation(
         &self,
@@ -473,6 +586,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
         settled_rx.borrow().clone()
     }
 
+    /// 测试用：获取指定执行 ID 的结算观测接收端。
     #[cfg(test)]
     pub(crate) fn attempt_settlement_receiver(
         &self,
@@ -486,11 +600,13 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
         }
     }
 
+    /// 测试用：判断指定执行 ID 是否仍有监督状态。
     #[cfg(test)]
     pub(crate) fn has_attempt_supervisor_state(&self, execution_id: &str) -> bool {
         self.executor.has_attempt_supervisor_state(execution_id)
     }
 
+    /// 测试用：仅协调本地进程内的尝试控制状态。
     #[cfg(test)]
     pub(crate) fn reconcile_local_attempt_control(
         &self,
@@ -501,6 +617,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
             .reconcile_local_attempt_control(run_id, current_execution_ids);
     }
 
+    /// 记录一次可重试的控制协调失败。
     fn observe_reconciliation_failure(
         &self,
         run_id: &str,
@@ -518,6 +635,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
         );
     }
 
+    /// 等待已加入的尝试完成持久化结算，并生成 `AlreadySettled` 回执。
     async fn wait_for_attempt_settlement(
         &self,
         run_id: &str,
@@ -554,7 +672,7 @@ impl<C: RuntimeDagController> RuntimeTaskService<C> {
     }
 }
 
-/// Claim one exact Pending task from a loaded relation revision.
+/// 从已加载的关系修订中认领一个精确的 Pending 任务。
 pub fn claim_runtime_task(
     snapshot: &mut RuntimePlanSnapshot,
     expected_task: &Task,
@@ -601,7 +719,7 @@ pub fn claim_runtime_task(
     Ok(RuntimeTaskClaimOutcome::Claimed(claim))
 }
 
-/// Settle one exact physical claim and clear claim ownership.
+/// 结算一个精确的物理认领并清除认领所有权。
 pub fn settle_runtime_claim(
     snapshot: &mut RuntimePlanSnapshot,
     task_id: &str,
@@ -626,9 +744,11 @@ pub fn settle_runtime_claim(
     Ok(RuntimeTaskSettlementOutcome::Settled)
 }
 
-/// Requeue an exact failed attempt without exposing an unclaimed intermediate
-/// state. `retry_count` counts completed retry decisions, while claim attempt
-/// identity remains `retry_count + 1`.
+/**
+将一个精确的失败尝试重新入队，且不暴露未认领的中间状态。
+
+`retry_count` 统计已完成的重试决策次数，而认领的尝试身份始终为 `retry_count + 1`。
+*/
 pub fn requeue_runtime_claim(
     snapshot: &mut RuntimePlanSnapshot,
     task_id: &str,
@@ -671,11 +791,12 @@ pub fn requeue_runtime_claim(
     Ok(RuntimeTaskRequeueOutcome::Requeued)
 }
 
-/// Apply one uncommitted dispatch assessment to the exact current claim.
-///
-/// Persistence adapters call this function while holding their atomic
-/// transaction, then publish any product side effect only when the typed result
-/// is not [`RuntimeTaskResolution::Superseded`].
+/**
+将一次未提交的分发评估应用到精确的当前认领上。
+
+持久化适配器应在持有原子事务时调用此函数，并且仅当类型化结果不是
+[`RuntimeTaskResolution::Superseded`] 时才发布产品侧的副作用。
+*/
 pub fn settle_runtime_resolution(
     snapshot: &mut RuntimePlanSnapshot,
     task_id: &str,
@@ -748,6 +869,7 @@ pub fn settle_runtime_resolution(
     }
 }
 
+/// 将重试耗尽策略映射为对应的任务终态。
 fn retry_exhaustion_status(exhaustion: RuntimeRetryExhaustion, error: String) -> TaskStatus {
     match exhaustion {
         RuntimeRetryExhaustion::Failed => TaskStatus::Failed(error),
@@ -755,6 +877,7 @@ fn retry_exhaustion_status(exhaustion: RuntimeRetryExhaustion, error: String) ->
     }
 }
 
+/// 将重试耗尽策略映射为对应的任务处理结果。
 fn retry_exhaustion_resolution(
     exhaustion: RuntimeRetryExhaustion,
     error: String,
@@ -765,6 +888,7 @@ fn retry_exhaustion_resolution(
     }
 }
 
+/// 按请求的状态结算认领，并在认领已被替换时返回 `Superseded`。
 fn settle_requested_status(
     snapshot: &mut RuntimePlanSnapshot,
     task_id: &str,
@@ -778,13 +902,13 @@ fn settle_requested_status(
     }
 }
 
-/// Explicitly retry one exact unclaimed task from a loaded relation revision.
-///
-/// The whole expected task participates in optimistic concurrency, including
-/// its failure fingerprint and retry counter. Products keep run restart,
-/// review, and other policy outside this mutation. Derived dependency blockers
-/// disappear from [`super::DagExecutionState`] when this new snapshot is read.
-/// A paused task uses [`resume_runtime_task`] without consuming retry budget.
+/**
+从已加载的关系修订中显式重试一个精确的未认领任务。
+
+整个期望任务（包括其失败指纹和重试计数）都参与乐观并发校验。运行重启、审查等产品
+策略不属于本变更。读取新快照后，派生的依赖阻塞会从 [`super::DagExecutionState`] 中消失。
+暂停的任务应使用 [`resume_runtime_task`]，不消耗重试预算。
+*/
 pub fn retry_runtime_task(
     snapshot: &mut RuntimePlanSnapshot,
     expected_task: &Task,
@@ -837,7 +961,7 @@ pub fn retry_runtime_task(
     Ok(RuntimeTaskRetryOutcome::Retried { retry_count })
 }
 
-/// Resume one exact paused task without increasing its retry counter.
+/// 恢复一个精确的暂停任务，不增加其重试计数。
 pub fn resume_runtime_task(
     snapshot: &mut RuntimePlanSnapshot,
     expected_task: &Task,
@@ -876,12 +1000,13 @@ pub fn resume_runtime_task(
     Ok(RuntimeTaskResumeOutcome::Resumed)
 }
 
-/// Settle a run-level pause or cancellation against one exact graph revision.
-///
-/// Cancellation marks every unfinished task Cancelled. Pause converts only
-/// active claimed tasks to Paused and leaves unstarted tasks Pending. Every
-/// claim is validated before mutation, so a stale revision, attempt, spec hash,
-/// or physical claim identity fails closed without a partial settlement.
+/**
+针对一个精确的图修订结算运行级的暂停或取消。
+
+取消会把所有未完成任务标记为 Cancelled。暂停只把活跃的已认领任务转为 Paused，
+未启动任务保持 Pending。所有认领在变更前都会先被校验，因此过期的修订号、尝试、
+规格哈希或物理认领身份都会以失败关闭的方式拒绝，不会产生部分结算。
+*/
 pub fn settle_runtime_interruption(
     snapshot: &mut RuntimePlanSnapshot,
     expected_revision: u64,
@@ -943,7 +1068,7 @@ pub fn settle_runtime_interruption(
     ))
 }
 
-/// Cancel every unfinished task in one exact graph revision.
+/// 取消一个精确图修订中的所有未完成任务。
 pub fn cancel_unfinished_runtime_tasks(
     snapshot: &mut RuntimePlanSnapshot,
     expected_revision: u64,
@@ -955,6 +1080,7 @@ pub fn cancel_unfinished_runtime_tasks(
     )
 }
 
+/// 判断给定认领是否仍是快照中该任务的当前认领。
 pub fn runtime_claim_is_current(
     snapshot: &RuntimePlanSnapshot,
     task_id: &str,
@@ -966,6 +1092,7 @@ pub fn runtime_claim_is_current(
     claim_matches_task(snapshot.revision, task, claim)
 }
 
+/// 仅当认领与任务匹配时，返回该任务的可变引用。
 fn claimed_task_mut<'a>(
     snapshot: &'a mut RuntimePlanSnapshot,
     task_id: &str,
@@ -987,6 +1114,7 @@ fn claimed_task_mut<'a>(
     Ok(snapshot.tasks.get_mut(position))
 }
 
+/// 校验认领的修订号、状态、尝试序号与规格哈希是否与任务一致。
 fn claim_matches_task(
     snapshot_revision: u64,
     task: &Task,
@@ -1013,12 +1141,13 @@ fn claim_matches_task(
     Ok(claim.spec_hash == spec_hash)
 }
 
-/// Validate claim/status/attempt/spec invariants for every task in a snapshot.
-///
-/// The executor calls this after structural DAG validation on every load so a
-/// malformed terminal claim fails closed instead of reporting false success.
-/// A Running task without a claim remains valid externally managed in-flight
-/// work; run-level interruption can still settle its lifecycle.
+/**
+校验快照中每个任务的认领/状态/尝试/规格不变量。
+
+执行器在每次加载并完成 DAG 结构校验后调用它，使格式错误的终态认领以失败关闭的方式
+被拒绝，而不是误报成功。没有认领的 Running 任务仍被视为由外部管理的合法在途工作；
+运行级中断仍可结算其生命周期。
+*/
 pub fn validate_runtime_snapshot_claims(
     snapshot: &RuntimePlanSnapshot,
 ) -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1043,10 +1172,12 @@ pub fn validate_runtime_snapshot_claims(
     Ok(())
 }
 
+/// 运行时任务服务与认领状态迁移的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 投影错误转换后保留类型化的容量与身份信息。
     #[test]
     fn interrupt_projection_errors_preserve_typed_capacity_and_identity() {
         assert_eq!(
@@ -1074,6 +1205,7 @@ mod tests {
     }
     use crate::tasks::{TaskExecution, TaskSpec};
 
+    /// 构造一个用于测试的最小任务。
     fn task(id: &str) -> Task {
         Task {
             spec: TaskSpec {
@@ -1088,6 +1220,7 @@ mod tests {
         }
     }
 
+    /// 认领、结算与过期 CAS 共用同一迁移权威。
     #[test]
     fn claim_settle_and_stale_cas_share_one_transition_authority()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1142,6 +1275,7 @@ mod tests {
         Ok(())
     }
 
+    /// 已消耗重试次数超过当前预算时拒绝认领。
     #[test]
     fn claim_rejects_consumed_retry_count_above_current_budget()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1165,6 +1299,7 @@ mod tests {
         Ok(())
     }
 
+    /// 结算到 Retrying 时被拒绝且不修改快照。
     #[test]
     fn settle_rejects_retrying_without_mutating_snapshot()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1213,6 +1348,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重新入队变更保持认领边界。
     #[test]
     fn requeue_mutation_preserves_claim_boundaries()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1252,6 +1388,7 @@ mod tests {
         Ok(())
     }
 
+    /// 类型化处理请求走规范的认领结算路径。
     #[test]
     fn typed_resolution_request_uses_canonical_claim_settlement()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1369,6 +1506,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重试耗尽时保留类型化的超时状态。
     #[test]
     fn retry_exhaustion_preserves_typed_timeout()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1423,6 +1561,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重试预算为 0 时首次失败即耗尽。
     #[test]
     fn retry_budget_zero_exhausts_the_first_failed_claim()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1472,6 +1611,7 @@ mod tests {
         Ok(())
     }
 
+    /// 在重试预算边界之前重新入队，到达边界后耗尽。
     #[test]
     fn retry_budget_requeues_until_boundary_then_exhausts()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1559,6 +1699,7 @@ mod tests {
         Ok(())
     }
 
+    /// 显式重试支持每种可重启状态并保留失败指纹。
     #[test]
     fn explicit_retry_supports_each_restartable_state_and_preserves_failure_fingerprint()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1599,6 +1740,7 @@ mod tests {
         Ok(())
     }
 
+    /// 恢复暂停任务不消耗重试预算。
     #[test]
     fn paused_resume_does_not_consume_retry_budget()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1632,6 +1774,7 @@ mod tests {
         Ok(())
     }
 
+    /// 暂停会结算认领，并保持未启动任务可恢复。
     #[test]
     fn pause_settles_claim_and_keeps_unstarted_tasks_resumable()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1693,6 +1836,7 @@ mod tests {
         Ok(())
     }
 
+    /// 取消保留终态兄弟任务并取消所有未完成任务。
     #[test]
     fn cancellation_retains_terminal_sibling_and_cancels_all_unfinished()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1745,6 +1889,7 @@ mod tests {
         Ok(())
     }
 
+    /// 认领在更新的图修订下仍有效，但身份损坏时失败关闭。
     #[test]
     fn claims_survive_newer_graph_revision_but_corrupt_identity_fails_closed()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1805,6 +1950,7 @@ mod tests {
         Ok(())
     }
 
+    /// 快照认领校验拒绝非活跃认领，并允许外部管理的 Running 任务。
     #[test]
     fn snapshot_claim_validation_rejects_inactive_claims_and_allows_external_running()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1872,6 +2018,7 @@ mod tests {
         Ok(())
     }
 
+    /// 显式重试在预算为 0 和 N 的边界上表现精确。
     #[test]
     fn explicit_retry_budget_zero_and_n_boundary_are_exact()
     -> std::result::Result<(), RuntimeTaskMutationError> {
@@ -1935,6 +2082,7 @@ mod tests {
         Ok(())
     }
 
+    /// 显式重试拒绝过期、无效和已认领的任务且不产生变更。
     #[test]
     fn explicit_retry_rejects_stale_invalid_and_claimed_tasks_without_mutation()
     -> std::result::Result<(), RuntimeTaskMutationError> {

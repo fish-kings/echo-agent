@@ -1,48 +1,50 @@
-//! Session Manager —— IM 渠道会话管理
-//!
-//! 提供框架级别的会话生命周期管理:
-//! - 按用户与会话维护相互独立的会话
-//!   (通过 channel_id + chat_id + sender_id 隔离)
-//! - 超时自动重置(空闲一段时间后,下一条消息会开启新会话)
-//! - 关键词/命令重置(用户可通过发送特定命令来重置会话)
-//!
-//! ## 用法
-//!
-//! ```rust,no_run
-//! use async_trait::async_trait;
-//! use echo_integration::channels::prelude::*;
-//! use echo_integration::channels::session::{SessionConfig, SessionHandler};
-//! use echo_core::error::Result;
-//!
-//! struct DummyHandler;
-//!
-//! #[async_trait]
-//! impl MessageHandler for DummyHandler {
-//!     async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
-//!         Ok(OutboundMessage::new(
-//!             msg.channel_id,
-//!             msg.chat_id,
-//!             msg.chat_type,
-//!             "ok",
-//!         ))
-//!     }
-//!
-//!     async fn reply(&self, _msg: OutboundMessage) -> Result<()> {
-//!         Ok(())
-//!     }
-//! }
-//!
-//! let config = SessionConfig::default()
-//!     .with_timeout_minutes(30)
-//!     .with_reset_keywords(vec!["reset chat".into(), "new chat".into()])
-//!     .with_reset_reply("Conversation has been reset.");
-//!
-//! fn make_handler(_instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
-//!     Box::new(DummyHandler)
-//! }
-//!
-//! let handler = SessionHandler::new(config, make_handler);
-//! ```
+/*!
+Session Manager —— IM 渠道会话管理
+
+提供框架级别的会话生命周期管理:
+- 按用户与会话维护相互独立的会话
+  (通过 channel_id + chat_id + sender_id 隔离)
+- 超时自动重置(空闲一段时间后,下一条消息会开启新会话)
+- 关键词/命令重置(用户可通过发送特定命令来重置会话)
+
+## 用法
+
+```rust,no_run
+use async_trait::async_trait;
+use echo_integration::channels::prelude::*;
+use echo_integration::channels::session::{SessionConfig, SessionHandler};
+use echo_core::error::Result;
+
+struct DummyHandler;
+
+#[async_trait]
+impl MessageHandler for DummyHandler {
+    async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
+        Ok(OutboundMessage::new(
+            msg.channel_id,
+            msg.chat_id,
+            msg.chat_type,
+            "ok",
+        ))
+    }
+
+    async fn reply(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
+}
+
+let config = SessionConfig::default()
+    .with_timeout_minutes(30)
+    .with_reset_keywords(vec!["reset chat".into(), "new chat".into()])
+    .with_reset_reply("Conversation has been reset.");
+
+fn make_handler(_instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
+    Box::new(DummyHandler)
+}
+
+let handler = SessionHandler::new(config, make_handler);
+```
+*/
 
 use super::types::*;
 use async_trait::async_trait;
@@ -131,10 +133,12 @@ impl SessionConfig {
         self
     }
 
-    /// 检查给定文本是否为重置命令。
-    ///
-    /// 使用 `to_lowercase()` 进行 Unicode 安全的大小写不敏感比较,
-    /// 从而正确支持非 ASCII 关键词(`eq_ignore_ascii_case` 对非 ASCII 字符不适用)。
+    /**
+    检查给定文本是否为重置命令。
+
+    使用 `to_lowercase()` 进行 Unicode 安全的大小写不敏感比较,
+    从而正确支持非 ASCII 关键词(`eq_ignore_ascii_case` 对非 ASCII 字符不适用)。
+    */
     pub fn is_reset(&self, text: &str) -> bool {
         let trimmed = text.trim();
         let lower = trimmed.to_lowercase();
@@ -180,12 +184,14 @@ struct SessionKey {
     sender_id: String,
 }
 
-/// 某个发送者作用域下渠道会话的一个具体"世代(incarnation)"。
-///
-/// 渠道坐标(channel/conversation/sender)保持稳定,而 `incarnation_id`
-/// 会在 [`SessionHandler`] 每次创建或替换内部消息处理器时发生变化。这个
-/// 不透明标识符使调用方无需重新实现会话生命周期,即可将临时的
-/// 模型/运行时状态与产品侧会话历史区分隔离。
+/**
+某个发送者作用域下渠道会话的一个具体"世代(incarnation)"。
+
+渠道坐标(channel/conversation/sender)保持稳定,而 `incarnation_id`
+会在 [`SessionHandler`] 每次创建或替换内部消息处理器时发生变化。这个
+不透明标识符使调用方无需重新实现会话生命周期,即可将临时的
+模型/运行时状态与产品侧会话历史区分隔离。
+*/
 #[derive(Clone, Debug)]
 pub struct ChannelSessionInstance {
     /// 渠道 ID。
@@ -223,8 +229,10 @@ impl ChannelSessionRotation {
 }
 
 impl ChannelSessionInstance {
-    /// 依据会话 key 与可选的前一个世代 ID,构造一个全新的会话实例
-    /// (随机生成新的 incarnation_id)。
+    /**
+    依据会话 key 与可选的前一个世代 ID,构造一个全新的会话实例
+    (随机生成新的 incarnation_id)。
+    */
     fn from_key(key: &SessionKey, previous_incarnation_id: Option<String>) -> Self {
         let incarnation_id = uuid::Uuid::new_v4().to_string();
         Self {
@@ -267,19 +275,23 @@ impl ChannelSessionInstance {
         self.lock_delivery_fence().incarnation_id().to_string()
     }
 
-    /// 被本次工厂创建的实例直接替换掉的上一个世代 ID。
-    ///
-    /// 被清理(prune)掉的会话没有直接的替代者;调用方应通过
-    /// [`SessionEndInfo`] 在发送者再次出现之前保留相应的清理义务。
+    /**
+    被本次工厂创建的实例直接替换掉的上一个世代 ID。
+
+    被清理(prune)掉的会话没有直接的替代者;调用方应通过
+    [`SessionEndInfo`] 在发送者再次出现之前保留相应的清理义务。
+    */
     pub fn previous_incarnation_id(&self) -> Option<&str> {
         self.previous_incarnation_id.as_deref()
     }
 
-    /// 将该已校验的发送者作用域原子性地轮换到一个新世代。
-    ///
-    /// 用于应用自身拥有的重置命令场景:应用需要先结算产品侧工作,
-    /// 再自行轮换模型/运行时状态。此实例的所有克隆以及框架的结束
-    /// 回调都会观察到这个新值。
+    /**
+    将该已校验的发送者作用域原子性地轮换到一个新世代。
+
+    用于应用自身拥有的重置命令场景:应用需要先结算产品侧工作,
+    再自行轮换模型/运行时状态。此实例的所有克隆以及框架的结束
+    回调都会观察到这个新值。
+    */
     pub fn rotate(&self) -> ChannelSessionRotation {
         let incarnation_id = uuid::Uuid::new_v4().to_string();
         let mut current = self.lock_delivery_fence();
@@ -354,8 +366,10 @@ struct DeferredSessionEnd {
 }
 
 impl DeferredSessionEnd {
-    /// 执行延迟的会话结束回调;若回调发生 panic,则在此处捕获并记录日志,
-    /// 避免其穿透到流的清理路径中。
+    /**
+    执行延迟的会话结束回调;若回调发生 panic,则在此处捕获并记录日志,
+    避免其穿透到流的清理路径中。
+    */
     fn settle(self) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.callback)(self.info);
@@ -393,8 +407,10 @@ impl SessionGeneration {
         }
     }
 
-    /// 尝试为一次新的流处理接纳一个活跃流名额:若该世代已被取消则返回
-    /// `None`;否则活跃流计数加一,刷新最后活跃时间,并返回对应的接收凭证。
+    /**
+    尝试为一次新的流处理接纳一个活跃流名额:若该世代已被取消则返回
+    `None`;否则活跃流计数加一,刷新最后活跃时间,并返回对应的接收凭证。
+    */
     fn begin(self: &Arc<Self>) -> Option<SessionStreamReceipt> {
         let mut state = self.lock_state();
         if self.cancellation.is_cancelled() {
@@ -425,8 +441,10 @@ impl SessionGeneration {
         self.lock_state().last_active = Instant::now();
     }
 
-    /// 注册一个会话结束回调:若当前无活跃流则立即结算执行;否则延迟到
-    /// 所有活跃流结算完成后再执行。同一世代只允许有一个待结算的回调。
+    /**
+    注册一个会话结束回调:若当前无活跃流则立即结算执行;否则延迟到
+    所有活跃流结算完成后再执行。同一世代只允许有一个待结算的回调。
+    */
     fn defer_end(&self, callback: Arc<dyn Fn(SessionEndInfo) + Send + Sync>, info: SessionEndInfo) {
         let deferred = {
             let mut state = self.lock_state();
@@ -445,8 +463,10 @@ impl SessionGeneration {
         }
     }
 
-    /// 取消该世代、等待其投递围栏退役完成;当 `settle_driven_streams` 为真时,
-    /// 还会等待所有已进入"驱动"阶段的流结算完成。
+    /**
+    取消该世代、等待其投递围栏退役完成;当 `settle_driven_streams` 为真时,
+    还会等待所有已进入"驱动"阶段的流结算完成。
+    */
     async fn retire(&self, settle_driven_streams: bool) {
         self.cancellation.cancel();
         self.instance
@@ -458,8 +478,10 @@ impl SessionGeneration {
         }
     }
 
-    /// 关闭时的结算会等待每一个已被接纳的流凭证结算完成,包括那些不会
-    /// 发布"驱动型 Turn 终止事件"的旧版/自定义 handler。
+    /**
+    关闭时的结算会等待每一个已被接纳的流凭证结算完成,包括那些不会
+    发布"驱动型 Turn 终止事件"的旧版/自定义 handler。
+    */
     async fn retire_all_streams(&self) {
         self.cancellation.cancel();
         self.instance
@@ -469,8 +491,10 @@ impl SessionGeneration {
         self.wait_for_streams(true).await;
     }
 
-    /// 阻塞等待流结算完成:`all_streams` 为真时等待所有活跃流归零,
-    /// 否则只等待处于"驱动"阶段的活跃流归零。
+    /**
+    阻塞等待流结算完成:`all_streams` 为真时等待所有活跃流归零,
+    否则只等待处于"驱动"阶段的活跃流归零。
+    */
     async fn wait_for_streams(&self, all_streams: bool) {
         loop {
             let settled = self.streams_settled.notified();
@@ -492,10 +516,12 @@ impl SessionGeneration {
     }
 }
 
-/// 单次内部流建立/消费生命周期的精确所有权凭证。
-///
-/// 该计数器独立于异步会话互斥锁,因此丢弃一个未被消费或只被部分消费的
-/// 流,也能同步地释放其接纳名额。
+/**
+单次内部流建立/消费生命周期的精确所有权凭证。
+
+该计数器独立于异步会话互斥锁,因此丢弃一个未被消费或只被部分消费的
+流,也能同步地释放其接纳名额。
+*/
 struct SessionStreamReceipt {
     /// 该凭证所属的会话世代。
     generation: Arc<SessionGeneration>,
@@ -504,8 +530,10 @@ struct SessionStreamReceipt {
 }
 
 impl SessionStreamReceipt {
-    /// 尝试将该凭证标记为"驱动中":若世代已被取消则返回 `false`;
-    /// 否则驱动流计数加一并返回 `true`。
+    /**
+    尝试将该凭证标记为"驱动中":若世代已被取消则返回 `false`;
+    否则驱动流计数加一并返回 `true`。
+    */
     fn begin_driving(&mut self) -> bool {
         let mut state = self.generation.lock_state();
         if self.generation.cancellation.is_cancelled() {
@@ -521,9 +549,11 @@ impl SessionStreamReceipt {
 }
 
 impl Drop for SessionStreamReceipt {
-    /// 释放该流凭证:递减活跃流(以及必要时的驱动流)计数,刷新最后活跃
-    /// 时间;当计数归零时唤醒等待中的结算方,并在必要时结算延迟的
-    /// 会话结束回调。
+    /**
+    释放该流凭证:递减活跃流(以及必要时的驱动流)计数,刷新最后活跃
+    时间;当计数归零时唤醒等待中的结算方,并在必要时结算延迟的
+    会话结束回调。
+    */
     fn drop(&mut self) {
         let (deferred, streams_settled) = {
             let mut state = self.generation.lock_state();
@@ -569,20 +599,23 @@ impl Drop for SessionStreamReceipt {
 
 // ── SessionFactory ───────────────────────────────────────────────────────────
 
-/// Session factory — creates new MessageHandler instances.
-///
-/// Called whenever a new session is needed, returning a brand new MessageHandler.
-/// Users typically create an Agent inside a closure and wrap it as a MessageHandler.
+/**
+会话工厂——创建新的 MessageHandler 实例。
+
+每当需要新会话时调用，返回一个全新的 MessageHandler。
+用户通常在闭包中创建 Agent，并将其包装为 MessageHandler。
+*/
 pub trait SessionFactory: Send + Sync {
-    /// Create a new message handler for one concrete session incarnation.
+    /// 为一个具体的会话实例（incarnation）创建新的消息处理器
     fn create(&self, instance: &ChannelSessionInstance) -> Box<dyn MessageHandler>;
 }
 
-/// Closure-based SessionFactory implementation
+/// 基于闭包的 SessionFactory 实现
 impl<F> SessionFactory for F
 where
     F: Fn(&ChannelSessionInstance) -> Box<dyn MessageHandler> + Send + Sync,
 {
+    /// 直接调用闭包创建处理器
     fn create(&self, instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
         self(instance)
     }
@@ -590,44 +623,59 @@ where
 
 // ── SessionHandler ───────────────────────────────────────────────────────────
 
-/// Session end callback parameters
+/// 会话结束回调的参数
 pub struct SessionEndInfo {
+    /// 渠道 ID
     pub channel_id: String,
+    /// 会话（聊天）ID
     pub chat_id: String,
+    /// 发送者 ID
     pub sender_id: String,
-    /// Opaque identity of the handler incarnation that ended.
+    /// 已结束的处理器实例的不透明标识
     pub incarnation_id: String,
+    /// 会话结束原因
     pub reason: SessionEndReason,
 }
 
-/// Reason for session ending
+/// 会话结束原因
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionEndReason {
-    /// Reset by user command
+    /// 被用户命令重置
     CommandReset,
-    /// Replaced after timeout
+    /// 超时后被替换
     TimeoutReplaced,
 }
 
-/// Session management handler.
-///
-/// Wraps a SessionFactory, maintaining independent MessageHandler instances per user.
-/// Automatically handles timeout resets and keyword-based resets.
+/**
+会话管理处理器。
+
+包装一个 SessionFactory，为每个用户维护独立的 MessageHandler 实例。
+自动处理超时重置和基于关键词的重置。
+*/
 pub struct SessionHandler {
+    /// 会话配置
     config: SessionConfig,
+    /// 创建新会话处理器的工厂
     factory: Arc<dyn SessionFactory>,
+    /// 按发送者作用域划分的会话表
     sessions: DashMap<SessionKey, Arc<Mutex<Session>>>,
+    /// 会话结束回调
     on_session_end: Option<Arc<dyn Fn(SessionEndInfo) + Send + Sync>>,
+    /// 准入门锁，串行化会话创建与关闭
     admission_gate: StdMutex<()>,
+    /// 是否仍接受新会话
     admission_open: AtomicBool,
+    /// 关闭时用于取消所有会话代际的令牌
     shutdown: CancellationToken,
 }
 
 impl SessionHandler {
-    /// Create a SessionHandler.
-    ///
-    /// - `config`: Session configuration
-    /// - `factory`: Factory function for creating new sessions
+    /**
+    创建 SessionHandler。
+
+    - `config`：会话配置
+    - `factory`：用于创建新会话的工厂函数
+    */
     pub fn new(config: SessionConfig, factory: impl SessionFactory + 'static) -> Self {
         Self {
             config,
@@ -640,19 +688,19 @@ impl SessionHandler {
         }
     }
 
-    /// Create with default configuration
+    /// 使用默认配置创建
     pub fn with_defaults(factory: impl SessionFactory + 'static) -> Self {
         Self::new(SessionConfig::default(), factory)
     }
 
-    /// Set the session-end callback used for exact resource cleanup.
-    ///
-    /// Reset retires old delivery, cancels its stream, and waits for already
-    /// admitted transport leases before publishing the replacement reply. The
-    /// callback for a still-unpolled stream remains deferred until its receipt
-    /// is dropped. Timeout replacement is restricted to idle generations.
-    /// Callback panics are contained at the framework boundary and never
-    /// propagate through stream teardown.
+    /**
+    设置用于精确资源清理的会话结束回调。
+
+    重置会先退役旧的投递、取消其流，并等待已准入的传输租约结束后，
+    才发布替换后的回复。对于尚未被轮询的流，回调会一直延迟到其回执被丢弃。
+    超时替换仅作用于空闲的代际。回调中的 panic 会在框架边界被拦截，
+    绝不会在流拆除过程中向外传播。
+    */
     pub fn with_on_session_end<F>(mut self, callback: F) -> Self
     where
         F: Fn(SessionEndInfo) + Send + Sync + 'static,
@@ -661,14 +709,17 @@ impl SessionHandler {
         self
     }
 
-    /// Get the number of currently retained sender-scoped sessions.
-    ///
-    /// Each distinct `(channel_id, conversation_id, sender_id)` identity counts
-    /// separately, including different participants in the same group chat.
+    /**
+    获取当前保留的、按发送者划分的会话数量。
+
+    每个不同的 `(channel_id, conversation_id, sender_id)` 身份单独计数，
+    同一群聊中的不同参与者也分别计数。
+    */
     pub fn active_sessions(&self) -> usize {
         self.sessions.len()
     }
 
+    /// 通过工厂为指定键创建新会话（可携带上一个实例的 incarnation id）
     fn create_session(&self, key: &SessionKey, previous_incarnation_id: Option<String>) -> Session {
         let instance = ChannelSessionInstance::from_key(key, previous_incarnation_id);
         let handler = Arc::from(self.factory.create(&instance));
@@ -682,6 +733,7 @@ impl SessionHandler {
         }
     }
 
+    /// 在准入门锁下用新会话替换已关闭的会话；若处理器已关闭则移除条目并返回错误
     fn replace_closed_session(
         &self,
         key: &SessionKey,
@@ -692,9 +744,10 @@ impl SessionHandler {
             ReactError::Other("channel session admission lock poisoned".to_string())
         })?;
         if !self.admission_open.load(Ordering::Acquire) {
-            // The prior handler already closed. The shutdown snapshot may
-            // still contain this map entry; removing it makes that snapshot
-            // skip a duplicate close without publishing a new Agent.
+            /*
+            之前的处理器已经关闭。关闭快照中可能仍包含该条目；
+            将其移除可以让快照跳过重复关闭，同时不会发布新的 Agent。
+            */
             self.sessions.remove(key);
             return Err(ReactError::Other(
                 "channel session handler is closed".to_string(),
@@ -704,7 +757,7 @@ impl SessionHandler {
         Ok(())
     }
 
-    /// Get or create a session (atomic operation, uses DashMap entry API to prevent race conditions)
+    /// 获取或创建会话（原子操作，使用 DashMap entry API 防止竞态）
     fn get_or_create(&self, key: &SessionKey) -> echo_core::error::Result<Arc<Mutex<Session>>> {
         let _gate = self.admission_gate.lock().map_err(|_| {
             ReactError::Other("channel session admission lock poisoned".to_string())
@@ -721,9 +774,10 @@ impl SessionHandler {
             .clone())
     }
 
-    /// Lock the authoritative map entry. A timeout prune can remove a session
-    /// after `get_or_create` returns but before its async mutex is acquired, so
-    /// identity must be rechecked under the same lock used by pruning.
+    /**
+    锁定会话表中具有权威性的条目。超时清理可能在 `get_or_create` 返回之后、
+    异步互斥锁获取之前移除会话，因此必须在清理所用的同一把锁下重新校验身份。
+    */
     async fn lock_current_session(
         &self,
         key: &SessionKey,
@@ -747,6 +801,7 @@ impl SessionHandler {
         }
     }
 
+    /// 若配置了结束回调，则将会话结束通知延迟挂到对应代际上
     fn settle_session_end(
         &self,
         generation: &SessionGeneration,
@@ -768,6 +823,7 @@ impl SessionHandler {
         }
     }
 
+    /// 清理除请求键以外所有空闲且已过期的会话
     async fn prune_expired_except(
         &self,
         requested_key: &SessionKey,
@@ -778,8 +834,10 @@ impl SessionHandler {
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect::<Vec<_>>();
         for (key, session) in sessions {
-            // The requested key must be replaced under its own session mutex so
-            // the new factory call receives the exact previous incarnation.
+            /*
+            请求的键必须在其自身的会话互斥锁下替换，
+            这样新的工厂调用才能拿到准确的上一个实例。
+            */
             if &key == requested_key {
                 continue;
             }
@@ -812,6 +870,7 @@ impl SessionHandler {
 
 #[async_trait]
 impl MessageHandler for SessionHandler {
+    /// 路由到发送者对应的会话处理消息；命中重置命令时重置会话并返回重置回复
     async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
         let key = SessionKey::from_message(&msg)?;
         self.prune_expired_except(&key).await?;
@@ -860,6 +919,7 @@ impl MessageHandler for SessionHandler {
         result.map(|message| message.with_delivery_fence(guard.instance.current_delivery_fence()))
     }
 
+    /// 以流式方式处理消息，并为流登记会话活跃凭证；命中重置命令时直接返回重置回复
     async fn handle_stream<'a>(
         &'a self,
         msg: InboundMessage,
@@ -987,12 +1047,16 @@ impl MessageHandler for SessionHandler {
         Ok(stream.boxed())
     }
 
+    /// 回复由渠道包装层负责，这里直接透传
     async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
-        // reply is handled by the channel wrapper; passthrough here
-        // No additional operations needed at the SessionHandler level
+        /*
+        回复由渠道包装层处理，这里直接透传；
+        SessionHandler 层无需额外操作
+        */
         Ok(())
     }
 
+    /// 关闭准入，退役所有会话的流并逐个关闭其处理器；关闭失败的会话会保留以便重试
     async fn close(&self) -> echo_core::error::Result<()> {
         let sessions = {
             let _gate = self.admission_gate.lock().map_err(|_| {
@@ -1035,6 +1099,7 @@ impl MessageHandler for SessionHandler {
     }
 }
 
+/// 单元测试
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1113,7 @@ mod tests {
     use tokio::sync::Notify;
     use tokio::time::timeout;
 
+    /// 测试中等待异步事件的超时时间
     const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// 测试用 inner handler:override handle_stream 产 2 条分段,记录调用次数。
@@ -1057,6 +1123,7 @@ mod tests {
 
     #[async_trait]
     impl MessageHandler for TwoChunkHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             Ok(OutboundMessage::new(
                 &msg.channel_id,
@@ -1065,9 +1132,11 @@ mod tests {
                 "fallback",
             ))
         }
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
+        /// 测试实现：以流式方式处理消息
         async fn handle_stream<'a>(
             &'a self,
             msg: InboundMessage,
@@ -1083,10 +1152,13 @@ mod tests {
         }
     }
 
+    /// 创建 TwoChunkHandler 的测试工厂
     struct TwoChunkFactory {
+        /// 所有创建出的处理器共享的调用计数
         counter: Arc<AtomicUsize>,
     }
     impl SessionFactory for TwoChunkFactory {
+        /// 创建测试处理器
         fn create(&self, _instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
             Box::new(TwoChunkHandler {
                 call_count: self.counter.clone(),
@@ -1094,13 +1166,17 @@ mod tests {
         }
     }
 
+    /// 支持“挂起”流的测试处理器，用于验证同一会话的并发处理
     struct ConcurrentStreamHandler {
+        /// 挂起流开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起流的通知
         release_parked: Arc<Notify>,
     }
 
     #[async_trait]
     impl MessageHandler for ConcurrentStreamHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             Ok(OutboundMessage::new(
                 &msg.channel_id,
@@ -1110,10 +1186,12 @@ mod tests {
             ))
         }
 
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
 
+        /// 测试实现：以流式方式处理消息
         async fn handle_stream<'a>(
             &'a self,
             msg: InboundMessage,
@@ -1156,12 +1234,16 @@ mod tests {
         }
     }
 
+    /// 创建 ConcurrentStreamHandler 的测试工厂
     struct ConcurrentStreamFactory {
+        /// 挂起流开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起流的通知
         release_parked: Arc<Notify>,
     }
 
     impl SessionFactory for ConcurrentStreamFactory {
+        /// 创建测试处理器
         fn create(&self, _instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
             Box::new(ConcurrentStreamHandler {
                 parked_started: self.parked_started.clone(),
@@ -1170,13 +1252,17 @@ mod tests {
         }
     }
 
+    /// 在流建立阶段阻塞的测试处理器
     struct SetupBlockingHandler {
+        /// 流建立开始时发出的通知
         setup_started: Arc<Notify>,
+        /// 放行流建立的通知
         release_setup: Arc<Notify>,
     }
 
     #[async_trait]
     impl MessageHandler for SetupBlockingHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             Ok(OutboundMessage::new(
                 &msg.channel_id,
@@ -1186,10 +1272,12 @@ mod tests {
             ))
         }
 
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
 
+        /// 测试实现：以流式方式处理消息
         async fn handle_stream<'a>(
             &'a self,
             _msg: InboundMessage,
@@ -1201,12 +1289,16 @@ mod tests {
         }
     }
 
+    /// 创建 SetupBlockingHandler 的测试工厂
     struct SetupBlockingFactory {
+        /// 流建立开始时发出的通知
         setup_started: Arc<Notify>,
+        /// 放行流建立的通知
         release_setup: Arc<Notify>,
     }
 
     impl SessionFactory for SetupBlockingFactory {
+        /// 创建测试处理器
         fn create(&self, _instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
             Box::new(SetupBlockingHandler {
                 setup_started: Arc::clone(&self.setup_started),
@@ -1215,26 +1307,35 @@ mod tests {
         }
     }
 
+    /// 在输出中带上自身代际编号的测试处理器，用于区分会话实例
     struct GenerationalStreamHandler {
+        /// 该处理器的代际编号（从 1 开始）
         generation: usize,
+        /// 是否存在待处理的 HITL 状态
         hitl_pending: AtomicBool,
+        /// 挂起流开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起流的通知
         release_parked: Arc<Notify>,
     }
 
+    /// 被轮询时直接 panic 的测试流
     struct PanicStream;
 
     impl futures::Stream for PanicStream {
+        /// 流元素类型
         type Item = echo_core::error::Result<OutboundMessage>;
 
+        /// 轮询时触发 panic
         fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-            // Deliberate test-only unwind validates receipt cleanup during panic propagation.
+            // 刻意的仅测试用栈展开，用于验证 panic 传播过程中凭证的清理。
             std::panic::resume_unwind(Box::new("session stream panic fixture"))
         }
     }
 
     #[async_trait]
     impl MessageHandler for GenerationalStreamHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             Ok(OutboundMessage::new(
                 &msg.channel_id,
@@ -1244,10 +1345,12 @@ mod tests {
             ))
         }
 
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
 
+        /// 测试实现：以流式方式处理消息
         async fn handle_stream<'a>(
             &'a self,
             msg: InboundMessage,
@@ -1308,13 +1411,18 @@ mod tests {
         }
     }
 
+    /// 创建 GenerationalStreamHandler 并递增代际编号的测试工厂
     struct GenerationalStreamFactory {
+        /// 已创建的处理器数量
         created: Arc<AtomicUsize>,
+        /// 挂起流开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起流的通知
         release_parked: Arc<Notify>,
     }
 
     impl SessionFactory for GenerationalStreamFactory {
+        /// 创建测试处理器
         fn create(&self, _instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
             let generation = self
                 .created
@@ -1332,15 +1440,22 @@ mod tests {
         }
     }
 
+    /// 保存模式与 HITL 状态的测试处理器，用于验证按发送者隔离的会话状态
     struct SenderScopedHandler {
+        /// 处理器实例编号
         instance_id: usize,
+        /// 当前模式
         mode: StdMutex<&'static str>,
+        /// 是否存在待处理的 HITL 状态
         hitl_pending: AtomicBool,
+        /// 挂起处理开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起处理的通知
         release_parked: Arc<Notify>,
     }
 
     impl SenderScopedHandler {
+        /// 获取模式锁（锁中毒时仍取回内部数据）
         fn lock_mode(&self) -> StdMutexGuard<'_, &'static str> {
             match self.mode.lock() {
                 Ok(mode) => mode,
@@ -1348,6 +1463,7 @@ mod tests {
             }
         }
 
+        /// 以文本形式描述当前处理器状态
         fn state_text(&self) -> String {
             format!(
                 "handler={};mode={};hitl={}",
@@ -1360,6 +1476,7 @@ mod tests {
 
     #[async_trait]
     impl MessageHandler for SenderScopedHandler {
+        /// 测试实现：处理消息
         async fn handle(&self, msg: InboundMessage) -> echo_core::error::Result<OutboundMessage> {
             match msg.text.as_str() {
                 "park-handle" => {
@@ -1384,18 +1501,24 @@ mod tests {
             ))
         }
 
+        /// 测试实现：忽略回复
         async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
             Ok(())
         }
     }
 
+    /// 创建 SenderScopedHandler 并递增实例编号的测试工厂
     struct SenderScopedFactory {
+        /// 已创建的处理器数量
         created: Arc<AtomicUsize>,
+        /// 挂起处理开始时发出的通知
         parked_started: Arc<Notify>,
+        /// 放行挂起处理的通知
         release_parked: Arc<Notify>,
     }
 
     impl SessionFactory for SenderScopedFactory {
+        /// 创建测试处理器
         fn create(&self, _instance: &ChannelSessionInstance) -> Box<dyn MessageHandler> {
             let instance_id = self
                 .created
@@ -1414,10 +1537,12 @@ mod tests {
         }
     }
 
+    /// 构造共享群聊 "shared-group" 中的一条群消息
     fn group_message(sender_id: &str, text: &str, message_id: &str) -> InboundMessage {
         scoped_group_message("qq", sender_id, "shared-group", text, message_id)
     }
 
+    /// 按指定渠道、发送者与会话构造群消息
     fn scoped_group_message(
         channel_id: &str,
         sender_id: &str,
@@ -1435,6 +1560,7 @@ mod tests {
         )
     }
 
+    /// 以非流式方式处理群消息并返回回复文本
     async fn group_handle_text(
         handler: &SessionHandler,
         sender_id: &str,
@@ -1448,6 +1574,7 @@ mod tests {
             .map_err(|error| error.to_string())
     }
 
+    /// 以流式方式处理群消息并返回唯一一条输出的文本
     async fn group_stream_text(
         handler: &SessionHandler,
         sender_id: &str,
@@ -1457,6 +1584,7 @@ mod tests {
         stream_message_text(handler, group_message(sender_id, text, message_id)).await
     }
 
+    /// 流式处理消息，要求恰好输出一条消息并返回其文本
     async fn stream_message_text(
         handler: &SessionHandler,
         message: InboundMessage,
@@ -1483,6 +1611,7 @@ mod tests {
         Ok(message.text)
     }
 
+    /// 获取消息所属会话的当前代际
     async fn generation_for_message(
         handler: &SessionHandler,
         message: &InboundMessage,
@@ -1497,6 +1626,7 @@ mod tests {
         Ok(Arc::clone(&guard.generation))
     }
 
+    /// 构造基于 SenderScopedFactory 的会话处理器及其观测句柄
     fn sender_scoped_handler() -> (
         Arc<SessionHandler>,
         Arc<AtomicUsize>,
@@ -1517,10 +1647,12 @@ mod tests {
         (handler, created, parked_started, release_parked)
     }
 
+    /// 构造固定发送者 u1、会话 c1 的私聊测试消息
     fn test_message(text: &str, message_id: &str) -> InboundMessage {
         InboundMessage::new("qq", "u1", "c1", ChatType::Direct, text, message_id)
     }
 
+    /// 流式处理测试消息，要求恰好输出一条消息并返回其文本
     async fn single_stream_text(
         handler: &SessionHandler,
         text: &str,
@@ -1544,6 +1676,7 @@ mod tests {
         Ok(first.text)
     }
 
+    /// 发送挂起消息并等待其流输出唯一一条消息
     async fn parked_stream_text(handler: Arc<SessionHandler>) -> Result<String, String> {
         let mut stream = handler
             .handle_stream(test_message("park", "parked"))
@@ -1560,6 +1693,7 @@ mod tests {
         Ok(first.text)
     }
 
+    /// 获取默认测试会话（qq/c1/u1）的当前代际
     async fn current_test_generation(
         handler: &SessionHandler,
     ) -> Result<Arc<SessionGeneration>, String> {
@@ -1577,6 +1711,7 @@ mod tests {
         Ok(Arc::clone(&guard.generation))
     }
 
+    /// 将代际的最后活跃时间回拨到超时之前，返回设置的时间点
     fn mark_generation_expired(
         generation: &SessionGeneration,
         timeout: Duration,
@@ -1588,16 +1723,19 @@ mod tests {
         Ok(expired_at)
     }
 
+    /// 读取代际的（活跃流数量，最后活跃时间）快照
     fn generation_snapshot(generation: &SessionGeneration) -> (usize, Instant) {
         let state = generation.lock_state();
         (state.active_streams, state.last_active)
     }
 
+    /// 将默认测试会话标记为已过期
     async fn mark_test_session_expired(handler: &SessionHandler) -> Result<Instant, String> {
         let generation = current_test_generation(handler).await?;
         mark_generation_expired(&generation, handler.config.timeout)
     }
 
+    /// SessionHandler 的流式处理会透传内部处理器产生的分段
     #[tokio::test]
     async fn session_handler_handle_stream_forwards_inner_chunks() -> Result<(), String> {
         let counter = Arc::new(AtomicUsize::new(0));
@@ -1636,6 +1774,7 @@ mod tests {
         Ok(())
     }
 
+    /// 流式处理遇到重置命令时直接短路返回重置回复
     #[tokio::test]
     async fn session_handler_handle_stream_reset_short_circuits() -> Result<(), String> {
         let counter = Arc::new(AtomicUsize::new(0));
@@ -1669,6 +1808,7 @@ mod tests {
         Ok(())
     }
 
+    /// 同一群聊中每个发送者各自使用一个会话
     #[tokio::test]
     async fn same_group_conversation_uses_one_session_per_sender() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1689,6 +1829,7 @@ mod tests {
         Ok(())
     }
 
+    /// 群内不同发送者不共享会话互斥锁
     #[tokio::test]
     async fn different_group_senders_do_not_share_the_session_mutex() -> Result<(), String> {
         let (handler, _, parked_started, release_parked) = sender_scoped_handler();
@@ -1728,6 +1869,7 @@ mod tests {
         Ok(())
     }
 
+    /// 某个发送者的重置不会替换群内其他成员的会话
     #[tokio::test]
     async fn sender_reset_does_not_replace_another_group_member_session() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1759,6 +1901,7 @@ mod tests {
         Ok(())
     }
 
+    /// 同一发送者复用其模式与 HITL 会话状态
     #[tokio::test]
     async fn same_sender_reuses_mode_and_hitl_session_state() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1775,6 +1918,7 @@ mod tests {
         Ok(())
     }
 
+    /// 应用层的世代轮换在超时替换过程中仍保持权威
     #[tokio::test]
     async fn application_rotation_remains_authoritative_through_timeout_replacement()
     -> Result<(), String> {
@@ -1868,6 +2012,7 @@ mod tests {
         Ok(())
     }
 
+    /// 框架重置会等待应用轮换前已准入的投递完成
     #[tokio::test]
     async fn framework_reset_waits_for_delivery_admitted_before_application_rotation()
     -> Result<(), String> {
@@ -1922,6 +2067,7 @@ mod tests {
         Ok(())
     }
 
+    /// 缺失或未知的发送者身份会被拒绝（失败即关闭）
     #[tokio::test]
     async fn missing_or_unknown_sender_identity_fails_closed() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1940,6 +2086,7 @@ mod tests {
         Ok(())
     }
 
+    /// 渠道或会话标识为空时会被拒绝（失败即关闭）
     #[tokio::test]
     async fn empty_channel_or_conversation_identity_fails_closed() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1962,6 +2109,7 @@ mod tests {
         Ok(())
     }
 
+    /// 同一发送者在不同会话与渠道之间相互隔离
     #[tokio::test]
     async fn same_sender_is_isolated_across_conversations_and_channels() -> Result<(), String> {
         let (handler, created, _, _) = sender_scoped_handler();
@@ -1992,8 +2140,10 @@ mod tests {
         Ok(())
     }
 
+    /// 超时清理为每个会话上报其原始发送者
     #[tokio::test]
     async fn timeout_prune_reports_each_scoped_session_original_sender() -> Result<(), String> {
+        /// 会话结束记录：（渠道 ID，会话 ID，发送者 ID，结束原因）
         type EndRecord = (String, String, String, SessionEndReason);
 
         let records = Arc::new(StdMutex::new(Vec::<EndRecord>::new()));
@@ -2052,6 +2202,7 @@ mod tests {
         Ok(())
     }
 
+    /// 流挂起期间仍允许同一会话处理新消息
     #[tokio::test]
     async fn session_handler_allows_same_session_message_while_stream_is_parked() {
         let parked_started = Arc::new(Notify::new());
@@ -2100,6 +2251,7 @@ mod tests {
         );
     }
 
+    /// 流出错并关闭后 SessionHandler 仍可继续使用
     #[tokio::test]
     async fn session_handler_remains_usable_after_stream_error_and_close() {
         let handler = SessionHandler::new(
@@ -2138,6 +2290,7 @@ mod tests {
         );
     }
 
+    /// 活跃流会阻止超时替换，直到其结算完成
     #[tokio::test]
     async fn active_stream_blocks_timeout_replacement_until_it_settles() -> Result<(), String> {
         let created = Arc::new(AtomicUsize::new(0));
@@ -2183,6 +2336,7 @@ mod tests {
         Ok(())
     }
 
+    /// 显式重置会在应答之前取消旧流
     #[tokio::test]
     async fn explicit_reset_cancels_old_stream_before_acknowledgement() -> Result<(), String> {
         let created = Arc::new(AtomicUsize::new(0));
@@ -2263,6 +2417,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重置会取消阻塞中的流建立并完成清理
     #[tokio::test]
     async fn reset_cancels_blocked_stream_setup_and_settles_cleanup() -> Result<(), String> {
         let setup_started = Arc::new(Notify::new());
@@ -2315,16 +2470,22 @@ mod tests {
         Ok(())
     }
 
+    /// 重置会等待处于驱动阶段的流建立结算完成
     #[tokio::test]
     async fn reset_waits_for_driven_stream_setup_to_settle() -> Result<(), String> {
+        /// 流建立阶段等待取消与放行、完成后标记已结算的测试处理器
         struct SettlingHandler {
+            /// 流建立开始时发出的通知
             started: Arc<Notify>,
+            /// 放行流建立的通知
             release: Arc<Notify>,
+            /// 流建立是否已结算
             settled: Arc<AtomicBool>,
         }
 
         #[async_trait]
         impl MessageHandler for SettlingHandler {
+            /// 测试实现：处理消息
             async fn handle(
                 &self,
                 msg: InboundMessage,
@@ -2337,10 +2498,12 @@ mod tests {
                 ))
             }
 
+            /// 测试实现：忽略回复
             async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
                 Ok(())
             }
 
+            /// 测试实现：以流式方式处理消息
             async fn handle_stream<'a>(
                 &'a self,
                 _msg: InboundMessage,
@@ -2352,10 +2515,12 @@ mod tests {
                 Ok(futures::stream::empty().boxed())
             }
 
+            /// 声明该处理器在取消后会结算流
             fn settles_on_cancel(&self) -> bool {
                 true
             }
 
+            /// 测试实现：带取消令牌的流式处理
             async fn handle_stream_with_cancel<'a>(
                 &'a self,
                 _msg: InboundMessage,
@@ -2436,6 +2601,7 @@ mod tests {
         Ok(())
     }
 
+    /// 未被轮询的流会把重置清理延迟到其被丢弃时
     #[tokio::test]
     async fn unpolled_stream_defers_reset_cleanup_until_drop() -> Result<(), String> {
         let ended = Arc::new(AtomicUsize::new(0));
@@ -2474,6 +2640,7 @@ mod tests {
         Ok(())
     }
 
+    /// 流展开过程中回调的 panic 会被拦截
     #[tokio::test]
     async fn callback_panic_is_contained_during_stream_unwind() -> Result<(), String> {
         let ended = Arc::new(AtomicUsize::new(0));
@@ -2517,6 +2684,7 @@ mod tests {
         Ok(())
     }
 
+    /// 流建立出错时会释放活跃凭证并刷新活跃时间
     #[tokio::test]
     async fn stream_setup_error_releases_and_touches_activity_receipt() -> Result<(), String> {
         let created = Arc::new(AtomicUsize::new(0));
@@ -2554,6 +2722,7 @@ mod tests {
         Ok(())
     }
 
+    /// 内部流元素出错时会释放活跃凭证并刷新活跃时间
     #[tokio::test]
     async fn inner_item_error_releases_and_touches_activity_receipt() -> Result<(), String> {
         let handler = SessionHandler::new(
@@ -2583,6 +2752,7 @@ mod tests {
         Ok(())
     }
 
+    /// 丢弃已轮询的流会释放活跃凭证并刷新活跃时间
     #[tokio::test]
     async fn dropping_polled_stream_releases_and_touches_activity_receipt() -> Result<(), String> {
         let created = Arc::new(AtomicUsize::new(0));
@@ -2621,6 +2791,7 @@ mod tests {
         Ok(())
     }
 
+    /// 未轮询的外层流持有活跃凭证，丢弃时释放
     #[tokio::test]
     async fn unpolled_outer_stream_holds_and_releases_activity_receipt() -> Result<(), String> {
         let created = Arc::new(AtomicUsize::new(0));
@@ -2656,6 +2827,7 @@ mod tests {
         Ok(())
     }
 
+    /// 未轮询的准入会阻止在后续轮询前被超时清理
     #[tokio::test]
     async fn unpolled_admission_prevents_timeout_prune_before_later_poll() -> Result<(), String> {
         let handler = SessionHandler::new(
@@ -2701,6 +2873,7 @@ mod tests {
         Ok(())
     }
 
+    /// panic 展开时会释放活跃凭证并刷新活跃时间
     #[tokio::test]
     async fn panic_unwind_releases_and_touches_activity_receipt() -> Result<(), String> {
         let admitted = Arc::new(Notify::new());
@@ -2745,12 +2918,15 @@ mod tests {
         Ok(())
     }
 
+    /// 会话关闭失败时保留 Agent 所有权以便重试
     #[tokio::test]
     async fn session_close_keeps_failed_agent_owner_for_retry() -> Result<(), String> {
+        /// 首次关闭失败、之后成功的测试处理器（内部为关闭次数计数）
         struct RetryCloseHandler(Arc<AtomicUsize>);
 
         #[async_trait]
         impl MessageHandler for RetryCloseHandler {
+            /// 测试实现：处理消息
             async fn handle(
                 &self,
                 msg: InboundMessage,
@@ -2763,10 +2939,12 @@ mod tests {
                 ))
             }
 
+            /// 测试实现：忽略回复
             async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
                 Ok(())
             }
 
+            /// 测试实现：关闭处理器
             async fn close(&self) -> echo_core::error::Result<()> {
                 if self.0.fetch_add(1, Ordering::AcqRel) == 0 {
                     Err(ReactError::Other("session agent close failed".to_string()))
@@ -2800,14 +2978,18 @@ mod tests {
         Ok(())
     }
 
+    /// 被取消的会话关闭会保留 Agent 所有权以便重试
     #[tokio::test]
     async fn cancelled_session_close_keeps_agent_owner_for_retry() -> Result<(), String> {
+        /// 首次关闭会永久挂起（只能被取消中断）的测试处理器
         struct InterruptedHandler {
+            /// close 被调用的次数
             closes: Arc<AtomicUsize>,
         }
 
         #[async_trait]
         impl MessageHandler for InterruptedHandler {
+            /// 测试实现：处理消息
             async fn handle(
                 &self,
                 msg: InboundMessage,
@@ -2819,9 +3001,11 @@ mod tests {
                     "reply",
                 ))
             }
+            /// 测试实现：忽略回复
             async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
                 Ok(())
             }
+            /// 测试实现：关闭处理器
             async fn close(&self) -> echo_core::error::Result<()> {
                 if self.closes.fetch_add(1, Ordering::AcqRel) == 0 {
                     std::future::pending::<()>().await;
@@ -2859,23 +3043,31 @@ mod tests {
         Ok(())
     }
 
+    /// 会话关闭会等待旧式流被丢弃后再关闭处理器
     #[tokio::test(flavor = "current_thread")]
     async fn session_close_waits_for_legacy_stream_drop_before_handler_close() -> Result<(), String>
     {
+        /// 被丢弃时置位标志的守卫，用于观测流是否已被释放
         struct StreamDropFlag(Arc<AtomicBool>);
         impl Drop for StreamDropFlag {
+            /// 置位“已丢弃”标志
             fn drop(&mut self) {
                 self.0.store(true, Ordering::Release);
             }
         }
 
+        /// 不支持取消感知的旧式处理器，其流持有需要释放的资源
         struct LegacyResourceHandler {
+            /// 流开始时发出的通知
             started: Arc<Notify>,
+            /// 流是否已被丢弃
             stream_dropped: Arc<AtomicBool>,
+            /// close 被调用的次数
             closes: Arc<AtomicUsize>,
         }
         #[async_trait]
         impl MessageHandler for LegacyResourceHandler {
+            /// 测试实现：处理消息
             async fn handle(
                 &self,
                 msg: InboundMessage,
@@ -2887,9 +3079,11 @@ mod tests {
                     "unused",
                 ))
             }
+            /// 测试实现：忽略回复
             async fn reply(&self, _msg: OutboundMessage) -> echo_core::error::Result<()> {
                 Ok(())
             }
+            /// 测试实现：以流式方式处理消息
             async fn handle_stream<'a>(
                 &'a self,
                 _msg: InboundMessage,
@@ -2906,6 +3100,7 @@ mod tests {
                 }
                 .boxed())
             }
+            /// 测试实现：关闭处理器
             async fn close(&self) -> echo_core::error::Result<()> {
                 if !self.stream_dropped.load(Ordering::Acquire) {
                     return Err(ReactError::Other(

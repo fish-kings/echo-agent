@@ -105,8 +105,10 @@ fn same_projection_content(
     left.digest == right.digest
 }
 
-/// 计算「上一次投影结果」与「本次投影结果」之间可复用的重叠（overlap）长度，
-/// 用于避免为已经投影过的消息重新分配序号（ordinal）。
+/**
+ * 计算「上一次投影结果」与「本次投影结果」之间可复用的重叠（overlap）长度，
+ * 用于避免为已经投影过的消息重新分配序号（ordinal）。
+ */
 fn generation_overlap(
     previous: &[crate::state::TranscriptProjectionMessage],
     projected: &[crate::state::TranscriptProjectionMessage],
@@ -124,8 +126,10 @@ fn generation_overlap(
         .unwrap_or_default()
 }
 
-/// 将已存储的消息列表转换为带内容摘要（digest）的投影消息标识列表（序号先置零，
-/// 之后由调用方赋值）。
+/**
+ * 将已存储的消息列表转换为带内容摘要（digest）的投影消息标识列表（序号先置零，
+ * 之后由调用方赋值）。
+ */
 fn transcript_projection_messages(
     projected: &[crate::memory::StoredMessage],
 ) -> crate::error::Result<Vec<crate::state::TranscriptProjectionMessage>> {
@@ -140,8 +144,10 @@ fn transcript_projection_messages(
         .collect()
 }
 
-/// 转录投影（transcript projection）的游标：跟踪当前代（generation）已投影过的
-/// 消息序号，用于在多次安全点（safe point）之间保持序号稳定、避免重复投影。
+/**
+ * 转录投影（transcript projection）的游标：跟踪当前代（generation）已投影过的
+ * 消息序号，用于在多次安全点（safe point）之间保持序号稳定、避免重复投影。
+ */
 #[derive(Clone, Default)]
 pub(crate) struct TranscriptProjectionCursor {
     /// 当前游标所属的代（generation）标识。
@@ -153,8 +159,10 @@ pub(crate) struct TranscriptProjectionCursor {
 }
 
 impl TranscriptProjectionCursor {
-    /// 用一份已还原（restored）的完整消息列表重新对齐游标状态，
-    /// 常用于从历史检查点恢复后重建投影序号。
+    /**
+     * 用一份已还原（restored）的完整消息列表重新对齐游标状态，
+     * 常用于从历史检查点恢复后重建投影序号。
+     */
     pub(crate) fn align_restored(
         &mut self,
         generation_id: &str,
@@ -177,8 +185,10 @@ impl TranscriptProjectionCursor {
         Ok(())
     }
 
-    /// 将新的投影结果与已有游标状态对齐：复用可重叠的旧序号，
-    /// 并为新增消息分配新的序号；若代（generation）发生变化则重置游标。
+    /**
+     * 将新的投影结果与已有游标状态对齐：复用可重叠的旧序号，
+     * 并为新增消息分配新的序号；若代（generation）发生变化则重置游标。
+     */
     fn assign(
         &mut self,
         generation_id: &str,
@@ -209,8 +219,10 @@ impl TranscriptProjectionCursor {
         Ok(assigned)
     }
 
-    /// 生成指定代（generation）对应的可持久化检查点；若游标当前所属代与
-    /// 请求的代不一致，则返回一个初始（空）状态的检查点。
+    /**
+     * 生成指定代（generation）对应的可持久化检查点；若游标当前所属代与
+     * 请求的代不一致，则返回一个初始（空）状态的检查点。
+     */
     fn checkpoint_for(&self, generation_id: &str) -> crate::state::TranscriptProjectionCheckpoint {
         crate::state::TranscriptProjectionCheckpoint {
             generation_id: generation_id.to_string(),
@@ -237,8 +249,10 @@ impl TranscriptProjectionCursor {
 
 // ── RuntimeConfig ────────────────────────────────────────────────────
 
-/// [`AgentConfig`](crate::agent::AgentConfig) 中在一次流式运行过程中不会变化的
-/// 不可变子集。
+/**
+ * [`AgentConfig`](crate::agent::AgentConfig) 中在一次流式运行过程中不会变化的
+ * 不可变子集。
+ */
 #[derive(Clone)]
 pub struct RuntimeConfig {
     /// Agent 名称。
@@ -257,8 +271,10 @@ pub struct RuntimeConfig {
     pub run_budget: echo_core::agent::RunBudgetPolicy,
     /// 模型是否支持 `tool_choice: none`。
     pub supports_tool_choice_none: bool,
-    /// 所配置模型接受的输入模态（modality）。`None` 用于保持对未提供
-    /// [`crate::llm::LlmConfig`] 的自定义 agent 的兼容性。
+    /**
+     * 所配置模型接受的输入模态（modality）。`None` 用于保持对未提供
+     * [`crate::llm::LlmConfig`] 的自定义 agent 的兼容性。
+     */
     pub input_modalities: Option<Vec<echo_core::llm::ModelInputModality>>,
     /// 会话 ID。
     pub session_id: Option<String>,
@@ -266,9 +282,11 @@ pub struct RuntimeConfig {
     pub runtime_state_id: Option<String>,
     /// 会话所属的对话 ID。
     pub conversation_id: Option<String>,
-    /// 会话绑定的工作目录（worktree 路径）。会被注入到每次工具调用的
-    /// ToolContext 中，使文件/shell/git 等工具在隔离的检出（checkout）目录内运行。
-    /// `None` 表示使用进程的当前工作目录（向后兼容）。
+    /**
+     * 会话绑定的工作目录（worktree 路径）。会被注入到每次工具调用的
+     * ToolContext 中，使文件/shell/git 等工具在隔离的检出（checkout）目录内运行。
+     * `None` 表示使用进程的当前工作目录（向后兼容）。
+     */
     pub working_dir: Option<std::path::PathBuf>,
     /// 采样温度。
     pub temperature: Option<f32>,
@@ -364,8 +382,10 @@ impl RuntimeConfig {
     }
 }
 
-/// 依据配置值、当前调用（invocation）上下文与旧版（legacy）外部上下文，
-/// 解析出实际生效的运行时状态（runtime state）标识。
+/**
+ * 依据配置值、当前调用（invocation）上下文与旧版（legacy）外部上下文，
+ * 解析出实际生效的运行时状态（runtime state）标识。
+ */
 pub(crate) fn effective_runtime_state_id<'a>(
     configured_runtime_state_id: Option<&'a str>,
     invocation: Option<&'a echo_core::agent::AgentInvocationContext>,
@@ -387,8 +407,10 @@ pub(crate) fn effective_runtime_state_id<'a>(
         .or(configured_runtime_state_id)
 }
 
-/// 校验运行时状态标识与转录代（transcript generation）标识是否一致；
-/// 若两者都存在但不相等，则返回错误。
+/**
+ * 校验运行时状态标识与转录代（transcript generation）标识是否一致；
+ * 若两者都存在但不相等，则返回错误。
+ */
 pub(crate) fn validate_transcript_generation_identity(
     runtime_state_id: Option<&str>,
     transcript_generation_id: Option<&str>,
@@ -441,8 +463,10 @@ pub struct ToolRuntime {
     pub hook_registry: Arc<tokio::sync::RwLock<HookRegistry>>,
     /// 干预（intervention）回调列表。
     pub intervention_callbacks: Vec<Arc<dyn InterventionCallback>>,
-    /// 来自已激活技能（skill）的允许工具模式集合（在快照创建时捕获）。
-    /// `None` 表示不受限制（没有技能限制工具）。
+    /**
+     * 来自已激活技能（skill）的允许工具模式集合（在快照创建时捕获）。
+     * `None` 表示不受限制（没有技能限制工具）。
+     */
     pub skill_allowed_tools: Option<std::collections::HashSet<String>>,
     /// 本次调用生效的已禁用工具集合。
     pub disabled_tools: std::collections::HashSet<String>,
@@ -649,15 +673,19 @@ pub struct AgentRunSnapshot {
     transcript_settlement_observed: Arc<std::sync::atomic::AtomicBool>,
     /// HTTP 客户端。
     pub client: Arc<reqwest::Client>,
-    /// 可选的 trait 级 LLM 客户端。当其存在时，流式核心循环
-    /// （`create_llm_stream`）与 `direct_answer_stream` 会通过该 trait 对象来
-    /// 路由 LLM 调用，而不是走原始的 `client` + 模型解析路径 —— 这使得测试替身
-    /// （MockLlmClient）能够驱动完整的 ReAct 循环。生产环境的 agent 会注入真实的
-    /// `LlmClient` 实现；若未附加任何实现，执行时将返回配置错误。
+    /**
+     * 可选的 trait 级 LLM 客户端。当其存在时，流式核心循环
+     * （`create_llm_stream`）与 `direct_answer_stream` 会通过该 trait 对象来
+     * 路由 LLM 调用，而不是走原始的 `client` + 模型解析路径 —— 这使得测试替身
+     * （MockLlmClient）能够驱动完整的 ReAct 循环。生产环境的 agent 会注入真实的
+     * `LlmClient` 实现；若未附加任何实现，执行时将返回配置错误。
+     */
     pub llm_client: Option<Arc<dyn crate::llm::LlmClient>>,
-    /// 每个 agent 的思考深度（thinking-depth）配置，会被传播到 think 阶段和
-    /// react 循环，使每次 LLM 请求都携带所配置的推理深度。`None` 表示
-    /// “使用模型默认值”（不发送 thinking 字段）。
+    /**
+     * 每个 agent 的思考深度（thinking-depth）配置，会被传播到 think 阶段和
+     * react 循环，使每次 LLM 请求都携带所配置的推理深度。`None` 表示
+     * “使用模型默认值”（不发送 thinking 字段）。
+     */
     pub thinking: Option<crate::llm::ThinkingConfig>,
     /// 取消令牌（在构造完成后设置）。
     pub cancel_token: Option<crate::agent::CancellationToken>,
@@ -672,8 +700,10 @@ pub struct AgentRunSnapshot {
     pub(crate) diagnostic_delivery_observer: Option<Arc<dyn DiagnosticDeliveryObserver>>,
     /// 当前的 run ID。
     pub current_run_id: Option<String>,
-    /// 唯一的 trace 调用 ID。它有意与 `current_run_id` 中的产品/业务 run ID
-    /// 区分开来。
+    /**
+     * 唯一的 trace 调用 ID。它有意与 `current_run_id` 中的产品/业务 run ID
+     * 区分开来。
+     */
     pub trace_run_id: Option<String>,
     /// 本次调用范围内、真正进入 ExecuteStage 的工具调用权威集合。
     executing_tool_call_ids: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
@@ -687,18 +717,24 @@ pub struct AgentRunSnapshot {
     pub current_message: Option<crate::llm::types::Message>,
     /// 当前具体的 subagent/工具执行 ID。
     pub current_execution_id: Option<String>,
-    /// 外部 run 级上下文（跨 spawn 安全，从 ReactAgent.external_* 抓取）。
-    /// 与 current_run_id 同源、同生命周期（set/clear 在同一处）。
+    /**
+     * 外部 run 级上下文（跨 spawn 安全，从 ReactAgent.external_* 抓取）。
+     * 与 current_run_id 同源、同生命周期（set/clear 在同一处）。
+     */
     pub external_cancel: Option<std::sync::Arc<tokio_util::sync::CancellationToken>>,
     /// 外部 trace sink（下沉）函数。
     pub external_trace_sink: Option<echo_core::tools::TraceSinkFn>,
     /// 外部委派（delegation）策略。
     pub external_delegation_policy: Option<echo_core::tools::NestedDelegationPolicy>,
-    /// 本快照所运行的、已分派 Subagent 尝试的身份/世系（lineage）信息。
-    /// 对于主 agent 调用为 `None`。会被复制进每个 ToolContext。
+    /**
+     * 本快照所运行的、已分派 Subagent 尝试的身份/世系（lineage）信息。
+     * 对于主 agent 调用为 `None`。会被复制进每个 ToolContext。
+     */
     pub subagent_lineage: Option<echo_core::tools::SubagentLineage>,
-    /// 用于 Subagent→父级 / Subagent→兄弟节点通信的上行（uplink）通道，
-    /// 由 dispatcher 安装进本次调用的运行时上下文中。
+    /**
+     * 用于 Subagent→父级 / Subagent→兄弟节点通信的上行（uplink）通道，
+     * 由 dispatcher 安装进本次调用的运行时上下文中。
+     */
     pub external_uplink: Option<echo_core::tools::SubagentUplinkFn>,
     /// 为本次调用及其工具保留的不透明所有权令牌。
     pub resource_guards: Vec<echo_core::tools::InvocationResourceGuard>,
@@ -711,17 +747,23 @@ pub struct AgentRunSnapshot {
         Arc<tokio::sync::Mutex<Vec<echo_core::tools::permission::PermissionRule>>>,
     /// 与父级 ReactAgent 共享的 token 用量跟踪器。
     pub token_tracker: Arc<echo_core::tokenizer::TokenUsageTracker>,
-    /// 与父级 ReactAgent 共享的自校准分词器（tokenizer）。think 阶段会将真实的
-    /// `usage.prompt_tokens` 反馈给它，使上下文窗口与压缩估算逐渐逼近模型的
-    /// 真实分词结果。
+    /**
+     * 与父级 ReactAgent 共享的自校准分词器（tokenizer）。think 阶段会将真实的
+     * `usage.prompt_tokens` 反馈给它，使上下文窗口与压缩估算逐渐逼近模型的
+     * 真实分词结果。
+     */
     pub calibrated_tokenizer: Arc<echo_core::tokenizer::CalibratedTokenizer>,
-    /// 用于 ReAct 检查点的运行时状态存储（消息 + 技能）。
-    /// 旧版 `current_plan` 数据仍以原始 Store 数据形式保留，不会被恢复。
+    /**
+     * 用于 ReAct 检查点的运行时状态存储（消息 + 技能）。
+     * 旧版 `current_plan` 数据仍以原始 Store 数据形式保留，不会被恢复。
+     */
     pub state_store: Option<Arc<dyn crate::state::RuntimeStateStore>>,
-    /// 用于用户可见转录投影的对话存储。当该字段与
-    /// `config.conversation_id` 同时设置时，运行循环会在每个最终化（finalization）
-    /// 安全点持久化投影后的消息，使应用 UI 历史始终与运行中的上下文保持同步——
-    /// 而无需每个入口点各自重新实现保存逻辑。
+    /**
+     * 用于用户可见转录投影的对话存储。当该字段与
+     * `config.conversation_id` 同时设置时，运行循环会在每个最终化（finalization）
+     * 安全点持久化投影后的消息，使应用 UI 历史始终与运行中的上下文保持同步——
+     * 而无需每个入口点各自重新实现保存逻辑。
+     */
     pub conversation_store: Option<Arc<dyn crate::memory::ConversationStore>>,
     /// 供可选的框架技能遥测（telemetry）写入器使用的长期存储。
     pub(crate) memory_store: Option<Arc<dyn crate::memory::Store>>,
@@ -730,8 +772,10 @@ pub struct AgentRunSnapshot {
     /// 可选的工具执行流水线（16 阶段中间件）。
     pub tool_execution_pipeline:
         Option<Arc<crate::agent::react::run::pipeline::ToolExecutionPipeline>>,
-    /// （stage4 E1）分层记忆管理器 —— 供 `pre_compaction_flush` 在压缩前写入
-    /// 持久化事实使用。从父级 ReactAgent 克隆而来。
+    /**
+     * （stage4 E1）分层记忆管理器 —— 供 `pre_compaction_flush` 在压缩前写入
+     * 持久化事实使用。从父级 ReactAgent 克隆而来。
+     */
     pub memory_layer_manager: Option<Arc<crate::evolution::MemoryLayerManager>>,
     /// 可选的、在 pre-prepare 边界处刷新的应用层投影。
     pub pre_model_context_projector: Option<Arc<dyn crate::compression::PreModelContextProjector>>,
@@ -775,8 +819,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
         })
     }
 
-    /// 若对话存储与运行时状态存储均已配置，则返回二者的引用；否则返回 `None`
-    /// （表示应回退到旧版持久化路径）。
+    /**
+     * 若对话存储与运行时状态存储均已配置，则返回二者的引用；否则返回 `None`
+     * （表示应回退到旧版持久化路径）。
+     */
     fn managed_stores(&self) -> Option<ManagedPersistenceStores<'_>> {
         Some((
             self.snapshot.conversation_store.as_ref()?,
@@ -832,8 +878,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
         .map_err(|_| persistence_deadline_error("conversation epoch acquisition"))?
     }
 
-    /// 加载指定作用域（scope）与运行时状态 ID 当前的持久化状态，
-    /// 返回作用域修订号（revision）、用于 CAS 的期望版本，以及当前的托管状态快照。
+    /**
+     * 加载指定作用域（scope）与运行时状态 ID 当前的持久化状态，
+     * 返回作用域修订号（revision）、用于 CAS 的期望版本，以及当前的托管状态快照。
+     */
     async fn current_runtime_state(
         &self,
         store: &dyn crate::state::RuntimeStateStore,
@@ -938,8 +986,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
             .unwrap_or(crate::state::RuntimeStateVersion::Absent)
     }
 
-    /// 确保内存中的上下文是从与持久化存储一致的运行时版本水合（hydrate）而来，
-    /// 否则拒绝继续写入以避免基于错误基线覆盖数据。
+    /**
+     * 确保内存中的上下文是从与持久化存储一致的运行时版本水合（hydrate）而来，
+     * 否则拒绝继续写入以避免基于错误基线覆盖数据。
+     */
     async fn require_hydrated_base(
         &self,
         current: Option<&crate::state::ManagedRuntimeStateSnapshot>,
@@ -961,8 +1011,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
         }
     }
 
-    /// 以 compare-and-save 语义保存运行时检查点：确保对话投影代存在、校验期望版本，
-    /// 并拒绝在存在待处理转录投影时覆盖检查点。
+    /**
+     * 以 compare-and-save 语义保存运行时检查点：确保对话投影代存在、校验期望版本，
+     * 并拒绝在存在待处理转录投影时覆盖检查点。
+     */
     async fn save_checkpoint(
         &self,
         context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -1048,8 +1100,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
         Ok(())
     }
 
-    /// 结算（settle）当前转录投影：确保对话代存在、处理任何遗留的待处理投影、
-    /// 将新的可见消息批量投影并以 compare-and-save 方式原子性地落盘。
+    /**
+     * 结算（settle）当前转录投影：确保对话代存在、处理任何遗留的待处理投影、
+     * 将新的可见消息批量投影并以 compare-and-save 方式原子性地落盘。
+     */
     async fn settle_transcript_projection(
         &self,
         context: &Arc<tokio::sync::Mutex<crate::compression::ContextManager>>,
@@ -1333,8 +1387,10 @@ impl<'a> AgentPersistenceCoordinator<'a> {
         }
     }
 
-    /// 在水合（hydration）或准入（admission）之前，校验对话/运行时作用域的生命周期
-    /// 是否有效，并结算任何遗留的待处理（durable pending）转录投影效果。
+    /**
+     * 在水合（hydration）或准入（admission）之前，校验对话/运行时作用域的生命周期
+     * 是否有效，并结算任何遗留的待处理（durable pending）转录投影效果。
+     */
     async fn reconcile_pending_projection(
         &self,
     ) -> crate::error::Result<Option<crate::memory::TranscriptProjectionSettlement>> {
@@ -1528,8 +1584,10 @@ impl AgentRunSnapshot {
         Self::from_agent_source(agent, Some(invocation), None)
     }
 
-    /// 统一的快照构建实现：融合 agent 配置、当前调用（invocation）上下文
-    /// 以及旧版（legacy）外部上下文，生成一份完整的 [`AgentRunSnapshot`]。
+    /**
+     * 统一的快照构建实现：融合 agent 配置、当前调用（invocation）上下文
+     * 以及旧版（legacy）外部上下文，生成一份完整的 [`AgentRunSnapshot`]。
+     */
     fn from_agent_source(
         agent: &super::ReactAgent,
         invocation: Option<&echo_core::agent::AgentInvocationContext>,
@@ -1694,9 +1752,11 @@ impl AgentRunSnapshot {
         self.skill_activation.activated_names()
     }
 
-    /// 为本次调用中每个已激活的技能持久化一条尽力而为（best-effort）的观测记录。
-    /// 遥测（telemetry）只是可观测性数据，不是执行权威：存储缺失或写入失败绝不能
-    /// 影响工具的执行结果。
+    /**
+     * 为本次调用中每个已激活的技能持久化一条尽力而为（best-effort）的观测记录。
+     * 遥测（telemetry）只是可观测性数据，不是执行权威：存储缺失或写入失败绝不能
+     * 影响工具的执行结果。
+     */
     fn record_skill_telemetry(
         &self,
         tool_name: &str,
@@ -1848,8 +1908,10 @@ impl AgentRunSnapshot {
             .contains(call_id)
     }
 
-    /// 结算一次被中断的工具调用：记录必要的 trace/audit 事件，并构造一个
-    /// 带有「可能存在副作用」标记的失败结果，供上层决定是否需要人工核实。
+    /**
+     * 结算一次被中断的工具调用：记录必要的 trace/audit 事件，并构造一个
+     * 带有「可能存在副作用」标记的失败结果，供上层决定是否需要人工核实。
+     */
     pub(crate) async fn settle_interrupted_tool_call(
         &self,
         call_id: &str,
@@ -2040,8 +2102,10 @@ impl AgentRunSnapshot {
         Ok(settlement)
     }
 
-    /// 将一次持久化错误分类并转换为对应的转录投影结算（settlement）状态，
-    /// 记录相应的 trace 事件并返回该结算结果。
+    /**
+     * 将一次持久化错误分类并转换为对应的转录投影结算（settlement）状态，
+     * 记录相应的 trace 事件并返回该结算结果。
+     */
     pub(crate) async fn observe_persistence_failure(
         &self,
         error: &crate::error::ReactError,
@@ -2392,8 +2456,10 @@ impl AgentRunSnapshot {
         self.process_tool_output_for_call(output, "unscoped", "tool", None)
     }
 
-    /// 针对具体某次工具调用应用输出溢出/截断策略：超出阈值时落盘为产物（artifact），
-    /// 否则按 token 预算截断；若落盘失败则回退为按 token 数截断。
+    /**
+     * 针对具体某次工具调用应用输出溢出/截断策略：超出阈值时落盘为产物（artifact），
+     * 否则按 token 预算截断；若落盘失败则回退为按 token 数截断。
+     */
     pub(crate) fn process_tool_output_for_call(
         &self,
         output: String,
@@ -2864,37 +2930,48 @@ mod transcript_filter_tests {
     use std::collections::HashSet;
     use std::sync::Arc;
 
+    /// 仅带名称的测试工具（非只读）。
     struct NamedTool(&'static str);
 
+    /// 仅带名称、且被本地归类为只读的测试工具。
     struct ReadOnlyNamedTool(&'static str);
 
+    /// 用于验证计划模式（plan mode）下 MCP 工具能力判定的探针工具。
     #[cfg(feature = "mcp")]
     struct McpPlanProbe {
+        /// 工具名称。
         name: String,
+        /// 工具被实际执行的次数。
         executions: Arc<std::sync::atomic::AtomicUsize>,
     }
 
+    /// 需要写入审批的测试工具。
     #[cfg(feature = "human-loop")]
     struct ApprovalTool;
 
     #[cfg(feature = "human-loop")]
     impl Tool for ApprovalTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "approval_tool"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "tool that requires write approval"
         }
 
+        /// 返回参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 声明需要写权限。
         fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
             vec![echo_core::tools::permission::ToolPermission::Write]
         }
 
+        /// 执行工具，直接返回成功。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2903,11 +2980,13 @@ mod transcript_filter_tests {
         }
     }
 
+    /// 永远不会返回审批结果（始终挂起）的人机交互提供者。
     #[cfg(feature = "human-loop")]
     struct PendingApprovalProvider;
 
     #[cfg(feature = "human-loop")]
     impl crate::human_loop::HumanLoopProvider for PendingApprovalProvider {
+        /// 返回一个永远挂起的 future，模拟一直等待中的审批。
         fn request(
             &self,
             _request: crate::human_loop::HumanLoopRequest,
@@ -2917,18 +2996,22 @@ mod transcript_filter_tests {
     }
 
     impl Tool for NamedTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             self.0
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "snapshot policy test tool"
         }
 
+        /// 返回参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 执行工具，直接返回成功。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2938,22 +3021,27 @@ mod transcript_filter_tests {
     }
 
     impl Tool for ReadOnlyNamedTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             self.0
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "locally classified read-only snapshot policy test tool"
         }
 
+        /// 返回参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 声明为只读工具。
         fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
             echo_core::tools::ToolRiskLevel::ReadOnly
         }
 
+        /// 执行工具，直接返回成功。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2964,26 +3052,32 @@ mod transcript_filter_tests {
 
     #[cfg(feature = "mcp")]
     impl Tool for McpPlanProbe {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             &self.name
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "MCP plan-mode capability probe"
         }
 
+        /// 返回参数 schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 声明需要写权限。
         fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
             vec![echo_core::tools::permission::ToolPermission::Write]
         }
 
+        /// 声明为标准风险级别。
         fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
             echo_core::tools::ToolRiskLevel::Standard
         }
 
+        /// 执行工具：累加执行计数并返回成功。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2994,6 +3088,7 @@ mod transcript_filter_tests {
         }
     }
 
+    /// 验证调用上下文能将产品层对话 ID 与运行时状态标识区分开。
     #[test]
     fn invocation_separates_product_conversation_from_runtime_state_identity() {
         let config = crate::agent::AgentConfig::new("test-model", "agent", "system")
@@ -3029,6 +3124,7 @@ mod transcript_filter_tests {
         );
     }
 
+    /// 验证转录代标识与运行时标识不一致时，会在修改存储之前拒绝检查点写入。
     #[tokio::test]
     async fn transcript_generation_runtime_identity_rejects_checkpoint_write_before_store_mutation()
     -> Result<()> {
@@ -3080,6 +3176,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证新的投影安全点会重置观测来源（provenance）状态。
     #[tokio::test]
     async fn new_projection_safe_point_resets_observation_provenance() -> Result<()> {
         let agent = crate::agent::ReactAgent::new(crate::agent::AgentConfig::new(
@@ -3099,6 +3196,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证检查点保存会按产品作用域建立索引，且精确重置能回收运行时状态。
     #[tokio::test]
     async fn checkpoint_save_indexes_product_scope_and_exact_reset_reclaims_runtime() -> Result<()>
     {
@@ -3159,6 +3257,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证检查点在快照创建后仍读取实时的规范技能激活状态。
     #[tokio::test]
     async fn checkpoint_reads_live_canonical_skill_activation_after_snapshot() -> Result<()> {
         use crate::state::RuntimeStateStore;
@@ -3195,6 +3294,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证未显式覆盖时，调用上下文中的对话 ID 仍作为检查点身份标识。
     #[test]
     fn invocation_conversation_remains_checkpoint_identity_without_explicit_override() {
         let agent = crate::agent::ReactAgent::new(crate::agent::AgentConfig::new(
@@ -3227,6 +3327,7 @@ mod transcript_filter_tests {
         );
     }
 
+    /// 验证运行时游标在多个安全点及压缩之间保持稳定。
     #[tokio::test]
     async fn runtime_cursor_is_stable_across_safe_points_and_compaction() -> Result<()> {
         let new = crate::memory::project_messages(
@@ -3304,6 +3405,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证调用被取消时，权限等待会随之停止。
     #[cfg(feature = "human-loop")]
     #[tokio::test]
     async fn permission_wait_stops_when_invocation_is_cancelled() -> Result<()> {
@@ -3344,6 +3446,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 返回快照中提供给 LLM 的工具名称列表。
     fn tool_names(snapshot: &AgentRunSnapshot) -> Vec<String> {
         snapshot
             .tools
@@ -3353,6 +3456,7 @@ mod transcript_filter_tests {
             .collect()
     }
 
+    /// 验证转录过滤只剔除由投影自身拥有的消息。
     #[test]
     fn transcript_filter_excludes_projection_owned_messages_only() {
         let mut context = ContextManager::builder(4096).build();
@@ -3380,6 +3484,7 @@ mod transcript_filter_tests {
         );
     }
 
+    /// 验证调用快照会将运行时字段作为一个整体值一次性推导出来。
     #[test]
     fn invocation_snapshot_derives_runtime_fields_as_one_value() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -3452,6 +3557,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证调用级的工具排除相互隔离，且快照创建后不可变。
     #[test]
     fn invocation_tool_exclusions_are_isolated_and_snapshot_immutable() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -3495,6 +3601,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证调用级运行预算会覆盖 agent 默认值，而不修改 agent 本身。
     #[test]
     fn invocation_run_budget_overrides_agent_default_without_mutation() {
         let mut agent = crate::agent::ReactAgent::new(
@@ -3522,6 +3629,7 @@ mod transcript_filter_tests {
         );
     }
 
+    /// 验证模型配置中的工具排除会合并进最终生效的工具策略。
     #[test]
     fn model_profile_exclusions_join_effective_tool_policy() -> Result<()> {
         let mut profile =
@@ -3541,6 +3649,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证模型配置的提示词后缀在压缩之后仍保持规范位置。
     #[tokio::test]
     async fn model_profile_prompt_suffix_is_canonical_after_compression() -> Result<()> {
         let mut profile =
@@ -3566,6 +3675,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证工具可见性会综合技能、计划模式与禁用策略。
     #[test]
     fn tool_visibility_combines_skill_plan_and_disabled_policies() {
         let manager = Arc::new(crate::tools::ToolManager::new());
@@ -3606,6 +3716,7 @@ mod transcript_filter_tests {
         assert_eq!(visible, vec!["read_file"]);
     }
 
+    /// 验证权限计划模式会隐藏并阻止会在本地产生修改的 MCP 工具。
     #[cfg(feature = "mcp")]
     #[tokio::test]
     async fn permission_plan_hides_and_blocks_locally_mutating_mcp_tool() -> Result<()> {
@@ -3650,6 +3761,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证实时权限计划模式优先于 hook 的放行决定，阻止会修改状态的 MCP 工具。
     #[cfg(all(feature = "mcp", feature = "human-loop"))]
     #[tokio::test]
     async fn live_permission_plan_precedes_hook_allow_for_mutating_mcp_tool() -> Result<()> {
@@ -3721,6 +3833,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证调用级可见性可以扩展，而不会修改工具注册表。
     #[test]
     fn invocation_visibility_expands_without_mutating_registry() -> Result<()> {
         let mut agent = crate::agent::ReactAgentBuilder::new()
@@ -3749,6 +3862,7 @@ mod transcript_filter_tests {
         Ok(())
     }
 
+    /// 验证未启用延迟可见性时，tool_search 工具会被隐藏。
     #[test]
     fn tool_search_is_hidden_when_deferred_visibility_is_disabled() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()

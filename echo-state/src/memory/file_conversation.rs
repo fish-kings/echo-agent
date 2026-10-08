@@ -1,33 +1,35 @@
-//! 文件后端的 [`ConversationStore`] —— 一个无额外依赖的 JSON 文件存储实现。
-//!
-//! 每个会话都有一份小型清单（manifest）和一份追加式的消息日志，另外在
-//! `<base>/conversations/_meta.json` 中维护一个单调递增的 id 计数器。这是在不使用
-//! SQLite 时替代 `SqliteConversationStore`（`sqlite` feature）的方案。
-//!
-//! ## 目录结构
-//!
-//! - `<base>/conversations/<safe_id>.json` —— 会话元数据，以及已提交的消息日志的
-//!   代（generation）编号/字节边界，原子写入。
-//! - `<base>/conversations/<safe_id>.messages.<generation>.jsonl` —— 消息内容。
-//!   纯粹的转录增长只追加新的后缀；如果发生替换，则会先原子写入一个新的
-//!   generation，再提交清单。
-//! - `<base>/conversations/_meta.json` —— 单调递增的 id 计数器，用来替代 SQLite 的
-//!   自增主键。每新增一个会话/消息都会递增该计数器，从而保证 id 在整个存储中唯一；
-//!   重启后可自我修复（self-heal）。
-//!
-//! ## 健壮性设计
-//!
-//! - **路径安全的 id。** 会话 id 在拼入路径前会被规整为文件系统安全的片段（拒绝
-//!   `/`、`\`、`..`），从而防止路径穿越（`../foo`）以及意外的目录逃逸。
-//! - **损坏的 JSON 视为错误。** 格式错误的记录/元数据文件会返回
-//!   `MemoryError::SerializationError`，而不是静默返回 `None`/空列表（以前这种做法
-//!   会让"数据损坏"和"没有数据"难以区分）。
-//! - **唯一临时文件名 + 父目录同步。** 每次原子写入都使用带 uuid 后缀的临时文件
-//!   （避免并发写入冲突），在 Unix 上重命名后还会对父目录执行 `fsync`，确保重命名
-//!   能在崩溃后仍然生效。
-//! - **已提交日志边界。** 消息字节会在清单推进前先落盘同步。读取方会忽略未提交的
-//!   尾部数据，下一次追加会在写入前先清理这部分尾部，因此崩溃不会暴露出不完整的
-//!   消息。
+/*!
+ * 文件后端的 [`ConversationStore`] —— 一个无额外依赖的 JSON 文件存储实现。
+ *
+ * 每个会话都有一份小型清单（manifest）和一份追加式的消息日志，另外在
+ * `<base>/conversations/_meta.json` 中维护一个单调递增的 id 计数器。这是在不使用
+ * SQLite 时替代 `SqliteConversationStore`（`sqlite` feature）的方案。
+ *
+ * ## 目录结构
+ *
+ * - `<base>/conversations/<safe_id>.json` —— 会话元数据，以及已提交的消息日志的
+ *   代（generation）编号/字节边界，原子写入。
+ * - `<base>/conversations/<safe_id>.messages.<generation>.jsonl` —— 消息内容。
+ *   纯粹的转录增长只追加新的后缀；如果发生替换，则会先原子写入一个新的
+ *   generation，再提交清单。
+ * - `<base>/conversations/_meta.json` —— 单调递增的 id 计数器，用来替代 SQLite 的
+ *   自增主键。每新增一个会话/消息都会递增该计数器，从而保证 id 在整个存储中唯一；
+ *   重启后可自我修复（self-heal）。
+ *
+ * ## 健壮性设计
+ *
+ * - **路径安全的 id。** 会话 id 在拼入路径前会被规整为文件系统安全的片段（拒绝
+ *   `/`、`\`、`..`），从而防止路径穿越（`../foo`）以及意外的目录逃逸。
+ * - **损坏的 JSON 视为错误。** 格式错误的记录/元数据文件会返回
+ *   `MemoryError::SerializationError`，而不是静默返回 `None`/空列表（以前这种做法
+ *   会让"数据损坏"和"没有数据"难以区分）。
+ * - **唯一临时文件名 + 父目录同步。** 每次原子写入都使用带 uuid 后缀的临时文件
+ *   （避免并发写入冲突），在 Unix 上重命名后还会对父目录执行 `fsync`，确保重命名
+ *   能在崩溃后仍然生效。
+ * - **已提交日志边界。** 消息字节会在清单推进前先落盘同步。读取方会忽略未提交的
+ *   尾部数据，下一次追加会在写入前先清理这部分尾部，因此崩溃不会暴露出不完整的
+ *   消息。
+ */
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read};
@@ -54,16 +56,22 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+/// 返回 `Result<T>` 的装箱异步 future 简写。
 type BoxFut<'a, T> = BoxFuture<'a, Result<T>>;
 
+/// 搜索候选过滤器位图所含的 `u64` 字数（共 64 × 64 = 4096 位）。
 const SEARCH_FILTER_WORDS: usize = 64;
+/// 投影 epoch 允许的最大值（与 SQLite 的 `i64` 上限保持一致）。
 const MAX_PROJECTION_EPOCH: u64 = i64::MAX as u64;
+/// 每个会话最多保留的删除回执数量，超出部分按 epoch 从旧到新淘汰。
 const DELETE_RECEIPT_RETENTION: usize = 32;
 
-/// 一份会话清单，加上从其已提交日志中加载出的消息。
-///
-/// `messages` 字段依然可以反序列化最初单文件布局所写出的记录。后续第一次调用
-/// `save_messages` 时，会把这类旧记录迁移到追加式布局。
+/**
+ * 一份会话清单，加上从其已提交日志中加载出的消息。
+ *
+ * `messages` 字段依然可以反序列化最初单文件布局所写出的记录。后续第一次调用
+ * `save_messages` 时，会把这类旧记录迁移到追加式布局。
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConversationRecord {
     /// 会话本身的元数据（标题、用户、时间戳等）。
@@ -82,8 +90,10 @@ struct ConversationRecord {
     projection: Option<FileProjectionState>,
 }
 
-/// 单个会话的投影（projection）权威状态：epoch、revision、生命周期，
-/// 以及去重/回执所需的簿记信息。
+/**
+ * 单个会话的投影（projection）权威状态：epoch、revision、生命周期，
+ * 以及去重/回执所需的簿记信息。
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileProjectionState {
     /// 当前投影所处的 epoch；每次(重新)创建会话都会递增。
@@ -141,8 +151,10 @@ impl FileProjectionState {
         })
     }
 
-    /// 裁剪已保留的删除回执，使其数量不超过 [`DELETE_RECEIPT_RETENTION`]；
-    /// 被淘汰的回执会把 `retention_floor_epoch` 上移到其 `deleted_epoch`。
+    /**
+     * 裁剪已保留的删除回执，使其数量不超过 [`DELETE_RECEIPT_RETENTION`]；
+     * 被淘汰的回执会把 `retention_floor_epoch` 上移到其 `deleted_epoch`。
+     */
     fn retain_delete_receipts(&mut self) {
         while self.delete_receipts.len() > DELETE_RECEIPT_RETENTION {
             let oldest = self
@@ -159,8 +171,10 @@ impl FileProjectionState {
     }
 }
 
-/// 一次托管会话删除操作的回执：payload 摘要 + 发生删除时的 epoch，
-/// 用于对重复的删除请求做幂等判断。
+/**
+ * 一次托管会话删除操作的回执：payload 摘要 + 发生删除时的 epoch，
+ * 用于对重复的删除请求做幂等判断。
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FileDeleteReceipt {
     /// 触发本次删除的请求 payload 的摘要。
@@ -195,10 +209,12 @@ impl MessageLogMeta {
     }
 }
 
-/// 用于大小写不敏感的 Unicode 子串搜索的固定大小候选过滤器（布隆过滤器思路）。
-///
-/// 它从不作为权威判定：命中的候选还需要针对会话标题和已提交消息再做一次真实校验。
-/// 旧版清单没有此字段，因此会被保守地当作候选保留下来（即不做过滤）。
+/**
+ * 用于大小写不敏感的 Unicode 子串搜索的固定大小候选过滤器（布隆过滤器思路）。
+ *
+ * 它从不作为权威判定：命中的候选还需要针对会话标题和已提交消息再做一次真实校验。
+ * 旧版清单没有此字段，因此会被保守地当作候选保留下来（即不做过滤）。
+ */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SearchFilter {
     /// 位图存储，每个 `u64` 表示 64 位。
@@ -302,8 +318,10 @@ fn search_filter_bits(value: &str) -> [usize; 2] {
     ]
 }
 
-/// 持久化为 `_meta.json` 的单调递增 id 计数器，用来替代 SQLite 的自增主键。
-/// 每新建一个会话/消息，`next_id` 都会递增，从而保证 id 在整个存储中唯一。
+/**
+ * 持久化为 `_meta.json` 的单调递增 id 计数器，用来替代 SQLite 的自增主键。
+ * 每新建一个会话/消息，`next_id` 都会递增，从而保证 id 在整个存储中唯一。
+ */
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct StoreMeta {
     /// 下一个可分配的 id。
@@ -318,8 +336,10 @@ impl StoreMeta {
     }
 }
 
-/// 内存缓存中的单条消息摘要信息，用于快速判断追加写入的前缀是否匹配，
-/// 而无需重新读取/反序列化整段消息内容。
+/**
+ * 内存缓存中的单条消息摘要信息，用于快速判断追加写入的前缀是否匹配，
+ * 而无需重新读取/反序列化整段消息内容。
+ */
 #[derive(Debug)]
 struct CachedMessage {
     /// 消息 id（如果已分配）。
@@ -330,8 +350,10 @@ struct CachedMessage {
     semantic_digest: [u8; 32],
 }
 
-/// 单个会话的内存缓存：当前消息日志状态及每条消息的摘要，
-/// 用来加速 `save_messages` 的前缀匹配判断。
+/**
+ * 单个会话的内存缓存：当前消息日志状态及每条消息的摘要，
+ * 用来加速 `save_messages` 的前缀匹配判断。
+ */
 #[derive(Debug)]
 struct ConversationCache {
     /// 缓存所对应的消息日志元数据快照，用于判断缓存是否仍然有效。
@@ -340,16 +362,18 @@ struct ConversationCache {
     messages: Vec<CachedMessage>,
 }
 
-/// 文件后端的会话存储。
-///
-/// 在同一个规范化（canonical）根路径下打开的多个句柄，共享同一个进程内权威状态，
-/// 并对每个会话的操作保持顺序。不同会话之间使用一个进程级、有界的阻塞线程池。
-/// 一个贯穿生命周期持有的旁路文件锁（sidecar lease）会拒绝另一个竞争进程接入，
-/// 而不是允许出现未同步的并发文件写入。
-///
-/// [`Self::new`] 是同步的初始化过程：获取进程锁、协调元数据、清理孤儿 generation
-/// 文件。异步调用方应当在对延迟敏感的工作开始之前，或在一个阻塞的初始化任务中
-/// 构造该存储。[`ConversationStore`] trait 的各个方法会把文件操作转移到阻塞线程执行。
+/**
+ * 文件后端的会话存储。
+ *
+ * 在同一个规范化（canonical）根路径下打开的多个句柄，共享同一个进程内权威状态，
+ * 并对每个会话的操作保持顺序。不同会话之间使用一个进程级、有界的阻塞线程池。
+ * 一个贯穿生命周期持有的旁路文件锁（sidecar lease）会拒绝另一个竞争进程接入，
+ * 而不是允许出现未同步的并发文件写入。
+ *
+ * [`Self::new`] 是同步的初始化过程：获取进程锁、协调元数据、清理孤儿 generation
+ * 文件。异步调用方应当在对延迟敏感的工作开始之前，或在一个阻塞的初始化任务中
+ * 构造该存储。[`ConversationStore`] trait 的各个方法会把文件操作转移到阻塞线程执行。
+ */
 #[derive(Clone)]
 pub struct FileConversationStore {
     /// 会话数据所在的根目录（`<base>/conversations`），已规范化。
@@ -387,19 +411,24 @@ struct SearchSnapshotHook {
     release: std::sync::mpsc::Receiver<()>,
 }
 
-/// 进程内的全局注册表：按规范化根路径复用同一个 [`FileConversationAuthority`]，
-/// 使得指向同一目录的多个 store 句柄共享缓存与进程锁。
+/**
+ * 进程内的全局注册表：按规范化根路径复用同一个 [`FileConversationAuthority`]，
+ * 使得指向同一目录的多个 store 句柄共享缓存与进程锁。
+ */
 fn file_conversation_registry() -> &'static Mutex<HashMap<PathBuf, Weak<FileConversationAuthority>>>
 {
+    // 规范化根路径 → 权威状态的弱引用；所有句柄释放后条目自然失效。
     static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<FileConversationAuthority>>>> =
         OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl FileConversationStore {
-    /// 创建一个以 `base/conversations/` 为根目录的文件后端会话存储。
-    ///
-    /// 这是一个同步的初始化过程：获取进程锁并扫描已有文件。
+    /**
+     * 创建一个以 `base/conversations/` 为根目录的文件后端会话存储。
+     *
+     * 这是一个同步的初始化过程：获取进程锁并扫描已有文件。
+     */
     pub fn new(base: impl AsRef<Path>) -> Result<Self> {
         let base = base.as_ref().join("conversations");
         std::fs::create_dir_all(&base)
@@ -561,11 +590,13 @@ impl FileConversationStore {
         base.join("_meta.json")
     }
 
-    /// 读取 `_meta.json`，并与已持久化的记录做协调（reconcile）。
-    ///
-    /// 崩溃场景下，一次记录重命名可能恰好在对应的 meta 写入之前变为持久化状态。
-    /// 扫描现有记录可以防止下一次启动的进程复用一个已经被持久化过的
-    /// 会话/消息 id。
+    /**
+     * 读取 `_meta.json`，并与已持久化的记录做协调（reconcile）。
+     *
+     * 崩溃场景下，一次记录重命名可能恰好在对应的 meta 写入之前变为持久化状态。
+     * 扫描现有记录可以防止下一次启动的进程复用一个已经被持久化过的
+     * 会话/消息 id。
+     */
     fn read_meta(base: &Path) -> Result<StoreMeta> {
         let mut meta = match std::fs::read_to_string(Self::meta_path(base)) {
             Ok(s) => {
@@ -608,8 +639,10 @@ impl FileConversationStore {
         Ok(meta)
     }
 
-    /// 扫描目录，删除不再被任何清单引用的消息日志文件（例如替换操作中被淘汰的旧
-    /// generation，在崩溃后未能及时清理的情况）。
+    /**
+     * 扫描目录，删除不再被任何清单引用的消息日志文件（例如替换操作中被淘汰的旧
+     * generation，在崩溃后未能及时清理的情况）。
+     */
     fn cleanup_orphaned_message_logs(base: &Path) -> Result<()> {
         let mut referenced = HashSet::new();
         let entries =
@@ -668,8 +701,10 @@ impl FileConversationStore {
         Ok(())
     }
 
-    /// 解析清单 JSON 内容，并校验其内部一致性（消息日志/内嵌消息互斥、搜索过滤器
-    /// 长度、投影权威状态的各项不变量）。
+    /**
+     * 解析清单 JSON 内容，并校验其内部一致性（消息日志/内嵌消息互斥、搜索过滤器
+     * 长度、投影权威状态的各项不变量）。
+     */
     fn parse_manifest(path: &Path, content: &str) -> Result<ConversationRecord> {
         let record: ConversationRecord = serde_json::from_str(content).map_err(|e| {
             MemoryError::SerializationError(format!("parse {}: {e}", path.display()))
@@ -766,8 +801,10 @@ impl FileConversationStore {
         Ok(Some(record))
     }
 
-    /// 按照清单记录的已提交字节边界，读取并解析该会话的消息日志文件，
-    /// 忽略未提交的尾部数据；发现截断或格式不一致时返回错误。
+    /**
+     * 按照清单记录的已提交字节边界，读取并解析该会话的消息日志文件，
+     * 忽略未提交的尾部数据；发现截断或格式不一致时返回错误。
+     */
     fn read_message_log(
         &self,
         conversation_id: &str,
@@ -844,8 +881,10 @@ impl FileConversationStore {
         Ok(messages)
     }
 
-    /// 原子写入会话清单；若已采用日志式消息存储，写入前会清空内嵌的 `messages`
-    /// 字段（避免同时持有两种存储形式）。
+    /**
+     * 原子写入会话清单；若已采用日志式消息存储，写入前会清空内嵌的 `messages`
+     * 字段（避免同时持有两种存储形式）。
+     */
     fn write_manifest(&self, record: &ConversationRecord) -> Result<()> {
         #[cfg(test)]
         {
@@ -886,8 +925,10 @@ impl FileConversationStore {
         Ok(bytes)
     }
 
-    /// 计算一条消息「语义字段」（角色、内容、附件、工具调用等）的摘要，
-    /// 用于判断两条消息在内容上是否等价，而不考虑 id/时间戳等元数据差异。
+    /**
+     * 计算一条消息「语义字段」（角色、内容、附件、工具调用等）的摘要，
+     * 用于判断两条消息在内容上是否等价，而不考虑 id/时间戳等元数据差异。
+     */
     fn semantic_digest(message: &StoredMessage) -> Result<[u8; 32]> {
         let semantic_fields = (
             &message.role,
@@ -902,6 +943,7 @@ impl FileConversationStore {
         Ok(Sha256::digest(encoded).into())
     }
 
+    /// 根据已加载的会话记录构建内存缓存（计算每条消息的语义摘要）。
     fn cache_from_record(record: &ConversationRecord) -> Result<ConversationCache> {
         let messages = record
             .messages
@@ -920,15 +962,20 @@ impl FileConversationStore {
         })
     }
 
+    /**
+     * 判断缓存中的已提交消息是否构成传入消息列表的前缀：
+     * 语义摘要必须一致；若传入消息带有显式 id，则 id 与创建时间也须一致。
+     */
     fn prefix_matches(
         cache: &ConversationCache,
         messages: &[StoredMessage],
         digests: &[[u8; 32]],
     ) -> bool {
-        // Canonical runtime projections intentionally carry `id = None` and
-        // regenerate `created_at` on every finalization, so their timestamp is
-        // not an update. An explicit id denotes an imported persisted record;
-        // for that shape, a timestamp change is part of replacement semantics.
+        /*
+         * 规范的运行时投影有意携带 `id = None`，并在每次定稿时重新生成
+         * `created_at`，因此它们的时间戳变化不算作更新。显式 id 表示这是一条
+         * 导入的已持久化记录；对于这种形态，时间戳变化属于替换语义的一部分。
+         */
         messages.len() >= cache.messages.len()
             && cache
                 .messages
@@ -943,6 +990,7 @@ impl FileConversationStore {
                 })
     }
 
+    /// 为单条消息绑定会话 id 并分配消息 id：已有 id 时推进计数器，否则从计数器取新 id。
     fn assign_message(
         conversation_id: &str,
         incoming: &StoredMessage,
@@ -957,6 +1005,7 @@ impl FileConversationStore {
         assigned
     }
 
+    /// 在持有 id 计数器锁的情况下，为一批消息统一分配 id。
     fn reserve_messages(
         &self,
         conversation_id: &str,
@@ -969,11 +1018,13 @@ impl FileConversationStore {
             .collect())
     }
 
+    /// 把当前内存中的 id 计数器持久化到 `_meta.json`。
     fn persist_current_meta(&self) -> Result<()> {
         let meta = self.authority.meta.lock().map_err(poison)?;
         self.persist_meta(&meta)
     }
 
+    /// 用给定的语义摘要为一条消息构造缓存条目。
     fn cached_message(message: &StoredMessage, digest: [u8; 32]) -> CachedMessage {
         CachedMessage {
             id: message.id,
@@ -982,6 +1033,10 @@ impl FileConversationStore {
         }
     }
 
+    /**
+     * 为追加写入准备消息日志文件：校验文件未被截断，
+     * 并截掉超出已提交边界的未提交尾部，返回日志文件路径。
+     */
     fn prepare_log_for_append(
         &self,
         conversation_id: &str,
@@ -1017,6 +1072,7 @@ impl FileConversationStore {
         Ok(path)
     }
 
+    /// 计算下一个消息日志 generation；无日志时从 1 开始，溢出时返回错误。
     fn next_generation(log: Option<&MessageLogMeta>) -> Result<u64> {
         match log {
             Some(log) => log.generation.checked_add(1).ok_or_else(|| {
@@ -1027,6 +1083,7 @@ impl FileConversationStore {
         }
     }
 
+    /// 尽力删除已被替换的旧 generation 日志文件；失败时仅记录告警。
     fn remove_replaced_log(&self, conversation_id: &str, replaced: Option<&MessageLogMeta>) {
         let Some(replaced) = replaced else {
             return;
@@ -1045,6 +1102,10 @@ impl FileConversationStore {
         }
     }
 
+    /**
+     * 用给定消息整体替换会话的消息日志：写入新 generation、持久化 id 计数器、
+     * 提交清单，然后删除旧 generation 并刷新内存缓存。
+     */
     fn replace_record_messages(
         &self,
         record: &mut ConversationRecord,
@@ -1098,10 +1159,12 @@ impl FileConversationStore {
         Ok(())
     }
 
+    /// 构造「托管会话必须通过投影接口操作」的错误。
     fn managed_conversation_error(conversation_id: &str) -> echo_core::error::ReactError {
         MemoryError::ManagedConversationRequiresProjection(conversation_id.to_string()).into()
     }
 
+    /// 根据转录投影批次构造应用回执。
     fn apply_receipt(
         batch: &TranscriptProjectionBatch,
         authority: ConversationProjectionAuthority,
@@ -1115,6 +1178,7 @@ impl FileConversationStore {
         }
     }
 
+    /// 根据托管导入请求构造应用回执。
     fn import_receipt(
         request: &ManagedConversationImport,
         authority: ConversationProjectionAuthority,
@@ -1128,10 +1192,15 @@ impl FileConversationStore {
         }
     }
 
+    /// 同步创建一个非托管会话（不带投影状态）。
     fn create_conversation_sync(&self, conv: NewConversation) -> Result<Conversation> {
         self.create_conversation_sync_with_projection(conv, None)
     }
 
+    /**
+     * 同步创建会话，可选附带投影状态：分配会话 id、创建空的第 1 代消息日志、
+     * 持久化 id 计数器并提交清单。会话已存在时返回错误。
+     */
     fn create_conversation_sync_with_projection(
         &self,
         conv: NewConversation,
@@ -1175,10 +1244,11 @@ impl FileConversationStore {
         Ok(conversation)
     }
 
-    /// Enumerate all conversation manifests on disk without reading message bodies.
-    ///
-    /// A single corrupt record surfaces as an error (the previous behavior
-    /// silently skipped it, masking data loss).
+    /**
+     * 枚举磁盘上的所有会话清单，但不读取消息正文。
+     *
+     * 任意一条记录损坏都会作为错误返回（以前的行为是静默跳过，从而掩盖数据丢失）。
+     */
     fn read_all_manifests(&self) -> Result<Vec<ConversationRecord>> {
         let mut records = Vec::new();
         let entries = std::fs::read_dir(&self.base)
@@ -1189,7 +1259,7 @@ impl FileConversationStore {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            // Skip the meta file.
+            // 跳过 meta 文件。
             if path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1203,19 +1273,23 @@ impl FileConversationStore {
     }
 }
 
+/// 把锁中毒错误转换为 `MemoryError::IoError`。
 fn poison<T>(_: std::sync::PoisonError<T>) -> MemoryError {
     MemoryError::IoError("store lock poisoned".into())
 }
 
 impl ConversationStore for FileConversationStore {
+    /// 声明本存储支持原子投影协议 `AtomicV1`。
     fn projection_capability(&self) -> ConversationProjectionCapability {
         ConversationProjectionCapability::AtomicV1
     }
 
+    /// 声明本存储支持绝对截止时间的持久化调用上下文。
     fn persistence_call_capability(&self) -> PersistenceCallCapability {
         PersistenceCallCapability::AbsoluteDeadlineV1
     }
 
+    /// 带调用上下文的 [`Self::ensure_projection_epoch`]：先检查截止时间再执行。
     fn ensure_projection_epoch_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1228,6 +1302,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 带调用上下文的 [`Self::get_projection_authority`]：先检查截止时间再执行。
     fn get_projection_authority_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1240,6 +1315,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 带调用上下文的 [`Self::apply_transcript_projection`]：先检查截止时间再执行。
     fn apply_transcript_projection_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1252,6 +1328,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 带调用上下文的 [`Self::import_managed_messages`]：先检查截止时间再执行。
     fn import_managed_messages_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1264,6 +1341,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 带调用上下文的 [`Self::update_managed_conversation`]：先检查截止时间再执行。
     fn update_managed_conversation_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1276,6 +1354,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 带调用上下文的 [`Self::delete_managed_conversation`]：先检查截止时间再执行。
     fn delete_managed_conversation_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -1288,6 +1367,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 创建一个非托管会话；若同 id 的托管会话已存在则拒绝。
     fn create_conversation<'a>(&'a self, conv: NewConversation) -> BoxFut<'a, Conversation> {
         let scope = Self::conversation_scope(conv.conversation_id.clone());
         self.run_blocking(scope, move |store| {
@@ -1302,6 +1382,7 @@ impl ConversationStore for FileConversationStore {
         })
     }
 
+    /// 读取会话元数据；已删除的托管会话视为不存在。
     fn get_conversation<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -1323,6 +1404,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 按过滤条件列出会话，按 `updated_at` 倒序并应用 offset/limit。
     fn list_conversations<'a>(
         &'a self,
         filter: ConversationFilter,
@@ -1367,9 +1449,9 @@ impl ConversationStore for FileConversationStore {
                         }
                     })
                     .collect();
-                // ORDER BY updated_at DESC.
+                // 等价于 ORDER BY updated_at DESC。
                 metas.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-                // OFFSET then LIMIT without indexing into the collection.
+                // 先 OFFSET 再 LIMIT，避免直接按下标访问集合。
                 let offset = filter.offset.unwrap_or(0);
                 let limit = filter.limit.unwrap_or(usize::MAX);
                 Ok(metas.into_iter().skip(offset).take(limit).collect())
@@ -1377,6 +1459,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 更新非托管会话的标题/摘要等元数据；会话不存在时静默成功。
     fn update_conversation<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -1393,7 +1476,7 @@ impl ConversationStore for FileConversationStore {
                 let _conversation = store.authority.scan_barrier.read().map_err(poison)?;
                 let mut record = match store.read_manifest(&conversation_id)? {
                     Some(r) => r,
-                    None => return Ok(()), // matches SQL UPDATE on 0 rows.
+                    None => return Ok(()), // 与 SQL UPDATE 命中 0 行时的行为一致。
                 };
                 if record.projection.is_some() {
                     return Err(Self::managed_conversation_error(&conversation_id));
@@ -1419,6 +1502,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 删除非托管会话的清单与消息日志；托管会话需走投影删除接口。
     fn delete_conversation<'a>(&'a self, conversation_id: &'a str) -> BoxFut<'a, ()> {
         let conversation_id = conversation_id.to_string();
         self.run_blocking(
@@ -1459,6 +1543,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 保存会话的完整消息列表：前缀匹配时只追加新后缀，否则原子替换为新 generation。
     fn save_messages<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -1631,6 +1716,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 读取会话的全部已提交消息。
     fn get_messages<'a>(&'a self, conversation_id: &'a str) -> BoxFut<'a, Vec<StoredMessage>> {
         let conversation_id = conversation_id.to_string();
         self.run_blocking(
@@ -1658,6 +1744,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 返回会话已提交消息的数量（仅读取清单，不读消息正文）。
     fn count_messages<'a>(&'a self, conversation_id: &'a str) -> BoxFut<'a, usize> {
         let conversation_id = conversation_id.to_string();
         self.run_blocking(
@@ -1682,6 +1769,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 确保托管会话处于存活的投影 epoch：不存在则创建，已删除且墓碑匹配时重建。
     fn ensure_projection_epoch<'a>(
         &'a self,
         request: EnsureConversationProjectionRequest,
@@ -1785,6 +1873,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 只读查询托管会话当前的投影权威状态；清单损坏时失败关闭。
     fn get_projection_authority<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -1809,6 +1898,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 以幂等、按 epoch 围栏的方式把一批转录投影应用到托管会话。
     fn apply_transcript_projection<'a>(
         &'a self,
         batch: TranscriptProjectionBatch,
@@ -1952,6 +2042,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 以 revision CAS 方式把外部消息导入托管会话。
     fn import_managed_messages<'a>(
         &'a self,
         request: ManagedConversationImport,
@@ -2041,6 +2132,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 以幂等、按 epoch 围栏的方式更新托管会话的元数据。
     fn update_managed_conversation<'a>(
         &'a self,
         request: ManagedConversationMetadataUpdate,
@@ -2137,6 +2229,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 删除托管会话并留下墓碑与删除回执，以围栏迟到的写入。
     fn delete_managed_conversation<'a>(
         &'a self,
         request: ManagedConversationDelete,
@@ -2223,6 +2316,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 在标题与消息内容中做大小写不敏感的子串搜索，先用过滤器筛选候选再精确校验。
     fn search_conversations<'a>(
         &'a self,
         query: &'a str,
@@ -2286,7 +2380,7 @@ impl ConversationStore for FileConversationStore {
                         updated_at: record.conversation.updated_at,
                     });
                 }
-                // ORDER BY updated_at DESC, then LIMIT.
+                // 等价于 ORDER BY updated_at DESC，然后 LIMIT。
                 results.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
                 results.truncate(limit);
                 Ok(results)
@@ -2294,6 +2388,7 @@ impl ConversationStore for FileConversationStore {
         )
     }
 
+    /// 获取已存在的非托管会话，不存在时创建。
     fn ensure_conversation<'a>(&'a self, conv: NewConversation) -> BoxFut<'a, Conversation> {
         let scope = Self::conversation_scope(conv.conversation_id.clone());
         self.run_blocking(scope, move |store| {
@@ -2309,11 +2404,12 @@ impl ConversationStore for FileConversationStore {
     }
 }
 
+/// 以 RFC 3339 格式返回当前本地时间。
 fn now_rfc3339() -> String {
     echo_core::utils::time::now_local().to_rfc3339()
 }
 
-/// Validate an id and encode its exact UTF-8 bytes as one safe path segment.
+/// 校验 id，并把其精确的 UTF-8 字节编码为一个安全的路径片段（保留 `_meta`）。
 fn safe_segment(id: &str) -> Result<String> {
     if id == "_meta" {
         return Err(MemoryError::Unsupported("conversation id is reserved: _meta".into()).into());
@@ -2322,6 +2418,7 @@ fn safe_segment(id: &str) -> Result<String> {
         .map_err(|error| MemoryError::Unsupported(error.to_string()).into())
 }
 
+/// 判断文件名是否形如 `<safe_id>.messages.<generation>.jsonl` 的消息日志文件。
 fn is_message_log_file_name(file_name: &str) -> bool {
     let Some(without_suffix) = file_name.strip_suffix(".jsonl") else {
         return false;
@@ -2346,8 +2443,10 @@ mod tests {
     };
     use std::time::Duration;
 
+    /// 测试用的结果类型，错误统一装箱为 `dyn Error`。
     type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+    /// 生成一个唯一的临时根目录路径（按进程 id + uuid 区分）。
     fn tmp_base() -> PathBuf {
         std::env::temp_dir().join(format!(
             "echo-file-conv-{}-{}",
@@ -2356,6 +2455,7 @@ mod tests {
         ))
     }
 
+    /// 构造一个用于测试的新会话请求。
     fn new_conv(id: &str, title: Option<&str>) -> NewConversation {
         NewConversation {
             conversation_id: id.to_string(),
@@ -2365,6 +2465,7 @@ mod tests {
         }
     }
 
+    /// 构造一条会话 id 为 `c1`、无 id/时间戳的测试消息。
     fn stored(role: &str, content: &str) -> StoredMessage {
         StoredMessage {
             id: None,
@@ -2378,6 +2479,7 @@ mod tests {
         }
     }
 
+    /// 构造一条带固定时间戳的投影测试消息。
     fn projection_message(conversation_id: &str, content: &str) -> StoredMessage {
         StoredMessage {
             id: None,
@@ -2391,6 +2493,7 @@ mod tests {
         }
     }
 
+    /// 构造一个转录投影批次（从 `first_ordinal` 开始依次编号）。
     fn projection_batch(
         conversation_id: &str,
         epoch: u64,
@@ -2410,6 +2513,7 @@ mod tests {
         )
     }
 
+    /// 构造一个确保投影 epoch 的请求，可指定期望的墓碑 epoch。
     fn ensure_projection_request(
         conversation_id: &str,
         expected_tombstone_epoch: Option<u64>,
@@ -2420,6 +2524,7 @@ mod tests {
         }
     }
 
+    /// 构造一个托管消息导入请求。
     fn managed_import(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2437,6 +2542,7 @@ mod tests {
         )
     }
 
+    /// 构造一个托管会话删除请求。
     fn managed_delete(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2444,6 +2550,7 @@ mod tests {
         ManagedConversationDelete::prepare(conversation_id, expected_epoch)
     }
 
+    /// 构造一个托管会话元数据更新请求。
     fn managed_metadata_update(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2462,6 +2569,7 @@ mod tests {
         )
     }
 
+    /// 判断结果是否为「托管会话必须走投影接口」错误。
     fn is_managed_projection_error<T>(result: echo_core::error::Result<T>) -> bool {
         matches!(
             result,
@@ -2473,6 +2581,7 @@ mod tests {
         )
     }
 
+    /// 判断结果是否为截止时间已过错误。
     fn is_deadline_exceeded<T>(result: echo_core::error::Result<T>) -> bool {
         matches!(
             result,
@@ -2481,6 +2590,7 @@ mod tests {
         )
     }
 
+    /// 验证：重建已删除的投影 epoch 时必须提供匹配的墓碑 epoch。
     #[tokio::test]
     async fn projection_epoch_recreation_requires_a_matching_tombstone() -> TestResult {
         let base = tmp_base();
@@ -2545,6 +2655,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：投影权威查询是只读的，且清单损坏时失败关闭。
     #[tokio::test]
     async fn projection_authority_query_is_read_only_and_fails_closed_on_corruption() -> TestResult
     {
@@ -2651,6 +2762,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：转录投影拒绝同一 generation 内序号不连续的批次。
     #[tokio::test]
     async fn transcript_projection_rejects_non_contiguous_generation_batches() -> TestResult {
         let base = tmp_base();
@@ -2753,6 +2865,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：原子投影是幂等的，且能合并多个 generation。
     #[tokio::test]
     async fn atomic_projection_is_idempotent_and_merges_generations() -> TestResult {
         let base = tmp_base();
@@ -2803,6 +2916,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管投影接口在调用上下文截止时间已过时拒绝执行。
     #[tokio::test]
     async fn managed_projection_context_rejects_expired_deadlines() -> TestResult {
         let base = tmp_base();
@@ -2935,6 +3049,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管导入使用 revision CAS，并阻止原始写接口修改托管会话。
     #[tokio::test]
     async fn managed_import_uses_revision_cas_and_fences_raw_mutators() -> TestResult {
         let base = tmp_base();
@@ -3047,6 +3162,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管元数据更新是幂等的，且受 epoch 围栏保护。
     #[tokio::test]
     async fn managed_metadata_update_is_idempotent_and_epoch_fenced() -> TestResult {
         let base = tmp_base();
@@ -3183,6 +3299,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管删除回执能围栏迟到的写入，并在会话重建后依然保留。
     #[tokio::test]
     async fn managed_delete_receipt_fences_late_effects_and_survives_recreate() -> TestResult {
         let base = tmp_base();
@@ -3257,6 +3374,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：并发写入的多个 generation 合并时不会丢失更新。
     #[tokio::test]
     async fn concurrent_generations_merge_without_lost_updates() -> TestResult {
         let base = tmp_base();
@@ -3286,6 +3404,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管清单提交失败时不会留下部分生效的副作用。
     #[tokio::test]
     async fn managed_manifest_publish_failures_leave_no_partial_effect() -> TestResult {
         let base = tmp_base();
@@ -3442,6 +3561,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：删除回执的保留下限可阻止已淘汰回执被重放。
     #[tokio::test]
     async fn delete_receipt_retention_floor_prevents_expired_replay() -> TestResult {
         let base = tmp_base();
@@ -3492,6 +3612,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：epoch 已达上限的投影不能再被重建。
     #[tokio::test]
     async fn maximum_projection_epoch_cannot_be_recreated() -> TestResult {
         let base = tmp_base();
@@ -3523,6 +3644,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：托管操作回执在重新打开存储后依然有效。
     #[tokio::test]
     async fn managed_receipts_survive_store_reopen() -> TestResult {
         let base = tmp_base();
@@ -3572,6 +3694,7 @@ mod tests {
         Ok(())
     }
 
+    /// 读取指定会话的清单，不存在时返回错误。
     fn manifest(
         store: &FileConversationStore,
         conversation_id: &str,
@@ -3585,6 +3708,7 @@ mod tests {
         })
     }
 
+    /// 取出记录中的消息日志元数据，缺失时返回错误。
     fn log_meta(record: &ConversationRecord) -> TestResult<MessageLogMeta> {
         record
             .message_log
@@ -3592,6 +3716,7 @@ mod tests {
             .ok_or_else(|| std::io::Error::other("missing message-log metadata").into())
     }
 
+    /// 把 `_meta.json` 替换为同名目录，使后续 meta 写入失败；返回该路径。
     fn block_meta_writes(store: &FileConversationStore) -> TestResult<PathBuf> {
         let path = FileConversationStore::meta_path(&store.base);
         match std::fs::remove_file(&path) {
@@ -3603,10 +3728,12 @@ mod tests {
         Ok(path)
     }
 
+    /// 移除阻塞用的目录，恢复 meta 写入。
     fn unblock_meta_writes(path: &Path) -> std::io::Result<()> {
         std::fs::remove_dir(path)
     }
 
+    /// 验证：文件操作在 tokio 运行时线程之外的阻塞线程上执行。
     #[tokio::test(flavor = "current_thread")]
     async fn file_operations_run_outside_the_tokio_runtime_thread() -> TestResult {
         let base = tmp_base();
@@ -3624,6 +3751,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：已受理的创建操作在调用方中止后仍会完成，且不会阻塞运行时。
     #[tokio::test(flavor = "current_thread")]
     async fn accepted_create_survives_caller_abort_without_stalling_runtime() -> TestResult {
         let base = tmp_base();
@@ -3671,6 +3799,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：读取损坏记录与删除操作竞争时失败关闭。
     #[tokio::test(flavor = "current_thread")]
     async fn corrupt_read_and_delete_race_fails_closed() -> TestResult {
         let base = tmp_base();
@@ -3718,6 +3847,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：精确的 UTF-8 id 在大小写不敏感的文件系统上不会互相混淆。
     #[tokio::test]
     async fn exact_utf8_ids_do_not_alias_on_case_folding_filesystems() -> TestResult {
         let base = tmp_base();
@@ -3778,6 +3908,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：不同会话的操作可在并行的阻塞槽位中执行。
     #[tokio::test]
     async fn different_conversations_run_in_parallel_blocking_slots() -> TestResult {
         let base = tmp_base();
@@ -3834,6 +3965,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：替换操作会等待仍在使用旧 generation 的搜索快照完成。
     #[tokio::test(flavor = "current_thread")]
     async fn replacement_waits_for_search_snapshot_using_old_generation() -> TestResult {
         let base = tmp_base();
@@ -3878,6 +4010,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：独立构造的多个句柄共享权威状态，并分配唯一 id。
     #[tokio::test]
     async fn independent_constructors_share_authority_and_allocate_unique_ids() -> TestResult {
         let base = tmp_base();
@@ -3911,6 +4044,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：会话的增删改查与搜索基本流程。
     #[tokio::test]
     async fn conversation_crud_and_search() {
         let base = tmp_base();
@@ -3965,6 +4099,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 验证：损坏的记录以错误形式暴露，而不是返回空结果。
     #[tokio::test]
     async fn corrupt_record_surfaces_as_error_not_empty()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -3973,7 +4108,7 @@ mod tests {
         store
             .create_conversation(new_conv("c1", Some("title")))
             .await?;
-        // Corrupt the record file on disk.
+        // 在磁盘上破坏该记录文件。
         let path = store.conv_path("c1")?;
         std::fs::write(&path, b"{ not valid json")?;
 
@@ -3991,17 +4126,19 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：包含路径穿越的会话 id 会被拒绝。
     #[tokio::test]
     async fn path_traversal_id_is_rejected() {
         let base = tmp_base();
         let store = FileConversationStore::new(&base).unwrap();
         let err = store.get_conversation("../escape").await.unwrap_err();
         assert!(matches!(err, echo_core::error::ReactError::Memory(_)));
-        // No file was created outside the base dir.
+        // 确认没有在根目录之外创建任何文件。
         assert!(!base.parent().unwrap().join("escape.json").exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 验证：消息经保存与读取后能完整往返。
     #[tokio::test]
     async fn round_trip_messages_via_project_and_restore() {
         use crate::memory::{project_messages, restore_messages};
@@ -4069,6 +4206,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 验证：过期的 `_meta.json` 会根据已有记录进行协调。
     #[tokio::test]
     async fn stale_meta_is_reconciled_from_records() {
         let base = tmp_base();
@@ -4100,6 +4238,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// 验证：调用方提供的消息 id 会推进运行中的 id 计数器。
     #[tokio::test]
     async fn supplied_message_ids_advance_the_live_counter() -> Result<()> {
         let base = tmp_base();
@@ -4119,6 +4258,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：重复保存完整消息列表时只追加新增的后缀。
     #[tokio::test]
     async fn repeated_full_projection_writes_only_the_new_suffix() -> TestResult {
         let base = tmp_base();
@@ -4169,6 +4309,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：创建提交前 meta 写入失败时，会话保持不可见。
     #[tokio::test]
     async fn meta_failure_before_create_publish_keeps_conversation_invisible() -> TestResult {
         let base = tmp_base();
@@ -4192,6 +4333,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：追加提交前 meta 写入失败时，新后缀保持未提交。
     #[tokio::test]
     async fn meta_failure_before_append_publish_keeps_suffix_uncommitted() -> TestResult {
         let base = tmp_base();
@@ -4224,6 +4366,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：替换提交前 meta 写入失败时，旧 generation 保持不变。
     #[tokio::test]
     async fn meta_failure_before_replacement_publish_preserves_old_generation() -> TestResult {
         let base = tmp_base();
@@ -4271,6 +4414,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：缩短、语义改写及显式时间戳变化都会触发 generation 替换。
     #[tokio::test]
     async fn shortening_semantic_rewrite_and_explicit_timestamp_change_replace_generation()
     -> TestResult {
@@ -4315,6 +4459,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：未提交的追加尾部对读取不可见，并在下次追加时被修复。
     #[tokio::test]
     async fn uncommitted_append_tail_is_hidden_then_repaired() -> TestResult {
         let base = tmp_base();
@@ -4347,6 +4492,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：重新打开存储时会删除孤儿替换 generation 文件。
     #[tokio::test]
     async fn orphan_replacement_generation_is_removed_on_reopen() -> TestResult {
         let base = tmp_base();
@@ -4377,6 +4523,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：已提交日志被截断时失败关闭，且不做任何修改。
     #[tokio::test]
     async fn truncated_committed_log_fails_closed_without_mutation() -> TestResult {
         let base = tmp_base();
@@ -4403,6 +4550,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：重新打开后，过期的 meta 能从显式消息 id 中恢复计数器。
     #[tokio::test]
     async fn stale_meta_recovers_explicit_message_id_after_reopen() -> TestResult {
         let base = tmp_base();
@@ -4433,6 +4581,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：旧版单文件记录可被读取，并在保存时迁移为追加式布局。
     #[tokio::test]
     async fn legacy_aggregate_record_is_read_then_migrated_on_save() -> TestResult {
         let base = tmp_base();
@@ -4473,6 +4622,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：更新会话元数据不会重写消息日志。
     #[tokio::test]
     async fn conversation_metadata_update_does_not_rewrite_message_log() -> TestResult {
         let base = tmp_base();
@@ -4497,6 +4647,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：Unicode 搜索仅把过滤器用于候选筛选，结果仍经精确校验。
     #[tokio::test]
     async fn unicode_search_uses_filter_only_for_candidates() -> TestResult {
         let base = tmp_base();
@@ -4555,6 +4706,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证：`safe_segment` 拒绝路径穿越并接受常见 id。
     #[test]
     fn safe_segment_rejects_traversal_and_accepts_typical_ids() {
         assert!(safe_segment("../x").is_err());

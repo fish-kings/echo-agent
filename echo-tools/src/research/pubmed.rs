@@ -1,7 +1,9 @@
-//! PubMed paper search tool.
-//!
-//! Queries the NCBI E-utilities API (ESearch + EFetch) and returns structured
-//! paper metadata including PMID, title, authors, abstract, journal, DOI, and MeSH terms.
+/*!
+ * PubMed 论文检索工具。
+ *
+ * 调用 NCBI E-utilities API（ESearch + EFetch），返回结构化的论文元数据，
+ * 包括 PMID、标题、作者、摘要、期刊、DOI 以及 MeSH 主题词。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -10,12 +12,17 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::sync::OnceLock;
 
+/// 工具名称
 const TOOL_NAME: &str = "pubmed_search";
+/// NCBI ESearch 接口地址（按查询获取 PMID 列表）
 const ESEARCH_URL: &str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi";
+/// NCBI EFetch 接口地址（按 PMID 获取论文详情）
 const EFETCH_URL: &str = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi";
 
+/// 全局共享的 HTTP 客户端
 static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// 获取（首次调用时初始化）带 SSRF 安全重定向策略的共享 HTTP 客户端
 fn shared_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -26,21 +33,26 @@ fn shared_client() -> &'static reqwest::Client {
     })
 }
 
+/// PubMed 论文检索工具
 pub struct PubMedSearchTool;
 
 impl Tool for PubMedSearchTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Search PubMed (NCBI) for biomedical literature. Returns PMID, title, authors, abstract, journal, year, DOI, and MeSH terms. Supports date range filtering and sorting. Example: pubmed_search(query='CRISPR gene therapy cancer', max_results=20, sort='pub_date')"
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -70,6 +82,7 @@ impl Tool for PubMedSearchTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -91,7 +104,7 @@ impl Tool for PubMedSearchTool {
             let min_date = parameters.get("min_date").and_then(|v| v.as_str());
             let max_date = parameters.get("max_date").and_then(|v| v.as_str());
 
-            // Step 1: ESearch to get PMIDs
+            // 第一步：通过 ESearch 获取 PMID 列表
             let mut search_url = format!(
                 "{}?db=pubmed&term={}&retmax={}&retmode=json&sort={}",
                 ESEARCH_URL,
@@ -176,7 +189,7 @@ impl Tool for PubMedSearchTool {
                 return Ok(ToolResult::success_json(result));
             }
 
-            // Step 2: EFetch to get paper details
+            // 第二步：通过 EFetch 获取论文详情
             let pmids: Vec<String> = id_list
                 .iter()
                 .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -220,7 +233,7 @@ impl Tool for PubMedSearchTool {
     }
 }
 
-/// Parse PubMed XML response into structured paper records.
+/// 将 PubMed XML 响应解析为结构化的论文记录。
 fn parse_pubmed_xml(xml: &str) -> Result<Vec<Value>> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
@@ -236,7 +249,7 @@ fn parse_pubmed_xml(xml: &str) -> Result<Vec<Value>> {
     let mut in_mesh_heading = false;
     let mut current_tag = String::new();
 
-    // Current article fields
+    // 当前文章的字段
     let mut pmid = String::new();
     let mut title = String::new();
     let mut abstract_text = String::new();
@@ -315,8 +328,8 @@ fn parse_pubmed_xml(xml: &str) -> Result<Vec<Value>> {
                     "mesh_descriptor" if in_mesh_heading => mesh_descriptor = text,
                     "article_id"
                         if in_article
-                        // Check if this is a DOI by looking at IdType attribute
-                        // (we already consumed the start event, so check text content)
+                        /* 检查是否为 DOI：本应查看 IdType 属性，
+                        但开始事件已被消费，因此改为检查文本内容 */
                         && text.contains("10.") =>
                     {
                         doi = text;
@@ -328,7 +341,7 @@ fn parse_pubmed_xml(xml: &str) -> Result<Vec<Value>> {
             Ok(Event::Empty(e)) => {
                 let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
                 if tag == "ArticleId" && in_article {
-                    // Check for DOI in attributes
+                    // 在属性中检查 DOI
                     let mut id_type = String::new();
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"IdType" {
@@ -336,8 +349,8 @@ fn parse_pubmed_xml(xml: &str) -> Result<Vec<Value>> {
                         }
                     }
                     if id_type == "doi" {
-                        // The DOI value is in the text content, which we already consumed
-                        // For empty elements, the value might be in the attribute
+                        /* DOI 值位于文本内容中，而文本内容已被消费；
+                        对于空元素，该值可能位于属性中 */
                     }
                 }
             }

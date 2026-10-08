@@ -1,7 +1,9 @@
-//! Long-term memory Store — concrete implementations
-//!
-//! Trait definition and data types live in [`echo_core::memory::store`].
-//! This module provides [`InMemoryStore`] and [`FileStore`].
+/*!
+长期记忆 Store —— 具体实现
+
+trait 定义与数据类型位于 [`echo_core::memory::store`]。
+本模块提供 [`InMemoryStore`] 与 [`FileStore`]。
+*/
 
 use crate::util::expand_tilde;
 use echo_core::error::{MemoryError, Result};
@@ -16,32 +18,35 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use tracing::{debug, info};
 
-// ── InMemoryStore ─────────────────────────────────────────────────────────────
+// ── InMemoryStore（内存存储） ─────────────────────────────────────────────────
 
-/// In-process memory Store, no persistence, suitable for testing and short-lived use
+/// 进程内的内存 Store，不做持久化，适用于测试和短生命周期场景。
 pub struct InMemoryStore {
-    /// namespace_key -> items
+    /// 命名空间键 -> 该命名空间下的条目
     data: RwLock<HashMap<String, HashMap<String, StoreItem>>>,
 }
 
 impl Default for InMemoryStore {
+    /// 等价于 [`InMemoryStore::new`]。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl InMemoryStore {
+    /// 创建一个空的内存 Store。
     pub fn new() -> Self {
         Self {
             data: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Insert a complete `StoreItem` directly, preserving its timestamps.
-    ///
-    /// Unlike `Store::put`, this method does **not** override `created_at` or
-    /// `updated_at` — the caller controls the full item state. Intended for
-    /// test code that needs to simulate old entries.
+    /**
+    直接插入一个完整的 `StoreItem`，保留其时间戳。
+
+    与 `Store::put` 不同，该方法**不会**覆盖 `created_at` 或 `updated_at`——
+    调用方完全控制条目状态。主要用于需要模拟旧条目的测试代码。
+    */
     pub async fn put_raw(&self, item: StoreItem) {
         let ns_key = namespace_key_owned(&item.namespace);
         let mut data = self.data.write().await;
@@ -51,6 +56,7 @@ impl InMemoryStore {
 }
 
 impl Store for InMemoryStore {
+    /// 写入或更新条目（更新时保留创建时间）。
     fn put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -78,6 +84,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 仅当当前条目与期望值一致时才写入，比较与写入是原子的。
     fn compare_and_put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -113,6 +120,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 读取指定命名空间下的条目。
     fn get<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -125,6 +133,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 按关键词相关度搜索条目。
     fn search<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -161,6 +170,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 删除条目，返回是否确实删除了。
     fn delete<'a>(&'a self, namespace: &'a [&'a str], key: &'a str) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let ns_key = namespace_key(namespace);
@@ -172,6 +182,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 列出匹配前缀的命名空间。
     fn list_namespaces<'a>(
         &'a self,
         prefix: Option<&'a [&'a str]>,
@@ -196,6 +207,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 列出命名空间下的全部条目。
     fn list<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<StoreItem>>> {
         Box::pin(async move {
             let ns_key = namespace_key(namespace);
@@ -207,6 +219,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 清理命名空间下已过期的条目，返回清理数量。
     fn prune_expired<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<u64>> {
         let ns_key = namespace_key(namespace);
         Box::pin(async move {
@@ -221,6 +234,7 @@ impl Store for InMemoryStore {
         })
     }
 
+    /// 按内容哈希去重，保留更新时间较新的条目，返回删除数量。
     fn dedup_by_content<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<u64>> {
         let ns_key = namespace_key(namespace);
         Box::pin(async move {
@@ -234,7 +248,7 @@ impl Store for InMemoryStore {
             for (key, item) in bucket.iter() {
                 let hash = content_hash(&item.value);
                 if let Some(existing_key) = seen.get(&hash) {
-                    // Keep the newer one
+                    // 保留较新的那一条
                     let existing_updated =
                         bucket.get(existing_key).map(|i| i.updated_at).unwrap_or(0);
                     if item.updated_at > existing_updated {
@@ -255,26 +269,38 @@ impl Store for InMemoryStore {
     }
 }
 
-// ── FileStore ─────────────────────────────────────────────────────────────────
+// ── FileStore（文件存储） ─────────────────────────────────────────────────────
 
-/// JSON file-based persistent Store.
-///
-/// Handles opened on the same canonical path share one in-process authority.
-/// Mutations persist a copy-on-write candidate before publishing it to readers,
-/// and a lifetime-held sidecar lease rejects a competing process.
+/**
+基于 JSON 文件的持久化 Store。
+
+在同一规范路径上打开的多个句柄共享同一个进程内权威（authority）。
+变更会先将写时复制（copy-on-write）的候选数据持久化，再发布给读取方；
+同时一个随生命周期持有的旁路文件租约（sidecar lease）会拒绝竞争进程。
+*/
 pub struct FileStore {
+    /// 规范化后的存储文件路径。
     path: PathBuf,
+    /// 该路径共享的进程内权威。
     authority: Arc<FileStoreAuthority>,
 }
 
+/// 同一文件路径在进程内共享的权威状态。
 struct FileStoreAuthority {
+    /// 已发布、对读取方可见的数据。
     data: RwLock<FileStoreData>,
+    /// 串行化事务的互斥锁。
     transaction: AsyncMutex<()>,
+    /// 最近一次成功提交到磁盘的字节内容。
     committed_bytes: Mutex<Option<Vec<u8>>>,
+    /// 持久化状态不明确时记录的中毒原因；设置后拒绝所有操作直至重新打开。
     poison: Mutex<Option<String>>,
+    /// 进程级独占文件租约，随权威生命周期持有。
     _lease: ExclusiveFileLease,
+    /// 测试用：注入的持久化故障。
     #[cfg(test)]
     persist_fault: Mutex<Option<PersistFault>>,
+    /// 测试用：持久化完成后、发布前的同步点。
     #[cfg(test)]
     after_persist: Mutex<
         Option<(
@@ -284,33 +310,45 @@ struct FileStoreAuthority {
     >,
 }
 
+/// 命名空间键 -> (键 -> 条目) 的存储数据。
 type FileStoreData = HashMap<String, HashMap<String, StoreItem>>;
 
+/// 已成功持久化、待发布的候选数据。
 struct PersistedFileStoreCandidate {
+    /// 候选数据。
     data: FileStoreData,
+    /// 已写入磁盘的序列化字节。
     bytes: Vec<u8>,
+    /// 提交成功但持久性降级时的错误描述。
     degraded: Option<String>,
 }
 
+/// 候选持久化失败的类型。
 enum PersistCandidateFailure {
+    /// 确定未提交，可安全返回错误。
     NotCommitted(MemoryError),
+    /// 提交状态不明确，需要使权威中毒。
     Poisoned(String),
 }
 
 #[cfg(test)]
 #[derive(Debug, Clone)]
+/// 测试用的持久化故障注入点。
 enum PersistFault {
+    /// 在写入前失败。
     BeforeWrite(String),
+    /// 在替换文件后失败。
     AfterReplace(String),
 }
 
+/// 进程内按路径索引的 FileStore 权威注册表。
 fn file_store_registry() -> &'static Mutex<HashMap<PathBuf, Weak<FileStoreAuthority>>> {
     static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Weak<FileStoreAuthority>>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl FileStore {
-    /// Open or create the Store file, auto-create parent directories
+    /// 打开或创建 Store 文件，自动创建父目录。
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = expand_tilde(path.as_ref());
         if let Some(parent) = path.parent() {
@@ -359,6 +397,7 @@ impl FileStore {
         Ok(Self { path, authority })
     }
 
+    /// 在阻塞线程中把候选数据写入磁盘，并区分未提交与状态不明确两类失败。
     async fn persist_candidate(
         &self,
         candidate: FileStoreData,
@@ -437,6 +476,7 @@ impl FileStore {
         })?
     }
 
+    /// 检查权威是否已中毒，中毒时返回错误。
     fn check_authority(&self) -> Result<()> {
         let poison = self
             .authority
@@ -452,6 +492,7 @@ impl FileStore {
         Ok(())
     }
 
+    /// 将已持久化的候选数据发布给读取方。
     async fn publish_candidate(&self, committed: PersistedFileStoreCandidate) {
         if let Some(error) = committed.degraded {
             tracing::warn!(
@@ -469,6 +510,7 @@ impl FileStore {
         debug!(path = %self.path.display(), "Store persisted");
     }
 
+    /// 把持久化失败映射为错误；状态不明确时使权威中毒。
     fn map_persist_failure(
         &self,
         failure: PersistCandidateFailure,
@@ -489,6 +531,7 @@ impl FileStore {
         }
     }
 
+    /// 在独立任务中执行事务，避免调用方取消导致提交后未发布。
     async fn transact<T, F>(&self, mutate: F) -> Result<T>
     where
         T: Send + 'static,
@@ -511,6 +554,7 @@ impl FileStore {
             })?
     }
 
+    /// 执行写时复制事务：变更副本、持久化、再发布。
     async fn transact_owned<T, F>(&self, mutate: F) -> Result<T>
     where
         F: FnOnce(&mut FileStoreData) -> (T, bool),
@@ -549,7 +593,7 @@ impl FileStore {
         Ok(result)
     }
 
-    /// Batch write: write multiple records to memory then flush to disk once, reducing IO overhead.
+    /// 批量写入：先把多条记录写入内存，再一次性刷盘，以减少 IO 开销。
     pub async fn put_batch(
         &self,
         entries: impl IntoIterator<Item = (Vec<&str>, &str, Value)>,
@@ -584,13 +628,14 @@ impl FileStore {
         .await
     }
 
-    /// Flush in-memory data to disk.
+    /// 将内存数据刷新到磁盘。
     pub async fn flush_public(&self) -> Result<()> {
         self.transact(|_| ((), true)).await
     }
 }
 
 impl Store for FileStore {
+    /// 写入或更新条目并持久化。
     fn put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -616,6 +661,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 仅当当前条目与期望值一致时才写入并持久化。
     fn compare_and_put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -649,6 +695,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 读取指定命名空间下的条目。
     fn get<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -662,6 +709,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 按关键词相关度搜索条目。
     fn search<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -700,6 +748,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 删除条目并持久化，返回是否确实删除了。
     fn delete<'a>(&'a self, namespace: &'a [&'a str], key: &'a str) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let ns_key = namespace_key(namespace);
@@ -715,6 +764,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 列出匹配前缀的命名空间。
     fn list_namespaces<'a>(
         &'a self,
         prefix: Option<&'a [&'a str]>,
@@ -740,6 +790,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 列出命名空间下的全部条目。
     fn list<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<StoreItem>>> {
         Box::pin(async move {
             self.check_authority()?;
@@ -752,6 +803,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 清理已过期的条目并持久化，返回清理数量。
     fn prune_expired<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<u64>> {
         let ns_key = namespace_key(namespace);
         Box::pin(async move {
@@ -769,6 +821,7 @@ impl Store for FileStore {
         })
     }
 
+    /// 按内容哈希去重并持久化，返回删除数量。
     fn dedup_by_content<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<u64>> {
         let ns_key = namespace_key(namespace);
         Box::pin(async move {
@@ -806,37 +859,40 @@ impl Store for FileStore {
     }
 }
 
-// ── Private utility functions ───────────────────────────────────────────────────
+// ── 私有工具函数 ───────────────────────────────────────────────────────────────
 
-/// Compute a simple content hash for deduplication.
+/// 计算用于去重的简单内容哈希。
 fn content_hash(value: &serde_json::Value) -> u64 {
     echo_core::utils::hash::fnv1a_64(value.to_string().as_bytes())
 }
 
+/// 把命名空间序列化为 JSON 数组形式的键，避免含 `/` 的分段产生别名。
 pub(crate) fn namespace_key(namespace: &[&str]) -> String {
     serde_json::to_string(namespace).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// [`namespace_key`] 的 `String` 切片版本。
 pub(crate) fn namespace_key_owned(namespace: &[String]) -> String {
     serde_json::to_string(namespace).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// 将命名空间键解析回分段列表。
 pub(crate) fn parse_namespace_key(key: &str) -> Result<Vec<String>> {
     serde_json::from_str(key).map_err(|error| {
         MemoryError::SerializationError(format!("parse namespace key: {error}")).into()
     })
 }
 
-/// Check if a StoreItem is still valid (not expired).
-/// Checks both `item.expires_at` (metadata) and `item.value["expires_at"]` (JSON).
+/** 检查 StoreItem 是否仍然有效（未过期）。
+同时检查 `item.expires_at`（元数据）和 `item.value["expires_at"]`（JSON）。 */
 fn is_item_valid(item: &StoreItem, now: u64) -> bool {
-    // Check metadata field first
+    // 先检查元数据字段
     if let Some(exp) = item.expires_at
         && exp <= now
     {
         return false;
     }
-    // Also check JSON value for embedded expiry (used by MemoryPromoter)
+    // 再检查 JSON 值中嵌入的过期时间（MemoryPromoter 使用）
     if let Some(exp) = item.value.get("expires_at").and_then(|v| v.as_u64())
         && exp <= now
     {
@@ -845,6 +901,7 @@ fn is_item_valid(item: &StoreItem, now: u64) -> bool {
     true
 }
 
+/// 按空白和常见标点切分文本，保留长度大于 1 的小写去重词。
 fn tokenize(text: &str) -> Vec<String> {
     use std::collections::HashSet;
     text.split(|c: char| c.is_whitespace() || "，。！？、；：,.!?;: ".contains(c))
@@ -855,7 +912,7 @@ fn tokenize(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Calculate the match score between a JSON Value and keywords (matched keyword count / total keyword count)
+/// 计算 JSON 值与关键词的匹配得分（命中关键词数 / 关键词总数）。
 fn value_relevance_score(value: &Value, keywords: &[String]) -> f32 {
     if keywords.is_empty() {
         return 1.0;
@@ -872,6 +929,7 @@ fn value_relevance_score(value: &Value, keywords: &[String]) -> f32 {
     }
 }
 
+/// 递归提取 JSON 值中的可搜索文本。
 fn value_to_searchable_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -891,14 +949,16 @@ fn value_to_searchable_text(value: &Value) -> String {
     }
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────────
+// ── 单元测试 ─────────────────────────────────────────────────────────────────────
 
+/// 单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use echo_core::memory::SearchQuery;
     use serde_json::json;
 
+    /// 通用的 compare_and_put 契约断言。
     async fn assert_compare_and_put_contract(store: &dyn Store) -> Result<()> {
         let namespace = &["cas"];
         assert_eq!(
@@ -931,11 +991,13 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 内存 Store 的 compare_and_put 精确且原子。
     async fn in_memory_store_compare_and_put_is_exact_and_atomic() -> Result<()> {
         assert_compare_and_put_contract(&InMemoryStore::new()).await
     }
 
     #[tokio::test]
+    /// 文件 Store 的 compare_and_put 精确且原子。
     async fn file_store_compare_and_put_is_exact_and_atomic() -> Result<()> {
         let directory =
             std::env::temp_dir().join(format!("echo-store-cas-{}", uuid::Uuid::new_v4()));
@@ -947,6 +1009,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 内存 Store 写入后可读取。
     async fn test_in_memory_store_put_and_get() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
@@ -969,6 +1032,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 读取不存在的条目返回空。
     async fn test_in_memory_store_get_nonexistent() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
@@ -978,6 +1042,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 删除已存在的条目。
     async fn test_in_memory_store_delete() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
@@ -995,6 +1060,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 删除不存在的条目返回 false。
     async fn test_in_memory_store_delete_nonexistent() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
@@ -1004,6 +1070,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 内存 Store 关键词搜索。
     async fn test_in_memory_store_search() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
@@ -1031,6 +1098,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 内存 Store 列出命名空间。
     async fn test_in_memory_store_list_namespaces() {
         let store = InMemoryStore::new();
 
@@ -1055,18 +1123,20 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 重复写入同一键会覆盖值。
     async fn test_in_memory_store_upsert() {
         let store = InMemoryStore::new();
         let ns = &["user", "memories"];
 
         store.put(ns, "key1", json!({"count": 1})).await.unwrap();
-        store.put(ns, "key1", json!({"count": 2})).await.unwrap(); // update
+        store.put(ns, "key1", json!({"count": 2})).await.unwrap(); // 更新
 
         let item = store.get(ns, "key1").await.unwrap().unwrap();
         assert_eq!(item.value["count"], 2);
     }
 
     #[tokio::test]
+    /// 不同命名空间相互隔离。
     async fn test_in_memory_store_namespace_isolation() {
         let store = InMemoryStore::new();
 
@@ -1087,6 +1157,7 @@ mod tests {
     }
 
     #[test]
+    /// StoreItem::new 初始化字段。
     fn test_store_item_new() {
         let item = StoreItem::new(
             vec!["user".to_string(), "memories".to_string()],
@@ -1103,6 +1174,7 @@ mod tests {
     }
 
     #[test]
+    /// 默认语义搜索实现返回不支持。
     fn test_store_semantic_search_default_is_unsupported() {
         let store = InMemoryStore::new();
         let err = futures::executor::block_on(
@@ -1113,12 +1185,14 @@ mod tests {
     }
 
     #[test]
+    /// 分词器按字符数（而非字节数）过滤短词。
     fn tokenizer_filters_by_character_count() {
         assert!(tokenize("中").is_empty());
         assert_eq!(tokenize("中文"), vec!["中文".to_string()]);
     }
 
     #[test]
+    /// 文件 Store 拒绝损坏的 JSON。
     fn file_store_rejects_corrupt_json() -> Result<()> {
         let root =
             std::env::temp_dir().join(format!("echo-store-corrupt-{}", uuid::Uuid::new_v4()));
@@ -1132,6 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 同一路径的多个句柄共享同一权威。
     async fn file_store_handles_share_one_authority() -> Result<()> {
         let root = std::env::temp_dir().join(format!("echo-store-shared-{}", uuid::Uuid::new_v4()));
         let path = root.join("store.json");
@@ -1150,6 +1225,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 并发事务按串行提交顺序发布。
     async fn concurrent_transactions_publish_in_serial_commit_order() -> Result<()> {
         let root =
             std::env::temp_dir().join(format!("echo-store-flush-order-{}", uuid::Uuid::new_v4()));
@@ -1158,9 +1234,8 @@ mod tests {
         let second = Arc::new(FileStore::new(&path)?);
         assert!(Arc::ptr_eq(&first.authority, &second.authority));
 
-        // Queue both copy-on-write transactions behind the same authority
-        // lock. Tokio's FIFO mutex ordering makes the expected commit order
-        // deterministic while neither candidate is visible before commit.
+        /* 让两个写时复制事务排在同一个权威锁之后。Tokio 互斥锁的 FIFO 顺序
+        使预期的提交顺序是确定的，同时两个候选在提交前都不可见。 */
         let transaction_guard = first.authority.transaction.lock().await;
         let (old_started, old_ready) = tokio::sync::oneshot::channel();
         let old_store = Arc::clone(&first);
@@ -1209,6 +1284,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 持久化失败时既不发布，也不会泄漏到后续提交中。
     async fn failed_persistence_never_publishes_or_leaks_into_later_commit() -> Result<()> {
         let root = std::env::temp_dir().join(format!("echo-store-atomic-{}", uuid::Uuid::new_v4()));
         let path = root.join("store.json");
@@ -1249,6 +1325,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 替换后报错时，按已提交处理并在发布前完成对账。
     async fn after_replace_error_reconciles_as_committed_before_publish() -> Result<()> {
         let root =
             std::env::temp_dir().join(format!("echo-store-reconcile-{}", uuid::Uuid::new_v4()));
@@ -1288,6 +1365,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 权威中毒后拒绝所有持久化读取，直到重新打开。
     async fn poisoned_file_authority_rejects_every_persisted_truth_read_until_reopen() -> Result<()>
     {
         let root =
@@ -1333,6 +1411,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 调用方被取消后，物理提交后的事务仍会完成发布。
     async fn cancelled_caller_cannot_release_transaction_after_physical_commit() -> Result<()> {
         let root = std::env::temp_dir().join(format!(
             "echo-store-cancel-after-commit-{}",
@@ -1412,6 +1491,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 取消与重启探针测试。
     async fn file_store_cancel_restart_probe() -> Result<()> {
         let Ok(path) = std::env::var("ECHO_FILE_STORE_CANCEL_RESTART_PROBE") else {
             return Ok(());
@@ -1433,6 +1513,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 命名空间分段中的 `/` 不会产生别名。
     async fn namespace_segments_do_not_alias_slash_content() -> Result<()> {
         let store = InMemoryStore::new();
         store.put(&["a/b"], "key", json!(1)).await?;

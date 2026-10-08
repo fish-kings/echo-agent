@@ -1,6 +1,8 @@
-//! LLM-based guard
-//!
-//! Sends content to a review LLM for safety judgment.
+/*!
+基于 LLM 的护栏
+
+将内容发送给审查用 LLM 进行安全判断。
+*/
 
 use super::{Guard, GuardDirection, GuardResult};
 use crate::error::Result;
@@ -8,6 +10,7 @@ use crate::llm::LlmClient;
 use futures::future::BoxFuture;
 use std::sync::Arc;
 
+/// 默认的内容安全审查系统提示词
 const DEFAULT_SYSTEM_PROMPT: &str = r#"You are a content safety review system. Judge whether the given content is safe.
 
 Criteria:
@@ -20,19 +23,24 @@ Reply in the following JSON format only (no other content):
 {"safe": true} or {"safe": false, "reason": "<blocking reason>"}
 "#;
 
-/// LLM guard
-///
-/// Uses an independent LLM client for content safety review.
+/**
+LLM 护栏
+
+使用独立的 LLM 客户端进行内容安全审查。
+*/
 pub struct LlmGuard {
+    /// 护栏名称
     guard_name: String,
+    /// 用于审查的 LLM 客户端
     client: Arc<dyn LlmClient>,
+    /// 审查使用的系统提示词
     system_prompt: String,
-    /// Directions to check (when empty, checks all directions)
+    /// 需要检查的方向（为空时检查所有方向）
     directions: Vec<GuardDirection>,
 }
 
 impl LlmGuard {
-    /// Use the default review prompt
+    /// 使用默认审查提示词创建 LLM 护栏
     pub fn new(name: impl Into<String>, client: Arc<dyn LlmClient>) -> Self {
         Self {
             guard_name: name.into(),
@@ -42,7 +50,7 @@ impl LlmGuard {
         }
     }
 
-    /// Custom review prompt
+    /// 使用自定义审查提示词创建 LLM 护栏
     pub fn with_prompt(
         name: impl Into<String>,
         client: Arc<dyn LlmClient>,
@@ -56,7 +64,7 @@ impl LlmGuard {
         }
     }
 
-    /// Restrict check directions
+    /// 限定检查方向
     pub fn with_directions(mut self, directions: Vec<GuardDirection>) -> Self {
         self.directions = directions;
         self
@@ -64,10 +72,12 @@ impl LlmGuard {
 }
 
 impl Guard for LlmGuard {
+    /// 护栏名称
     fn name(&self) -> &str {
         &self.guard_name
     }
 
+    /// 将内容交给审查 LLM 判断，并解析其 JSON 结论
     fn check<'a>(
         &'a self,
         content: &'a str,
@@ -92,6 +102,7 @@ impl Guard for LlmGuard {
     }
 }
 
+/// 解析审查 LLM 的响应；无法解析或格式异常时 fail-closed 阻断
 fn parse_guard_response(response: &str) -> Result<GuardResult> {
     let trimmed = response.trim();
 

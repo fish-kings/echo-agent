@@ -1,4 +1,4 @@
-//! Per-file Git worktree checkpoints used before destructive file mutations.
+//! 按文件粒度的 Git 工作区检查点，在破坏性文件修改之前创建。
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,29 +7,40 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// 检查点序号，保证同一进程内生成的 ID 唯一
 static CHECKPOINT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// 文件在 Git index 中的条目
 #[derive(Serialize, Deserialize)]
 struct IndexEntry {
+    /// 文件模式（如 100644）
     mode: String,
+    /// 对象 ID
     object_id: String,
+    /// 暂存阶段号
     stage: String,
 }
 
+/// 检查点清单，记录恢复文件所需的信息
 #[derive(Serialize, Deserialize)]
 struct CheckpointManifest {
+    /// 文件相对 Git 根目录的路径
     relative_path: String,
+    /// 创建检查点时工作区中该文件是否存在
     worktree_existed: bool,
+    /// 文件权限模式（仅 Unix）
     #[cfg(unix)]
     worktree_mode: Option<u32>,
+    /// 修改前的 index 条目，None 表示未被跟踪
     index_entry: Option<IndexEntry>,
 }
 
-/// Snapshot the exact worktree bytes and index entry for one file.
-///
-/// `Ok(None)` means the target is not inside a Git repository. Once a Git root
-/// is found, every snapshot failure is returned so callers can stop the pending
-/// destructive mutation.
+/**
+ * 为单个文件快照其工作区中的精确字节内容及 index 条目。
+ *
+ * `Ok(None)` 表示目标不在 Git 仓库中。一旦找到 Git 根目录，
+ * 任何快照失败都会返回错误，以便调用方中止待执行的破坏性修改。
+ */
 pub fn create_checkpoint(file_path: &Path) -> Result<Option<String>, String> {
     let Some(git_root) = find_git_root(file_path)? else {
         return Ok(None);
@@ -76,8 +87,10 @@ pub fn create_checkpoint(file_path: &Path) -> Result<Option<String>, String> {
     result
 }
 
-/// Restore only the file represented by `checkpoint_id`, including its exact
-/// pre-mutation Git index entry. Other worktree and staged changes are untouched.
+/**
+ * 仅恢复 `checkpoint_id` 所对应的文件，包括其修改前的精确 Git index 条目。
+ * 其他工作区变更和已暂存的变更不受影响。
+ */
 pub fn rollback_to_checkpoint(file_path: &Path, checkpoint_id: &str) -> Result<(), String> {
     echo_core::utils::fs::validate_path_segment(checkpoint_id)
         .map_err(|error| format!("invalid checkpoint id: {error}"))?;
@@ -114,7 +127,7 @@ pub fn rollback_to_checkpoint(file_path: &Path, checkpoint_id: &str) -> Result<(
     )
 }
 
-/// Remove older per-file checkpoints, preserving the newest `keep` entries.
+/// 删除较旧的单文件检查点，保留最新的 `keep` 个。
 pub fn cleanup_old_checkpoints(file_path: &Path, keep: usize) {
     let Ok(Some(git_root)) = find_git_root(file_path) else {
         return;
@@ -132,6 +145,7 @@ pub fn cleanup_old_checkpoints(file_path: &Path, keep: usize) {
     }
 }
 
+/// 生成唯一的检查点 ID（时间戳 + 进程 ID + 序号）。
 fn checkpoint_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -141,6 +155,7 @@ fn checkpoint_id() -> String {
     format!("{nanos:032x}-{:08x}-{sequence:016x}", std::process::id())
 }
 
+/// 获取存放检查点的目录（位于 Git 元数据目录下）。
 fn checkpoint_root(git_root: &Path) -> Result<PathBuf, String> {
     let output = Command::new("git")
         .args(["rev-parse", "--git-path", "echo-checkpoints"])
@@ -160,6 +175,7 @@ fn checkpoint_root(git_root: &Path) -> Result<PathBuf, String> {
     })
 }
 
+/// 将目标路径解析为绝对路径。
 fn absolute_target(file_path: &Path) -> Result<PathBuf, String> {
     if let Ok(path) = fs::canonicalize(file_path) {
         return Ok(path);
@@ -172,6 +188,7 @@ fn absolute_target(file_path: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("failed to resolve checkpoint target: {error}"))
 }
 
+/// 查找文件所在的 Git 仓库根目录，不在仓库中时返回 None。
 fn find_git_root(file_path: &Path) -> Result<Option<PathBuf>, String> {
     let dir = if file_path.is_file() {
         file_path.parent().unwrap_or(file_path)
@@ -193,6 +210,7 @@ fn find_git_root(file_path: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(root))
 }
 
+/// 读取文件在 Git index 中的条目。
 fn read_index_entry(git_root: &Path, relative: &Path) -> Result<Option<IndexEntry>, String> {
     let output = Command::new("git")
         .args(["ls-files", "--stage", "--"])
@@ -225,6 +243,7 @@ fn read_index_entry(git_root: &Path, relative: &Path) -> Result<Option<IndexEntr
     }))
 }
 
+/// 将文件的 index 条目恢复为给定值；为 None 时从 index 中移除。
 fn restore_index_entry(
     git_root: &Path,
     relative_path: &str,
@@ -261,6 +280,7 @@ fn restore_index_entry(
     }
 }
 
+/// 读取文件权限模式（仅 Unix）。
 #[cfg(unix)]
 fn file_mode(path: &Path) -> Result<Option<u32>, String> {
     use std::os::unix::fs::PermissionsExt;
@@ -269,6 +289,7 @@ fn file_mode(path: &Path) -> Result<Option<u32>, String> {
         .map_err(|error| format!("failed to inspect checkpoint permissions: {error}"))
 }
 
+/// 设置文件权限模式（仅 Unix）。
 #[cfg(unix)]
 fn set_file_mode(path: &Path, mode: u32) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
@@ -280,6 +301,7 @@ fn set_file_mode(path: &Path, mode: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// 回滚只恢复目标文件的工作区内容和 index 条目。
     #[test]
     fn rollback_restores_only_target_worktree_and_index() -> Result<(), Box<dyn std::error::Error>>
     {
@@ -315,6 +337,7 @@ mod tests {
         Ok(())
     }
 
+    /// 在指定目录中运行 git 命令，失败时返回错误。
     fn run_git(root: &Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
         let status = Command::new("git").args(args).current_dir(root).status()?;
         if status.success() {

@@ -1,8 +1,10 @@
-//! 可复用的开放学术元数据与文献管理器 API 客户端。
-//!
-//! 这些客户端返回一个精简的、归一化的「作品」契约，便于应用按照自己的
-//! 存储模型持久化记录。各服务商特有的响应字段仍可通过专门的 Zotero 和
-//! Europe PMC 类型获取。
+/*!
+ * 可复用的开放学术元数据与文献管理器 API 客户端。
+ *
+ * 这些客户端返回一个精简的、归一化的「作品」契约，便于应用按照自己的
+ * 存储模型持久化记录。各服务商特有的响应字段仍可通过专门的 Zotero 和
+ * Europe PMC 类型获取。
+ */
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -12,12 +14,17 @@ use reqwest::{Client, Method, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// HTTP 请求默认超时时间。
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// 单次检索允许返回的最大结果数。
 const MAX_RESULTS: usize = 100;
+/// 分页拉取 Zotero 条目的总数上限。
 const MAX_ZOTERO_ITEMS: usize = 10_000;
 
-/// 归一化后的学术作品记录，跨不同数据源（OpenAlex、Crossref、Europe PMC、
-/// Zotero 等）使用统一字段表示。
+/**
+ * 归一化后的学术作品记录，跨不同数据源（OpenAlex、Crossref、Europe PMC、
+ * Zotero 等）使用统一字段表示。
+ */
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScholarlyWork {
     /// 来源服务商标识（如 "openalex"、"crossref"、"europe_pmc"、"zotero"）。
@@ -435,8 +442,10 @@ impl ZoteroClient {
         Self::with_base_url("https://api.zotero.org", library_kind, library_id, api_key)
     }
 
-    /// 使用自定义基础 URL 创建客户端（便于测试时指向本地 mock 服务）；
-    /// 若图书馆 ID 或 API 密钥为空则返回错误。
+    /**
+     * 使用自定义基础 URL 创建客户端（便于测试时指向本地 mock 服务）；
+     * 若图书馆 ID 或 API 密钥为空则返回错误。
+     */
     pub fn with_base_url(
         base_url: impl Into<String>,
         library_kind: ZoteroLibraryKind,
@@ -1027,6 +1036,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 各服务商的响应能被解析为统一的作品契约。
     #[test]
     fn parses_provider_contracts() -> Result<()> {
         let openalex = parse_openalex_page(&json!({
@@ -1079,6 +1089,7 @@ mod tests {
         Ok(())
     }
 
+    /// Zotero 条目与作品记录互转时保留引用字段。
     #[test]
     fn zotero_conversion_preserves_citation_fields() -> Result<()> {
         let item: ZoteroItem = serde_json::from_value(json!({
@@ -1099,6 +1110,7 @@ mod tests {
         Ok(())
     }
 
+    /// 真实开放学术服务商能返回结果（联网测试）。
     #[tokio::test]
     #[ignore = "opt-in live smoke test; set ECHO_AGENT_PROVIDER_SMOKE=1"]
     async fn live_open_scholarly_providers_return_results() -> Result<()> {
@@ -1125,6 +1137,7 @@ mod tests {
         Ok(())
     }
 
+    /// 使用真实 Zotero 凭据能列出条目（联网测试）。
     #[tokio::test]
     #[ignore = "requires ZOTERO_API_KEY and ZOTERO_LIBRARY_ID"]
     async fn live_zotero_credentials_can_list_items() -> Result<()> {

@@ -1,7 +1,8 @@
-//! Scheduler runner — periodic tick loop that fires cron tasks.
-//!
-//! The [`SchedulerRunner`] accepts an application callback and remains
-//! decoupled from any specific Agent or task service.
+/*!
+ * 调度器运行器——周期性 tick 循环，负责触发 cron 任务。
+ *
+ * [`SchedulerRunner`] 接收应用层回调，与任何具体的 Agent 或任务服务保持解耦。
+ */
 
 use super::cron_task::{CronTask, CronTaskStatus, CronTaskStore};
 use chrono::{DateTime, Utc};
@@ -25,60 +26,62 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-/// Type alias for the fire function: takes a CronTask, returns a future with the result.
+/// 触发函数的类型别名：接收一个 CronTask，返回携带执行结果的 future。
 pub type FireFn =
     Arc<dyn Fn(CronTask) -> BoxFuture<'static, echo_core::error::Result<String>> + Send + Sync>;
 
-/// Callback that receives durable identity for one scheduler delivery attempt.
-///
-/// `occurrence_id` remains stable when an owner-loss recovery retries a
-/// callback. `attempt_id` changes for every physical execution attempt. A
-/// callback that performs non-idempotent external effects should use
-/// `occurrence_id` as its idempotency key.
+/**
+ * 接收单次调度投递尝试持久化身份的回调。
+ *
+ * 当属主丢失恢复流程重试回调时，`occurrence_id` 保持不变；
+ * `attempt_id` 则在每次物理执行尝试时都会变化。
+ * 执行非幂等外部副作用的回调应使用 `occurrence_id` 作为幂等键。
+ */
 pub type OccurrenceFireFn = Arc<
     dyn Fn(SchedulerInvocation) -> BoxFuture<'static, echo_core::error::Result<String>>
         + Send
         + Sync,
 >;
 
-/// Source of one durable scheduler occurrence.
+/// 单个持久化调度实例（occurrence）的来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]
 pub enum SchedulerTrigger {
-    /// A cron expression produced the occurrence.
+    /// 由 cron 表达式产生的实例。
     Scheduled,
-    /// A caller requested an immediate one-off execution.
+    /// 调用方请求的立即一次性执行。
     Manual,
 }
 
-/// Exact callback attempt delivered by [`SchedulerRunner`].
+/// 由 [`SchedulerRunner`] 投递的一次具体回调尝试。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SchedulerInvocation {
-    /// Stable idempotency identity shared by every retry of this occurrence.
+    /// 稳定的幂等身份，本实例的每次重试共享同一值。
     pub occurrence_id: String,
-    /// Opaque identity for this physical callback attempt.
+    /// 本次物理回调尝试的不透明身份标识。
     pub attempt_id: String,
-    /// Monotonic attempt number within the occurrence.
+    /// 实例内单调递增的尝试序号。
     pub attempt: u32,
-    /// Task definition captured when the occurrence was durably persisted.
+    /// 实例被持久化时捕获的任务定义。
     pub task: CronTask,
-    /// Original scheduled time, or the request time for a manual run.
+    /// 原始计划时间；手动运行时为请求时间。
     pub scheduled_at: DateTime<Utc>,
-    /// Whether the occurrence came from cron polling or `run_once`.
+    /// 实例来自 cron 轮询还是 `run_once`。
     pub trigger: SchedulerTrigger,
-    /// True when a prior callback owner disappeared after effect admission.
+    /// 若之前的回调属主在副作用准入后消失，则为 true。
     pub recovered_after_owner_loss: bool,
 }
 
 impl SchedulerInvocation {
-    /// Construct a first callback attempt for an application-owned occurrence.
-    ///
-    /// The durable scheduler overwrites these attempt fields when it delivers
-    /// its own journaled occurrences. This constructor exists for embedding
-    /// adapters and source-compatible callback wrappers, which cannot use a
-    /// struct literal because this contract is non-exhaustive.
+    /**
+     * 为应用自有的实例构造首次回调尝试。
+     *
+     * 持久化调度器在投递自身日志中的实例时会覆盖这些尝试字段。
+     * 该构造函数供嵌入适配器和源码兼容的回调包装器使用——
+     * 由于此契约是 non-exhaustive 的，它们无法使用结构体字面量构造。
+     */
     pub fn new(
         occurrence_id: impl Into<String>,
         task: CronTask,
@@ -97,45 +100,69 @@ impl SchedulerInvocation {
     }
 }
 
+/// 写入投递账本的实例负载。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct OccurrencePayload {
+    /// 持久化时捕获的任务定义。
     task: CronTask,
+    /// 计划触发时间（手动运行时为请求时间）。
     scheduled_at: DateTime<Utc>,
+    /// 实例触发来源。
     trigger: SchedulerTrigger,
+    /// 持久化时任务的控制修订号，用于检测禁用/删除。
     #[serde(default)]
     control_revision: u64,
 }
 
+/// 实例投递事件类型。
 type OccurrenceEvent = DeliveryEvent<String, OccurrencePayload>;
+/// 实例事件的文件日志类型。
 type OccurrenceJournal = FileEventJournal<OccurrenceEvent>;
+/// 实例投递账本的投影类型。
 type OccurrenceProjection = DeliveryLedgerProjection<String, OccurrencePayload>;
+/// 实例投递账本类型。
 type OccurrenceLedger = DeliveryLedger<OccurrenceJournal, String, OccurrencePayload>;
 
+/// 调度实例的持久化权威：持有日志、账本及相关并发控制状态。
 struct OccurrenceAuthority {
+    /// 实例事件日志。
     journal: Arc<OccurrenceJournal>,
+    /// 基于日志的投递账本。
     ledger: OccurrenceLedger,
+    /// 串行化账本读改写操作的同步锁。
     operation: StdMutex<()>,
+    /// 当前进程内仍存活的回调尝试 ID 集合（仅作存活提示）。
     active_attempts: StdMutex<HashSet<String>>,
+    /// 每个（任务 ID，定义身份）已持久化的最新计划时间水位。
     latest_scheduled_at: StdMutex<HashMap<(String, String), DateTime<Utc>>>,
+    /// 串行化实例认领与投递的异步锁。
     delivery_lock: Mutex<()>,
+    /// 测试用：在结算提交后注入错误。
     #[cfg(test)]
     settle_after_commit_fault: std::sync::atomic::AtomicBool,
+    /// 测试用：统计冷扫描日志的次数。
     #[cfg(test)]
     cold_scans: std::sync::atomic::AtomicUsize,
+    /// 测试用：在入队提交后注入错误。
     #[cfg(test)]
     enqueue_after_commit_fault: std::sync::atomic::AtomicBool,
 }
 
-/// Detects a dropped callback owner while the process remains alive.
-///
-/// This set is only a liveness hint. The journaled `EffectStarted` and
-/// `OutcomeUnknown` transitions remain the recovery authority.
+/**
+ * 在进程仍存活时检测被丢弃的回调属主。
+ *
+ * 该集合仅是存活提示；日志中的 `EffectStarted` 与 `OutcomeUnknown`
+ * 状态转换才是恢复的权威依据。
+ */
 struct CallbackOwnerGuard {
+    /// 所属实例权威的弱引用。
     authority: Weak<OccurrenceAuthority>,
+    /// 本守卫对应的回调尝试 ID。
     attempt_id: String,
 }
 
 impl Drop for CallbackOwnerGuard {
+    /// 守卫释放时从活跃尝试集合中移除对应的尝试 ID。
     fn drop(&mut self) {
         let Some(authority) = self.authority.upgrade() else {
             return;
@@ -148,25 +175,32 @@ impl Drop for CallbackOwnerGuard {
     }
 }
 
+/// 全局注册表：按日志路径记录活跃的实例权威，防止同一日志被多个运行器打开。
 fn occurrence_authorities() -> &'static StdMutex<HashMap<PathBuf, Weak<OccurrenceAuthority>>> {
     static AUTHORITIES: OnceLock<StdMutex<HashMap<PathBuf, Weak<OccurrenceAuthority>>>> =
         OnceLock::new();
     AUTHORITIES.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-/// A scheduled occurrence retains both the public task ID and the definition
-/// identity captured from the store.  The scheduled timestamp makes repeated
-/// cron ticks address the same occurrence instead of treating an entire task
-/// as the deduplication unit.
+/**
+ * 计划实例同时保留公开任务 ID 与从存储中捕获的定义身份。
+ * 计划时间戳使重复的 cron tick 指向同一实例，
+ * 而不是把整个任务当作去重单元。
+ */
 #[derive(Debug, Clone)]
 struct ScheduledOccurrence {
+    /// 捕获时的任务定义。
     task: CronTask,
+    /// 计划触发时间。
     scheduled_at: DateTime<Utc>,
 }
 
+/// 任务 ID → （定义身份，最近一次触发的计划时间）。
 type LastFiredByTask = HashMap<String, (String, DateTime<Utc>)>;
+/// 计划实例 ID 编码格式的版本号。
 const SCHEDULED_OCCURRENCE_ID_VERSION: u8 = 1;
 
+/// 返回任务的定义身份：优先使用 `definition_id`，为空时回退到 `created_at`。
 fn definition_identity(task: &CronTask) -> &str {
     if task.definition_id.is_empty() {
         &task.created_at
@@ -175,11 +209,13 @@ fn definition_identity(task: &CronTask) -> &str {
     }
 }
 
+/// 构造（任务 ID，定义身份）组合键。
 fn definition_key(task: &CronTask) -> (String, String) {
     (task.id.clone(), definition_identity(task).to_string())
 }
 
 impl OccurrenceAuthority {
+    /// 在持有操作锁的情况下，若实例尚不存在则入队；返回是否新插入。
     fn enqueue_if_absent(
         &self,
         occurrence_id: &str,
@@ -193,6 +229,7 @@ impl OccurrenceAuthority {
         self.enqueue_if_absent_unlocked(occurrence_id, payload, false)
     }
 
+    /// 以日志身份与下一序号生成手动实例 ID 并入队，返回该 ID。
     fn enqueue_generated_manual(
         &self,
         payload: OccurrencePayload,
@@ -208,8 +245,8 @@ impl OccurrenceAuthority {
                 "Scheduler occurrence authority lock poisoned: {error}"
             ))
         })?;
-        // The journal generation and next sequence identify an unused slot
-        // while this same operation lock owns the subsequent append.
+        /* 日志代际与下一序号标识一个未被使用的槽位，
+        同一把操作锁持有随后的追加写入。 */
         let occurrence_id = format!(
             "cron-manual:{}:{}",
             self.journal.journal_identity(),
@@ -224,6 +261,7 @@ impl OccurrenceAuthority {
         Ok(occurrence_id)
     }
 
+    /// 不加锁版本的入队逻辑（调用方须已持有操作锁），并维护计划时间水位。
     fn enqueue_if_absent_unlocked(
         &self,
         occurrence_id: &str,
@@ -284,6 +322,7 @@ impl OccurrenceAuthority {
         Ok(true)
     }
 
+    /// 冷扫描日志，判断是否已持久化过指定实例。
     fn journal_contains(&self, occurrence_id: &str) -> echo_core::error::Result<bool> {
         #[cfg(test)]
         self.cold_scans
@@ -305,6 +344,7 @@ impl OccurrenceAuthority {
         }
     }
 
+    /// 认领下一个可用实例；返回认领及其是否为属主丢失后的恢复。
     fn claim_next(
         &self,
     ) -> echo_core::error::Result<Option<(DeliveryClaim<String, OccurrencePayload>, bool)>> {
@@ -354,6 +394,7 @@ impl OccurrenceAuthority {
         Ok(Some((draft.claim, recovered_after_owner_loss)))
     }
 
+    /// 持久化副作用准入并登记活跃尝试，返回回调属主守卫。
     fn begin_effect(
         self: &Arc<Self>,
         claim: &DeliveryClaim<String, OccurrencePayload>,
@@ -390,6 +431,7 @@ impl OccurrenceAuthority {
         })
     }
 
+    /// 持久化实例的结算结果。
     fn settle(
         &self,
         claim: &DeliveryClaim<String, OccurrencePayload>,
@@ -417,6 +459,7 @@ impl OccurrenceAuthority {
         self.confirm_durable(&receipt, "settle scheduler occurrence")
     }
 
+    /// 加锁后调和已失去属主的中断实例。
     fn reconcile_owner_loss(&self) -> echo_core::error::Result<()> {
         let _operation = self.operation.lock().map_err(|error| {
             echo_core::error::ReactError::Other(format!(
@@ -426,6 +469,7 @@ impl OccurrenceAuthority {
         self.reconcile_inactive_owner_loss_unlocked()
     }
 
+    /// 将已开始副作用但属主不再活跃的实例标记为结果未知，以便至少一次重放。
     fn reconcile_inactive_owner_loss_unlocked(&self) -> echo_core::error::Result<()> {
         let active_attempts = self.active_attempts.lock().map_err(|error| {
             echo_core::error::ReactError::Other(format!(
@@ -479,6 +523,7 @@ impl OccurrenceAuthority {
         Ok(())
     }
 
+    /// 若提交回执未确认持久化，则显式同步日志数据。
     fn confirm_durable(
         &self,
         receipt: &ApplyReceipt,
@@ -495,6 +540,7 @@ impl OccurrenceAuthority {
     }
 }
 
+/// 从中断的账本记录重建认领信息。
 fn claim_from_record(
     record: &DeliveryRecord<String, OccurrencePayload>,
 ) -> echo_core::error::Result<DeliveryClaim<String, OccurrencePayload>> {
@@ -520,6 +566,7 @@ fn claim_from_record(
     })
 }
 
+/// 打开（或拒绝重复打开）与任务存储关联的实例权威，并完成恢复。
 fn open_occurrence_authority(
     store: &CronTaskStore,
     tasks: &[CronTask],
@@ -577,12 +624,13 @@ fn open_occurrence_authority(
     Ok(authority)
 }
 
+/// 重放日志，重建当前活跃定义的最新计划时间水位。
 fn load_latest_scheduled_at(
     journal: &OccurrenceJournal,
     active_tasks: &[CronTask],
 ) -> echo_core::error::Result<HashMap<(String, String), DateTime<Utc>>> {
-    // Bound the rebuildable watermark to current definitions, not to the
-    // number of historical occurrences or removed task generations.
+    /* 将可重建的水位限定在当前定义范围内，
+    而非历史实例数量或已删除的任务代际。 */
     let active = active_tasks
         .iter()
         .map(definition_key)
@@ -618,6 +666,7 @@ fn load_latest_scheduled_at(
     }
 }
 
+/// 创建父目录并返回规范化后的文件路径。
 fn canonical_sibling_path(path: &Path) -> echo_core::error::Result<PathBuf> {
     let parent = path
         .parent()
@@ -641,6 +690,7 @@ fn canonical_sibling_path(path: &Path) -> echo_core::error::Result<PathBuf> {
     Ok(canonical_parent.join(file_name))
 }
 
+/// 基于任务身份与计划时间计算稳定的计划实例 ID（SHA-256）。
 fn scheduled_occurrence_id(
     task: &CronTask,
     scheduled_at: DateTime<Utc>,
@@ -661,10 +711,12 @@ fn scheduled_occurrence_id(
     Ok(format!("cron-scheduled:{digest:x}"))
 }
 
+/// 构造统一格式的账本操作错误。
 fn ledger_error(operation: &str, error: impl std::fmt::Display) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Other(format!("Failed to {operation}: {error}"))
 }
 
+/// 在独立 tokio 任务中执行变更，避免调用方取消导致变更中途被丢弃。
 async fn run_owned_mutation<T, F>(operation: &str, future: F) -> echo_core::error::Result<T>
 where
     T: Send + 'static,
@@ -678,66 +730,83 @@ where
         .map_err(|error| ledger_error(operation, error))?
 }
 
-/// Owned handle for a running scheduler loop.
+/// 运行中调度循环的所有权句柄。
 pub struct SchedulerHandle {
+    /// 调度循环的取消令牌。
     cancel: CancellationToken,
+    /// 调度循环任务的 join 句柄。
     join: JoinHandle<()>,
 }
 
 impl SchedulerHandle {
-    /// Request shutdown without waiting for the loop to exit.
+    /// 请求关闭，但不等待循环退出。
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
-    /// Return whether the scheduler loop has exited.
+    /// 返回调度循环是否已退出。
     pub fn is_finished(&self) -> bool {
         self.join.is_finished()
     }
 
-    /// Wait for the scheduler loop to exit naturally.
+    /// 等待调度循环自然退出。
     pub async fn join(self) -> echo_core::error::Result<()> {
         self.join.await.map_err(|error| {
             echo_core::error::ReactError::Other(format!("Scheduler task failed: {error}"))
         })
     }
 
-    /// Cancel the scheduler and wait until all scheduler-owned work has stopped.
+    /// 取消调度器并等待其拥有的所有工作停止。
     pub async fn shutdown(self) -> echo_core::error::Result<()> {
         self.cancel();
         self.join().await
     }
 }
 
-/// Periodic scheduler that checks and fires cron tasks.
-///
-/// Runs a tokio background task that polls every 30 seconds.
-/// Uses `last_fired` tracking to prevent double-firing.
+/**
+ * 周期性检查并触发 cron 任务的调度器。
+ *
+ * 运行一个每 30 秒轮询一次的 tokio 后台任务，
+ * 并通过 `last_fired` 跟踪防止重复触发。
+ */
 pub struct SchedulerRunner {
+    /// cron 任务定义存储。
     store: CronTaskStore,
+    /// 实例触发回调。
     fire_fn: OccurrenceFireFn,
+    /// 持久化实例权威。
     occurrence_authority: Arc<OccurrenceAuthority>,
+    /// 任务定义的内存缓存。
     tasks: Arc<RwLock<Vec<CronTask>>>,
+    /// 每个任务最近一次触发的记录，用于防止重复触发。
     last_fired: Arc<RwLock<LastFiredByTask>>,
+    /// 上一次 tick 的时间，作为下一窗口的起点。
     last_tick_at: Arc<RwLock<DateTime<Utc>>>,
+    /// 串行化任务定义变更与准入判断的控制锁。
     control_lock: Arc<Mutex<()>>,
+    /// 调度器取消令牌。
     cancel: CancellationToken,
 }
 
+/// 已完成副作用准入、等待执行回调的实例。
 struct AdmittedOccurrence {
+    /// 账本认领信息。
     claim: DeliveryClaim<String, OccurrencePayload>,
+    /// 是否为属主丢失后的恢复执行。
     recovered_after_owner_loss: bool,
+    /// 待执行的回调 future。
     callback: BoxFuture<'static, echo_core::error::Result<String>>,
+    /// 回调属主守卫。
     callback_owner: CallbackOwnerGuard,
 }
 
 impl SchedulerRunner {
-    /// Create a scheduler with the source-compatible task-only callback.
-    ///
-    /// The callback still uses the canonical durable occurrence ledger, but it
-    /// cannot observe the stable idempotency identity. New integrations that
-    /// perform external effects should use
-    /// [`Self::new_with_occurrence_context`].
+    /**
+     * 使用源码兼容的仅任务回调创建调度器。
+     *
+     * 回调仍走规范的持久化实例账本，但无法观察到稳定的幂等身份。
+     * 执行外部副作用的新集成应使用 [`Self::new_with_occurrence_context`]。
+     */
     pub async fn new(
         store: CronTaskStore,
         cancel: CancellationToken,
@@ -748,7 +817,7 @@ impl SchedulerRunner {
         Self::new_with_occurrence_context(store, cancel, occurrence_fire_fn).await
     }
 
-    /// Create a scheduler whose callback can make external effects idempotent.
+    /// 创建调度器，其回调可借助实例上下文使外部副作用幂等。
     pub async fn new_with_occurrence_context(
         store: CronTaskStore,
         cancel: CancellationToken,
@@ -768,7 +837,7 @@ impl SchedulerRunner {
         })
     }
 
-    /// Spawn the scheduler as a background tokio task.
+    /// 将调度器作为后台 tokio 任务启动。
     pub fn spawn(self: Arc<Self>) -> SchedulerHandle {
         let cancel = self.cancel.clone();
         let join = tokio::spawn(async move {
@@ -777,7 +846,7 @@ impl SchedulerRunner {
         SchedulerHandle { cancel, join }
     }
 
-    /// Main loop: tick every 30 seconds, checking and firing due tasks.
+    /// 主循环：每 30 秒 tick 一次，检查并触发到期任务。
     async fn run_loop(&self) {
         info!("Scheduler runner started (30s tick interval)");
         if let Err(error) = self.drain_pending(None).await {
@@ -799,12 +868,13 @@ impl SchedulerRunner {
         }
     }
 
-    /// Single tick: check all enabled tasks and fire those that are due.
+    /// 单次 tick：检查所有已启用任务并触发到期者。
     async fn tick(&self) {
         let now = Utc::now();
         self.tick_at(now).await;
     }
 
+    /// 以指定时间执行一次 tick：先持久化全部到期实例，再并发投递。
     async fn tick_at(&self, now: DateTime<Utc>) {
         if let Err(error) = self.store.check_authority() {
             warn!(%error, "Scheduler definition authority is unavailable; tick blocked");
@@ -821,10 +891,9 @@ impl SchedulerRunner {
                 continue;
             }
             if let Some(next) = task.next_run_after(&window_start) {
-                // Check if next_run is within the window
+                // 检查下次运行时间是否落在窗口内
                 if next <= now {
-                    // The in-process reservation is made only after durable
-                    // admission or an explicit control-gate suppression.
+                    /* 进程内预留仅在持久化准入或显式的控制闸门抑制之后才会记录。 */
                     if let Some((definition_id, last)) = last_fired.get(&task.id)
                         && definition_id == definition_identity(task)
                         && *last == next
@@ -842,9 +911,9 @@ impl SchedulerRunner {
         drop(tasks);
         drop(last_fired);
 
-        // Persist the whole due set before awaiting any callback. A hung
-        // callback cannot prevent later tasks in the same tick from reaching
-        // the journal, and an interrupted admission leaves the window open.
+        /* 在等待任何回调之前先持久化全部到期集合。
+        挂起的回调不会阻止同一 tick 中后续任务写入日志，
+        而被中断的准入会让窗口保持开放。 */
         let mut failed_admission = false;
         let mut admitted = Vec::new();
         for occurrence in to_fire {
@@ -897,7 +966,7 @@ impl SchedulerRunner {
         }
     }
 
-    /// Drive one captured occurrence through the production admission path.
+    /// 让单个捕获的实例走一遍生产环境的准入路径。
     #[cfg(test)]
     async fn fire_task(&self, occurrence: ScheduledOccurrence) -> echo_core::error::Result<()> {
         if let Some(occurrence_id) = self.enqueue_scheduled(&occurrence).await? {
@@ -906,6 +975,7 @@ impl SchedulerRunner {
         Ok(())
     }
 
+    /// 在定义仍有效时持久化计划实例；返回需要投递的实例 ID。
     async fn enqueue_scheduled(
         &self,
         occurrence: &ScheduledOccurrence,
@@ -955,6 +1025,7 @@ impl SchedulerRunner {
         Ok(Some(occurrence_id))
     }
 
+    /// 依次认领并投递待处理实例，直到队列为空或目标实例完成。
     async fn drain_pending(
         &self,
         target_occurrence_id: Option<&str>,
@@ -963,6 +1034,7 @@ impl SchedulerRunner {
             .await
     }
 
+    /// 与 [`Self::drain_pending`] 相同，但可先执行一个已准入的实例。
     async fn drain_pending_with_admitted(
         &self,
         target_occurrence_id: Option<&str>,
@@ -1000,9 +1072,8 @@ impl SchedulerRunner {
                 let occurrence_id = claim.message_id.clone();
                 let is_target = target_occurrence_id == Some(occurrence_id.as_str());
                 let payload = claim.payload.clone();
-                // Durable effect admission is the linearization point relative
-                // to disable/remove. A replay whose prior effect already began
-                // stays admitted even when the definition was later removed.
+                /* 持久化的副作用准入是相对于禁用/删除的线性化点。
+                之前副作用已开始的重放，即使定义随后被删除也仍保持准入。 */
                 let _control = self.control_lock.lock().await;
                 self.store.check_authority()?;
                 if self.cancel.is_cancelled() {
@@ -1185,9 +1256,9 @@ impl SchedulerRunner {
         }
     }
 
-    // ── Management API ────────────────────────────────────────────
+    // ── 管理 API ────────────────────────────────────────────
 
-    /// Add a new cron task and persist it.
+    /// 添加新的 cron 任务并持久化。
     pub async fn add_task(&self, task: CronTask) -> echo_core::error::Result<()> {
         let store = self.store.clone();
         let control = Arc::clone(&self.control_lock);
@@ -1211,12 +1282,12 @@ impl SchedulerRunner {
         .await
     }
 
-    /// Remove a cron task by its unique ID.
+    /// 按唯一 ID 删除 cron 任务。
     pub async fn remove_task(&self, id: &str) -> echo_core::error::Result<bool> {
         self.remove_task_exact(id).await
     }
 
-    /// Remove exactly one cron task by its complete ID.
+    /// 按完整 ID 精确删除一个 cron 任务。
     pub async fn remove_task_exact(&self, id: &str) -> echo_core::error::Result<bool> {
         let id = id.to_string();
         let store = self.store.clone();
@@ -1250,7 +1321,7 @@ impl SchedulerRunner {
         .await
     }
 
-    /// Enable or disable a task.
+    /// 启用或禁用任务。
     pub async fn set_status(
         &self,
         id: &str,
@@ -1280,13 +1351,13 @@ impl SchedulerRunner {
         .await
     }
 
-    /// List all cron tasks.
+    /// 列出所有 cron 任务。
     pub async fn list_tasks(&self) -> Vec<CronTask> {
         let _control = self.control_lock.lock().await;
         self.tasks.read().await.clone()
     }
 
-    /// Manually fire a task immediately (bypassing schedule).
+    /// 立即手动触发任务（绕过调度计划）。
     pub async fn run_once(&self, id: &str) -> echo_core::error::Result<String> {
         let requested_at = Utc::now();
         loop {
@@ -1301,9 +1372,8 @@ impl SchedulerRunner {
                     .await?
                     .ok_or_else(|| ledger_error("manual run", "admitted callback did not settle"));
             }
-            // Older unstarted work owns the FIFO frontier. Drive it before
-            // persisting this manual occurrence so caller cancellation cannot
-            // leave a surprise unadmitted manual run behind.
+            /* 更早的未开始工作占据 FIFO 前沿。先驱动它们再持久化本次手动实例，
+            避免调用方取消后遗留一个意外的未准入手动运行。 */
             self.drain_pending(None).await?;
             tokio::select! {
                 _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
@@ -1316,6 +1386,7 @@ impl SchedulerRunner {
         }
     }
 
+    /// 在前沿无未开始实例时，持久化并准入一次手动运行。
     async fn admit_manual(
         &self,
         id: &str,
@@ -1390,12 +1461,13 @@ impl SchedulerRunner {
         )))
     }
 
-    /// Reload tasks from the store.
+    /// 从存储重新加载任务。
     pub async fn reload(&self) -> echo_core::error::Result<usize> {
         let _control = self.control_lock.lock().await;
         self.refresh_cache().await
     }
 
+    /// 恢复存储权威并刷新任务缓存、触发记录与水位。
     async fn refresh_cache(&self) -> echo_core::error::Result<usize> {
         let tasks = self.store.recover_authority().await?;
         let count = tasks.len();

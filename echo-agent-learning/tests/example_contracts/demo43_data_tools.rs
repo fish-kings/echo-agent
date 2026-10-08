@@ -1,14 +1,16 @@
-//! demo43: 数据处理工具演示（Excel / CSV / Word / Text）
-//!
-//! 展示内置的数据处理能力：
-//! - Excel 文件读取和导出
-//! - Word 文档读取
-//! - 文本文件处理
-//! - CSV/JSON/Parquet 数据处理
-//!
-//! ```bash
-//! cargo test --all-features --test example_contracts contract_demo43_data_tools
-//! ```
+/*!
+demo43: 数据处理工具演示（Excel / CSV / Word / Text）
+
+展示内置的数据处理能力：
+- Excel 文件读取和导出
+- Word 文档读取
+- 文本文件处理
+- CSV/JSON/Parquet 数据处理
+
+```bash
+cargo test --all-features --test example_contracts contract_demo43_data_tools
+```
+*/
 
 use echo_agent::error::Result;
 use echo_agent::prelude::*;
@@ -233,8 +235,10 @@ async fn contract_demo43_data_tools() -> Result<()> {
     Ok(())
 }
 
-/// 构建一个使用 `MockLlmClient` 按预设脚本依次调用工具的 Agent，执行任务后校验
-/// 每个预期工具都被调用过，并返回 Agent 最终给出的答案文本。
+/**
+构建一个使用 `MockLlmClient` 按预设脚本依次调用工具的 Agent，执行任务后校验
+每个预期工具都被调用过，并返回 Agent 最终给出的答案文本。
+*/
 async fn run_scripted_task(
     agent_name: &str,
     task: &str,

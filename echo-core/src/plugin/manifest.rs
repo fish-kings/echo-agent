@@ -1,7 +1,9 @@
-//! EchoAgent 插件所使用的扁平化 `plugin.json` 清单文件。
-//!
-//! Portable Agent Plugins 的元数据与 EchoAgent 的本地配置共享
-//! 同一份根文档。各组件的位置由软件包布局固定，因此不会在清单中重复声明。
+/*!
+EchoAgent 插件所使用的扁平化 `plugin.json` 清单文件。
+
+Portable Agent Plugins 的元数据与 EchoAgent 的本地配置共享
+同一份根文档。各组件的位置由软件包布局固定，因此不会在清单中重复声明。
+*/
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -66,8 +68,10 @@ pub struct PluginManifest {
     #[serde(default)]
     pub dependencies: Vec<PluginDependency>,
 
-    /// Agent Plugins 1.0 将未知的顶层字段视为非致命错误。保留它们，
-    /// 以便调用方可以在不丢失原始数据的情况下上报诊断信息。
+    /**
+    Agent Plugins 1.0 将未知的顶层字段视为非致命错误。保留它们，
+    以便调用方可以在不丢失原始数据的情况下上报诊断信息。
+    */
     #[serde(flatten)]
     unknown_fields: HashMap<String, serde_json::Value>,
 }
@@ -170,10 +174,12 @@ impl PluginDependency {
         }
     }
 
-    /// 判断给定的已安装版本是否满足该依赖的版本约束。
-    ///
-    /// 若依赖未指定版本约束，则总是返回 `Ok(true)`。若指定了约束但未提供
-    /// 已安装版本，或版本字符串无法解析，则返回错误。
+    /**
+    判断给定的已安装版本是否满足该依赖的版本约束。
+
+    若依赖未指定版本约束，则总是返回 `Ok(true)`。若指定了约束但未提供
+    已安装版本，或版本字符串无法解析，则返回错误。
+    */
     pub fn satisfies(&self, installed_version: Option<&str>) -> Result<bool, String> {
         let Some(constraint) = self.version_constraint() else {
             return Ok(true);
@@ -267,9 +273,11 @@ impl PluginManifest {
         self.display_name.as_deref().unwrap_or(&self.name)
     }
 
-    /// 将调用方提供的配置值与清单中声明的默认值合并，并进行校验。
-    ///
-    /// 提供了未声明键的条目会被记为错误；成功时返回合并后的完整配置集合。
+    /**
+    将调用方提供的配置值与清单中声明的默认值合并，并进行校验。
+
+    提供了未声明键的条目会被记为错误；成功时返回合并后的完整配置集合。
+    */
     pub fn resolve_user_config(
         &self,
         provided: &HashMap<String, serde_json::Value>,
@@ -347,8 +355,10 @@ impl PluginManifest {
         errors
     }
 
-    /// 校验插件自身声明的字段：配置键命名、`multiple`/`min`/`max` 的适用性、
-    /// 默认值的合法性，以及依赖名称的合法性。
+    /**
+    校验插件自身声明的字段：配置键命名、`multiple`/`min`/`max` 的适用性、
+    默认值的合法性，以及依赖名称的合法性。
+    */
     fn validate_plugin_fields(&self, errors: &mut Vec<ValidationError>) {
         for (key, entry) in &self.config {
             if !is_valid_identifier(key) {
@@ -403,8 +413,10 @@ impl PluginManifest {
     }
 }
 
-/// 校验单个配置值是否符合其配置项定义（类型、必填性、取值范围、路径存在性等）。
-/// 校验通过返回 `None`，否则返回描述错误的字符串。
+/**
+校验单个配置值是否符合其配置项定义（类型、必填性、取值范围、路径存在性等）。
+校验通过返回 `None`，否则返回描述错误的字符串。
+*/
 fn validate_config_value(
     entry: &PluginUserConfigEntry,
     value: &serde_json::Value,
@@ -470,8 +482,10 @@ fn validate_config_value(
     None
 }
 
-/// 校验插件名称是否符合 Agent Plugins 规范：1–64 个小写 ASCII 字母、
-/// 数字、连字符或句点，首尾必须为字母数字，且不能包含 `--` 或 `..`。
+/**
+校验插件名称是否符合 Agent Plugins 规范：1–64 个小写 ASCII 字母、
+数字、连字符或句点，首尾必须为字母数字，且不能包含 `--` 或 `..`。
+*/
 fn is_agent_plugin_name(name: &str) -> bool {
     let len = name.chars().count();
     (1..=64).contains(&len)
@@ -493,8 +507,10 @@ fn is_agent_plugin_name(name: &str) -> bool {
         && !name.contains("..")
 }
 
-/// 校验字符串是否为合法标识符：以字母或下划线开头，
-/// 且只包含 ASCII 字母、数字或下划线。
+/**
+校验字符串是否为合法标识符：以字母或下划线开头，
+且只包含 ASCII 字母、数字或下划线。
+*/
 fn is_valid_identifier(value: &str) -> bool {
     value
         .chars()
@@ -528,6 +544,7 @@ mod tests {
         )
     }
 
+    /// 验证可解析扁平化插件清单并正确返回显示名与版本。
     #[test]
     fn parses_flat_plugin_manifest() -> Result<(), String> {
         let parsed = manifest(serde_json::json!({
@@ -539,6 +556,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证缺失或不受支持的 `$schema` 会被拒绝。
     #[test]
     fn rejects_missing_or_unsupported_schema() -> Result<(), String> {
         let parsed = PluginManifest::from_json(r#"{"name":"example"}"#)
@@ -558,6 +576,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证插件名支持句点，但拒绝连续分隔符与大写字母。
     #[test]
     fn supports_standard_name_periods_and_rejects_double_separators() {
         assert!(is_agent_plugin_name("acme.tools"));
@@ -566,6 +585,7 @@ mod tests {
         assert!(!is_agent_plugin_name("Uppercase"));
     }
 
+    /// 验证未知顶层字段不是致命错误并可被上报。
     #[test]
     fn unknown_top_level_fields_are_non_fatal() -> Result<(), String> {
         let parsed = PluginManifest::from_json(&format!(
@@ -576,6 +596,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证根级配置项的 min/max 约束会被校验。
     #[test]
     fn validates_root_configuration() -> Result<(), String> {
         let parsed = manifest(serde_json::json!({
@@ -593,6 +614,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证依赖版本约束在缺少已安装版本时返回错误。
     #[test]
     fn dependency_constraints_handle_missing_versions() {
         let dependency = PluginDependency::Versioned {
@@ -603,6 +625,7 @@ mod tests {
         assert!(dependency.satisfies(None).is_err());
     }
 
+    /// 验证用户配置的默认值合并与类型校验。
     #[test]
     fn resolves_and_validates_user_configuration() -> Result<(), String> {
         let parsed = manifest(serde_json::json!({

@@ -1,12 +1,14 @@
-//! Data quality analysis tools
-//!
-//! Provides missing value analysis, outlier detection, and consistency checking
-//! to help assess and improve data quality before analysis.
-//!
-//! Tools:
-//! - `MissingValueAnalysisTool`: Analyze missing values per column with patterns and imputation suggestions
-//! - `OutlierDetectionTool`: Detect outliers using IQR or Z-score methods
-//! - `ConsistencyCheckTool`: Check data consistency (type mismatches, range validation, cross-column rules)
+/*!
+ * 数据质量分析工具
+ *
+ * 提供缺失值分析、离群值检测和一致性检查，
+ * 帮助在分析前评估并改善数据质量。
+ *
+ * 工具：
+ * - `MissingValueAnalysisTool`：逐列分析缺失值，给出缺失模式和填充建议
+ * - `OutlierDetectionTool`：使用 IQR 或 Z-score 方法检测离群值
+ * - `ConsistencyCheckTool`：检查数据一致性（类型不匹配、取值范围校验、跨列规则）
+ */
 
 use polars::prelude::*;
 use serde_json::Value;
@@ -19,18 +21,23 @@ use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
 // ── MissingValueAnalysisTool ─────────────────────────────────────────
 
+/// 缺失值分析工具：统计每列缺失数量、比例，识别缺失模式并给出填充建议。
 pub struct MissingValueAnalysisTool;
 
 impl Tool for MissingValueAnalysisTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "missing_value_analysis"
     }
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具描述。
     fn description(&self) -> &str {
         "Analyze missing values in a dataset: counts per column, percentage, pattern classification (all_missing, random_missing, monotonic), and imputation suggestions based on column type and missing rate."
     }
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -38,6 +45,7 @@ impl Tool for MissingValueAnalysisTool {
             "required": ["data_path"]
         })
     }
+    /// 加载数据并逐列分析缺失值数量、比例、模式及填充建议。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -91,6 +99,7 @@ impl Tool for MissingValueAnalysisTool {
     }
 }
 
+/// 根据空值分布判断缺失模式（无缺失、全部缺失、单调、随机、分散）。
 fn classify_missing_pattern(col: &Column, row_count: usize) -> &'static str {
     let null_count = col.null_count();
     if null_count == 0 {
@@ -111,6 +120,7 @@ fn classify_missing_pattern(col: &Column, row_count: usize) -> &'static str {
     }
 }
 
+/// 根据列类型、缺失比例和缺失模式给出填充建议。
 fn suggest_imputation(dtype: &DataType, missing_pct: f64, pattern: &str) -> String {
     if pattern == "no_missing" {
         return "No imputation needed".to_string();
@@ -141,18 +151,23 @@ fn suggest_imputation(dtype: &DataType, missing_pct: f64, pattern: &str) -> Stri
 
 // ── OutlierDetectionTool ─────────────────────────────────────────────
 
+/// 离群值检测工具：支持 IQR 和 Z-score 两种方法。
 pub struct OutlierDetectionTool;
 
 impl Tool for OutlierDetectionTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "outlier_detection"
     }
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具描述。
     fn description(&self) -> &str {
         "Detect outliers in numeric columns using IQR method (values beyond Q1 - k*IQR or Q3 + k*IQR) or Z-score method (values with |z| > threshold). Default threshold: 1.5 for IQR, 3.0 for Z-score."
     }
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -165,6 +180,7 @@ impl Tool for OutlierDetectionTool {
             "required": ["data_path"]
         })
     }
+    /// 使用 IQR 或 Z-score 方法对数值列检测离群值。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -246,6 +262,7 @@ impl Tool for OutlierDetectionTool {
     }
 }
 
+/// 使用 IQR 方法检测离群值，返回分位数、上下界及离群样本。
 fn detect_iqr_outliers(values: &[f64], k: f64, col_name: &str) -> serde_json::Value {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
@@ -273,6 +290,7 @@ fn detect_iqr_outliers(values: &[f64], k: f64, col_name: &str) -> serde_json::Va
     })
 }
 
+/// 对已排序的数据按线性插值计算分位数。
 fn percentile(values: &[f64], probability: f64) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -285,6 +303,7 @@ fn percentile(values: &[f64], probability: f64) -> f64 {
     lower_value + (upper_value - lower_value) * (position - lower as f64)
 }
 
+/// 使用 Z-score 方法检测离群值，返回均值、标准差及离群样本。
 fn detect_zscore_outliers(values: &[f64], threshold: f64, col_name: &str) -> serde_json::Value {
     let n = values.len();
     let mean = values.iter().sum::<f64>() / n as f64;
@@ -315,18 +334,23 @@ fn detect_zscore_outliers(values: &[f64], threshold: f64, col_name: &str) -> ser
 
 // ── ConsistencyCheckTool ─────────────────────────────────────────────
 
+/// 一致性检查工具：检测类型不匹配、取值范围及跨列规则。
 pub struct ConsistencyCheckTool;
 
 impl Tool for ConsistencyCheckTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "consistency_check"
     }
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具描述。
     fn description(&self) -> &str {
         "Check data consistency: type mismatches in string columns, out-of-range values in numeric columns, and cross-column validation. Custom rules can be provided as JSON."
     }
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -337,6 +361,7 @@ impl Tool for ConsistencyCheckTool {
             "required": ["data_path"]
         })
     }
+    /// 自动检测类型不匹配，并按自定义规则校验数据一致性。
     fn execute(
         &self,
         parameters: ToolParameters,
@@ -350,7 +375,7 @@ impl Tool for ConsistencyCheckTool {
             let path = security.validate_file(data_path)?;
             let df = load_dataframe(&path, None)?;
             let mut issues = Vec::new();
-            // ── Automatic type mismatch detection ──
+            // ── 自动检测类型不匹配 ──
             for col_name in df.get_column_names() {
                 let col = df
                     .column(col_name)
@@ -420,7 +445,7 @@ impl Tool for ConsistencyCheckTool {
                     }
                 }
             }
-            // ── Custom rule validation ──
+            // ── 自定义规则校验 ──
             if let Some(rules_str) = parameters.get("rules").and_then(|v| v.as_str()) {
                 let rules: Vec<serde_json::Value> =
                     serde_json::from_str(rules_str).map_err(|e| ToolError::InvalidParameter {
@@ -538,6 +563,7 @@ mod tests {
     use echo_core::tools::Tool;
     use std::io::Write;
 
+    /// 创建临时 CSV 文件并返回其路径。
     fn create_temp_csv(content: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -550,10 +576,12 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    /// 删除临时文件。
     fn cleanup(path: &str) {
         let _ = std::fs::remove_file(path);
     }
 
+    /// 缺失值分析的基本行为。
     #[tokio::test]
     async fn test_missing_value_analysis() {
         let path = create_temp_csv("a,b,c\n1,x,foo\n,y,bar\n3,,\n");
@@ -571,9 +599,10 @@ mod tests {
         cleanup(&path);
     }
 
+    /// IQR 方法能识别明显离群值。
     #[tokio::test]
     async fn test_outlier_detection_iqr() {
-        // Create data with a clear outlier
+        // 构造带有明显离群值的数据
         let path = create_temp_csv("value\n1\n2\n3\n2\n1\n100\n3\n2\n1\n");
 
         let tool = super::OutlierDetectionTool;
@@ -590,6 +619,7 @@ mod tests {
         cleanup(&path);
     }
 
+    /// IQR 在恰好四个值时也能正确处理。
     #[test]
     fn iqr_handles_exactly_four_values() {
         let result = detect_iqr_outliers(&[1.0, 2.0, 3.0, 100.0], 1.5, "value");
@@ -598,6 +628,7 @@ mod tests {
         assert!(result["q3"].is_number());
     }
 
+    /// 取值范围一致性检查。
     #[tokio::test]
     async fn test_consistency_check_range() {
         let path = create_temp_csv("age\n25\n30\n-5\n40\n200\n");

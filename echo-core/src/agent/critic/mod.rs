@@ -6,16 +6,20 @@ use futures::future::BoxFuture;
 
 // ── Critic trait ──────────────────────────────────────────────────────────────
 
-/// Critic trait —— 评估 Agent 生成的响应
-///
-/// 与 `Planner` 相对称，这是 Self-Reflection（自我反思）模式中的一个可插拔
-/// 评估组件。实现 `Critic` 即可自定义评估策略。
+/**
+Critic trait —— 评估 Agent 生成的响应
+
+与 `Planner` 相对称，这是 Self-Reflection（自我反思）模式中的一个可插拔
+评估组件。实现 `Critic` 即可自定义评估策略。
+*/
 pub trait Critic: Send + Sync {
-    /// 评估一次响应
-    ///
-    /// - `task`：原始任务描述
-    /// - `answer`：Agent 生成的响应
-    /// - `context`：额外上下文（例如情景记忆、历史结果等）
+    /**
+    评估一次响应
+
+    - `task`：原始任务描述
+    - `answer`：Agent 生成的响应
+    - `context`：额外上下文（例如情景记忆、历史结果等）
+    */
     fn critique<'a>(
         &'a self,
         task: &'a str,
@@ -31,6 +35,7 @@ pub trait Critic: Send + Sync {
 
 // ── 重新导出 composite ──────────────────────────────────────────────────────────
 
+/// 组合评估器实现
 mod composite;
 pub use composite::{CompositeCritic, CompositeStrategy};
 
@@ -49,12 +54,14 @@ pub struct StaticCritic {
 }
 
 impl StaticCritic {
-    /// 创建一个静态评估器
-    ///
-    /// # 参数
-    /// * `score` - 评估得分（通常范围为 0.0-10.0）
-    /// * `passed` - 是否通过评估
-    /// * `feedback` - 评估反馈文本
+    /**
+    创建一个静态评估器
+
+    # 参数
+    * `score` - 评估得分（通常范围为 0.0-10.0）
+    * `passed` - 是否通过评估
+    * `feedback` - 评估反馈文本
+    */
     pub fn new(score: f64, passed: bool, feedback: impl Into<String>) -> Self {
         Self {
             score,
@@ -107,9 +114,11 @@ impl Critic for StaticCritic {
 
 // ── ThresholdCritic ───────────────────────────────────────────────────────────
 
-/// 阈值 Critic：通过内部另一个 Critic 完成评估，再依据阈值判定是否通过
-///
-/// 用于包装其他 Critic，改写其 `passed` 判定结果。
+/**
+阈值 Critic：通过内部另一个 Critic 完成评估，再依据阈值判定是否通过
+
+用于包装其他 Critic，改写其 `passed` 判定结果。
+*/
 pub struct ThresholdCritic {
     /// 实际负责打分与生成反馈的内部评估器。
     inner: Box<dyn Critic>,
@@ -118,11 +127,13 @@ pub struct ThresholdCritic {
 }
 
 impl ThresholdCritic {
-    /// 创建一个阈值评估器
-    ///
-    /// # 参数
-    /// * `inner` - 内部评估器，用于实际打分与生成反馈
-    /// * `threshold` - 通过阈值，得分 >= threshold 时结果被标记为通过
+    /**
+    创建一个阈值评估器
+
+    # 参数
+    * `inner` - 内部评估器，用于实际打分与生成反馈
+    * `threshold` - 通过阈值，得分 >= threshold 时结果被标记为通过
+    */
     pub fn new(inner: impl Critic + 'static, threshold: f64) -> Self {
         Self {
             inner: Box::new(inner),

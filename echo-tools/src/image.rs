@@ -1,4 +1,4 @@
-//! Local image viewing for multimodal agents.
+//! 面向多模态 Agent 的本地图片查看工具。
 
 use base64::Engine;
 use echo_core::error::{Result, ToolError};
@@ -12,16 +12,19 @@ use std::path::PathBuf;
 
 use crate::security::SecurityConfig;
 
-/// Load a local image and project its pixels into the next model turn.
+/// 加载本地图片，并将其像素投射到下一轮模型输入中。
 pub struct ViewImageTool {
+    /// 可选的基准目录；设置后图片路径必须位于该目录内。
     base_dir: Option<PathBuf>,
 }
 
 impl ViewImageTool {
+    /// 创建不限制基准目录的图片查看工具。
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基准目录内的图片查看工具。
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -30,32 +33,39 @@ impl ViewImageTool {
 }
 
 impl Default for ViewImageTool {
+    /// 等同于 `Self::new()`。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for ViewImageTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "view_image"
     }
 
+    /// 返回工具所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 返回工具要求模型支持的输入模态。
     fn required_input_modalities(&self) -> &'static [echo_core::llm::ModelInputModality] {
         &[echo_core::llm::ModelInputModality::Image]
     }
 
+    /// 返回面向模型的工具描述。
     fn description(&self) -> &str {
         "View a local image file when visual inspection is needed. The image pixels are sent directly to multimodal models."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -75,6 +85,7 @@ impl Tool for ViewImageTool {
         })
     }
 
+    /// 在给定工具上下文中执行工具。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -148,6 +159,7 @@ impl Tool for ViewImageTool {
     }
 }
 
+/// 解析并规范化图片路径；配置了基准目录时拒绝越界路径。
 fn resolve_image_path(
     path: &str,
     base_dir: Option<&std::path::Path>,
@@ -187,6 +199,7 @@ fn resolve_image_path(
     Ok(resolved)
 }
 
+/// 通过文件魔数识别受支持的图片 MIME 类型（PNG、JPEG、GIF、WebP）。
 fn detect_supported_image_mime(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
         Some("image/png")
@@ -210,6 +223,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    /// 构造以指定目录为工作目录的测试上下文。
     fn tool_context(directory: &std::path::Path) -> echo_core::tools::ToolContext {
         echo_core::tools::ToolContext {
             working_dir: Some(directory.to_path_buf()),
@@ -217,6 +231,7 @@ mod tests {
         }
     }
 
+    /// 图片像素应作为模型内容投射，而非序列化进文本输出。
     #[tokio::test]
     async fn view_image_projects_pixels_without_serializing_them() -> Result<()> {
         let directory = tempfile::tempdir()?;
@@ -249,6 +264,7 @@ mod tests {
         Ok(())
     }
 
+    /// 非图片文件应被拒绝。
     #[tokio::test]
     async fn view_image_rejects_non_images() -> Result<()> {
         let directory = tempfile::tempdir()?;

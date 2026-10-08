@@ -1,30 +1,32 @@
-//! 提示词模板管理系统
-//!
-//! 提供一个集中式的 `PromptTemplateManager`，用于注册、存储以及渲染带变量替换功能的
-//! 提示词模板。模板使用 `{{variable_name}}` 语法，支持嵌套变量解析、默认值以及
-//! 条件区块。
-//!
-//! # 快速开始
-//!
-//! ```rust
-//! use echo_core::agent::prompt_template::PromptTemplateManager;
-//!
-//! let manager = PromptTemplateManager::new();
-//! manager.register("greeting", "Hello, {{name}}! Welcome to {{project}}.");
-//!
-//! let result = manager.render("greeting", &[("name", "Alice"), ("project", "EchoAgent")]);
-//! assert_eq!(result.unwrap(), "Hello, Alice! Welcome to EchoAgent.");
-//! ```
-//!
-//! # 模板语法
-//!
-//! - **变量**：`{{variable_name}}` —— 替换为提供的值。
-//! - **默认值**：`{{variable_name:default_value}}` —— 未提供该变量时使用
-//!   `default_value`。
-//! - **条件块**：`{{#if variable_name}}...{{#endif}}` —— 仅当 `variable_name`
-//!   存在且非空时才包含该块。
-//! - **带备选分支的条件块**：`{{#if variable_name}}...{{#else}}...{{#endif}}`
-//!   —— 变量存在时包含第一个块，否则包含备选块。
+/*!
+提示词模板管理系统
+
+提供一个集中式的 `PromptTemplateManager`，用于注册、存储以及渲染带变量替换功能的
+提示词模板。模板使用 `{{variable_name}}` 语法，支持嵌套变量解析、默认值以及
+条件区块。
+
+# 快速开始
+
+```rust
+use echo_core::agent::prompt_template::PromptTemplateManager;
+
+let manager = PromptTemplateManager::new();
+manager.register("greeting", "Hello, {{name}}! Welcome to {{project}}.");
+
+let result = manager.render("greeting", &[("name", "Alice"), ("project", "EchoAgent")]);
+assert_eq!(result.unwrap(), "Hello, Alice! Welcome to EchoAgent.");
+```
+
+# 模板语法
+
+- **变量**：`{{variable_name}}` —— 替换为提供的值。
+- **默认值**：`{{variable_name:default_value}}` —— 未提供该变量时使用
+  `default_value`。
+- **条件块**：`{{#if variable_name}}...{{#endif}}` —— 仅当 `variable_name`
+  存在且非空时才包含该块。
+- **带备选分支的条件块**：`{{#if variable_name}}...{{#else}}...{{#endif}}`
+  —— 变量存在时包含第一个块，否则包含备选块。
+*/
 
 use crate::error::{ReactError, Result};
 use std::collections::HashMap;
@@ -189,8 +191,8 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
                 i = end.saturating_add(1);
             }
             TemplateElement::ConditionalElse | TemplateElement::ConditionalEnd => {
-                // 这些标记本应在上面的 ConditionalStart 渲染逻辑中被消耗掉。
-                // 如果在顶层遇到它们，直接跳过即可。
+                /* 这些标记本应在上面的 ConditionalStart 渲染逻辑中被消耗掉。
+                如果在顶层遇到它们，直接跳过即可。 */
                 i += 1;
             }
         }
@@ -201,32 +203,34 @@ fn render_elements(elements: &[TemplateElement], variables: &HashMap<String, Str
 
 // ── PromptTemplateManager ──────────────────────────────────────────────────────
 
-/// 集中式提示词模板注册表与渲染引擎。
-///
-/// `PromptTemplateManager` 存储具名的提示词模板，并对其进行变量替换渲染。支持：
-///
-/// - 简单变量替换：`{{name}}`
-/// - 默认值：`{{name:default}}`
-/// - 条件块：`{{#if var}}...{{#else}}...{{#endif}}`
-///
-/// 该管理器是线程安全的（内部使用 `RwLock`），通常通过 `Arc<PromptTemplateManager>`
-/// 在多个 agent 之间共享。
-///
-/// # 示例
-///
-/// ```rust
-/// use echo_core::agent::prompt_template::PromptTemplateManager;
-/// use std::sync::Arc;
-///
-/// let manager = Arc::new(PromptTemplateManager::new());
-/// manager.register("system_prompt", "You are a {{role}} assistant for {{domain}}.");
-///
-/// let rendered = manager.render("system_prompt", &[
-///     ("role", "coding"),
-///     ("domain", "Rust development"),
-/// ]);
-/// assert_eq!(rendered.unwrap(), "You are a coding assistant for Rust development.");
-/// ```
+/**
+集中式提示词模板注册表与渲染引擎。
+
+`PromptTemplateManager` 存储具名的提示词模板，并对其进行变量替换渲染。支持：
+
+- 简单变量替换：`{{name}}`
+- 默认值：`{{name:default}}`
+- 条件块：`{{#if var}}...{{#else}}...{{#endif}}`
+
+该管理器是线程安全的（内部使用 `RwLock`），通常通过 `Arc<PromptTemplateManager>`
+在多个 agent 之间共享。
+
+# 示例
+
+```rust
+use echo_core::agent::prompt_template::PromptTemplateManager;
+use std::sync::Arc;
+
+let manager = Arc::new(PromptTemplateManager::new());
+manager.register("system_prompt", "You are a {{role}} assistant for {{domain}}.");
+
+let rendered = manager.render("system_prompt", &[
+    ("role", "coding"),
+    ("domain", "Rust development"),
+]);
+assert_eq!(rendered.unwrap(), "You are a coding assistant for Rust development.");
+```
+*/
 pub struct PromptTemplateManager {
     /// 按名称索引的已注册模板集合。
     templates: RwLock<HashMap<String, String>>,
@@ -240,18 +244,22 @@ impl PromptTemplateManager {
         }
     }
 
-    /// 注册一个具名的提示词模板。
-    ///
-    /// 如果同名模板已存在，则会被覆盖。
+    /**
+    注册一个具名的提示词模板。
+
+    如果同名模板已存在，则会被覆盖。
+    */
     pub fn register(&self, name: &str, template: &str) {
         // 从锁中毒中恢复 —— 数据依然有效
         let mut guard = self.templates.write().unwrap_or_else(|e| e.into_inner());
         guard.insert(name.to_string(), template.to_string());
     }
 
-    /// 移除一个具名模板。
-    ///
-    /// 若该模板存在并被移除，返回 `true`。
+    /**
+    移除一个具名模板。
+
+    若该模板存在并被移除，返回 `true`。
+    */
     pub fn remove(&self, name: &str) -> bool {
         // 从锁中毒中恢复 —— 数据依然有效
         let mut guard = self.templates.write().unwrap_or_else(|e| e.into_inner());
@@ -272,14 +280,16 @@ impl PromptTemplateManager {
         guard.keys().cloned().collect()
     }
 
-    /// 使用提供的变量替换渲染一个具名模板。
-    ///
-    /// 变量以 `(name, value)` 对组成的切片形式提供。缺失的变量要么使用模板中
-    /// 通过 `{{name:default}}` 指定的默认值替换，要么保留为空。
-    ///
-    /// # 错误
-    ///
-    /// 若模板名未注册，返回 `ReactError::Other`。
+    /**
+    使用提供的变量替换渲染一个具名模板。
+
+    变量以 `(name, value)` 对组成的切片形式提供。缺失的变量要么使用模板中
+    通过 `{{name:default}}` 指定的默认值替换，要么保留为空。
+
+    # 错误
+
+    若模板名未注册，返回 `ReactError::Other`。
+    */
     pub fn render(&self, name: &str, variables: &[(&str, &str)]) -> Result<String> {
         // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
@@ -296,9 +306,11 @@ impl PromptTemplateManager {
         Ok(render_elements(&elements, &vars))
     }
 
-    /// 直接渲染一个模板字符串（不通过名称查找）。
-    ///
-    /// 适用于模板未在管理器中注册的一次性渲染场景。
+    /**
+    直接渲染一个模板字符串（不通过名称查找）。
+
+    适用于模板未在管理器中注册的一次性渲染场景。
+    */
     pub fn render_template(&self, template: &str, variables: &[(&str, &str)]) -> String {
         let vars: HashMap<String, String> = variables
             .iter()
@@ -309,19 +321,23 @@ impl PromptTemplateManager {
         render_elements(&elements, &vars)
     }
 
-    /// 获取一个已注册模板的原始模板字符串。
-    ///
-    /// 若模板名未注册，返回 `None`。
+    /**
+    获取一个已注册模板的原始模板字符串。
+
+    若模板名未注册，返回 `None`。
+    */
     pub fn get_template(&self, name: &str) -> Option<String> {
         // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());
         guard.get(name).cloned()
     }
 
-    /// 渲染一个具名模板；当不需要任何替换时（即模板中不包含 `{{` 标记），
-    /// 直接回退返回原始模板字符串。
-    ///
-    /// 这是针对静态文本模板的一种性能优化。
+    /**
+    渲染一个具名模板；当不需要任何替换时（即模板中不包含 `{{` 标记），
+    直接回退返回原始模板字符串。
+
+    这是针对静态文本模板的一种性能优化。
+    */
     pub fn render_or_raw(&self, name: &str, variables: &[(&str, &str)]) -> Result<String> {
         // 从锁中毒中恢复 —— 数据依然有效
         let guard = self.templates.read().unwrap_or_else(|e| e.into_inner());

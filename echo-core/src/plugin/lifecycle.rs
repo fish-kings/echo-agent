@@ -1,49 +1,61 @@
-//! 插件生命周期 trait —— 挂载到插件状态转换上的钩子。
-//!
-//! 插件通过实现这个 trait 来在其生命周期的关键时刻接收回调：
-//! 加载、激活、停用和关闭。
+/*!
+插件生命周期 trait —— 挂载到插件状态转换上的钩子。
+
+插件通过实现这个 trait 来在其生命周期的关键时刻接收回调：
+加载、激活、停用和关闭。
+*/
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-/// 插件的生命周期回调。
-///
-/// agent 框架会在合适的时机调用这些方法：
-///
-/// ```text
-/// load → init → activate ⇄ deactivate → shutdown
-///                    ↑          ↓
-///                    └──────────┘  (可在重新加载时循环)
-/// ```
+/**
+插件的生命周期回调。
+
+agent 框架会在合适的时机调用这些方法：
+
+```text
+load → init → activate ⇄ deactivate → shutdown
+                   ↑          ↓
+                   └──────────┘  (可在重新加载时循环)
+```
+*/
 pub trait PluginLifecycle: Send + Sync {
-    /// 在插件加载完毕、其组件已注册之后调用一次。
-    ///
-    /// 用于执行一次性的初始化工作：启动后台进程、
-    /// 建立连接、初始化缓存等。
+    /**
+    在插件加载完毕、其组件已注册之后调用一次。
+
+    用于执行一次性的初始化工作：启动后台进程、
+    建立连接、初始化缓存等。
+    */
     fn init(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// 在插件被启用时调用（若 `default_enabled: true`，则启动时也会调用）。
-    ///
-    /// 此时组件已经完成装配。用于执行激活相关的逻辑，
-    /// 例如启动监控器。
+    /**
+    在插件被启用时调用（若 `default_enabled: true`，则启动时也会调用）。
+
+    此时组件已经完成装配。用于执行激活相关的逻辑，
+    例如启动监控器。
+    */
     fn activate(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// 在插件被禁用时调用。
-    ///
-    /// 用于停止后台进程并释放资源。
-    /// 该方法返回后，组件将被解除装配。
+    /**
+    在插件被禁用时调用。
+
+    用于停止后台进程并释放资源。
+    该方法返回后，组件将被解除装配。
+    */
     fn deactivate(&self) -> Result<(), String> {
         Ok(())
     }
 
-    /// 在 agent 关闭时调用。
-    ///
-    /// 用于执行最终清理：刷新缓冲区、关闭连接、
-    /// 将状态保存到 `${ECHO_PLUGIN_DATA}`。
+    /**
+    在 agent 关闭时调用。
+
+    用于执行最终清理：刷新缓冲区、关闭连接、
+    将状态保存到 `${ECHO_PLUGIN_DATA}`。
+    */
     fn shutdown(&self) -> Result<(), String> {
         Ok(())
     }
@@ -194,10 +206,12 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// 在释放已卸载插件的资源之后，移除其回调。
-    ///
-    /// 清理失败时会保留所有权，以便调用方重试，
-    /// 而不是替换掉可能仍持有活跃资源的回调。
+    /**
+    在释放已卸载插件的资源之后，移除其回调。
+
+    清理失败时会保留所有权，以便调用方重试，
+    而不是替换掉可能仍持有活跃资源的回调。
+    */
     pub fn unregister(&mut self, plugin_id: &str) -> Result<bool, String> {
         if !self.plugins.contains_key(plugin_id) {
             return Ok(false);
@@ -207,12 +221,14 @@ impl PluginLifecycleManager {
         Ok(true)
     }
 
-    /// 结算回调产生的副作用，同时保留该注册项以便重试。
-    ///
-    /// 一次失败的 init 或 activate 可能已经获取了资源，即便回调
-    /// 从未真正变为激活状态。该生命周期权威方会执行与 unregister
-    /// 相同的 deactivate/shutdown 结算流程，但会保留回调本身，
-    /// 以便协调者之后能够初始化下一代真正的实例。
+    /**
+    结算回调产生的副作用，同时保留该注册项以便重试。
+
+    一次失败的 init 或 activate 可能已经获取了资源，即便回调
+    从未真正变为激活状态。该生命周期权威方会执行与 unregister
+    相同的 deactivate/shutdown 结算流程，但会保留回调本身，
+    以便协调者之后能够初始化下一代真正的实例。
+    */
     pub fn reset_for_retry(&mut self, plugin_id: &str) -> Result<bool, String> {
         let Some(lifecycle) = self.plugins.get_mut(plugin_id) else {
             return Ok(false);
@@ -247,8 +263,10 @@ impl PluginLifecycleManager {
         }
     }
 
-    /// 将已注册的回调与注册表中已启用插件的集合进行协调。
-    /// 未解决的下线（withdrawal）会阻塞所有新的激活，直到清理成功为止。
+    /**
+    将已注册的回调与注册表中已启用插件的集合进行协调。
+    未解决的下线（withdrawal）会阻塞所有新的激活，直到清理成功为止。
+    */
     pub fn reconcile<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -259,8 +277,10 @@ impl PluginLifecycleManager {
         errors
     }
 
-    /// 停用那些插件不在下一个集合中的、当前处于激活状态的回调。
-    /// 内嵌运行时会在解除插件组件装配之前调用此方法。
+    /**
+    停用那些插件不在下一个集合中的、当前处于激活状态的回调。
+    内嵌运行时会在解除插件组件装配之前调用此方法。
+    */
     pub fn deactivate_not_in<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -269,8 +289,10 @@ impl PluginLifecycleManager {
         self.deactivate_not_in_set(&enabled)
     }
 
-    /// 初始化并激活当前已启用集合中存在的回调。
-    /// 内嵌运行时会在插件组件完成装配之后调用此方法。
+    /**
+    初始化并激活当前已启用集合中存在的回调。
+    内嵌运行时会在插件组件完成装配之后调用此方法。
+    */
     pub fn activate_enabled<'a>(
         &mut self,
         enabled_plugins: impl IntoIterator<Item = &'a str>,
@@ -362,6 +384,7 @@ impl Drop for PluginLifecycleManager {
     }
 }
 
+/// 插件生命周期管理的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,21 +434,25 @@ mod tests {
     }
 
     impl PluginLifecycle for CountingLifecycle {
+        /// 计数并成功。
         fn init(&self) -> Result<(), String> {
             self.0.init.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
+        /// 计数并成功。
         fn activate(&self) -> Result<(), String> {
             self.0.activate.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
+        /// 计数并成功。
         fn deactivate(&self) -> Result<(), String> {
             self.0.deactivate.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
+        /// 计数并成功。
         fn shutdown(&self) -> Result<(), String> {
             self.0.shutdown.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -433,16 +460,19 @@ mod tests {
     }
 
     impl PluginLifecycle for FailingCleanupLifecycle {
+        /// 总是返回注入的停用失败。
         fn deactivate(&self) -> Result<(), String> {
             Err("injected deactivate failure".to_string())
         }
 
+        /// 总是返回注入的关闭失败。
         fn shutdown(&self) -> Result<(), String> {
             Err("injected shutdown failure".to_string())
         }
     }
 
     impl PluginLifecycle for FailingActivationLifecycle {
+        /// 计数后返回注入的激活失败。
         fn activate(&self) -> Result<(), String> {
             self.0.activate.fetch_add(1, Ordering::SeqCst);
             Err("injected activation failure".to_string())
@@ -450,15 +480,18 @@ mod tests {
     }
 
     impl PluginLifecycle for FailingInitializationLifecycle {
+        /// 返回注入的初始化失败。
         fn init(&self) -> Result<(), String> {
             Err("injected init failure".to_string())
         }
 
+        /// 计数并失败：激活前不应被调用。
         fn deactivate(&self) -> Result<(), String> {
             self.0.deactivate.fetch_add(1, Ordering::SeqCst);
             Err("deactivate called before activation".to_string())
         }
 
+        /// 计数并成功。
         fn shutdown(&self) -> Result<(), String> {
             self.0.shutdown.fetch_add(1, Ordering::SeqCst);
             Ok(())
@@ -466,11 +499,13 @@ mod tests {
     }
 
     impl PluginLifecycle for RetryingDeactivateLifecycle {
+        /// 计数并成功。
         fn activate(&self) -> Result<(), String> {
             self.counts.activate.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
+        /// 计数，并按开关决定是否失败。
         fn deactivate(&self) -> Result<(), String> {
             self.counts.deactivate.fetch_add(1, Ordering::SeqCst);
             if self.fail_deactivate.load(Ordering::SeqCst) {
@@ -482,6 +517,7 @@ mod tests {
     }
 
     impl PluginLifecycle for RetryingCleanupLifecycle {
+        /// 计数，并按开关决定是否失败。
         fn deactivate(&self) -> Result<(), String> {
             self.counts.deactivate.fetch_add(1, Ordering::SeqCst);
             if self.fail_deactivate.load(Ordering::SeqCst) {
@@ -491,6 +527,7 @@ mod tests {
             }
         }
 
+        /// 计数，并按开关决定是否失败。
         fn shutdown(&self) -> Result<(), String> {
             self.counts.shutdown.fetch_add(1, Ordering::SeqCst);
             if self.fail_shutdown.load(Ordering::SeqCst) {
@@ -501,6 +538,7 @@ mod tests {
         }
     }
 
+    /// 验证管理器按启用集合驱动状态转换，且各回调只执行一次。
     #[test]
     fn lifecycle_manager_drives_enabled_state_and_shutdown_once() -> Result<(), String> {
         let counts = Arc::new(Counts::default());
@@ -519,6 +557,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证注销会释放回调并允许重新注册。
     #[test]
     fn unregister_releases_callbacks_and_allows_reregistration() -> Result<(), String> {
         let first = Arc::new(Counts::default());
@@ -538,6 +577,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证全部停用后重新激活不会再次初始化。
     #[test]
     fn deactivate_all_brackets_reactivation_without_reinitializing() -> Result<(), String> {
         let counts = Arc::new(Counts::default());
@@ -554,6 +594,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证注销清理失败时保留回调所有权。
     #[test]
     fn failed_unregister_retains_cleanup_ownership() -> Result<(), String> {
         let mut manager = PluginLifecycleManager::new();
@@ -574,6 +615,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证下线失败会阻塞协调与直接激活，直到重试成功。
     #[test]
     fn failed_withdrawal_blocks_reconcile_and_direct_activation_until_retry() -> Result<(), String>
     {
@@ -626,6 +668,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证全部停用失败会阻塞独立的激活阶段。
     #[test]
     fn failed_deactivate_all_blocks_separate_activation_phase() -> Result<(), String> {
         let old_counts = Arc::new(Counts::default());
@@ -661,6 +704,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证激活失败会阻塞后续回调，直到完成清理。
     #[test]
     fn failed_activation_blocks_later_callbacks_until_cleanup() -> Result<(), String> {
         let failed_counts = Arc::new(Counts::default());
@@ -701,6 +745,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证单独停用成功并不能结算注销时失败的关闭债务。
     #[test]
     fn successful_deactivate_does_not_settle_failed_unregister_shutdown() -> Result<(), String> {
         let old_counts = Arc::new(Counts::default());
@@ -744,6 +789,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证重试关闭时不会重复已成功的停用。
     #[test]
     fn shutdown_retry_does_not_repeat_successful_deactivation() -> Result<(), String> {
         let counts = Arc::new(Counts::default());
@@ -771,6 +817,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证初始化失败后只需关闭而无需停用。
     #[test]
     fn failed_init_requires_shutdown_without_deactivation() -> Result<(), String> {
         let counts = Arc::new(Counts::default());

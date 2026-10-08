@@ -35,6 +35,7 @@ use crate::error::Result;
 pub struct DefaultAgentFactory;
 
 impl AgentFactory for DefaultAgentFactory {
+    /// 根据工厂配置创建 ReactAgent 并装箱为 `dyn Agent`。
     fn create_agent(&self, config: AgentFactoryConfig) -> Result<Box<dyn Agent>> {
         let model = config.model_name().to_string();
         let name = config.agent_name().to_string();
@@ -55,12 +56,14 @@ impl AgentFactory for DefaultAgentFactory {
 
 pub use echo_core::agent::factory::{AgentFactory, AgentFactoryConfig};
 
+/// 默认 Agent 工厂的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::MockLlmClient;
     use std::sync::Arc;
 
+    /// 验证工厂配置构建器正确设置各字段。
     #[test]
     fn test_factory_creates_config() {
         let config = AgentFactoryConfig::new()
@@ -72,6 +75,7 @@ mod tests {
         assert_eq!(config.agent_name(), "test-agent");
     }
 
+    /// 验证可使用 Mock LLM 客户端构建 Agent。
     #[tokio::test]
     async fn test_factory_build_agent_with_mock() {
         let mock_client = Arc::new(MockLlmClient::new().with_model_name("mock-test"));

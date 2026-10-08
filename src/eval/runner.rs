@@ -460,8 +460,10 @@ impl EvalRunner {
         let (Some(store), Some(run)) = (self.run_store.as_ref(), run) else {
             return;
         };
-        // 对于该测试判定标准而言，命令的退出状态才是权威依据，
-        // 而不是其测试运行器内部失败断言的数量。
+        /*
+        对于该测试判定标准而言，命令的退出状态才是权威依据，
+        而不是其测试运行器内部失败断言的数量。
+        */
         let mut event = RunEvent::TestRun {
             command: command.to_string(),
             passed,
@@ -634,8 +636,10 @@ impl EvalRunner {
                     );
                 }
 
-                // 校验 test_command：拒绝可能在传给 `sh -c` 时
-                // 导致命令注入的 shell 元字符
+                /*
+                校验 test_command：拒绝可能在传给 `sh -c` 时
+                导致命令注入的 shell 元字符
+                */
                 if let Err(msg) = validate_shell_command(test_command) {
                     return EvalResult::new("criteria", false).with_metric("swe_bench", 0.0, &msg);
                 }
@@ -884,8 +888,10 @@ impl EvalRunner {
 
                 for (key, expected_val) in expected {
                     checks_total += 1;
-                    // 尝试在输出中查找该值，匹配类似
-                    // "key: value"、"key = value" 或者直接查找数字的模式
+                    /*
+                    尝试在输出中查找该值，匹配类似
+                    "key: value"、"key = value" 或者直接查找数字的模式
+                    */
                     let found = extract_number_near_key(output, key);
                     match found {
                         Some(actual) => {

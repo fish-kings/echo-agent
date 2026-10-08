@@ -1,12 +1,14 @@
-//! demo68_human_selection — HumanLoopProvider Selection (task checkpoint) demo
-//!
-//! Demonstrates the unified human-in-the-loop Selection kind that replaces
-//! the legacy HumanGate. A running task can pause and wait for human input
-//! via the same HumanLoopProvider used for tool approvals.
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo68_human_gate --features subagent,human-loop
-//! ```
+/*!
+ * demo68_human_selection — HumanLoopProvider 选择（任务检查点）演示
+ *
+ * 演示统一的人在回路 Selection 类型，它取代了旧版 HumanGate。
+ * 运行中的任务可以暂停，并通过与工具审批相同的 HumanLoopProvider
+ * 等待人工输入。
+ *
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo68_human_gate --features subagent,human-loop
+ * ```
+ */
 
 use echo_agent::human_loop::{
     ApprovalDecision, HumanLoopEvent, HumanLoopManager, HumanLoopProvider, HumanLoopRequest,
@@ -15,15 +17,16 @@ use echo_agent::human_loop::{
 use std::sync::Arc;
 use std::time::Duration;
 
+/// 示例入口：依次演示选择请求、选择超时与审批请求三个场景。
 #[tokio::main]
 async fn main() {
     println!("=== demo68: HumanLoopProvider Selection ===\n");
 
-    // ── Scenario 1: Selection via HumanLoopManager event loop ─────────
+    // ── 场景 1：通过 HumanLoopManager 事件循环进行选择 ─────────
     println!("--- Scenario 1: Selection via Manager events ---");
     let manager = Arc::new(HumanLoopManager::new());
 
-    // Spawn event handler (simulates frontend)
+    // 启动事件处理任务（模拟前端）
     let mgr = manager.clone();
     let handler = tokio::spawn(async move {
         while let Some(event) = mgr.recv_event().await {
@@ -41,14 +44,14 @@ async fn main() {
                 for (i, opt) in options.iter().enumerate() {
                     println!("  [{i}] {opt}");
                 }
-                // Auto-select "Approve"
+                // 自动选择 "Approve"
                 responder.respond("Approve".to_string(), None);
                 println!("  📨 [Frontend]  responded: Approve");
             }
         }
     });
 
-    // Task requests selection
+    // 任务发起选择请求
     let req = HumanLoopRequest::selection(
         "task-1",
         "Review the draft and choose an action",
@@ -72,15 +75,15 @@ async fn main() {
     drop(manager);
     let _ = handler.await;
 
-    // ── Scenario 2: Timeout ──────────────────────────────────────────
+    // ── 场景 2：超时 ──────────────────────────────────────────
     println!("\n--- Scenario 2: Selection timeout ---");
     let manager2 = Arc::new(HumanLoopManager::new());
 
-    // Spawn handler that never responds (simulates no frontend)
+    // 启动一个从不响应的处理任务（模拟没有前端）
     let mgr2 = manager2.clone();
     let handler2 = tokio::spawn(async move {
         while let Some(_event) = mgr2.recv_event().await {
-            // Intentionally not responding to trigger timeout
+            // 故意不响应以触发超时
         }
     });
 
@@ -89,7 +92,7 @@ async fn main() {
         "Approve deployment",
         vec!["Deploy".into(), "Abort".into()],
     );
-    // Use the approval_with_timeout pattern adapted for selection
+    // 沿用 approval_with_timeout 模式，改用于选择请求
     let mut req2 = req2;
     req2.timeout = Some(Duration::from_millis(200));
 
@@ -103,7 +106,7 @@ async fn main() {
     drop(manager2);
     handler2.abort();
 
-    // ── Scenario 3: Approval kind still works ────────────────────────
+    // ── 场景 3：审批类型仍然可用 ────────────────────────
     println!("\n--- Scenario 3: Approval kind (backward compat) ---");
     let manager3 = Arc::new(HumanLoopManager::new());
 

@@ -1,4 +1,4 @@
-//! Cron task definition and persistence.
+//! Cron 任务定义与持久化。
 
 use chrono::{DateTime, Utc};
 use cron::Schedule;
@@ -12,54 +12,56 @@ use tracing::debug;
 
 // ── CronTask ───────────────────────────────────────────────────────
 
-/// A scheduled task that fires according to a cron expression.
+/// 按 cron 表达式定时触发的计划任务。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CronTask {
-    /// Unique identifier.
+    /// 唯一标识符。
     pub id: String,
-    /// Store-owned immutable identity for this definition generation.
-    ///
-    /// `CronTaskStore::add` always replaces this value so removing and adding
-    /// an exact task clone cannot resurrect callbacks from the prior
-    /// definition. Legacy records without this field use `created_at` until
-    /// they are re-added. New unpersisted tasks leave this empty until
-    /// `CronTaskStore::add` assigns the canonical value.
+    /**
+     * 由存储持有的、本代定义的不可变身份标识。
+     *
+     * `CronTaskStore::add` 总是会替换该值，因此删除后再添加一个完全相同的任务克隆，
+     * 也无法复活先前定义的回调。缺少该字段的旧记录在重新添加之前以 `created_at`
+     * 作为身份。尚未持久化的新任务在 `CronTaskStore::add` 分配规范值之前保持为空。
+     */
     #[serde(default)]
     pub definition_id: String,
-    /// Human-readable name.
+    /// 人类可读的名称。
     pub name: String,
-    /// 5-field cron expression: `min hour dom month dow`.
+    /// 5 字段 cron 表达式：`min hour dom month dow`。
     pub cron_expr: String,
-    /// The prompt or command to execute when fired.
+    /// 触发时要执行的提示词或命令。
     pub prompt: String,
-    /// Whether the task is active.
+    /// 任务是否处于激活状态。
     pub status: CronTaskStatus,
-    /// Durable revision incremented by every status control operation.
-    ///
-    /// Scheduled occurrences capture this token so disable followed by enable
-    /// cannot admit work selected before either control committed.
+    /**
+     * 持久化的控制修订号，每次状态控制操作都会递增。
+     *
+     * 计划触发实例会捕获该令牌，因此“先禁用再启用”不会放行在任一控制操作提交之前
+     * 已被选中的工作。
+     */
     #[serde(default)]
     pub control_revision: u64,
-    /// ISO 8601 timestamp of the last execution.
+    /// 最近一次执行的 ISO 8601 时间戳。
     pub last_run_at: Option<String>,
-    /// Truncated result from the last execution (first 500 chars).
+    /// 最近一次执行的截断结果（前 500 个字符）。
     pub last_result: Option<String>,
-    /// ISO 8601 timestamp of creation.
+    /// 创建时间的 ISO 8601 时间戳。
     pub created_at: String,
 }
 
-/// Whether a cron task is active.
+/// cron 任务的激活状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CronTaskStatus {
-    /// Task fires on schedule.
+    /// 任务按计划触发。
     Enabled,
-    /// Task is paused.
+    /// 任务已暂停。
     Disabled,
 }
 
 impl CronTask {
-    /// Create a new enabled cron task.
+    /// 创建一个处于启用状态的新 cron 任务。
     pub fn new(name: &str, cron_expr: &str, prompt: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -75,16 +77,18 @@ impl CronTask {
         }
     }
 
-    /// Calculate the next fire time after now.
-    ///
-    /// Returns `None` if the cron expression is invalid or has no future occurrences.
+    /**
+     * 计算当前时刻之后的下一次触发时间。
+     *
+     * 若 cron 表达式无效或不存在未来的触发时间，则返回 `None`。
+     */
     pub fn next_run(&self) -> Option<DateTime<Utc>> {
         self.next_run_after(&Utc::now())
     }
 
-    /// Calculate the first fire time strictly after a caller-supplied boundary.
+    /// 计算严格晚于调用方给定边界的第一次触发时间。
     pub fn next_run_after(&self, after: &DateTime<Utc>) -> Option<DateTime<Utc>> {
-        // The cron crate expects 7-field expressions; pad with seconds and year
+        // cron crate 需要 7 字段表达式；补齐秒和年字段
         let expr = if self.cron_expr.split_whitespace().count() == 5 {
             format!("0 {} *", self.cron_expr)
         } else {
@@ -94,7 +98,7 @@ impl CronTask {
         schedule.after(after).next()
     }
 
-    /// Validate the cron expression.
+    /// 校验 cron 表达式是否合法。
     pub fn validate_cron(&self) -> bool {
         let expr = if self.cron_expr.split_whitespace().count() == 5 {
             format!("0 {} *", self.cron_expr)
@@ -104,6 +108,7 @@ impl CronTask {
         Schedule::from_str(&expr).is_ok()
     }
 
+    /// 判断两个任务是否属于同一代定义（ID 相同且定义身份一致）。
     pub(crate) fn same_definition(&self, other: &Self) -> bool {
         if self.id != other.id {
             return false;
@@ -119,32 +124,42 @@ impl CronTask {
 
 // ── CronTaskStore ──────────────────────────────────────────────────
 
-/// Persistent store for cron task definitions.
-///
-/// Supports two backends:
-/// 1. **Store trait** (SQLite/InMemory) — recommended
-/// 2. **File-based** — legacy JSON file fallback
-///
-/// [`super::SchedulerRunner`] derives its occurrence journal and checkpoint
-/// paths from this store's definition path. Store-backed definitions must set
-/// a stable path anchor with [`Self::with_path`] before constructing a runner.
+/**
+ * cron 任务定义的持久化存储。
+ *
+ * 支持两种后端：
+ * 1. **Store trait**（SQLite/InMemory）—— 推荐
+ * 2. **基于文件** —— 旧版 JSON 文件回退方案
+ *
+ * [`super::SchedulerRunner`] 会根据该存储的定义路径推导触发实例日志与检查点路径。
+ * 基于 Store 的定义在构造 runner 之前必须通过 [`Self::with_path`] 设置稳定的路径锚点。
+ */
 #[derive(Clone)]
 pub struct CronTaskStore {
+    /// 可选的 Store 后端；为 `None` 时使用文件后端。
     backend: Option<Arc<dyn echo_core::memory::Store>>,
+    /// 定义文件路径（同时作为触发实例日志的路径锚点）。
     path: PathBuf,
+    /// 进程内全局共享的变更互斥锁，串行化所有读-改-写操作。
     mutation_lock: Arc<Mutex<()>>,
+    /// 按路径共享的健康状态（含权威性中毒标记）。
     health: Arc<CronTaskStoreHealth>,
 }
 
+/// 按定义路径共享的存储健康状态。
 struct CronTaskStoreHealth {
+    /// 权威性中毒原因；为 `Some` 时拒绝一切读写，直到恢复。
     poison: StdMutex<Option<String>>,
+    /// 测试用：在可见替换之后注入持久化失败。
     #[cfg(test)]
     file_after_replace_fault: Arc<std::sync::atomic::AtomicBool>,
+    /// 测试用：在对账读取时注入读取失败。
     #[cfg(test)]
     file_reconcile_read_fault: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl CronTaskStoreHealth {
+    /// 创建未中毒的健康状态。
     fn new() -> Self {
         Self {
             poison: StdMutex::new(None),
@@ -156,20 +171,25 @@ impl CronTaskStoreHealth {
     }
 }
 
+/// Store 后端中保存 cron 任务的命名空间。
 const STORE_NAMESPACE: &[&str] = &["scheduler", "cron_tasks"];
+/// Store 后端中保存全部 cron 任务的键。
 const STORE_KEY: &str = "all_cron_tasks";
 
+/// 返回进程级共享的 cron 存储变更锁。
 fn cron_store_mutation_lock() -> Arc<Mutex<()>> {
     static LOCK: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
     Arc::clone(LOCK.get_or_init(|| Arc::new(Mutex::new(()))))
 }
 
+/// 返回按规范化路径索引的健康状态注册表（弱引用）。
 fn cron_store_health_registry() -> &'static StdMutex<HashMap<PathBuf, Weak<CronTaskStoreHealth>>> {
     static REGISTRY: OnceLock<StdMutex<HashMap<PathBuf, Weak<CronTaskStoreHealth>>>> =
         OnceLock::new();
     REGISTRY.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
+/// 计算路径的规范化键，即使父目录尚不存在也能保持稳定。
 fn cron_store_health_key(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -210,6 +230,7 @@ fn cron_store_health_key(path: &Path) -> PathBuf {
     }
 }
 
+/// 获取或创建指定路径共享的健康状态，并清理已失效的条目。
 fn cron_store_health(path: &Path) -> Arc<CronTaskStoreHealth> {
     let key = cron_store_health_key(path);
     let mut registry = cron_store_health_registry()
@@ -225,7 +246,7 @@ fn cron_store_health(path: &Path) -> Arc<CronTaskStoreHealth> {
 }
 
 impl CronTaskStore {
-    /// Create a file-based store (default: `~/.echo-agent/scheduler/tasks.json`).
+    /// 创建基于文件的存储（默认路径：`~/.echo-agent/scheduler/tasks.json`）。
     pub fn new() -> Self {
         let path = default_task_path();
         Self {
@@ -236,7 +257,7 @@ impl CronTaskStore {
         }
     }
 
-    /// Create a Store-backed store with automatic migration from file.
+    /// 创建基于 Store 后端的存储，并自动从旧文件迁移数据。
     pub async fn with_store(
         store: Arc<dyn echo_core::memory::Store>,
     ) -> echo_core::error::Result<Self> {
@@ -250,16 +271,19 @@ impl CronTaskStore {
         Ok(s)
     }
 
-    /// Set a custom file definition path and colocate occurrence durability files.
-    ///
-    /// For a Store-backed instance the Store remains the definition authority;
-    /// this path only selects the sibling occurrence journal location.
+    /**
+     * 设置自定义的定义文件路径，并将触发实例的持久化文件放在同一位置。
+     *
+     * 对于基于 Store 的实例，Store 仍是定义的权威来源；该路径仅用于选择相邻的
+     * 触发实例日志位置。
+     */
     pub fn with_path(mut self, path: PathBuf) -> Self {
         self.health = cron_store_health(&path);
         self.path = path;
         self
     }
 
+    /// 测试用：同时指定 Store 后端与路径构造存储。
     #[cfg(test)]
     pub(crate) fn with_backend_path_for_test(
         backend: Arc<dyn echo_core::memory::Store>,
@@ -273,6 +297,7 @@ impl CronTaskStore {
         }
     }
 
+    /// 测试用：注入“可见替换后持久化失败”故障。
     #[cfg(test)]
     pub(crate) fn inject_file_after_replace_fault(&self) {
         self.health
@@ -280,6 +305,7 @@ impl CronTaskStore {
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// 测试用：注入“可见替换后持久化失败且对账读取失败”故障。
     #[cfg(test)]
     pub(crate) fn inject_file_after_replace_reconcile_read_fault(&self) {
         self.health
@@ -290,6 +316,7 @@ impl CronTaskStore {
             .store(true, std::sync::atomic::Ordering::Release);
     }
 
+    /// 返回触发实例日志与检查点文件的路径 `(journal, checkpoint)`。
     pub(crate) fn occurrence_paths(&self) -> echo_core::error::Result<(PathBuf, PathBuf)> {
         if self.backend.is_some() && self.path.as_os_str().is_empty() {
             return Err(echo_core::error::ReactError::Other(
@@ -308,18 +335,19 @@ impl CronTaskStore {
         ))
     }
 
-    /// Load all cron tasks.
+    /// 加载全部 cron 任务。
     pub async fn load_all(&self) -> echo_core::error::Result<Vec<CronTask>> {
         self.check_authority()?;
         self.load_all_unchecked().await
     }
 
+    /// 在不检查权威性中毒状态的情况下加载全部任务。
     async fn load_all_unchecked(&self) -> echo_core::error::Result<Vec<CronTask>> {
         if let Some(ref backend) = self.backend {
             let item = backend.get(STORE_NAMESPACE, STORE_KEY).await?;
             match item {
                 Some(store_item) => {
-                    // Value is stored as serde_json::Value — extract the string
+                    // 值以 serde_json::Value 存储——提取其中的字符串
                     let json_str = match &store_item.value {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
@@ -339,7 +367,7 @@ impl CronTaskStore {
         }
     }
 
-    /// Save all cron tasks.
+    /// 保存全部 cron 任务（调用方需已持有变更锁）。
     async fn save_all_unlocked(&self, tasks: &[CronTask]) -> echo_core::error::Result<()> {
         self.check_authority()?;
         validate_task_ids(tasks)?;
@@ -372,11 +400,12 @@ impl CronTaskStore {
         Ok(())
     }
 
-    /// Add a task as a fresh definition incarnation and persist it.
-    ///
-    /// The store replaces caller-supplied `definition_id` and returns the exact
-    /// committed definition so callers can update projections without a second
-    /// fallible backend read.
+    /**
+     * 以全新的定义代添加任务并持久化。
+     *
+     * 存储会替换调用方提供的 `definition_id`，并返回实际提交的定义，
+     * 使调用方无需再次进行可能失败的后端读取即可更新投影。
+     */
     pub async fn add(&self, mut task: CronTask) -> echo_core::error::Result<CronTask> {
         unique_id(&task.id)?;
         let _guard = self.mutation_lock.lock().await;
@@ -393,12 +422,12 @@ impl CronTaskStore {
         Ok(task)
     }
 
-    /// Remove a task by ID and persist. Returns true if found.
+    /// 按 ID 删除任务并持久化；找到时返回 true。
     pub async fn remove(&self, id: &str) -> echo_core::error::Result<bool> {
         Ok(self.remove_with_snapshot(id).await?.is_some())
     }
 
-    /// Return the exact committed definition set to update an in-memory view.
+    /// 删除任务并返回实际提交后的定义集合，用于更新内存视图。
     pub(crate) async fn remove_with_snapshot(
         &self,
         id: &str,
@@ -415,12 +444,12 @@ impl CronTaskStore {
         Ok(removed.then_some(tasks))
     }
 
-    /// Remove exactly one task by its complete ID and persist.
+    /// 按完整 ID 精确删除一个任务并持久化。
     pub async fn remove_exact(&self, id: &str) -> echo_core::error::Result<bool> {
         self.remove(id).await
     }
 
-    /// Update the status of a task by ID and persist.
+    /// 按 ID 更新任务状态并持久化。
     pub async fn set_status(
         &self,
         id: &str,
@@ -429,6 +458,7 @@ impl CronTaskStore {
         Ok(self.set_status_with_snapshot(id, status).await?.is_some())
     }
 
+    /// 更新任务状态、递增控制修订号，并返回提交后的定义集合。
     pub(crate) async fn set_status_with_snapshot(
         &self,
         id: &str,
@@ -457,7 +487,7 @@ impl CronTaskStore {
         Ok(found.then_some(tasks))
     }
 
-    /// Update last_run info after a task fires.
+    /// 任务触发后更新 last_run 信息。
     pub async fn update_last_run(&self, id: &str, result: &str) -> echo_core::error::Result<()> {
         let id = unique_id(id)?;
         let task = self.get(id).await?.ok_or_else(|| {
@@ -468,11 +498,12 @@ impl CronTaskStore {
             .map(|_| ())
     }
 
-    /// Update last-run information only for the captured task definition.
-    ///
-    /// The store-owned `definition_id` prevents a callback from an older
-    /// definition from updating a task that was removed and recreated with the
-    /// same public ID. Legacy records use `created_at` as their identity.
+    /**
+     * 仅针对捕获到的那一代任务定义更新最近运行信息。
+     *
+     * 由存储持有的 `definition_id` 可防止旧定义的回调去更新一个已被删除、
+     * 又以相同公开 ID 重新创建的任务。旧记录以 `created_at` 作为身份。
+     */
     pub(crate) async fn update_last_run_for_task(
         &self,
         expected: &CronTask,
@@ -499,15 +530,16 @@ impl CronTaskStore {
         Ok(updated)
     }
 
-    /// Get a task by its unique ID.
+    /// 按唯一 ID 获取任务。
     pub async fn get(&self, id: &str) -> echo_core::error::Result<Option<CronTask>> {
         let id = unique_id(id)?;
         let tasks = self.load_all().await?;
         Ok(tasks.into_iter().find(|task| task.id == id))
     }
 
-    // ── Private helpers ────────────────────────────────────────────
+    // ── 私有辅助方法 ────────────────────────────────────────────
 
+    /// 检查定义权威性是否已中毒；中毒时返回错误。
     pub(crate) fn check_authority(&self) -> echo_core::error::Result<()> {
         let poison = self
             .health
@@ -522,6 +554,7 @@ impl CronTaskStore {
         Ok(())
     }
 
+    /// 返回定义权威性是否已中毒。
     pub(crate) fn is_authority_poisoned(&self) -> bool {
         self.health
             .poison
@@ -530,6 +563,7 @@ impl CronTaskStore {
             .is_some()
     }
 
+    /// 重新加载后端并清除中毒标记，返回恢复后的任务列表。
     pub(crate) async fn recover_authority(&self) -> echo_core::error::Result<Vec<CronTask>> {
         let _guard = self.mutation_lock.lock().await;
         let tasks = self.load_all_unchecked().await?;
@@ -541,6 +575,7 @@ impl CronTaskStore {
         Ok(tasks)
     }
 
+    /// 标记权威性中毒并返回相应错误。
     fn poison_authority(&self, reason: String) -> echo_core::error::ReactError {
         *self
             .health
@@ -552,6 +587,7 @@ impl CronTaskStore {
         ))
     }
 
+    /// 从定义文件加载任务；文件不存在或为空时返回空列表。
     fn load_from_file(&self) -> echo_core::error::Result<Vec<CronTask>> {
         if !self.path.exists() {
             return Ok(vec![]);
@@ -569,6 +605,7 @@ impl CronTaskStore {
         Ok(tasks)
     }
 
+    /// 原子写入定义文件；写入结果不确定时通过对账判断是否需要中毒。
     fn save_to_file(&self, json: &str) -> echo_core::error::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -652,6 +689,7 @@ impl CronTaskStore {
         }
     }
 
+    /// 将旧版文件中的任务迁移到 Store 后端（目标已存在时保留旧文件不迁移）。
     async fn migrate_from_file(&self) -> echo_core::error::Result<()> {
         let _guard = self.mutation_lock.lock().await;
         let Some(backend) = self.backend.as_ref() else {
@@ -663,8 +701,8 @@ impl CronTaskStore {
             return Ok(());
         }
 
-        // A present destination is already authoritative, even when it stores
-        // an empty list.  Never replace it with a legacy snapshot.
+        /* 已存在的目标数据即为权威来源，即使其中存储的是空列表。
+        绝不能用旧版快照替换它。 */
         if backend.get(STORE_NAMESPACE, STORE_KEY).await?.is_some() {
             let _ = self.load_all().await?;
             debug!("Scheduler store already contains cron tasks; preserving legacy file");
@@ -687,7 +725,7 @@ impl CronTaskStore {
         })?;
         validate_task_ids(&tasks)?;
         self.save_all_unlocked(&tasks).await?;
-        // Remove legacy file after successful migration
+        // 迁移成功后删除旧文件
         let _ = std::fs::remove_file(&legacy_path);
         debug!(
             "Migrated {} cron tasks and removed legacy file",
@@ -697,6 +735,7 @@ impl CronTaskStore {
     }
 }
 
+/// 校验任务 ID 非空并原样返回。
 fn unique_id(id: &str) -> echo_core::error::Result<&str> {
     if id.trim().is_empty() {
         return Err(echo_core::error::ReactError::Other(
@@ -706,11 +745,13 @@ fn unique_id(id: &str) -> echo_core::error::Result<&str> {
     Ok(id)
 }
 
+/// 返回默认的任务定义文件路径。
 fn default_task_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".echo-agent/scheduler/tasks.json")
 }
 
+/// 在路径文件名后追加后缀，生成相邻文件路径。
 fn path_with_suffix(path: &std::path::Path, suffix: &str) -> echo_core::error::Result<PathBuf> {
     let file_name = path.file_name().ok_or_else(|| {
         echo_core::error::ReactError::Other(format!(
@@ -723,6 +764,7 @@ fn path_with_suffix(path: &std::path::Path, suffix: &str) -> echo_core::error::R
     Ok(path.with_file_name(suffixed))
 }
 
+/// 校验任务 ID 均非空且互不重复。
 fn validate_task_ids(tasks: &[CronTask]) -> echo_core::error::Result<()> {
     let mut seen = HashSet::with_capacity(tasks.len());
     for task in tasks {
@@ -738,17 +780,19 @@ fn validate_task_ids(tasks: &[CronTask]) -> echo_core::error::Result<()> {
 }
 
 impl Default for CronTaskStore {
+    /// 等价于 [`CronTaskStore::new`]。
     fn default() -> Self {
         Self::new()
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 新建任务的默认字段正确。
     #[test]
     fn test_cron_task_creation() {
         let task = CronTask::new("test", "*/5 * * * *", "Hello");
@@ -759,6 +803,7 @@ mod tests {
         assert!(task.validate_cron());
     }
 
+    /// 旧记录缺失字段时控制修订号默认为 0。
     #[test]
     fn legacy_task_defaults_control_revision_to_zero() -> Result<(), String> {
         let task: CronTask = serde_json::from_value(serde_json::json!({
@@ -777,6 +822,7 @@ mod tests {
         Ok(())
     }
 
+    /// 触发实例路径保留完整的定义文件名。
     #[test]
     fn occurrence_paths_preserve_the_complete_definition_file_name() -> Result<(), String> {
         let root = std::env::temp_dir().join("echo-scheduler-path-identity");
@@ -796,6 +842,7 @@ mod tests {
         Ok(())
     }
 
+    /// 中毒状态按定义路径共享。
     #[test]
     fn definition_path_keys_shared_poison_authority() {
         let root = std::env::temp_dir().join(format!(
@@ -815,6 +862,7 @@ mod tests {
         assert!(store_b.check_authority().is_ok());
     }
 
+    /// 独立配置的克隆在同一路径上共享中毒状态。
     #[test]
     fn independently_configured_clones_share_same_path_poison() {
         let root = std::env::temp_dir().join(format!(
@@ -831,6 +879,7 @@ mod tests {
         assert!(second.check_authority().is_err());
     }
 
+    /// 父目录创建前后健康状态键保持稳定。
     #[test]
     fn health_key_is_stable_before_and_after_parent_creation() -> Result<(), String> {
         let root = std::env::temp_dir().join(format!(
@@ -850,6 +899,7 @@ mod tests {
         Ok(())
     }
 
+    /// 健康注册表会清理已失效的路径条目。
     #[test]
     fn health_registry_prunes_dead_path_entries() {
         let root = std::env::temp_dir().join(format!(
@@ -870,6 +920,7 @@ mod tests {
         drop(live);
     }
 
+    /// 状态控制操作会递增持久化修订号。
     #[tokio::test]
     async fn status_controls_increment_the_durable_revision() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(
@@ -902,6 +953,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重新添加完全相同的克隆会获得新的定义代。
     #[tokio::test]
     async fn add_replaces_an_exact_clones_definition_incarnation() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(
@@ -939,6 +991,7 @@ mod tests {
         Ok(())
     }
 
+    /// 合法表达式能计算出下一次触发时间。
     #[test]
     fn test_cron_task_next_run() {
         let task = CronTask::new("test", "0 12 * * *", "Noon task");
@@ -946,6 +999,7 @@ mod tests {
         assert!(next.is_some());
     }
 
+    /// 非法表达式校验失败且无下一次触发时间。
     #[test]
     fn test_cron_task_invalid_expr() {
         let task = CronTask::new("bad", "not a cron", "test");
@@ -953,6 +1007,7 @@ mod tests {
         assert!(task.next_run().is_none());
     }
 
+    /// 精确删除不会误删同前缀的任务。
     #[tokio::test]
     async fn remove_exact_does_not_remove_tasks_with_the_same_prefix() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(
@@ -987,6 +1042,7 @@ mod tests {
         Ok(())
     }
 
+    /// 独立的文件存储实例并发添加不会丢失数据。
     #[tokio::test]
     async fn independent_file_store_instances_do_not_lose_concurrent_adds() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(
@@ -1013,6 +1069,7 @@ mod tests {
         Ok(())
     }
 
+    /// 添加时拒绝重复的任务 ID。
     #[tokio::test]
     async fn add_rejects_duplicate_task_ids() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(
@@ -1038,6 +1095,7 @@ mod tests {
         Ok(())
     }
 
+    /// 加载时拒绝持久化文件中重复的任务 ID。
     #[tokio::test]
     async fn load_rejects_duplicate_task_ids_in_persisted_file() -> Result<(), String> {
         let temp = std::env::temp_dir().join(format!(

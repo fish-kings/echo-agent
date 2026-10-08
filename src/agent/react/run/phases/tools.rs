@@ -43,8 +43,10 @@ struct PublishedWave {
     final_answers: Vec<String>,
 }
 
-/// 若工具结果附带类型化内容（如图片），将其投影为一条可注入上下文的
-/// 多模态消息；无内容或模型不接受图片时返回 `None`。
+/**
+若工具结果附带类型化内容（如图片），将其投影为一条可注入上下文的
+多模态消息；无内容或模型不接受图片时返回 `None`。
+*/
 async fn project_typed_tool_result(
     context: &Arc<Mutex<crate::compression::ContextManager>>,
     result: &crate::tools::ToolResult,
@@ -121,8 +123,10 @@ async fn forward_pipeline_event(
     let _ = tx.send(Ok(agent_event(event))).await;
 }
 
-/// 发布一次已完成调用的结果：写入上下文、发出 `ToolResult` 事件，
-/// 并在结果来自 `final_answer` 工具时返回其输出内容。
+/**
+发布一次已完成调用的结果：写入上下文、发出 `ToolResult` 事件，
+并在结果来自 `final_answer` 工具时返回其输出内容。
+*/
 async fn publish_completed_call(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -190,8 +194,10 @@ async fn publish_completed_call(
     }
 }
 
-/// 以“已取消”状态收尾一个工具批次：落盘事务记录、标记运行为 Cancelled，
-/// 并发出批次结束与取消事件。
+/**
+以“已取消”状态收尾一个工具批次：落盘事务记录、标记运行为 Cancelled，
+并发出批次结束与取消事件。
+*/
 async fn close_cancelled_batch(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -220,8 +226,10 @@ async fn close_cancelled_batch(
     Ok(())
 }
 
-/// 以“失败”状态收尾一个工具批次：落盘事务记录、标记运行为 Failed，
-/// 并发出批次结束与错误事件。
+/**
+以“失败”状态收尾一个工具批次：落盘事务记录、标记运行为 Failed，
+并发出批次结束与错误事件。
+*/
 async fn close_failed_batch(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -247,9 +255,11 @@ async fn close_failed_batch(
     Ok(())
 }
 
-/// 结算一批被中断（取消/超时）的调用：已经拿到结果的照常发布，
-/// 尚未发出过的先补发 `ToolCall` 事件，仍未完成的按 `settlement`
-/// 给定的分类与消息记为失败。返回本批的发布统计。
+/**
+结算一批被中断（取消/超时）的调用：已经拿到结果的照常发布，
+尚未发出过的先补发 `ToolCall` 事件，仍未完成的按 `settlement`
+给定的分类与消息记为失败。返回本批的发布统计。
+*/
 async fn settle_interrupted_calls(
     snap: &AgentRunSnapshot,
     context: &Arc<Mutex<crate::compression::ContextManager>>,
@@ -323,9 +333,11 @@ struct InterruptedSettlement<'a> {
     message: &'a str,
 }
 
-/// 按顺序执行标记，把一批调用拆分为若干“波次”（wave）：
-/// 能并发执行的连续调用合并为一个 `Concurrent` 波次，需要单独顺序
-/// 执行的调用各自成为一个 `Sequential` 波次，从而保留原始相对顺序。
+/**
+按顺序执行标记，把一批调用拆分为若干“波次”（wave）：
+能并发执行的连续调用合并为一个 `Concurrent` 波次，需要单独顺序
+执行的调用各自成为一个 `Sequential` 波次，从而保留原始相对顺序。
+*/
 fn build_execution_waves(
     steps: Vec<ToolCallSpec>,
     sequential_call_ids: &std::collections::HashSet<String>,
@@ -350,8 +362,10 @@ fn build_execution_waves(
     waves
 }
 
-/// 判断某个工具是否必须单独顺序执行（不支持并发批处理，或启用
-/// human-in-loop 时需要人工审批）。
+/**
+判断某个工具是否必须单独顺序执行（不支持并发批处理，或启用
+human-in-loop 时需要人工审批）。
+*/
 async fn requires_sequential_execution(snap: &AgentRunSnapshot, tool_name: &str) -> bool {
     let tool_disallows_parallel_execution = snap
         .tools
@@ -413,12 +427,14 @@ pub(crate) async fn run_tools(
             cb.on_think_end(agent, &ts, pt, ct).await;
         }
     }
-    // 把 assistant 这一轮推入历史。当所有工具调用都被丢弃时
-    // （例如所有参数在修复后仍然 JSON 解析失败），`msg_tc` 会是空的——
-    // 推送一个 content 为空的 assistant_with_tools([]) 会让部分 provider
-    // 对下一个请求返回 HTTP 400（"content or tool_calls must be set"）。
-    // 这里回退为一个带有内容的 assistant 消息，使这一轮在结构上合法，
-    // 模型也能够重新发起工具调用。
+    /*
+    把 assistant 这一轮推入历史。当所有工具调用都被丢弃时
+    （例如所有参数在修复后仍然 JSON 解析失败），`msg_tc` 会是空的——
+    推送一个 content 为空的 assistant_with_tools([]) 会让部分 provider
+    对下一个请求返回 HTTP 400（"content or tool_calls must be set"）。
+    这里回退为一个带有内容的 assistant 消息，使这一轮在结构上合法，
+    模型也能够重新发起工具调用。
+    */
     let assistant_message = if msg_tc.is_empty() {
         Message::assistant("(流式工具调用参数解析失败,已跳过;请重新发起工具调用)".to_string())
     } else {
@@ -514,10 +530,12 @@ pub(crate) async fn run_tools(
                     );
                 }
                 drop(stream_tx);
-                // 豁免超时的工具自行掌控自己的执行截止时间。对这种混合批次，
-                // 禁用外层的批次计时器；普通的同批工具仍受 ToolManager 的
-                // 单工具超时保护，而长时间运行的工具则可以等待其内部
-                // Subagent 的截止时间，而不是在普通的 120 秒上限处被取消。
+                /*
+                豁免超时的工具自行掌控自己的执行截止时间。对这种混合批次，
+                禁用外层的批次计时器；普通的同批工具仍受 ToolManager 的
+                单工具超时保护，而长时间运行的工具则可以等待其内部
+                Subagent 的截止时间，而不是在普通的 120 秒上限处被取消。
+                */
                 let bt = if has_timeout_exempt_tool {
                     None
                 } else {
@@ -640,8 +658,10 @@ pub(crate) async fn run_tools(
                         }
                     }
                 }
-                // 无论是正常完成还是取消，都会在事务记录（transcript）落盘之前，
-                // 按 assistant 的调用顺序发布已捕获的结果。
+                /*
+                无论是正常完成还是取消，都会在事务记录（transcript）落盘之前，
+                按 assistant 的调用顺序发布已捕获的结果。
+                */
                 let mut ready = std::mem::take(
                     &mut *completed.lock().unwrap_or_else(|error| error.into_inner()),
                 );
@@ -848,9 +868,11 @@ pub(crate) async fn run_tools(
         }
     }
 
-    // 这是批次中每一个 assistant 工具调用都已经拿到匹配结果的第一个时刻。
-    // 无论周期性间隔如何，都在此处落盘，以确保重启后不会丢失已完成的
-    // 写入/危险工具的执行结果。
+    /*
+    这是批次中每一个 assistant 工具调用都已经拿到匹配结果的第一个时刻。
+    无论周期性间隔如何，都在此处落盘，以确保重启后不会丢失已完成的
+    写入/危险工具的执行结果。
+    */
     let settlement = snap.save_transcript_projection(context, None).await?;
     if snap.conversation_store.is_some() {
         snap.mark_transcript_settlement_observed();

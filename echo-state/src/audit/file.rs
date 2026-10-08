@@ -1,6 +1,8 @@
-//! 文件审计日志记录器
-//!
-//! 将审计事件以 JSON-lines 格式写入文件，支持按过滤条件查询。
+/*!
+文件审计日志记录器
+
+将审计事件以 JSON-lines 格式写入文件，支持按过滤条件查询。
+*/
 
 use echo_core::audit::{AuditEvent, AuditFilter, AuditLogger};
 use echo_core::error::Result;
@@ -8,27 +10,41 @@ use futures::future::BoxFuture;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// 文件审计日志的可变状态（受互斥锁保护）。
 struct FileAuditState {
+    /// 绑定已打开文件身份的守卫，用于检测路径被替换。
     file_guard: echo_core::utils::fs::ExistingRegularFileGuard,
+    /// 已确认持久化的文件长度（字节）。
     committed_len: u64,
 }
 
-/// 文件审计日志记录器
-///
-/// 每个事件序列化为一行 JSON 追加写入文件。同一路径只有一个 live logger
-/// authority；需要在多个调用方间共享时使用 `Arc<FileAuditLogger>`。
+/**
+文件审计日志记录器
+
+每个事件序列化为一行 JSON 追加写入文件。同一路径只有一个 live logger
+authority；需要在多个调用方间共享时使用 `Arc<FileAuditLogger>`。
+*/
 pub struct FileAuditLogger {
+    /// 规范化后的审计日志文件路径。
     path: PathBuf,
+    /// 跨进程独占文件租约，保证同一路径只有一个活跃记录器。
     _lease: echo_core::utils::fs::ExclusiveFileLease,
+    /// 文件守卫与已提交长度等可变状态。
     state: Mutex<FileAuditState>,
+    /// 写入与查询时应用的内容保留（脱敏/截断）策略。
     retention: echo_core::utils::retention::ContentRetentionPolicy,
 }
 
 impl FileAuditLogger {
+    /// 打开（必要时创建）指定路径的审计日志文件；错误信息会经过脱敏处理。
     pub fn new(path: impl Into<PathBuf>) -> Result<Self> {
         Self::open(path.into()).map_err(sanitize_file_error)
     }
 
+    /**
+    实际的打开流程：持久化创建父目录、获取独占租约、按需创建文件，
+    并修复崩溃导致的残缺尾记录后记录已提交长度。
+    */
     fn open(path: PathBuf) -> Result<Self> {
         let parent = path
             .parent()
@@ -72,8 +88,10 @@ impl FileAuditLogger {
         })
     }
 
-    /// Recover only a crash-torn final JSONL record. Complete corrupt records
-    /// remain visible as errors and are never skipped.
+    /**
+    仅恢复因崩溃而残缺的最后一条 JSONL 记录。
+    完整但已损坏的记录会作为错误暴露，永远不会被跳过。
+    */
     fn repair_torn_tail(
         path: &Path,
         file_guard: &echo_core::utils::fs::ExistingRegularFileGuard,
@@ -136,6 +154,7 @@ impl FileAuditLogger {
         Ok(())
     }
 
+    /// 设置写入与查询时使用的内容保留策略。
     pub fn with_retention_policy(
         mut self,
         retention: echo_core::utils::retention::ContentRetentionPolicy,
@@ -145,6 +164,7 @@ impl FileAuditLogger {
     }
 }
 
+/// 将文件错误转换为经过默认保留策略脱敏的 `ReactError`。
 fn sanitize_file_error(error: impl std::fmt::Display) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Other(
         echo_core::utils::retention::ContentRetentionPolicy::default()
@@ -152,6 +172,7 @@ fn sanitize_file_error(error: impl std::fmt::Display) -> echo_core::error::React
     )
 }
 
+/// 将 JSON 解码错误转换为只含类别与位置、不回显原始载荷的错误。
 fn audit_decode_error(error: serde_json::Error) -> echo_core::error::ReactError {
     echo_core::error::ReactError::Other(format!(
         "invalid audit record: {:?} at line {} column {}",
@@ -161,6 +182,7 @@ fn audit_decode_error(error: serde_json::Error) -> echo_core::error::ReactError 
     ))
 }
 
+/// 以溢出检查的方式计算 `current + segment_len`，得到记录结束偏移。
 fn checked_record_end(current: u64, segment_len: usize) -> Result<u64> {
     let segment_len = u64::try_from(segment_len).map_err(|error| {
         echo_core::error::ReactError::Other(format!("audit record length overflow: {error}"))
@@ -171,6 +193,7 @@ fn checked_record_end(current: u64, segment_len: usize) -> Result<u64> {
 }
 
 impl AuditLogger for FileAuditLogger {
+    /// 应用保留策略后，将事件以一行 JSON 追加写入并同步落盘。
     fn log<'a>(&'a self, mut event: AuditEvent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             event.apply_retention(&self.retention);
@@ -178,9 +201,10 @@ impl AuditLogger for FileAuditLogger {
             let mut bytes = line.into_bytes();
             bytes.push(b'\n');
 
-            // Keep path identity and length in the same lock as the append. If
-            // SyncData has an unknown outcome, committed_len does not advance;
-            // this live handle then fails closed until verified reopen.
+            /*
+            路径身份与长度校验与追加写入处于同一把锁内。若 SyncData 结果未知，
+            committed_len 不会前移；此后该活跃句柄将以失败关闭，直到经过校验的重新打开。
+            */
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let next_len = checked_record_end(state.committed_len, bytes.len())?;
             echo_core::utils::fs::append_existing_matching(
@@ -196,6 +220,7 @@ impl AuditLogger for FileAuditLogger {
         })
     }
 
+    /// 读取整个文件并按会话、Agent 名称、时间范围与数量上限过滤事件；文件长度与已提交长度不一致时报错。
     fn query<'a>(&'a self, filter: AuditFilter) -> BoxFuture<'a, Result<Vec<AuditEvent>>> {
         Box::pin(async move {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());

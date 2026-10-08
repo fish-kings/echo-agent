@@ -9,18 +9,24 @@ use echo_core::sandbox::IsolationLevel;
 
 // -- 面向编程注册技能描述符的沙箱策略 --
 
-/// 针对以编程方式注册的技能描述符的单技能沙箱隔离策略。
-/// 官方 `SKILL.md` 文件格式没有 sandbox 字段；
-/// 需要此策略的宿主可通过运行时 API 附加该策略。
+/**
+针对以编程方式注册的技能描述符的单技能沙箱隔离策略。
+官方 `SKILL.md` 文件格式没有 sandbox 字段；
+需要此策略的宿主可通过运行时 API 附加该策略。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SkillSandboxPolicy {
-    /// 所需的隔离级别。`None` 表示不强制（默认行为）。
-    ///
-    /// 可选值：`none`、`process`、`os-sandbox`、`container`、`orchestrated`
+    /**
+    所需的隔离级别。`None` 表示不强制（默认行为）。
+
+    可选值：`none`、`process`、`os-sandbox`、`container`、`orchestrated`
+    */
     pub isolation: Option<IsolationLevel>,
 
-    /// 沙箱内是否允许网络访问。
-    /// 当指定了 isolation 时，默认值为 `false`（拒绝）。
+    /**
+    沙箱内是否允许网络访问。
+    当指定了 isolation 时，默认值为 `false`（拒绝）。
+    */
     pub network: Option<bool>,
 
     /// 执行超时时间（秒）。`None` 表示不额外设置超时。
@@ -54,22 +60,28 @@ impl SkillSandboxPolicy {
 
 // -- 第一层：SkillDescriptor（目录元数据，每个技能约 50-100 tokens）--
 
-/// 在发现阶段加载的轻量级技能元数据（第一层）。
-///
-/// 与 [agentskills.io 规范](https://agentskills.io/specification) 对齐。
-/// 仅 `name` 和 `description` 为必填字段，其余字段均为可选。
-///
-/// 会话启动时，agent 会基于所有已发现的描述符构建一份**目录**，
-/// 并注入到系统提示词中。每个描述符大约消耗 50-100 tokens，
-/// 因此即使有几十个技能，基础上下文占用依然很小。
+/**
+在发现阶段加载的轻量级技能元数据（第一层）。
+
+与 [agentskills.io 规范](https://agentskills.io/specification) 对齐。
+仅 `name` 和 `description` 为必填字段，其余字段均为可选。
+
+会话启动时，agent 会基于所有已发现的描述符构建一份**目录**，
+并注入到系统提示词中。每个描述符大约消耗 50-100 tokens，
+因此即使有几十个技能，基础上下文占用依然很小。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillDescriptor {
-    /// 唯一的技能名称（kebab-case：小写字母、连字符，长度 1-64）。
-    /// 根据规范必须与其所在的父目录名一致。
+    /**
+    唯一的技能名称（kebab-case：小写字母、连字符，长度 1-64）。
+    根据规范必须与其所在的父目录名一致。
+    */
     pub name: String,
 
-    /// 人类可读的描述（最多 1024 字符）。
-    /// 应同时说明该技能**做什么**以及**何时使用**。
+    /**
+    人类可读的描述（最多 1024 字符）。
+    应同时说明该技能**做什么**以及**何时使用**。
+    */
     pub description: String,
 
     /// `SKILL.md` 文件的绝对路径。
@@ -88,12 +100,14 @@ pub struct SkillDescriptor {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub metadata: HashMap<String, String>,
 
-    /// 用于分组卸载的来源标记（例如 `"plugin:my-plugin"`）。
-    ///
-    /// 由插件集成方在从插件目录加载技能时设置，以便
-    /// `SkillRegistry::unregister_by_source` 能在禁用/卸载时精确移除
-    /// 该插件的技能。用户加载的 / 内置技能（永远不会被分组卸载）
-    /// 该字段为 `None`。序列化时跳过此字段，以避免对前端消费者造成破坏性变更。
+    /**
+    用于分组卸载的来源标记（例如 `"plugin:my-plugin"`）。
+
+    由插件集成方在从插件目录加载技能时设置，以便
+    `SkillRegistry::unregister_by_source` 能在禁用/卸载时精确移除
+    该插件的技能。用户加载的 / 内置技能（永远不会被分组卸载）
+    该字段为 `None`。序列化时跳过此字段，以避免对前端消费者造成破坏性变更。
+    */
     #[serde(skip, default)]
     pub source: Option<String>,
 
@@ -115,9 +129,11 @@ pub struct SkillDescriptor {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
 
-    /// 用于技能路由的显式触发关键词/短语。
-    /// 当用户查询匹配任一触发词时，该技能即被激活。
-    /// 作为 `description` 字段的补充，以实现精确路由。
+    /**
+    用于技能路由的显式触发关键词/短语。
+    当用户查询匹配任一触发词时，该技能即被激活。
+    作为 `description` 字段的补充，以实现精确路由。
+    */
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<String>,
 
@@ -125,23 +141,29 @@ pub struct SkillDescriptor {
     #[serde(skip)]
     pub hooks: Option<crate::skills::hooks::HooksDefinition>,
 
-    /// 单技能沙箱隔离策略。
-    /// 设置后，该技能上下文内的工具执行将按此策略受到约束
-    /// （隔离级别、网络、路径、超时）。
+    /**
+    单技能沙箱隔离策略。
+    设置后，该技能上下文内的工具执行将按此策略受到约束
+    （隔离级别、网络、路径、超时）。
+    */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<SkillSandboxPolicy>,
 
-    /// 必须先于该技能被激活的其他技能。
-    /// 框架会在 `activate_skill` 过程中自动激活这些依赖项。
-    /// 循环依赖会在发现阶段被检测出来并记录为警告。
+    /**
+    必须先于该技能被激活的其他技能。
+    框架会在 `activate_skill` 过程中自动激活这些依赖项。
+    循环依赖会在发现阶段被检测出来并记录为警告。
+    */
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
 }
 
 impl SkillDescriptor {
-    /// 生成一行用于注入系统提示词的目录条目。
-    ///
-    /// 格式：`- <name>: <description>`（可附带路径约束和触发词）
+    /**
+    生成一行用于注入系统提示词的目录条目。
+
+    格式：`- <name>: <description>`（可附带路径约束和触发词）
+    */
     pub fn catalog_line(&self) -> String {
         let mut line = format!("- {}: {}", self.name, self.description);
 
@@ -163,8 +185,10 @@ impl SkillDescriptor {
         line
     }
 
-    /// 根据 agentskills.io 规范校验名称。
-    /// 返回警告列表（空列表表示有效）。
+    /**
+    根据 agentskills.io 规范校验名称。
+    返回警告列表（空列表表示有效）。
+    */
     pub fn validate_name(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         let name = &self.name;
@@ -197,8 +221,10 @@ impl SkillDescriptor {
         warnings
     }
 
-    /// 校验 `paths` 字段中的 glob 模式。
-    /// 对无效或可疑的模式返回警告列表。
+    /**
+    校验 `paths` 字段中的 glob 模式。
+    对无效或可疑的模式返回警告列表。
+    */
     pub fn validate_paths(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         for pattern in &self.paths {
@@ -246,9 +272,11 @@ impl SkillDescriptor {
         warnings
     }
 
-    /// 检查涉及的文件路径是否满足该技能的条件激活规则。
-    ///
-    /// 没有设置 `paths` 的技能始终视为匹配。
+    /**
+    检查涉及的文件路径是否满足该技能的条件激活规则。
+
+    没有设置 `paths` 的技能始终视为匹配。
+    */
     pub fn matches_context_path(&self, context_path: &str) -> bool {
         if self.paths.is_empty() {
             return true;
@@ -268,10 +296,12 @@ impl SkillDescriptor {
         })
     }
 
-    /// 检查该描述符是否允许使用指定名称的工具。
-    ///
-    /// `allowed_tools` 为空表示不受限制。匹配语义与 hook/tool 匹配保持一致，
-    /// 因此精确名称、glob 模式以及 `Bash` -> `Bash(git:*)` 前缀变体的行为都一致。
+    /**
+    检查该描述符是否允许使用指定名称的工具。
+
+    `allowed_tools` 为空表示不受限制。匹配语义与 hook/tool 匹配保持一致，
+    因此精确名称、glob 模式以及 `Bash` -> `Bash(git:*)` 前缀变体的行为都一致。
+    */
     pub fn permits_tool(&self, tool_name: &str) -> bool {
         if self.allowed_tools.is_empty() {
             return true;
@@ -281,9 +311,11 @@ impl SkillDescriptor {
     }
 }
 
-/// 即使某个技能缩小了其领域工具的可见范围，框架控制类工具依然保持可用。
-/// 如果没有这些工具，受限技能可能会导致无法完成收尾、
-/// 无法进一步发现、无法加载资源，或无法向用户提出明确问题。
+/**
+即使某个技能缩小了其领域工具的可见范围，框架控制类工具依然保持可用。
+如果没有这些工具，受限技能可能会导致无法完成收尾、
+无法进一步发现、无法加载资源，或无法向用户提出明确问题。
+*/
 pub fn is_skill_control_tool(tool_name: &str) -> bool {
     matches!(
         tool_name,
@@ -307,13 +339,15 @@ where
             .any(|matcher| tool_matcher(matcher, tool_name))
 }
 
-/// 将工具名与匹配器模式进行匹配。
-///
-/// 支持：
-/// - 精确匹配：`"Read"` 匹配 `"Read"`
-/// - 通配符：`"*"` 匹配所有工具
-/// - Glob 模式：`"Bash(*)"` 匹配 `"Bash(git:status)"`
-/// - 前缀匹配：`"Bash"` 匹配 `"Bash(git:status)"`
+/**
+将工具名与匹配器模式进行匹配。
+
+支持：
+- 精确匹配：`"Read"` 匹配 `"Read"`
+- 通配符：`"*"` 匹配所有工具
+- Glob 模式：`"Bash(*)"` 匹配 `"Bash(git:status)"`
+- 前缀匹配：`"Bash"` 匹配 `"Bash(git:status)"`
+*/
 pub fn tool_matcher(matcher: &str, tool_name: &str) -> bool {
     if matcher == "*" || matcher == tool_name {
         return true;
@@ -326,10 +360,12 @@ pub fn tool_matcher(matcher: &str, tool_name: &str) -> bool {
     tool_name.starts_with(matcher) && tool_name.as_bytes().get(matcher.len()).copied() == Some(b'(')
 }
 
-/// 一份已解析的 `SKILL.md` 文档，尚未进行运行时资源发现。
-///
-/// descriptor 是 frontmatter 在目录层面的投影，
-/// 而 `instructions` 则是结束分隔符之后的 Markdown 正文。
+/**
+一份已解析的 `SKILL.md` 文档，尚未进行运行时资源发现。
+
+descriptor 是 frontmatter 在目录层面的投影，
+而 `instructions` 则是结束分隔符之后的 Markdown 正文。
+*/
 #[derive(Debug, Clone)]
 pub struct SkillDocument {
     descriptor: SkillDescriptor,
@@ -372,9 +408,11 @@ impl SkillDocument {
         self.descriptor.source = Some(source.into());
     }
 
-    /// 使用新的标准 `allowed-tools` 值重新渲染该已解析文档。
-    /// 演化（evolution）与宿主工具使用这一规范化写入器，
-    /// 而不是另外再实现一个 YAML 解析器或旧字段归一化逻辑。
+    /**
+    使用新的标准 `allowed-tools` 值重新渲染该已解析文档。
+    演化（evolution）与宿主工具使用这一规范化写入器，
+    而不是另外再实现一个 YAML 解析器或旧字段归一化逻辑。
+    */
     pub fn render_with_allowed_tools(
         &self,
         allowed_tools: &[String],
@@ -414,18 +452,22 @@ impl SkillDocument {
 
 // -- 第二层：SkillContent（完整说明内容，在激活时加载）--
 
-/// 技能被激活时返回的完整技能内容（第二层）。
-///
-/// 包含 `SKILL.md` 的 Markdown 正文（已剥离 frontmatter），
-/// 以及在 `scripts/`、`references/`、`assets/` 目录中发现的
-/// 随附资源文件清单。
+/**
+技能被激活时返回的完整技能内容（第二层）。
+
+包含 `SKILL.md` 的 Markdown 正文（已剥离 frontmatter），
+以及在 `scripts/`、`references/`、`assets/` 目录中发现的
+随附资源文件清单。
+*/
 #[derive(Debug, Clone)]
 pub struct SkillContent {
     /// 该技能的目录描述符。
     pub descriptor: SkillDescriptor,
 
-    /// `SKILL.md` 的 Markdown 正文（frontmatter 之后的全部内容）。
-    /// 这是该技能的主要说明文本。
+    /**
+    `SKILL.md` 的 Markdown 正文（frontmatter 之后的全部内容）。
+    这是该技能的主要说明文本。
+    */
     pub instructions: String,
 
     /// 在技能目录中发现的随附资源文件。
@@ -433,10 +475,12 @@ pub struct SkillContent {
 }
 
 impl SkillContent {
-    /// 将技能内容格式化为用于注入 LLM 的结构化文本块。
-    ///
-    /// 使用类 XML 标签，以便 agent 框架在上下文压缩期间
-    /// 能够识别出技能内容。
+    /**
+    将技能内容格式化为用于注入 LLM 的结构化文本块。
+
+    使用类 XML 标签，以便 agent 框架在上下文压缩期间
+    能够识别出技能内容。
+    */
     pub fn to_prompt_block(&self) -> String {
         let skill_dir = self
             .descriptor
@@ -518,13 +562,15 @@ impl std::fmt::Display for SkillResourceKind {
 
 // -- SKILL.md Frontmatter（原始反序列化目标）--
 
-/// 从 `SKILL.md` 文件反序列化得到的原始 YAML frontmatter。
-///
-/// 仅接受官方 agentskills.io 规范中的字段（`deny_unknown_fields`），
-/// 且 `metadata` 将字符串键映射为字符串值，与规范中
-/// string-to-string 的约定保持一致。echo-agent 不使用任何私有
-/// frontmatter 扩展字段：路由完全由 description 驱动，
-/// 单技能钩子也不属于文件格式的一部分。
+/**
+从 `SKILL.md` 文件反序列化得到的原始 YAML frontmatter。
+
+仅接受官方 agentskills.io 规范中的字段（`deny_unknown_fields`），
+且 `metadata` 将字符串键映射为字符串值，与规范中
+string-to-string 的约定保持一致。echo-agent 不使用任何私有
+frontmatter 扩展字段：路由完全由 description 驱动，
+单技能钩子也不属于文件格式的一部分。
+*/
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawFrontmatter {
@@ -542,8 +588,10 @@ pub(crate) struct RawFrontmatter {
     /// 任意键值对元数据（可选）。
     #[serde(default = "default_optional_metadata")]
     pub metadata: Option<HashMap<String, String>>,
-    /// 官方格式：以空格分隔的单个字符串。YAML 序列形式以及
-    /// 旧版下划线拼写会被 serde 直接拒绝，而不是被静默归一化。
+    /**
+    官方格式：以空格分隔的单个字符串。YAML 序列形式以及
+    旧版下划线拼写会被 serde 直接拒绝，而不是被静默归一化。
+    */
     #[serde(default = "default_optional_string", rename = "allowed-tools")]
     pub allowed_tools: Option<String>,
 }
@@ -559,11 +607,13 @@ fn default_optional_metadata() -> Option<HashMap<String, String>> {
 }
 
 impl RawFrontmatter {
-    /// 将已校验的 frontmatter 转换为目录元数据。
-    ///
-    /// [`SkillDescriptor`] 上的运行时扩展字段（`triggers`、
-    /// `paths` 等）在标准格式中没有对应的文件来源；
-    /// 这些字段仅对以编程方式构造的描述符可用。
+    /**
+    将已校验的 frontmatter 转换为目录元数据。
+
+    [`SkillDescriptor`] 上的运行时扩展字段（`triggers`、
+    `paths` 等）在标准格式中没有对应的文件来源；
+    这些字段仅对以编程方式构造的描述符可用。
+    */
     pub fn into_descriptor(self, location: PathBuf) -> SkillDescriptor {
         SkillDescriptor {
             source: None,
@@ -798,9 +848,11 @@ Body"#;
     /// 验证旧版顶层扩展字段会被拒绝解析。
     #[test]
     fn test_legacy_top_level_extension_fields_are_rejected() {
-        // 旧版标准化之前的文件会在 frontmatter 顶层声明 echo-agent 语义；
-        // 解析必须失败（fail closed），以便目录工具能发现未迁移的文件，
-        // 而不是静默丢弃路由/沙箱意图。
+        /*
+        旧版标准化之前的文件会在 frontmatter 顶层声明 echo-agent 语义；
+        解析必须失败（fail closed），以便目录工具能发现未迁移的文件，
+        而不是静默丢弃路由/沙箱意图。
+        */
         for legacy_field in [
             "triggers:\n  - 周报\n",
             "shell: bash\n",
@@ -820,8 +872,10 @@ Body"#;
     /// 验证 frontmatter 中出现 hooks 字段时解析会失败。
     #[test]
     fn test_frontmatter_hooks_are_rejected() {
-        // 单技能钩子不属于官方文件格式的一部分；
-        // frontmatter 中的 hooks 块是未知的官方字段，必须解析失败。
+        /*
+        单技能钩子不属于官方文件格式的一部分；
+        frontmatter 中的 hooks 块是未知的官方字段，必须解析失败。
+        */
         let content = "---\nname: hooked\ndescription: Hooked.\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: echo done\n---\nBody";
         assert!(SkillDocument::parse(content).is_err());
     }
@@ -829,9 +883,11 @@ Body"#;
     /// 验证非标量（嵌套）的 metadata 会被拒绝解析。
     #[test]
     fn test_non_scalar_metadata_is_rejected() {
-        // 规范将 metadata 定义为字符串键到字符串值的映射；
-        // 嵌套映射（包括任何供应商命名空间）会导致解析失败，
-        // 而不是被静默地重新整形。
+        /*
+        规范将 metadata 定义为字符串键到字符串值的映射；
+        嵌套映射（包括任何供应商命名空间）会导致解析失败，
+        而不是被静默地重新整形。
+        */
         for nested in [
             "metadata:\n  echo-agent:\n    triggers: [周报]\n",
             "metadata:\n  vendor:\n    nested: true\n",

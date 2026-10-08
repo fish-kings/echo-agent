@@ -1,12 +1,20 @@
 //! Agent 核心 trait、事件与回调接口
 
+/// 与具体产品无关的、基于键的执行准入控制。
 pub mod admission;
+/// 统一的 `AgentBuilder` trait。
 pub mod builder;
+/// Critic trait 及其内置实现。
 mod critic;
+/// Agent 事件信封（envelope）与带身份的事件流。
 mod event_envelope;
+/// Agent 工厂：基于配置创建 agent。
 pub mod factory;
+/// 用于影响 agent 行为的干预回调接口。
 pub mod intervention;
+/// 提示词模板管理系统。
 pub mod prompt_template;
+/// 共享的 agent 类型定义。
 mod types;
 
 pub use admission::{
@@ -86,6 +94,7 @@ pub enum AgentSteerError {
 }
 
 impl std::fmt::Display for AgentSteerError {
+    /// 输出引导错误的英文描述。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unsupported => f.write_str("live steering is not supported by this agent"),
@@ -133,8 +142,10 @@ pub enum AgentSteerTurnOutcome {
     Cancelled,
     /// provider、工具、校验或运行时处理失败。
     Failed,
-    /// turn 的持有者在发布带类型的终态之前被丢弃或中止。这是一种终止状态，
-    /// 但不得被理解为成功。
+    /**
+    turn 的持有者在发布带类型的终态之前被丢弃或中止。这是一种终止状态，
+    但不得被理解为成功。
+    */
     Dropped,
 }
 
@@ -482,13 +493,17 @@ pub struct AgentInvocationContext {
     它们绝不会修改共享的工具注册表。
     */
     pub disabled_tools: Option<std::collections::HashSet<String>>,
-    /// 对模型可见其 schema 的初始工具名集合。
-    /// `None` 表示保持完整的合规工具集合全部可见。
+    /**
+    对模型可见其 schema 的初始工具名集合。
+    `None` 表示保持完整的合规工具集合全部可见。
+    */
     pub visible_tools: Option<std::collections::HashSet<String>>,
     /// 本次调用的预算策略。`None` 表示使用 agent 的默认值。
     pub run_budget: Option<RunBudgetPolicy>,
-    /// 插入在 system prompt 之后、当前输入之前的结构化对话 turn。
-    /// 这是限定值作用域的，绝不会修改 agent 已配置的 system prompt。
+    /**
+    插入在 system prompt 之后、当前输入之前的结构化对话 turn。
+    这是限定值作用域的，绝不会修改 agent 已配置的 system prompt。
+    */
     pub history: Option<Vec<Message>>,
     /// 在本次调用所派生的 Agent、subagent 与工具工作期间保留的不透明资源。
     pub resource_guards: Vec<crate::tools::InvocationResourceGuard>,
@@ -502,6 +517,7 @@ pub struct AgentInvocationContext {
 }
 
 impl std::fmt::Debug for AgentInvocationContext {
+    /// 输出调用上下文的调试摘要，敏感或较大的字段仅显示数量或占位符。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentInvocationContext")
             .field("runtime_state_id", &self.runtime_state_id)
@@ -578,12 +594,14 @@ pub enum AgentEvent {
         /// 消耗的 completion token 数
         completion_tokens: usize,
     },
-    /// provider 针对单次请求上报的 LLM 用量。
-    ///
-    /// `ThinkEnd` 作为一个精简、向后兼容的 UI 事件保留下来。这个信息更丰富的
-    /// 事件携带缓存可观测性数据。当 `usage_reported` 为 false 时，说明
-    /// provider 或网关没有返回用量元数据；调用方必须把缓存相关字段视为
-    /// 未知，而不是零命中率。
+    /**
+    provider 针对单次请求上报的 LLM 用量。
+
+    `ThinkEnd` 作为一个精简、向后兼容的 UI 事件保留下来。这个信息更丰富的
+    事件携带缓存可观测性数据。当 `usage_reported` 为 false 时，说明
+    provider 或网关没有返回用量元数据；调用方必须把缓存相关字段视为
+    未知，而不是零命中率。
+    */
     LlmUsage {
         /// 该请求使用的模型。
         model: String,
@@ -637,12 +655,16 @@ pub enum AgentEvent {
         call_id: String,
         /// 工具名
         name: String,
-        /// stream 事件负载（`Progress` / `Output`；`Complete` 会被 ReAct
-        /// runner 映射为 [`Self::ToolResult`]）。
+        /**
+        stream 事件负载（`Progress` / `Output`；`Complete` 会被 ReAct
+        runner 映射为 [`Self::ToolResult`]）。
+        */
         event: crate::tools::ToolStreamEvent,
     },
-    /// 在一批工具开始执行之前发出。
-    /// ToolBatchStart 与 ToolBatchEnd 之间的所有工具都是并发执行的。
+    /**
+    在一批工具开始执行之前发出。
+    ToolBatchStart 与 ToolBatchEnd 之间的所有工具都是并发执行的。
+    */
     ToolBatchStart {
         /// 本批次中的工具数量
         tool_count: usize,
@@ -697,8 +719,10 @@ pub enum AgentEvent {
         failure: crate::error::AgentFailure,
     },
 
-    /// 安全提示：agent 即将执行一个需要用户关注的动作。
-    /// 包含具体动作、原因、风险等级和所需权限。
+    /**
+    安全提示：agent 即将执行一个需要用户关注的动作。
+    包含具体动作、原因、风险等级和所需权限。
+    */
     SafetyNotice {
         /// agent 即将执行的动作。
         action: String,
@@ -953,11 +977,13 @@ pub enum StepType {
 workflow 层在通过 plan-execute 和多 agent 拓扑驱动 agent 时，已经强制执行了
 这种序列化。
 */
-/// 可共享的、agent 全局范围的工具可见性策略。
-///
-/// 该策略会在创建一次调用快照时被读取。与惰性构建的 Subagent 共享它，
-/// 可以在不让框架耦合任何特定产品的工具控制存储的前提下，保持它们注册的
-/// 能力面一致。
+/**
+可共享的、agent 全局范围的工具可见性策略。
+
+该策略会在创建一次调用快照时被读取。与惰性构建的 Subagent 共享它，
+可以在不让框架耦合任何特定产品的工具控制存储的前提下，保持它们注册的
+能力面一致。
+*/
 #[derive(Debug, Clone, Default)]
 pub struct ToolVisibilityPolicy {
     /// 当前被禁用的工具名集合；`None` 表示没有禁用项。
@@ -981,6 +1007,7 @@ impl ToolVisibilityPolicy {
     }
 }
 
+/// Agent 核心 trait：定义执行、对话、流式输出、工具管理与生命周期控制等统一接口。
 pub trait Agent: Send + Sync {
     /// 用于日志、事件与编排中的、人类可读的 agent 名称。
     fn name(&self) -> &str;
@@ -999,8 +1026,10 @@ pub trait Agent: Send + Sync {
         vec![]
     }
 
-    /// 被 agent 全局能力策略对模型隐藏的已注册工具。仅限本次调用的排除项
-    /// 保留在 [`AgentInvocationContext::disabled_tools`] 中。
+    /**
+    被 agent 全局能力策略对模型隐藏的已注册工具。仅限本次调用的排除项
+    保留在 [`AgentInvocationContext::disabled_tools`] 中。
+    */
     fn disabled_tool_names(&self) -> std::collections::HashSet<String> {
         self.tool_visibility_policy().disabled_names()
     }
@@ -1025,10 +1054,12 @@ pub trait Agent: Send + Sync {
         vec![]
     }
 
-    /// 在丢弃该 agent 之前释放外部资源。
-    ///
-    /// 若清理失败（例如 MCP server 断开连接出错、flush 失败）返回 `Err`，
-    /// 使调用方可以记录日志或处理资源泄漏。
+    /**
+    在丢弃该 agent 之前释放外部资源。
+
+    若清理失败（例如 MCP server 断开连接出错、flush 失败）返回 `Err`，
+    使调用方可以记录日志或处理资源泄漏。
+    */
     fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Ok(()) })
     }
@@ -1095,9 +1126,11 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// 以一个不可变值携带调用元数据来执行。
-    ///
-    /// 默认实现保持对不消费调用元数据的 agent 的兼容性。
+    /**
+    以一个不可变值携带调用元数据来执行。
+
+    默认实现保持对不消费调用元数据的 agent 的兼容性。
+    */
     fn execute_stream_with_invocation_context<'a>(
         &'a self,
         task: &'a str,
@@ -1142,10 +1175,12 @@ pub trait Agent: Send + Sync {
         self.execute_stream(message)
     }
 
-    /// 支持协作式取消的聊天流式变体。
-    ///
-    /// 默认实现用一个感知取消的包装器包裹 [`Self::chat_stream`]。当 `cancel`
-    /// 被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
+    /**
+    支持协作式取消的聊天流式变体。
+
+    默认实现用一个感知取消的包装器包裹 [`Self::chat_stream`]。当 `cancel`
+    被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
+    */
     fn chat_stream_with_cancel<'a>(
         &'a self,
         message: &'a str,
@@ -1157,11 +1192,13 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// 使用结构化多模态消息的多轮聊天流式方法。
-    ///
-    /// 实现必须保持与 [`Self::chat_stream_with_cancel`] 相同的对话语义：
-    /// 追加到既有上下文，而不是重置它。默认实现不支持，因为从一个拥有所有权
-    /// 的消息中提取出借用的文本回退值，在生命周期上是不安全的。
+    /**
+    使用结构化多模态消息的多轮聊天流式方法。
+
+    实现必须保持与 [`Self::chat_stream_with_cancel`] 相同的对话语义：
+    追加到既有上下文，而不是重置它。默认实现不支持，因为从一个拥有所有权
+    的消息中提取出借用的文本回退值，在生命周期上是不安全的。
+    */
     fn chat_stream_message_with_cancel<'a>(
         &'a self,
         _message: Message,
@@ -1175,10 +1212,12 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// 带限定值作用域调用元数据的结构化多轮聊天。
-    ///
-    /// 默认实现委托给既有的结构化聊天方法，使第三方 agent 无需改变语义
-    /// 即可选择接入元数据。
+    /**
+    带限定值作用域调用元数据的结构化多轮聊天。
+
+    默认实现委托给既有的结构化聊天方法，使第三方 agent 无需改变语义
+    即可选择接入元数据。
+    */
     fn chat_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1217,9 +1256,11 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// 带限定值作用域调用元数据的多模态流式处理。
-    ///
-    /// 默认实现委托给既有的多模态方法，使第三方 agent 保持源码兼容。
+    /**
+    带限定值作用域调用元数据的多模态流式处理。
+
+    默认实现委托给既有的多模态方法，使第三方 agent 保持源码兼容。
+    */
     fn execute_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1234,30 +1275,38 @@ pub trait Agent: Send + Sync {
         })
     }
 
-    /// 重置内存中的对话状态。
-    ///
-    /// 实现应清空上下文，并触发 `SessionStart("clear")` hook，
-    /// 使已注册的 hook 能够响应该重置事件。
+    /**
+    重置内存中的对话状态。
+
+    实现应清空上下文，并触发 `SessionStart("clear")` hook，
+    使已注册的 hook 能够响应该重置事件。
+    */
     fn reset(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
 
-    /// 若该 agent 正在跟踪某个 run ID，返回它。
-    /// 默认值：None。ReactAgent 会覆盖此方法。
+    /**
+    若该 agent 正在跟踪某个 run ID，返回它。
+    默认值：None。ReactAgent 会覆盖此方法。
+    */
     fn current_run_id(&self) -> Option<String> {
         None
     }
 
-    /// 返回该 agent 实例的累计 token 用量快照。
-    ///
-    /// 轻量级和第三方 agent 可以保持空的默认实现。团队编排会在执行前后
-    /// 比较快照，从而在不依赖具体 agent 实现的情况下收集用量信息。
+    /**
+    返回该 agent 实例的累计 token 用量快照。
+
+    轻量级和第三方 agent 可以保持空的默认实现。团队编排会在执行前后
+    比较快照，从而在不依赖具体 agent 实现的情况下收集用量信息。
+    */
     fn token_usage_summary(&self) -> crate::tokenizer::UsageSummary {
         crate::tokenizer::UsageSummary::default()
     }
 
-    /// 在实现现有的安全点，向当前 turn 注入一条消息。
-    /// 不支持实时引导的实现保持这个带类型的默认返回值。
+    /**
+    在实现现有的安全点，向当前 turn 注入一条消息。
+    不支持实时引导的实现保持这个带类型的默认返回值。
+    */
     fn steer_input(
         &self,
         _expected_turn_id: Option<&str>,
@@ -1266,11 +1315,13 @@ pub trait Agent: Send + Sync {
         Err(AgentSteerError::Unsupported)
     }
 
-    /// 注入一条消息，并跟踪它经历接受、模型上下文 drain、根 turn 结算的全过程。
-    ///
-    /// 只支持旧版 [`Self::steer_input`] 的实现保持源码兼容，
-    /// 在能够提供真实的生命周期信号之前，在这里返回
-    /// [`AgentSteerError::Unsupported`]。
+    /**
+    注入一条消息，并跟踪它经历接受、模型上下文 drain、根 turn 结算的全过程。
+
+    只支持旧版 [`Self::steer_input`] 的实现保持源码兼容，
+    在能够提供真实的生命周期信号之前，在这里返回
+    [`AgentSteerError::Unsupported`]。
+    */
     fn steer_input_tracked(
         &self,
         _expected_turn_id: Option<&str>,
@@ -1281,64 +1332,80 @@ pub trait Agent: Send + Sync {
 
     // ── External run context (跨 spawn 安全的值传递, 见 ExternalRunContext) ──
 
-    /// 旧版的、agent 全局范围的 run 上下文 setter。
-    ///
-    /// **背景**：`tokio::task_local!` 不会跨 `tokio::spawn` 继承。subagent instance
-    /// 在框架层的 `tokio::spawn`（subagent_executor.rs 的 dispatch_fork）里执行，
-    /// 应用层经 task_local 注入的 run_id / cancel / trace_sink 全部丢失。
-    /// 新代码应使用 `AgentInvocationContext` 的 value-scoped streaming methods；
-    /// 此 setter 仅为外部兼容保留。
+    /**
+    旧版的、agent 全局范围的 run 上下文 setter。
+
+    **背景**：`tokio::task_local!` 不会跨 `tokio::spawn` 继承。subagent instance
+    在框架层的 `tokio::spawn`（subagent_executor.rs 的 dispatch_fork）里执行，
+    应用层经 task_local 注入的 run_id / cancel / trace_sink 全部丢失。
+    新代码应使用 `AgentInvocationContext` 的 value-scoped streaming methods；
+    此 setter 仅为外部兼容保留。
+    */
     fn set_external_context(&self, _ctx: &crate::tools::ExternalRunContext) {}
 
     /// 清除通过旧版 setter 安装的上下文。
     fn clear_external_context(&self) {}
 
-    /// 为该 agent 的工具调用绑定一个工作目录（Sprint 8 worktree
-    /// 隔离）。设置后，每一次 shell/文件/git 工具调用都会在 `path` 内部运行
-    /// （经由 `ToolContext.working_dir`）。`None` 会清除它（恢复默认 cwd）。
-    ///
-    /// 默认值：noop。新的调用路径应使用 `AgentInvocationContext::working_dir`；
-    /// 此 setter 仅为需要刻意配置 agent 全局默认值的调用方保留兼容性。
+    /**
+    为该 agent 的工具调用绑定一个工作目录（Sprint 8 worktree
+    隔离）。设置后，每一次 shell/文件/git 工具调用都会在 `path` 内部运行
+    （经由 `ToolContext.working_dir`）。`None` 会清除它（恢复默认 cwd）。
+
+    默认值：noop。新的调用路径应使用 `AgentInvocationContext::working_dir`；
+    此 setter 仅为需要刻意配置 agent 全局默认值的调用方保留兼容性。
+    */
     fn set_working_dir(&self, _path: Option<std::path::PathBuf>) {}
 
-    /// 清除已绑定的工作目录（等价于 `set_working_dir(None)`）。
-    /// 默认值：noop。ReactAgent 会覆盖它。
+    /**
+    清除已绑定的工作目录（等价于 `set_working_dir(None)`）。
+    默认值：noop。ReactAgent 会覆盖它。
+    */
     fn clear_working_dir(&self) {}
 
     // ── 动态能力方法（默认 noop）────────────────────
 
-    /// 在运行时动态注册一个工具。
-    ///
-    /// 默认值：noop（不做任何操作直接返回）。ReactAgent 会覆盖此方法，
-    /// 把工具添加进它的 ToolManager。
+    /**
+    在运行时动态注册一个工具。
+
+    默认值：noop（不做任何操作直接返回）。ReactAgent 会覆盖此方法，
+    把工具添加进它的 ToolManager。
+    */
     fn register_tool(&self, _tool: Box<dyn crate::tools::Tool>) {}
 
-    /// 在运行时按名称动态移除一个工具。
-    ///
-    /// 若找到并移除该工具返回 `true`，否则返回 `false`。
-    /// 默认值：返回 `false`（不做任何操作）。ReactAgent 会覆盖此方法。
+    /**
+    在运行时按名称动态移除一个工具。
+
+    若找到并移除该工具返回 `true`，否则返回 `false`。
+    默认值：返回 `false`（不做任何操作）。ReactAgent 会覆盖此方法。
+    */
     fn remove_tool(&self, _name: &str) -> bool {
         false
     }
 
-    /// 获取当前对话历史。
-    ///
-    /// 默认值：空列表。ReactAgent 会覆盖此方法，
-    /// 返回其 ContextManager 中的消息。
+    /**
+    获取当前对话历史。
+
+    默认值：空列表。ReactAgent 会覆盖此方法，
+    返回其 ContextManager 中的消息。
+    */
     fn messages(&self) -> Vec<Message> {
         vec![]
     }
 
-    /// 在运行时更新 system prompt。
-    ///
-    /// 默认值：noop。ReactAgent 会覆盖此方法，
-    /// 更新其配置并把该 prompt 重新注入上下文。
+    /**
+    在运行时更新 system prompt。
+
+    默认值：noop。ReactAgent 会覆盖此方法，
+    更新其配置并把该 prompt 重新注入上下文。
+    */
     fn set_system_prompt(&self, _prompt: &str) {}
 
-    /// 把一个任务委派给某个具名的 subagent 或团队成员。
-    ///
-    /// 默认值：返回错误（"delegation not supported"）。
-    /// 当启用了 Subagent 特性时，ReactAgent 会覆盖此方法。
+    /**
+    把一个任务委派给某个具名的 subagent 或团队成员。
+
+    默认值：返回错误（"delegation not supported"）。
+    当启用了 Subagent 特性时，ReactAgent 会覆盖此方法。
+    */
     fn delegate_to<'a>(
         &'a self,
         _target: &'a str,
@@ -1361,30 +1428,39 @@ pub trait Agent: Send + Sync {
 这对于从 `SharedAgent` 中移除外层 `Mutex` 是必需的。
 */
 impl Agent for Box<dyn Agent> {
+    /// 委托给内部 agent 的 [`Agent::name`]。
     fn name(&self) -> &str {
         self.as_ref().name()
     }
+    /// 委托给内部 agent 的 [`Agent::model_name`]。
     fn model_name(&self) -> &str {
         self.as_ref().model_name()
     }
+    /// 委托给内部 agent 的 [`Agent::system_prompt`]。
     fn system_prompt(&self) -> &str {
         self.as_ref().system_prompt()
     }
+    /// 委托给内部 agent 的 [`Agent::tool_names`]。
     fn tool_names(&self) -> Vec<String> {
         self.as_ref().tool_names()
     }
+    /// 委托给内部 agent 的 [`Agent::tool_definitions`]。
     fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         self.as_ref().tool_definitions()
     }
+    /// 委托给内部 agent 的 [`Agent::skill_names`]。
     fn skill_names(&self) -> Vec<String> {
         self.as_ref().skill_names()
     }
+    /// 委托给内部 agent 的 [`Agent::mcp_server_names`]。
     fn mcp_server_names(&self) -> Vec<String> {
         self.as_ref().mcp_server_names()
     }
+    /// 委托给内部 agent 的 [`Agent::token_usage_summary`]。
     fn token_usage_summary(&self) -> crate::tokenizer::UsageSummary {
         self.as_ref().token_usage_summary()
     }
+    /// 委托给内部 agent 的 [`Agent::steer_input`]。
     fn steer_input(
         &self,
         expected_turn_id: Option<&str>,
@@ -1392,6 +1468,7 @@ impl Agent for Box<dyn Agent> {
     ) -> std::result::Result<String, AgentSteerError> {
         self.as_ref().steer_input(expected_turn_id, message)
     }
+    /// 委托给内部 agent 的 [`Agent::steer_input_tracked`]。
     fn steer_input_tracked(
         &self,
         expected_turn_id: Option<&str>,
@@ -1399,18 +1476,22 @@ impl Agent for Box<dyn Agent> {
     ) -> std::result::Result<AgentSteerReceipt, AgentSteerError> {
         self.as_ref().steer_input_tracked(expected_turn_id, message)
     }
+    /// 委托给内部 agent 的 [`Agent::close`]。
     fn close<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         self.as_ref().close()
     }
+    /// 委托给内部 agent 的 [`Agent::execute`]。
     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
         self.as_ref().execute(task)
     }
+    /// 委托给内部 agent 的 [`Agent::execute_stream`]。
     fn execute_stream<'a>(
         &'a self,
         task: &'a str,
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
         self.as_ref().execute_stream(task)
     }
+    /// 委托给内部 agent 的 [`Agent::execute_stream_with_cancel`]。
     fn execute_stream_with_cancel<'a>(
         &'a self,
         task: &'a str,
@@ -1418,6 +1499,7 @@ impl Agent for Box<dyn Agent> {
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
         self.as_ref().execute_stream_with_cancel(task, cancel)
     }
+    /// 委托给内部 agent 的 [`Agent::execute_stream_with_invocation_context`]。
     fn execute_stream_with_invocation_context<'a>(
         &'a self,
         task: &'a str,
@@ -1427,15 +1509,18 @@ impl Agent for Box<dyn Agent> {
         self.as_ref()
             .execute_stream_with_invocation_context(task, cancel, invocation)
     }
+    /// 委托给内部 agent 的 [`Agent::chat`]。
     fn chat<'a>(&'a self, message: &'a str) -> BoxFuture<'a, Result<String>> {
         self.as_ref().chat(message)
     }
+    /// 委托给内部 agent 的 [`Agent::chat_stream`]。
     fn chat_stream<'a>(
         &'a self,
         message: &'a str,
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
         self.as_ref().chat_stream(message)
     }
+    /// 委托给内部 agent 的 [`Agent::chat_stream_with_cancel`]。
     fn chat_stream_with_cancel<'a>(
         &'a self,
         message: &'a str,
@@ -1443,6 +1528,7 @@ impl Agent for Box<dyn Agent> {
     ) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
         self.as_ref().chat_stream_with_cancel(message, cancel)
     }
+    /// 委托给内部 agent 的 [`Agent::chat_stream_message_with_cancel`]。
     fn chat_stream_message_with_cancel<'a>(
         &'a self,
         message: Message,
@@ -1451,6 +1537,7 @@ impl Agent for Box<dyn Agent> {
         self.as_ref()
             .chat_stream_message_with_cancel(message, cancel)
     }
+    /// 委托给内部 agent 的 [`Agent::chat_stream_message_with_invocation_context`]。
     fn chat_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1460,6 +1547,7 @@ impl Agent for Box<dyn Agent> {
         self.as_ref()
             .chat_stream_message_with_invocation_context(message, cancel, invocation)
     }
+    /// 委托给内部 agent 的 [`Agent::execute_stream_message_with_cancel`]。
     fn execute_stream_message_with_cancel<'a>(
         &'a self,
         message: Message,
@@ -1468,6 +1556,7 @@ impl Agent for Box<dyn Agent> {
         self.as_ref()
             .execute_stream_message_with_cancel(message, cancel)
     }
+    /// 委托给内部 agent 的 [`Agent::execute_stream_message_with_invocation_context`]。
     fn execute_stream_message_with_invocation_context<'a>(
         &'a self,
         message: Message,
@@ -1477,45 +1566,58 @@ impl Agent for Box<dyn Agent> {
         self.as_ref()
             .execute_stream_message_with_invocation_context(message, cancel, invocation)
     }
+    /// 委托给内部 agent 的 [`Agent::current_run_id`]。
     fn current_run_id(&self) -> Option<String> {
         self.as_ref().current_run_id()
     }
+    /// 委托给内部 agent 的 [`Agent::reset`]。
     fn reset(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.as_ref().reset()
     }
+    /// 委托给内部 agent 的 [`Agent::set_external_context`]。
     fn set_external_context(&self, ctx: &crate::tools::ExternalRunContext) {
         self.as_ref().set_external_context(ctx);
     }
+    /// 委托给内部 agent 的 [`Agent::clear_external_context`]。
     fn clear_external_context(&self) {
         self.as_ref().clear_external_context();
     }
+    /// 委托给内部 agent 的 [`Agent::set_working_dir`]。
     fn set_working_dir(&self, path: Option<std::path::PathBuf>) {
         self.as_ref().set_working_dir(path);
     }
+    /// 委托给内部 agent 的 [`Agent::clear_working_dir`]。
     fn clear_working_dir(&self) {
         self.as_ref().clear_working_dir();
     }
+    /// 委托给内部 agent 的 [`Agent::register_tool`]。
     fn register_tool(&self, tool: Box<dyn crate::tools::Tool>) {
         self.as_ref().register_tool(tool)
     }
+    /// 委托给内部 agent 的 [`Agent::remove_tool`]。
     fn remove_tool(&self, name: &str) -> bool {
         self.as_ref().remove_tool(name)
     }
+    /// 委托给内部 agent 的 [`Agent::messages`]。
     fn messages(&self) -> Vec<Message> {
         self.as_ref().messages()
     }
+    /// 委托给内部 agent 的 [`Agent::set_system_prompt`]。
     fn set_system_prompt(&self, prompt: &str) {
         self.as_ref().set_system_prompt(prompt)
     }
+    /// 委托给内部 agent 的 [`Agent::delegate_to`]。
     fn delegate_to<'a>(&'a self, target: &'a str, task: &'a str) -> BoxFuture<'a, Result<String>> {
         self.as_ref().delegate_to(target, task)
     }
 }
 
-/// 用一个支持协作式取消的包装器包裹一个 agent 事件 stream。
-///
-/// 当 `cancel` 被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
-/// `execute_stream_with_cancel` 和 `chat_stream_with_cancel` 的默认实现共用它。
+/**
+用一个支持协作式取消的包装器包裹一个 agent 事件 stream。
+
+当 `cancel` 被触发时，该 stream 会产出 [`AgentEvent::Cancelled`] 并终止。
+`execute_stream_with_cancel` 和 `chat_stream_with_cancel` 的默认实现共用它。
+*/
 fn cancel_aware_stream<'a>(
     mut stream: BoxStream<'a, Result<AgentEvent>>,
     cancel: CancellationToken,
@@ -1539,6 +1641,7 @@ fn cancel_aware_stream<'a>(
     Box::pin(wrapped)
 }
 
+/// 包装事件流，使调用上下文（及其资源守卫）一直存活到流被丢弃为止。
 fn invocation_retaining_stream<'a>(
     mut stream: BoxStream<'a, Result<AgentEvent>>,
     invocation: AgentInvocationContext,
@@ -1559,6 +1662,7 @@ mod invocation_retaining_stream_tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 被丢弃时递增计数器的测试守卫。
     struct DropCounter(Arc<AtomicUsize>);
 
     impl Drop for DropCounter {
@@ -1567,6 +1671,7 @@ mod invocation_retaining_stream_tests {
         }
     }
 
+    /// 仅实现必需方法、其余使用默认实现的测试 agent。
     struct DefaultInvocationAgent;
 
     impl Agent for DefaultInvocationAgent {
@@ -1616,6 +1721,7 @@ mod invocation_retaining_stream_tests {
         }
     }
 
+    /// 构造携带一个 `DropCounter` 资源守卫的调用上下文。
     fn invocation(drops: &Arc<AtomicUsize>) -> AgentInvocationContext {
         AgentInvocationContext {
             resource_guards: vec![InvocationResourceGuard::new(DropCounter(Arc::clone(drops)))],
@@ -1714,9 +1820,11 @@ pub trait AgentCallback: Send + Sync {
         Box::pin(async {})
     }
 
-    /// 在一次工具调用开始之前调用，携带其规范调用身份。
-    ///
-    /// 默认实现为只需要工具级生命周期通知的回调保留源码兼容性。
+    /**
+    在一次工具调用开始之前调用，携带其规范调用身份。
+
+    默认实现为只需要工具级生命周期通知的回调保留源码兼容性。
+    */
     fn on_tool_start_with_id<'a>(
         &'a self,
         agent: &'a str,

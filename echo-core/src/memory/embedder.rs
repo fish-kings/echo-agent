@@ -1,7 +1,9 @@
-//! 文本向量化接口
-//!
-//! 将文本映射为稠密浮点向量，用于语义检索。
-//! 具体实现（`HttpEmbedder`）位于 `echo_state` 中。
+/*!
+文本向量化接口
+
+将文本映射为稠密浮点向量，用于语义检索。
+具体实现（`HttpEmbedder`）位于 `echo_state` 中。
+*/
 
 use crate::error::Result;
 use futures::future::BoxFuture;

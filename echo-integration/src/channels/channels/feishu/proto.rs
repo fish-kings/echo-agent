@@ -1,9 +1,11 @@
-//! 飞书 WebSocket Protobuf 协议
-//!
-//! 飞书长连接使用自定义 Protobuf 协议（PBBP2），而非纯 WebSocket JSON。
-//! 本模块实现了 Frame 与 Header 的编解码。
-//!
-//! 协议参考：larksuite/oapi-sdk-go/ws/pbbp2.proto
+/*!
+飞书 WebSocket Protobuf 协议
+
+飞书长连接使用自定义 Protobuf 协议（PBBP2），而非纯 WebSocket JSON。
+本模块实现了 Frame 与 Header 的编解码。
+
+协议参考：larksuite/oapi-sdk-go/ws/pbbp2.proto
+*/
 
 use prost::Message;
 

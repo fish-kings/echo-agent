@@ -1,6 +1,8 @@
-//! 上下文压缩 —— trait 及输入/输出类型
-//!
-//! 具体实现位于 `echo_state::compression::compressor`。
+/*!
+上下文压缩 —— trait 及输入/输出类型
+
+具体实现位于 `echo_state::compression::compressor`。
+*/
 
 use crate::error::Result;
 use crate::llm::types::Message;
@@ -101,10 +103,12 @@ pub enum ToolPairFixType {
     PlaceholderResultInserted,
 }
 
-/// 捕获一次压缩过程完整结果的一等状态对象。
-///
-/// 这是上下文压缩的审计轨迹 —— 记录了做了什么、移除了什么、修复了什么，
-/// 以及提升到了长期记忆中的内容。
+/**
+捕获一次压缩过程完整结果的一等状态对象。
+
+这是上下文压缩的审计轨迹 —— 记录了做了什么、移除了什么、修复了什么，
+以及提升到了长期记忆中的内容。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompressionCheckpoint {
     /// 该检查点的唯一标识符（UUID v4）。
@@ -123,8 +127,10 @@ pub struct CompressionCheckpoint {
     pub protected_count: usize,
     /// 压缩后应用的工具调用配对修复列表。
     pub tool_pair_fixes: Vec<ToolPairFix>,
-    /// 发送给 MemoryPromoter 用于事实提取的被淘汰消息数量。
-    /// 注意：这里统计的是被淘汰的消息数，而非实际提取出的事实数（promoter 是异步运行的）。
+    /**
+    发送给 MemoryPromoter 用于事实提取的被淘汰消息数量。
+    注意：这里统计的是被淘汰的消息数，而非实际提取出的事实数（promoter 是异步运行的）。
+    */
     pub memory_promotion_count: usize,
     /// 压缩前的估计 token 数。
     pub token_before: usize,
@@ -226,12 +232,14 @@ impl CompressionCheckpoint {
     }
 }
 
-/// 由基于 LLM 的压缩器产出的结构化摘要。
-///
-/// 与自由文本摘要不同，这里每个字段都跟踪对话的一个特定方面。这样可以实现：
-/// - **字段级合并**，用于增量压缩（不会出现摘要漂移）
-/// - **可验证性** —— 可独立检查每个字段
-/// - **可编程访问** —— 提取文件路径、待办任务等信息
+/**
+由基于 LLM 的压缩器产出的结构化摘要。
+
+与自由文本摘要不同，这里每个字段都跟踪对话的一个特定方面。这样可以实现：
+- **字段级合并**，用于增量压缩（不会出现摘要漂移）
+- **可验证性** —— 可独立检查每个字段
+- **可编程访问** —— 提取文件路径、待办任务等信息
+*/
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct StructuredSummary {
@@ -292,10 +300,12 @@ impl StructuredSummary {
         format!("[对话历史摘要]\n{}", self.to_json())
     }
 
-    /// 将较新的摘要信息合并进当前摘要（按字段级别）。
-    ///
-    /// 由 `IncrementalSummaryCompressor` 用于更新缓存的摘要，同时不丢失
-    /// 早期压缩过程中的信息。
+    /**
+    将较新的摘要信息合并进当前摘要（按字段级别）。
+
+    由 `IncrementalSummaryCompressor` 用于更新缓存的摘要，同时不丢失
+    早期压缩过程中的信息。
+    */
     pub fn merge_with(&mut self, newer: &StructuredSummary) {
         // goal：跟踪最新目标（以最新为准，避免噪声累积）
         if !newer.goal.is_empty() && newer.goal != self.goal {
@@ -383,10 +393,12 @@ impl StructuredSummary {
     }
 }
 
-/// 跟踪应在压缩过程中幸存下来的权威上下文来源。
-///
-/// 压缩淘汰消息时，关键上下文（系统提示词、项目规则、技能注入内容）可能
-/// 会丢失。`CanonicalContext` 保存这些权威来源，以便在压缩后重新注入。
+/**
+跟踪应在压缩过程中幸存下来的权威上下文来源。
+
+压缩淘汰消息时，关键上下文（系统提示词、项目规则、技能注入内容）可能
+会丢失。`CanonicalContext` 保存这些权威来源，以便在压缩后重新注入。
+*/
 #[derive(Debug, Clone, Default)]
 pub struct CanonicalContext {
     /// 基础系统提示词（不含技能/规则扩展部分）。
@@ -407,11 +419,13 @@ impl CanonicalContext {
             || !self.skill_injections.is_empty()
     }
 
-    /// 构建压缩后插入的补充性重新注入消息。
-    ///
-    /// 基础系统提示词由 `ContextManager` 直接负责恢复；本方法只返回
-    /// 补充性的权威上下文，以避免提示词被重复表示。
-    /// 若没有需要重新注入的内容，返回 `None`。
+    /**
+    构建压缩后插入的补充性重新注入消息。
+
+    基础系统提示词由 `ContextManager` 直接负责恢复；本方法只返回
+    补充性的权威上下文，以避免提示词被重复表示。
+    若没有需要重新注入的内容，返回 `None`。
+    */
     pub fn to_reinjection_messages(&self) -> Option<Vec<String>> {
         if !self.has_any() {
             return None;
@@ -486,15 +500,19 @@ pub trait ContextCompressor: Send + Sync {
     /// 对给定输入执行一次压缩，返回保留/淘汰的消息与压缩检查点。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>>;
 
-    /// 该压缩器的人类可读名称，用于指标跟踪。
-    /// 实现方可覆盖此方法以提供更具描述性的名称。
+    /**
+    该压缩器的人类可读名称，用于指标跟踪。
+    实现方可覆盖此方法以提供更具描述性的名称。
+    */
     fn name(&self) -> &str {
         "custom"
     }
 }
 
-/// 允许将 `Box<dyn ContextCompressor>` 直接传给任何接受
-/// `impl ContextCompressor` 的函数，而无需引入额外的包装枚举。
+/**
+允许将 `Box<dyn ContextCompressor>` 直接传给任何接受
+`impl ContextCompressor` 的函数，而无需引入额外的包装枚举。
+*/
 impl ContextCompressor for Box<dyn ContextCompressor> {
     /// 转发到被装箱的具体压缩器实现。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {

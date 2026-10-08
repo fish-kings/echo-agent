@@ -1,9 +1,11 @@
-//! 子 Agent（Subagent）系统 —— 多层级 Agent 委派。
-//!
-//! 提供三种执行模式：
-//! - **Sync（同步）**：父 Agent 阻塞等待子 Agent 返回（即当前 `AgentDispatchTool` 的行为）
-//! - **Fork（分叉）**：独立运行；除非显式请求过滤后的历史，否则上下文是全新的
-//! - **Teammate（队友）**：并行独立运行的 Agent，通过 join/cancel 句柄进行控制
+/*!
+子 Agent（Subagent）系统 —— 多层级 Agent 委派。
+
+提供三种执行模式：
+- **Sync（同步）**：父 Agent 阻塞等待子 Agent 返回（即当前 `AgentDispatchTool` 的行为）
+- **Fork（分叉）**：独立运行；除非显式请求过滤后的历史，否则上下文是全新的
+- **Teammate（队友）**：并行独立运行的 Agent，通过 join/cancel 句柄进行控制
+*/
 
 pub mod builder;
 pub mod context;

@@ -1,6 +1,8 @@
-//! Shell command execution tool
-//!
-//! Security policy: only allows safe commands in the whitelist, uses direct argv execution (rejects shell injection)
+/*!
+ * Shell 命令执行工具
+ *
+ * 安全策略：仅允许白名单中的安全命令，使用直接 argv 执行（拒绝 shell 注入）
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::sandbox::{
@@ -32,86 +34,96 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
+/// 每次流式输出分块的最大字节数
 const STREAM_CHUNK_BYTES: usize = 16 * 1024;
+/// 内存中保留的 stdout+stderr 输出上限（字节）
 const MAX_RETAINED_OUTPUT_BYTES: usize = 1024 * 1024;
+/// 流式事件通道的容量
 const STREAM_CHANNEL_CAPACITY: usize = 32;
 
+/// 严格模式下允许直接执行的安全命令白名单
 static ALLOWED_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        // ===== File viewing =====
+        // ===== 文件查看 =====
         "ls", "cat", "head", "tail", "less", "more", "file", "stat", "wc",
-        // ===== Directory operations (read-only) =====
-        "pwd", "tree", "find", "du", // ===== Code related =====
-        "git", "cargo", "rustc", "clippy", "rustfmt", // ===== Search & find =====
-        "grep", "rg", "ag", "fd", // ===== Text processing (read-only) =====
+        // ===== 目录操作（只读） =====
+        "pwd", "tree", "find", "du", // ===== 代码相关 =====
+        "git", "cargo", "rustc", "clippy", "rustfmt", // ===== 搜索与查找 =====
+        "grep", "rg", "ag", "fd", // ===== 文本处理（只读） =====
         "echo", "printf", "cut", "sort", "uniq", "diff",
-        // ===== System info (read-only) =====
+        // ===== 系统信息（只读） =====
         "which", "whereis", "env", "date", "uname",
     ])
 });
 
+/// 需要人工确认后才能执行的命令集合
 static REQUIRE_APPROVAL_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        // ===== File deletion/modification (requires confirmation) =====
-        "rm", "rmdir", "mv", "cp", // ===== Network operations (requires confirmation) =====
-        "curl", "wget", "nc", // ===== Process operations (requires confirmation) =====
-        "kill", "killall", "pkill", // ===== Package management (requires confirmation) =====
+        // ===== 文件删除/修改（需要确认） =====
+        "rm", "rmdir", "mv", "cp", // ===== 网络操作（需要确认） =====
+        "curl", "wget", "nc", // ===== 进程操作（需要确认） =====
+        "kill", "killall", "pkill", // ===== 包管理（需要确认） =====
         "apt", "apt-get", "yum", "dnf", "brew", "pip", "pip3", "npm", "yarn", "pnpm",
-        // ===== Script execution (requires confirmation) =====
+        // ===== 脚本执行（需要确认） =====
         "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "php",
-        // ===== Text processing (may modify files) =====
+        // ===== 文本处理（可能修改文件） =====
         "sed", "awk",
     ])
 });
 
+/// 危险命令黑名单（始终拒绝，即使配置了沙箱）
 static DANGEROUS_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        // ===== Extremely dangerous (data destruction) =====
-        "dd", "shred", "mkfs", "fdisk", // ===== Privilege escalation =====
-        "sudo", "su", // ===== Permission modification =====
-        "chmod", "chown", "chgrp", // ===== System operations =====
+        // ===== 极度危险（数据破坏） =====
+        "dd", "shred", "mkfs", "fdisk", // ===== 权限提升 =====
+        "sudo", "su", // ===== 权限修改 =====
+        "chmod", "chown", "chgrp", // ===== 系统操作 =====
         "reboot", "shutdown", "halt", "poweroff", "init",
-        // ===== High-risk network operations =====
+        // ===== 高风险网络操作 =====
         "nmap",
     ])
 });
 
+/// 已知的 git 子命令集合（部分仍需确认）
 static GIT_SAFE_SUBCOMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        // Read-only operations
+        // 只读操作
         "status", "log", "show", "diff", "branch", "tag", "ls-files", "ls-tree", "remote", "config",
-        // Modifying operations requiring user confirmation
+        // 需要用户确认的修改操作
         "add", "commit", "checkout", "switch", "stash",
     ])
 });
 
+/// 已知的 cargo 子命令集合（部分仍需确认）
 static CARGO_SAFE_SUBCOMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
-        // Read-only / build operations
+        // 只读 / 构建操作
         "check", "build", "test", "clippy", "fmt", "tree", "search", "metadata",
-        // Requires confirmation
+        // 需要确认
         "clean", "update",
     ])
 });
 
-/// Shell metacharacter list (used to reject shell syntax and prevent injection)
-///
-/// These characters have special meaning in `sh -c`. This tool uses direct argv execution,
-/// so commands containing these characters will be rejected UNLESS a sandbox is configured.
+/**
+ * Shell 元字符列表（用于拒绝 shell 语法、防止注入）
+ *
+ * 这些字符在 `sh -c` 中具有特殊含义。本工具使用直接 argv 执行，
+ * 因此除非配置了沙箱，否则包含这些字符的命令会被拒绝。
+ */
 const SHELL_METACHARACTERS: &[char] = &[
-    '|',  // pipe
-    ';',  // command separator
-    '&',  // background/conditional execution
-    '$',  // variable/command substitution
-    '`',  // backtick command substitution
-    '>',  // redirect output
-    '<',  // redirect input
-    '(',  // subshell
-    ')',  // subshell
-    '\n', // newline injection
+    '|',  // 管道
+    ';',  // 命令分隔符
+    '&',  // 后台/条件执行
+    '$',  // 变量/命令替换
+    '`',  // 反引号命令替换
+    '>',  // 输出重定向
+    '<',  // 输入重定向
+    '(',  // 子 shell
+    ')',  // 子 shell
+    '\n', // 换行注入
 ];
 
-/// Commands that are safe to run inside a sandbox (sandbox provides isolation)
+/// 在沙箱内运行是安全的命令（由沙箱提供隔离）
 static SANDBOX_SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "bash", "sh", "zsh", "fish", "python", "python3", "node", "perl", "ruby", "php", "pip",
@@ -119,17 +131,20 @@ static SANDBOX_SAFE_COMMANDS: LazyLock<HashSet<&'static str>> = LazyLock::new(||
     ])
 });
 
-/// Command safety check result
+/// 命令安全检查结果
 pub type CommandSafety = CommandPolicyDecision;
 
-/// Default command policy used by [`ShellTool`].
+/// [`ShellTool`] 使用的默认命令策略。
 #[derive(Debug, Clone, Copy)]
 pub struct StandardCommandPolicy {
+    /// 是否启用严格白名单模式
     strict: bool,
+    /// 是否按"已配置沙箱"进行评估
     sandboxed: bool,
 }
 
 impl StandardCommandPolicy {
+    /// 创建严格模式策略（仅允许白名单命令，不视为沙箱环境）
     pub fn strict() -> Self {
         Self {
             strict: true,
@@ -137,6 +152,7 @@ impl StandardCommandPolicy {
         }
     }
 
+    /// 创建宽松模式策略（不强制白名单，不视为沙箱环境）
     pub fn permissive() -> Self {
         Self {
             strict: false,
@@ -144,6 +160,7 @@ impl StandardCommandPolicy {
         }
     }
 
+    /// 设置是否按沙箱环境评估命令
     pub fn with_sandbox(mut self, sandboxed: bool) -> Self {
         self.sandboxed = sandboxed;
         self
@@ -151,57 +168,67 @@ impl StandardCommandPolicy {
 }
 
 impl CommandPolicy for StandardCommandPolicy {
+    /// 按当前严格/沙箱配置评估命令安全性
     fn evaluate(&self, command: &str) -> CommandPolicyDecision {
         ShellTool::for_policy_evaluation(self.strict, self.sandboxed).check_command_safety(command)
     }
 }
 
-/// Validate a shell command against the strict default safety policy.
-///
-/// This is the canonical, reusable safety gate used by every shell-execution
-/// path in the framework (the synchronous `ShellTool` plus async/background
-/// spawners such as `spawn_background_task`). It uses the default strict
-/// `ShellTool` (no sandbox, strict whitelist), so it rejects shell
-/// metacharacters, dangerous commands, and non-whitelisted programs.
-///
-/// Callers that execute commands obtained from the LLM (or any untrusted
-/// source) **must** call this before spawning a process and honor the
-/// returned [`CommandSafety`] verdict.
+/**
+ * 使用严格的默认安全策略校验 shell 命令。
+ *
+ * 这是框架内所有 shell 执行路径共用的标准安全闸门（同步的 `ShellTool`
+ * 以及 `spawn_background_task` 等异步/后台启动器）。它使用默认严格模式的
+ * `ShellTool`（无沙箱、严格白名单），因此会拒绝 shell 元字符、危险命令
+ * 以及不在白名单中的程序。
+ *
+ * 执行来自 LLM（或任何不可信来源）命令的调用方，**必须**在启动进程前
+ * 调用此函数，并遵守返回的 [`CommandSafety`] 判定。
+ */
 pub fn validate_command_safety(command: &str) -> CommandSafety {
     StandardCommandPolicy::strict().evaluate(command)
 }
 
-/// Shell command execution tool (with safety checks)
-///
-/// Optional sandbox executor integration: when `sandbox` is set, all commands execute through the sandbox,
-/// providing additional isolation and resource limits.
-///
-/// Optional background mode: when a [`CommandCellRegistry`] is configured via
-/// [`ShellTool::with_cell_launcher`], `background=true` launches the command
-/// as a cell and returns a `cell_id` immediately.
+/**
+ * Shell 命令执行工具（带安全检查）
+ *
+ * 可选的沙箱执行器集成：设置 `sandbox` 后，所有命令都通过沙箱执行，
+ * 以提供额外的隔离与资源限制。
+ *
+ * 可选的后台模式：通过 [`ShellTool::with_cell_launcher`] 配置
+ * [`CommandCellRegistry`] 后，`background=true` 会将命令作为 cell 启动，
+ * 并立即返回 `cell_id`。
+ */
 pub struct ShellTool {
-    /// Whether strict mode is enabled (default true)
+    /// 是否启用严格模式（默认 true）
     strict_mode: bool,
+    /// 应用自定义的命令策略；设置后替代内置分类器
     command_policy: Option<Arc<dyn CommandPolicy>>,
+    /// 策略评估时是否视为已配置沙箱
     policy_sandboxed: bool,
-    /// Optional sandbox executor (interior-mutable so `Tool::set_sandbox`
-    /// can inject it post-construction via `ToolManager::apply_sandbox`).
+    /**
+     * 可选的沙箱执行器（内部可变，以便 `Tool::set_sandbox` 在构造后
+     * 通过 `ToolManager::apply_sandbox` 注入）。
+     */
     sandbox: Mutex<Option<Arc<dyn SandboxExecutor>>>,
-    /// Optional command cell registry for `background=true` launches.
-    /// `None` (default) = background mode unavailable.
+    /**
+     * 用于 `background=true` 启动的可选命令 cell 注册表。
+     * `None`（默认）表示后台模式不可用。
+     */
     cell_launcher: Option<Arc<dyn CommandCellRegistry>>,
-    /// Command timeout in seconds (default 60 seconds)
+    /// 命令超时时间，单位秒（默认 60 秒）
     timeout_secs: u64,
 }
 
 impl Default for ShellTool {
+    /// 等价于 [`ShellTool::new`]
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl ShellTool {
-    /// Create a new Shell tool (default strict mode, 60s timeout)
+    /// 创建新的 Shell 工具（默认严格模式，60 秒超时）
     pub fn new() -> Self {
         Self {
             strict_mode: true,
@@ -213,7 +240,7 @@ impl ShellTool {
         }
     }
 
-    /// Create a non-strict mode Shell tool (not recommended!)
+    /// 创建非严格模式的 Shell 工具（不推荐！）
     pub fn new_permissive() -> Self {
         Self {
             strict_mode: false,
@@ -225,6 +252,7 @@ impl ShellTool {
         }
     }
 
+    /// 构造仅用于策略评估的实例
     fn for_policy_evaluation(strict_mode: bool, policy_sandboxed: bool) -> Self {
         Self {
             strict_mode,
@@ -236,13 +264,13 @@ impl ShellTool {
         }
     }
 
-    /// Replace the default classifier with an application-supplied policy.
+    /// 使用应用提供的策略替换默认分类器。
     pub fn with_command_policy(mut self, policy: Arc<dyn CommandPolicy>) -> Self {
         self.command_policy = Some(policy);
         self
     }
 
-    /// Set the sandbox executor; commands will be executed through the sandbox
+    /// 设置沙箱执行器；命令将通过沙箱执行
     pub fn with_sandbox(self, sandbox: Arc<dyn SandboxExecutor>) -> Self {
         *self
             .sandbox
@@ -251,40 +279,45 @@ impl ShellTool {
         self
     }
 
-    /// Set the command cell registry used by `background=true` launches.
-    /// (Plain field assignment — the registry is injected once at setup time,
-    /// unlike the interior-mutable `sandbox` Mutex which `Tool::set_sandbox`
-    /// fills in later.)
+    /**
+     * 设置 `background=true` 启动所使用的命令 cell 注册表。
+     * （普通字段赋值——注册表在初始化时一次性注入，不同于内部可变的
+     * `sandbox` Mutex，后者由 `Tool::set_sandbox` 稍后填充。）
+     */
     pub fn with_cell_launcher(mut self, cells: Arc<dyn CommandCellRegistry>) -> Self {
         self.cell_launcher = Some(cells);
         self
     }
 
-    /// Set command timeout in seconds (default 60 seconds)
+    /// 设置命令超时时间，单位秒（默认 60 秒）
     pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
         self.timeout_secs = timeout_secs;
         self
     }
 
-    /// Check if the command contains shell metacharacters
-    ///
-    /// Note: metacharacters inside quotes are safe (passed as literal arguments),
-    /// but this tool takes a conservative approach and rejects any metacharacter found.
-    /// This prevents injection attacks like `ls; rm -rf /` or `echo $(id)`.
+    /**
+     * 检查命令是否包含 shell 元字符
+     *
+     * 注意：引号内的元字符是安全的（会作为字面参数传递），
+     * 但本工具采取保守策略，发现任何元字符都拒绝。
+     * 这可以防止 `ls; rm -rf /` 或 `echo $(id)` 之类的注入攻击。
+     */
     fn has_shell_metacharacters(&self, cmd: &str) -> bool {
         cmd.contains(SHELL_METACHARACTERS)
     }
 
-    /// Launch the command as a background cell (Codex-style `background=true`).
-    ///
-    /// Order of gates (mirrors the foreground policy):
-    /// 1. no cell registry → refuse;
-    /// 2. the SAME `check_command_safety` classifier as the foreground path
-    ///    (Safe proceeds; RequiresApproval/Dangerous return the same errors);
-    /// 3. launch through the registry and return the `cell_id` immediately.
-    ///
-    /// `require_sandbox` is carried in the request. A registry without the
-    /// matching executor must reject rather than silently downgrade.
+    /**
+     * 将命令作为后台 cell 启动（Codex 风格的 `background=true`）。
+     *
+     * 闸门顺序（与前台策略一致）：
+     * 1. 没有 cell 注册表 → 拒绝；
+     * 2. 使用与前台路径相同的 `check_command_safety` 分类器
+     *    （Safe 继续；RequiresApproval/Dangerous 返回相同的错误）；
+     * 3. 通过注册表启动并立即返回 `cell_id`。
+     *
+     * `require_sandbox` 随请求一同传递。缺少对应执行器的注册表必须拒绝，
+     * 而不是静默降级。
+     */
     async fn launch_background_cell(
         &self,
         command: &str,
@@ -326,9 +359,10 @@ impl ShellTool {
                 .map(|dir| dir.display().to_string()),
             timeout_secs,
             require_sandbox: has_sandbox,
-            // Background cells outlive the foreground Turn. Product runtimes
-            // that distinguish pause from cancel stop owned cells explicitly
-            // by run identity instead of inheriting the Turn token here.
+            /*
+             * 后台 cell 的生命周期长于前台 Turn。区分暂停与取消的产品运行时
+             * 会按 run 身份显式停止其拥有的 cell，而不是在此继承 Turn 的取消令牌。
+             */
             cancel: None,
             owner: CommandCellOwner {
                 conversation_id: ctx.conversation_id.clone(),
@@ -376,7 +410,7 @@ impl ShellTool {
         }
     }
 
-    /// Check whether a command is safe
+    /// 检查命令是否安全
     pub fn check_command_safety(&self, command: &str) -> CommandSafety {
         if let Some(policy) = &self.command_policy {
             return policy.evaluate(command);
@@ -388,8 +422,8 @@ impl ShellTool {
             .is_some()
             || self.policy_sandboxed;
 
-        // Check for shell metacharacters (prevent injection)
-        // When sandbox is available, allow metacharacters — sandbox provides isolation
+        /* 检查 shell 元字符（防止注入）
+         * 当沙箱可用时允许元字符——由沙箱提供隔离 */
         if self.has_shell_metacharacters(command) && !has_sandbox {
             return CommandSafety::Dangerous(format!(
                 "Command contains shell metacharacters (| ; & $ ` > < () etc.), execution rejected.\
@@ -403,7 +437,7 @@ impl ShellTool {
         let parts = match shlex_split(command) {
             Some(parts) => parts,
             None => {
-                // If sandbox is available, allow unparseable commands (will use sh -c)
+                // 若沙箱可用，允许无法解析的命令（将使用 sh -c 执行）
                 if has_sandbox {
                     return CommandSafety::Safe;
                 }
@@ -419,7 +453,7 @@ impl ShellTool {
 
         let base_cmd = parts[0].as_str();
 
-        // 1. Check if in the dangerous command blocklist (always enforced, even with sandbox)
+        // 1. 检查是否在危险命令黑名单中（始终强制执行，即使有沙箱）
         if DANGEROUS_COMMANDS.contains(base_cmd) {
             return CommandSafety::Dangerous(format!(
                 "Command '{}' is in the dangerous command blocklist, execution rejected",
@@ -427,12 +461,12 @@ impl ShellTool {
             ));
         }
 
-        // 2. Sandbox mode: commands in SANDBOX_SAFE_COMMANDS are allowed without approval
+        // 2. 沙箱模式：SANDBOX_SAFE_COMMANDS 中的命令无需审批即可执行
         if has_sandbox && SANDBOX_SAFE_COMMANDS.contains(base_cmd) {
             return CommandSafety::Safe;
         }
 
-        // 3. Check if manual confirmation is required
+        // 3. 检查是否需要人工确认
         if REQUIRE_APPROVAL_COMMANDS.contains(base_cmd) {
             return CommandSafety::RequiresApproval(format!(
                 "Command '{}' may cause system changes, requires manual confirmation",
@@ -440,7 +474,7 @@ impl ShellTool {
             ));
         }
 
-        // 4. Strict mode: must be in the whitelist
+        // 4. 严格模式：必须在白名单中
         if self.strict_mode && !ALLOWED_COMMANDS.contains(base_cmd) {
             return CommandSafety::Dangerous(format!(
                 "Command '{}' is not in the safe whitelist, execution rejected",
@@ -448,7 +482,7 @@ impl ShellTool {
             ));
         }
 
-        // 5. Subcommand check for special commands
+        // 5. 对特殊命令进行子命令检查
         match base_cmd {
             "git" => self.check_git_command(&parts),
             "cargo" => self.check_cargo_command(&parts),
@@ -456,7 +490,7 @@ impl ShellTool {
         }
     }
 
-    /// Check git subcommand
+    /// 检查 git 子命令
     fn check_git_command(&self, parts: &[String]) -> CommandSafety {
         if parts.len() < 2 {
             return CommandSafety::Safe;
@@ -464,14 +498,14 @@ impl ShellTool {
 
         let subcommand = parts[1].as_str();
 
-        // Check git operation
+        // 检查 git 操作
         match subcommand {
-            // Network operations (require confirmation)
+            // 网络操作（需要确认）
             "push" | "pull" | "fetch" | "clone" => CommandSafety::RequiresApproval(format!(
                 "git {} involves network operations, requires confirmation",
                 subcommand
             )),
-            // Force reset (dangerous, reject)
+            // 强制重置（危险，拒绝）
             "reset" => {
                 if parts.iter().any(|part| part == "--hard") {
                     CommandSafety::Dangerous(
@@ -483,11 +517,11 @@ impl ShellTool {
                     )
                 }
             }
-            // Clean untracked files (requires confirmation)
+            // 清理未跟踪文件（需要确认）
             "clean" => CommandSafety::RequiresApproval(
                 "git clean will delete untracked files, requires confirmation".to_string(),
             ),
-            // Safe subcommands
+            // 安全子命令
             cmd if GIT_SAFE_SUBCOMMANDS.contains(cmd) => {
                 if cmd == "commit" || cmd == "add" || cmd == "checkout" {
                     CommandSafety::RequiresApproval(format!(
@@ -498,7 +532,7 @@ impl ShellTool {
                     CommandSafety::Safe
                 }
             }
-            // Unknown subcommand (requires confirmation)
+            // 未知子命令（需要确认）
             _ => CommandSafety::RequiresApproval(format!(
                 "git {} is not in the known safe list, requires confirmation",
                 subcommand
@@ -506,7 +540,7 @@ impl ShellTool {
         }
     }
 
-    /// Check cargo subcommand
+    /// 检查 cargo 子命令
     fn check_cargo_command(&self, parts: &[String]) -> CommandSafety {
         if parts.len() < 2 {
             return CommandSafety::Safe;
@@ -515,16 +549,16 @@ impl ShellTool {
         let subcommand = parts[1].as_str();
 
         match subcommand {
-            // Package install/publish (requires confirmation)
+            // 包安装/发布（需要确认）
             "install" | "uninstall" | "publish" => CommandSafety::RequiresApproval(format!(
                 "cargo {} involves package installation/publishing, requires confirmation",
                 subcommand
             )),
-            // Run programs (requires confirmation)
+            // 运行程序（需要确认）
             "run" => CommandSafety::RequiresApproval(
                 "cargo run will execute a program, requires confirmation".to_string(),
             ),
-            // Known safe commands
+            // 已知的安全命令
             cmd if CARGO_SAFE_SUBCOMMANDS.contains(cmd) => {
                 if cmd == "clean" || cmd == "update" {
                     CommandSafety::RequiresApproval(format!(
@@ -535,7 +569,7 @@ impl ShellTool {
                     CommandSafety::Safe
                 }
             }
-            // Unknown subcommand (requires confirmation)
+            // 未知子命令（需要确认）
             _ => CommandSafety::RequiresApproval(format!(
                 "cargo {} is not in the known safe list, requires confirmation",
                 subcommand
@@ -545,23 +579,27 @@ impl ShellTool {
 }
 
 impl Tool for ShellTool {
+    /// 返回工具名称 `shell`
     fn name(&self) -> &str {
         "shell"
     }
 
+    /// 返回面向模型的工具描述
     fn description(&self) -> &str {
         "Execute restricted shell commands (only safe read-only operations and code-related commands are allowed). Parameter: command - the command to execute. Note: only simple commands (program + args) are supported; pipes, redirects, command substitution, and other shell syntax are not allowed."
     }
 
+    /// 声明工具需要执行权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Execute]
     }
 
+    /// 声明工具风险等级为危险
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
-    /// P2: receive sandbox at agent-setup time (via ToolManager::apply_sandbox).
+    /// P2：在 agent 初始化时接收沙箱（通过 ToolManager::apply_sandbox）。
     fn set_sandbox(&self, sandbox: Arc<dyn SandboxExecutor>) -> bool {
         *self
             .sandbox
@@ -570,6 +608,7 @@ impl Tool for ShellTool {
         true
     }
 
+    /// 返回工具参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -591,6 +630,7 @@ impl Tool for ShellTool {
         })
     }
 
+    /// 执行命令并等待流中的完成事件作为最终结果
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -610,6 +650,7 @@ impl Tool for ShellTool {
         })
     }
 
+    /// 执行命令并返回实时输出事件流（支持后台模式、沙箱与直接执行）
     fn execute_stream_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -627,16 +668,17 @@ impl Tool for ShellTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("command".to_string()))?;
 
-            // Extract timeout parameter (default 60s). The background path maps
-            // an explicit timeout onto the cell lifetime WITHOUT the 300s
-            // foreground cap (hour-scale builds are the whole point of cells).
+            /*
+             * 提取超时参数（默认 60 秒）。后台路径会把显式超时映射为 cell 的
+             * 生命周期，且不受前台 300 秒上限约束（cell 的意义正是支持小时级构建）。
+             */
             let has_timeout_param = parameters.contains_key("timeout");
             let timeout_secs_raw = parameters
                 .get("timeout")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(self.timeout_secs);
 
-            // ── Background mode: launch a cell, return immediately ──
+            // ── 后台模式：启动 cell 并立即返回 ──
             let background = parameters
                 .get("background")
                 .and_then(|v| v.as_bool())
@@ -657,8 +699,10 @@ impl Tool for ShellTool {
                 return Ok(single_complete_stream(result));
             }
 
-            // ── Foreground path (unchanged) ─────────────────────────
-            // Cap at 300 seconds
+            /*
+            ── 前台路径（保持不变） ─────────────────────────
+            上限为 300 秒
+            */
             let timeout_secs = timeout_secs_raw.min(300);
 
             match self.check_command_safety(command) {
@@ -735,11 +779,13 @@ impl Tool for ShellTool {
         })
     }
 
+    /// 声明支持实时流式输出
     fn supports_streaming(&self) -> bool {
         true
     }
 }
 
+/// 使用 shlex 将命令字符串解析为 argv 列表
 fn parse_command(tool_name: &str, command: &str) -> Result<Vec<String>> {
     shlex_split(command).ok_or_else(|| {
         ToolError::ExecutionFailed {
@@ -752,6 +798,7 @@ fn parse_command(tool_name: &str, command: &str) -> Result<Vec<String>> {
     })
 }
 
+/// 构造只包含一个完成事件的流
 fn single_complete_stream<'a>(
     result: ToolResult,
 ) -> Pin<Box<dyn Stream<Item = ToolStreamEvent> + Send + 'a>> {
@@ -760,6 +807,7 @@ fn single_complete_stream<'a>(
     }))
 }
 
+/// 将 mpsc 接收端包装为工具流事件流
 fn receiver_stream<'a>(
     receiver: mpsc::Receiver<ToolStreamEvent>,
 ) -> Pin<Box<dyn Stream<Item = ToolStreamEvent> + Send + 'a>> {
@@ -769,6 +817,7 @@ fn receiver_stream<'a>(
     ))
 }
 
+/// 直接（非沙箱）启动子进程，并返回其输出事件流
 fn start_direct_stream<'a>(
     program: &str,
     args: &[String],
@@ -812,6 +861,7 @@ fn start_direct_stream<'a>(
     Ok(receiver_stream(rx))
 }
 
+/// 通过沙箱执行命令，并将沙箱事件映射为工具流事件
 fn start_sandbox_stream<'a>(
     sandbox: Arc<dyn SandboxExecutor>,
     command: SandboxCommand,
@@ -900,6 +950,7 @@ fn start_sandbox_stream<'a>(
     receiver_stream(rx)
 }
 
+/// 驱动直接子进程：读取 stdout/stderr、处理超时与取消，并在结束时发送完成事件
 async fn run_direct_child(
     child: &mut tokio::process::Child,
     mut stdout: Option<tokio::process::ChildStdout>,
@@ -1038,6 +1089,7 @@ async fn run_direct_child(
     let _ = tx.send(ToolStreamEvent::Complete(result)).await;
 }
 
+/// 将输出文本按 UTF-8 边界分块后发送到事件通道
 async fn send_output(
     tx: &mpsc::Sender<ToolStreamEvent>,
     channel: ToolOutputChannel,
@@ -1051,6 +1103,7 @@ async fn send_output(
     Ok(())
 }
 
+/// 杀死子进程（Unix 下连同其进程组）并回收
 async fn cleanup_direct_child(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id() {
@@ -1064,19 +1117,27 @@ async fn cleanup_direct_child(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
+/// 在内存中保留的进程输出（带容量上限）
 #[derive(Default)]
 struct RetainedOutput {
+    /// 已保留的输出字节
     bytes: Vec<u8>,
+    /// 实际产生的输出总字节数（含未保留部分）
     total_bytes: u64,
+    /// 是否因容量上限发生截断
     truncated: bool,
 }
 
+/// 将命令输出同步写入产物（artifact）文件的捕获器
 struct ArtifactCapture {
+    /// 产物写入器；写入失败或未配置时为 `None`
     writer: Option<ToolOutputArtifactWriter>,
+    /// 写入过程中记录的错误信息
     error: Option<String>,
 }
 
 impl ArtifactCapture {
+    /// 根据上下文中的产物配置创建捕获器
     fn new(ctx: &ToolContext, tool_name: &str) -> Self {
         let writer = ctx.output_artifacts.clone().map(|config| {
             ToolOutputArtifactWriter::new(
@@ -1090,6 +1151,7 @@ impl ArtifactCapture {
         }
     }
 
+    /// 将一段输出写入产物；失败时记录错误并停止后续写入
     fn push(&mut self, channel: ToolOutputChannel, text: &str) {
         let Some(writer) = self.writer.as_mut() else {
             return;
@@ -1101,6 +1163,7 @@ impl ArtifactCapture {
         }
     }
 
+    /// 完成产物写入，并将产物引用或写入错误附加到结果
     fn finish(&mut self, mut result: ToolResult) -> ToolResult {
         let artifact = match self.writer.take() {
             Some(writer) => match writer.finish() {
@@ -1125,6 +1188,7 @@ impl ArtifactCapture {
     }
 }
 
+/// 将产物引用写入工具结果，并更新相关的截断元数据
 fn apply_artifact(artifact: ToolOutputArtifactRef, result: &mut ToolResult) {
     let original_bytes = result
         .metadata
@@ -1159,6 +1223,7 @@ fn apply_artifact(artifact: ToolOutputArtifactRef, result: &mut ToolResult) {
 }
 
 impl RetainedOutput {
+    /// 记录输出字节，在剩余容量内保留前缀并更新截断标记
     fn push(&mut self, bytes: &[u8], remaining_capacity: usize) {
         self.total_bytes = self
             .total_bytes
@@ -1170,11 +1235,13 @@ impl RetainedOutput {
         self.truncated |= retain < bytes.len();
     }
 
+    /// 以有损 UTF-8 方式返回已保留的文本
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes).to_string()
     }
 }
 
+/// 根据退出码、保留输出与耗时构建直接执行路径的工具结果
 fn build_tool_result(
     exit_code: i32,
     stdout: RetainedOutput,
@@ -1235,6 +1302,7 @@ fn build_tool_result(
         .with_meta("stderr_bytes", stderr.total_bytes.to_string())
 }
 
+/// 将沙箱执行结果转换为工具结果
 fn tool_result_from_execution(
     result: echo_core::sandbox::ExecutionResult,
     working_dir: Option<&std::path::PathBuf>,
@@ -1295,6 +1363,7 @@ fn tool_result_from_execution(
         .with_meta("stderr_bytes", stderr_bytes.to_string())
 }
 
+/// 合并 stdout 与 stderr 作为最终输出
 fn combined_process_output(stdout: &str, stderr: &str) -> String {
     if stderr.is_empty() {
         stdout.to_string()
@@ -1317,21 +1386,26 @@ mod tests {
     use futures::StreamExt;
     use std::collections::HashMap;
 
+    /// 测试用沙箱，始终返回成功的空结果
     struct TestSandbox;
 
     impl SandboxExecutor for TestSandbox {
+        /// 返回测试沙箱名称
         fn name(&self) -> &str {
             "test"
         }
 
+        /// 返回进程级隔离
         fn isolation_level(&self) -> IsolationLevel {
             IsolationLevel::Process
         }
 
+        /// 始终可用
         fn is_available(&self) -> BoxFuture<'_, bool> {
             Box::pin(async { true })
         }
 
+        /// 返回空的成功结果
         fn execute(
             &self,
             _command: SandboxCommand,
@@ -1353,12 +1427,15 @@ mod tests {
         }
     }
 
+    /// 记录最近一次启动请求的测试用 cell 注册表
     #[derive(Default)]
     struct CapturingCellRegistry {
+        /// 最近一次收到的启动请求
         request: Mutex<Option<CommandCellRequest>>,
     }
 
     impl CommandCellRegistry for CapturingCellRegistry {
+        /// 记录启动请求并返回固定的回执
         fn launch(
             &self,
             request: CommandCellRequest,
@@ -1378,6 +1455,7 @@ mod tests {
             })
         }
 
+        /// 返回运行中状态的空增量
         fn wait(
             &self,
             cell_id: &str,
@@ -1408,6 +1486,7 @@ mod tests {
             })
         }
 
+        /// 返回空操作的观察租约
         fn observe(
             &self,
             cell_id: &str,
@@ -1415,24 +1494,28 @@ mod tests {
             Ok(CommandCellObservationLease::new(cell_id, || {}))
         }
 
+        /// 始终报告停止成功
         fn stop(&self, _cell_id: &str) -> bool {
             true
         }
 
+        /// 返回空列表
         fn list(&self) -> BoxFuture<'_, Vec<CommandCellSnapshot>> {
             Box::pin(async { Vec::new() })
         }
 
+        /// 直接返回成功
         fn shutdown(&self) -> BoxFuture<'_, std::result::Result<(), CommandCellError>> {
             Box::pin(async { Ok(()) })
         }
     }
 
+    /// 验证白名单内的常见命令被判定为安全
     #[test]
     fn test_safe_commands() {
         let tool = ShellTool::new();
 
-        // Safe commands
+        // 安全命令
         assert_eq!(tool.check_command_safety("ls -la"), CommandSafety::Safe);
         assert_eq!(tool.check_command_safety("pwd"), CommandSafety::Safe);
         assert_eq!(
@@ -1446,6 +1529,7 @@ mod tests {
         );
     }
 
+    /// 验证后台启动会保留沙箱要求并传递归属信息，而不是直接拒绝
     #[tokio::test]
     async fn background_launch_preserves_sandbox_requirement_instead_of_rejecting()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1486,17 +1570,18 @@ mod tests {
         Ok(())
     }
 
+    /// 验证各类 shell 注入语法被拒绝
     #[test]
     fn test_shell_injection_rejected() {
         let tool = ShellTool::new();
 
-        // Pipe injection
+        // 管道注入
         match tool.check_command_safety("ls | rm -rf /tmp") {
             CommandSafety::Dangerous(_) => {}
             other => panic!("Pipe injection should be rejected, got: {:?}", other),
         }
 
-        // Command substitution injection
+        // 命令替换注入
         match tool.check_command_safety("echo $(id)") {
             CommandSafety::Dangerous(_) => {}
             other => panic!(
@@ -1505,25 +1590,25 @@ mod tests {
             ),
         }
 
-        // Backtick injection
+        // 反引号注入
         match tool.check_command_safety("echo `id`") {
             CommandSafety::Dangerous(_) => {}
             other => panic!("Backtick injection should be rejected, got: {:?}", other),
         }
 
-        // Semicolon injection
+        // 分号注入
         match tool.check_command_safety("ls; rm -rf /tmp/x") {
             CommandSafety::Dangerous(_) => {}
             other => panic!("Semicolon injection should be rejected, got: {:?}", other),
         }
 
-        // Redirect injection
+        // 重定向注入
         match tool.check_command_safety("cat file > /etc/passwd") {
             CommandSafety::Dangerous(_) => {}
             other => panic!("Redirect injection should be rejected, got: {:?}", other),
         }
 
-        // Conditional execution injection
+        // 条件执行注入
         match tool.check_command_safety("echo hello && rm -rf /") {
             CommandSafety::Dangerous(_) => {}
             other => panic!(
@@ -1532,18 +1617,19 @@ mod tests {
             ),
         }
 
-        // Subshell injection
+        // 子 shell 注入
         match tool.check_command_safety("$(dangerous)") {
             CommandSafety::Dangerous(_) => {}
             other => panic!("Subshell injection should be rejected, got: {:?}", other),
         }
     }
 
+    /// 验证需要人工确认的命令被正确识别
     #[test]
     fn test_require_approval_commands() {
         let tool = ShellTool::new();
 
-        // Commands requiring confirmation
+        // 需要确认的命令
         match tool.check_command_safety("rm -rf /tmp/test") {
             CommandSafety::RequiresApproval(_) => {}
             _ => panic!("rm command should require confirmation"),
@@ -1565,11 +1651,12 @@ mod tests {
         }
     }
 
+    /// 验证危险命令被明确拒绝
     #[test]
     fn test_dangerous_commands() {
         let tool = ShellTool::new();
 
-        // Extremely dangerous commands (explicitly rejected)
+        // 极度危险的命令（明确拒绝）
         match tool.check_command_safety("dd if=/dev/zero of=/dev/sda") {
             CommandSafety::Dangerous(_) => {}
             _ => panic!("dd command should be rejected"),
@@ -1591,16 +1678,17 @@ mod tests {
         }
     }
 
+    /// 验证 git 子命令的分级判定
     #[test]
     fn test_git_commands() {
         let tool = ShellTool::new();
 
-        // Git safe commands
+        // Git 安全命令
         assert_eq!(tool.check_command_safety("git log"), CommandSafety::Safe);
         assert_eq!(tool.check_command_safety("git diff"), CommandSafety::Safe);
         assert_eq!(tool.check_command_safety("git status"), CommandSafety::Safe);
 
-        // Git commands requiring confirmation
+        // 需要确认的 Git 命令
         match tool.check_command_safety("git commit -m 'test'") {
             CommandSafety::RequiresApproval(_) => {}
             _ => panic!("git commit should require confirmation"),
@@ -1621,18 +1709,19 @@ mod tests {
             _ => panic!("git clean should require confirmation"),
         }
 
-        // Git dangerous commands
+        // Git 危险命令
         match tool.check_command_safety("git reset --hard HEAD~1") {
             CommandSafety::Dangerous(_) => {}
             _ => panic!("git reset --hard should be rejected"),
         }
     }
 
+    /// 验证 cargo 子命令的分级判定
     #[test]
     fn test_cargo_commands() {
         let tool = ShellTool::new();
 
-        // Cargo safe commands
+        // Cargo 安全命令
         assert_eq!(
             tool.check_command_safety("cargo check"),
             CommandSafety::Safe
@@ -1647,7 +1736,7 @@ mod tests {
             CommandSafety::Safe
         );
 
-        // Cargo commands requiring confirmation
+        // 需要确认的 Cargo 命令
         match tool.check_command_safety("cargo run") {
             CommandSafety::RequiresApproval(_) => {}
             _ => panic!("cargo run should require confirmation"),
@@ -1664,9 +1753,10 @@ mod tests {
         }
     }
 
+    /// 验证严格模式下未知命令被拒绝
     #[test]
     fn test_unknown_command_in_strict_mode() {
-        let tool = ShellTool::new(); // default strict mode
+        let tool = ShellTool::new(); // 默认严格模式
 
         match tool.check_command_safety("unknown_command") {
             CommandSafety::Dangerous(_) => {}
@@ -1674,25 +1764,26 @@ mod tests {
         }
     }
 
+    /// 验证工具执行时对安全/需确认/危险命令的处理
     #[tokio::test]
     async fn test_shell_tool_execution() {
         let tool = ShellTool::new();
 
-        // Test safe command
+        // 测试安全命令
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("echo hello"));
         let result = tool.execute(params).await.unwrap();
         assert!(result.success);
         assert!(result.output.contains("hello"));
 
-        // Test command requiring confirmation
+        // 测试需要确认的命令
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("rm test.txt"));
         let result = tool.execute(params).await.unwrap();
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("confirmation"));
 
-        // Test dangerous command
+        // 测试危险命令
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("sudo reboot"));
         let result = tool.execute(params).await.unwrap();
@@ -1700,11 +1791,13 @@ mod tests {
         assert!(result.error.unwrap().contains("rejection"));
     }
 
+    /// 验证 Shell 工具声明支持实时流式输出
     #[test]
     fn shell_tool_declares_live_streaming_support() {
         assert!(ShellTool::new().supports_streaming());
     }
 
+    /// 验证进程退出前即可收到第一块输出
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stream_emits_first_chunk_before_process_exit() {
@@ -1761,6 +1854,7 @@ mod tests {
         let _ = std::fs::remove_file(script);
     }
 
+    /// 验证失败时保留 stderr 与退出码元数据
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stream_failure_retains_stderr_and_exit_metadata() {
@@ -1820,6 +1914,7 @@ mod tests {
         let _ = std::fs::remove_file(script);
     }
 
+    /// 验证跨多次管道读取被拆分的 Unicode 字符能正确还原
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stream_preserves_unicode_split_across_pipe_reads() {
@@ -1855,6 +1950,7 @@ mod tests {
         let _ = std::fs::remove_file(script);
     }
 
+    /// 验证保留输出受上限约束且报告真实总字节数
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stream_caps_retained_output_and_reports_total_bytes() {
@@ -1894,6 +1990,7 @@ mod tests {
         let _ = std::fs::remove_file(script);
     }
 
+    /// 验证 10MB 输出被完整写入产物文件
     #[cfg(unix)]
     #[tokio::test]
     async fn shell_stream_spills_complete_ten_megabyte_artifact()
@@ -1953,6 +2050,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证丢弃输出流会杀死并回收子进程
     #[cfg(unix)]
     #[tokio::test]
     async fn dropping_shell_stream_kills_and_reaps_child() {
@@ -2003,11 +2101,12 @@ mod tests {
         let _ = std::fs::remove_file(pid_file);
     }
 
+    /// 验证执行路径中的注入命令被拒绝
     #[tokio::test]
     async fn test_shell_injection_rejected_in_execution() {
         let tool = ShellTool::new();
 
-        // Pipe injection → rejected
+        // 管道注入 → 拒绝
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("ls | rm -rf /tmp"));
         let result = tool.execute(params).await.unwrap();
@@ -2020,7 +2119,7 @@ mod tests {
                 .contains("shell metacharacters")
         );
 
-        // Command substitution → rejected
+        // 命令替换 → 拒绝
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("echo $(id)"));
         let result = tool.execute(params).await.unwrap();
@@ -2033,7 +2132,7 @@ mod tests {
                 .contains("shell metacharacters")
         );
 
-        // Semicolon injection → rejected
+        // 分号注入 → 拒绝
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("ls; echo pwned"));
         let result = tool.execute(params).await.unwrap();
@@ -2047,13 +2146,14 @@ mod tests {
         );
     }
 
+    /// 危险命令语料测试：所有命令都不应被判定为安全
     #[test]
     fn test_dangerous_command_corpus() {
-        // RFC 5.1.4: Integration test — dangerous command interception rate
-        // Every command in this corpus must NOT be classified as Safe.
+        /* RFC 5.1.4：集成测试——危险命令拦截率
+         * 该语料中的每条命令都不能被判定为 Safe。 */
         let shell = ShellTool::new();
 
-        // Commands that should always be blocked (Dangerous)
+        // 应始终被拦截的命令（Dangerous）
         let always_dangerous = vec![
             "dd if=/dev/zero of=/dev/sda",
             "mkfs.ext4 /dev/sda1",
@@ -2080,7 +2180,7 @@ mod tests {
             );
         }
 
-        // Commands that should require approval (never Safe)
+        // 应需要审批的命令（绝不能是 Safe）
         let requires_approval = vec![
             "rm -rf /tmp/test",
             "rm -rf ~",
@@ -2107,7 +2207,7 @@ mod tests {
             );
         }
 
-        // Shell metacharacter injection attempts (should be rejected)
+        // Shell 元字符注入尝试（应被拒绝）
         let injection_attempts = vec![
             "ls; rm -rf /",
             "ls | rm -rf /",
@@ -2127,7 +2227,7 @@ mod tests {
             );
         }
 
-        // Total corpus size for reporting
+        // 用于报告的语料总数
         let total = always_dangerous.len() + requires_approval.len() + injection_attempts.len();
         println!(
             "Dangerous command corpus: {} commands tested, 100% interception rate",
@@ -2135,6 +2235,7 @@ mod tests {
         );
     }
 
+    /// 验证默认与自定义超时配置
     #[test]
     fn test_timeout_configuration() {
         let tool = ShellTool::new();
@@ -2143,18 +2244,19 @@ mod tests {
         let tool_custom = ShellTool::new().with_timeout(120);
         assert_eq!(tool_custom.timeout_secs, 120);
 
-        // Permissive mode also has default timeout
+        // 宽松模式同样有默认超时
         let permissive = ShellTool::new_permissive();
         assert_eq!(permissive.timeout_secs, 60);
     }
 
+    /// 验证超时会被触发
     #[tokio::test]
     async fn test_shell_timeout_triggers() {
-        // Create a permissive shell tool with 1 second timeout (to allow sleep command)
+        // 创建 1 秒超时的宽松模式 shell 工具（以允许 sleep 命令）
         let tool = ShellTool::new_permissive().with_timeout(1);
 
         let mut params = HashMap::new();
-        // sleep 10 should definitely trigger the 1s timeout
+        // sleep 10 必然会触发 1 秒超时
         params.insert("command".to_string(), serde_json::json!("sleep 10"));
 
         let result = tool.execute(params).await.unwrap();
@@ -2173,13 +2275,14 @@ mod tests {
         );
     }
 
+    /// 验证单次调用的超时参数可覆盖默认值
     #[tokio::test]
     async fn test_shell_timeout_per_call_override() {
         let tool = ShellTool::new_permissive().with_timeout(60);
 
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("sleep 10"));
-        params.insert("timeout".to_string(), serde_json::json!(1)); // Override to 1s
+        params.insert("timeout".to_string(), serde_json::json!(1)); // 覆盖为 1 秒
 
         let result = tool.execute(params).await.unwrap();
         assert!(
@@ -2194,13 +2297,14 @@ mod tests {
         );
     }
 
+    /// 验证超时参数被限制在 300 秒以内
     #[tokio::test]
     async fn test_shell_timeout_cap_at_300() {
         let tool = ShellTool::new();
 
         let mut params = HashMap::new();
         params.insert("command".to_string(), serde_json::json!("echo ok"));
-        // Request 999s timeout, should be capped at 300s (but command finishes fast)
+        // 请求 999 秒超时，应被限制为 300 秒（但命令会很快结束）
         params.insert("timeout".to_string(), serde_json::json!(999));
 
         let result = tool.execute(params).await.unwrap();
@@ -2208,11 +2312,13 @@ mod tests {
         assert!(result.output.contains("ok"));
     }
 
+    /// 验证命令在上下文指定的工作目录中执行
     #[tokio::test]
     async fn test_shell_honors_context_working_dir() {
-        // Regression test for the worktree cwd bug: ShellTool must run the
-        // command in ctx.working_dir when set. Uses a unique tmp dir under the
-        // std temp dir (no tempfile dependency).
+        /*
+         * worktree cwd 缺陷的回归测试：设置了 ctx.working_dir 时，ShellTool
+         * 必须在该目录下运行命令。使用标准临时目录下的唯一子目录（不依赖 tempfile）。
+         */
         use echo_core::tools::ToolContext;
 
         let unique = format!(
@@ -2235,7 +2341,7 @@ mod tests {
         let result = tool.execute_with_context(params, &ctx).await.unwrap();
         assert!(result.success, "pwd should succeed: {:?}", result);
 
-        // Compare via canonicalize to handle macOS /var -> /private/var symlink.
+        // 通过 canonicalize 比较，以处理 macOS 上 /var -> /private/var 的符号链接。
         let got = std::path::Path::new(result.output.trim());
         let got_canonical = std::fs::canonicalize(got).unwrap_or_else(|_| got.to_path_buf());
         let want_canonical = std::fs::canonicalize(&wt_dir).unwrap_or_else(|_| wt_dir.clone());
@@ -2250,6 +2356,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wt_dir);
     }
 
+    /// 基于当前时间纳秒数生成唯一计数，用于构造临时路径
     fn nanoid_counter() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
@@ -2258,6 +2365,7 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// 在临时目录创建可执行测试脚本并返回路径
     #[cfg(unix)]
     fn create_test_script(label: &str, contents: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;

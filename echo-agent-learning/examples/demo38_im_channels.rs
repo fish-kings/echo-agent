@@ -54,8 +54,10 @@ async fn main() -> echo_agent::error::Result<()> {
             session_config.clone(),
             move |instance: &ChannelSessionInstance| -> Box<dyn MessageHandler> {
                 let _runtime_incarnation = instance.incarnation_id();
-                // 在超时/重置替换被确认之前，SessionHandler 会拦截来自本次
-                // incarnation 的延迟输出。
+                /*
+                在超时/重置替换被确认之前，SessionHandler 会拦截来自本次
+                incarnation 的延迟输出。
+                */
                 Box::new(AgentChannelHandler::from_config_with_client(
                     AgentConfig::standard(&model, "im-assistant", "Answer the user clearly."),
                     Arc::clone(&llm_client),

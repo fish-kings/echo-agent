@@ -43,6 +43,7 @@ pub fn scan_summary(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// 验证能识别 OpenAI API Key。
     #[test]
     fn test_scan_openai_key() {
         let text = "export OPENAI_API_KEY=sk-proj12345678901234567890abcdef";
@@ -50,6 +51,7 @@ mod tests {
         assert!(matches.iter().any(|m| m.secret_type == "OpenAI API Key"));
     }
 
+    /// 验证密钥会被替换为脱敏占位符。
     #[test]
     fn test_redact_secrets() {
         let text = "token: sk-ant-api03-abc123def456ghi789";
@@ -58,6 +60,7 @@ mod tests {
         assert!(!redacted.contains("sk-ant-api03"));
     }
 
+    /// 验证普通文本不会被误判为包含密钥。
     #[test]
     fn test_no_secrets() {
         let text = "This is normal code without any secrets.";
@@ -65,6 +68,7 @@ mod tests {
         assert!(scan_secrets(text).is_empty());
     }
 
+    /// 验证能识别 GitHub Token。
     #[test]
     fn test_github_token() {
         let text = "GITHUB_TOKEN=ghp_1234567890abcdefghijklmnopqrstuvwxyz123456";
@@ -72,6 +76,7 @@ mod tests {
         assert!(matches.iter().any(|m| m.secret_type == "GitHub Token"));
     }
 
+    /// 验证能识别 PEM 私钥块。
     #[test]
     fn test_private_key() {
         let text =
@@ -81,6 +86,7 @@ mod tests {
 
     // ── 回归测试：新增的模式（P1-16 / 2.7） ────────────────────
 
+    /// 验证能识别 HuggingFace Token。
     #[test]
     fn test_huggingface_token() {
         assert!(contains_secrets(
@@ -88,6 +94,7 @@ mod tests {
         ));
     }
 
+    /// 验证能识别 Google API Key。
     #[test]
     fn test_google_api_key() {
         assert!(contains_secrets(
@@ -95,6 +102,7 @@ mod tests {
         ));
     }
 
+    /// 验证能识别 GitLab 个人访问令牌。
     #[test]
     fn test_gitlab_pat() {
         assert!(contains_secrets(
@@ -102,6 +110,7 @@ mod tests {
         ));
     }
 
+    /// 验证能识别 Stripe 正式环境密钥。
     #[test]
     fn test_stripe_live_key() {
         assert!(contains_secrets(concat!(
@@ -110,6 +119,7 @@ mod tests {
         )));
     }
 
+    /// 验证能识别 npm Token。
     #[test]
     fn test_npm_token() {
         assert!(contains_secrets(
@@ -117,6 +127,7 @@ mod tests {
         ));
     }
 
+    /// 验证能识别带密码的数据库连接串。
     #[test]
     fn test_db_connection_string() {
         assert!(contains_secrets(

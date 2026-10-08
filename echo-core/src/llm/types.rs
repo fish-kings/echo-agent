@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 
 // ── 多模态内容 ────────────────────────────────────────────────────────
 
-/// 结构化消息内容中与提供方无关的一个组成部分。
-///
-/// 当供应商适配层的线上 API 原生不支持某个变体时，由适配层负责转换；
-/// 框架自身在会话状态中始终保留其类型化的值。
+/**
+结构化消息内容中与提供方无关的一个组成部分。
+
+当供应商适配层的线上 API 原生不支持某个变体时，由适配层负责转换；
+框架自身在会话状态中始终保留其类型化的值。
+*/
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentPart {
@@ -41,17 +43,31 @@ pub enum ContentPart {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReasoningBlock {
     /// 附带提供方签名的推理文本。
-    Signed { thinking: String, signature: String },
+    Signed {
+        /// 推理文本。
+        thinking: String,
+        /// 提供方对推理文本的签名。
+        signature: String,
+    },
     /// 必须原样回放的不透明加密推理内容。
-    Redacted { data: String },
-    /// 提供方持有的不透明推理状态，必须原样回放。
-    ///
-    /// 当应用在本地管理会话历史且使用 `store: false` 时，
-    /// Responses 接口要求同时提供 item id 和加密后的 payload。
-    Opaque {
-        provider: String,
-        id: String,
+    Redacted {
+        /// 加密后的推理数据。
         data: String,
+    },
+    /**
+    提供方持有的不透明推理状态，必须原样回放。
+
+    当应用在本地管理会话历史且使用 `store: false` 时，
+    Responses 接口要求同时提供 item id 和加密后的 payload。
+    */
+    Opaque {
+        /// 产生该推理状态的提供方标识。
+        provider: String,
+        /// 提供方分配的推理 item id。
+        id: String,
+        /// 加密后的推理 payload。
+        data: String,
+        /// 可选的推理摘要片段。
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         summary: Vec<String>,
     },
@@ -67,11 +83,13 @@ pub struct ImageUrl {
     pub detail: Option<String>,
 }
 
-/// 结构化用户消息中携带的、与提供方无关的链接资源。
-///
-/// 协议适配层在到达供应商边界之前会一直保留其类型化的形态。对于没有原生
-/// resource-link 块的供应商，会渲染成确定性文本；而框架内的 Agent 可以在
-/// 不解析嵌入用户文本中的私有标记的情况下检查每一个字段。
+/**
+结构化用户消息中携带的、与提供方无关的链接资源。
+
+协议适配层在到达供应商边界之前会一直保留其类型化的形态。对于没有原生
+resource-link 块的供应商，会渲染成确定性文本；而框架内的 Agent 可以在
+不解析嵌入用户文本中的私有标记的情况下检查每一个字段。
+*/
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct LinkedResource {
     /// 协议提供的可选展示与受众标注信息。
@@ -93,8 +111,10 @@ pub struct LinkedResource {
 }
 
 impl LinkedResource {
-    /// 渲染一段确定性的供应商兜底文本，不改变 Session 历史中存储的
-    /// 类型化框架消息。
+    /**
+    渲染一段确定性的供应商兜底文本，不改变 Session 历史中存储的
+    类型化框架消息。
+    */
     #[doc(hidden)]
     pub fn model_text(&self) -> String {
         let encoded = serde_json::to_string(self)
@@ -103,11 +123,13 @@ impl LinkedResource {
     }
 }
 
-/// 消息内容：同时兼容纯文本和多模态 parts 两种形式。
-///
-/// 序列化行为：
-/// - `Text("hello")` → `"hello"`（与旧版 API 完全向后兼容）
-/// - `Parts([...])` → `[{"type":"text","text":"..."},...]`
+/**
+消息内容：同时兼容纯文本和多模态 parts 两种形式。
+
+序列化行为：
+- `Text("hello")` → `"hello"`（与旧版 API 完全向后兼容）
+- `Parts([...])` → `[{"type":"text","text":"..."},...]`
+*/
 #[derive(Debug, Clone, Default)]
 pub enum MessageContent {
     /// 纯文本内容。
@@ -120,6 +142,7 @@ pub enum MessageContent {
 }
 
 impl Serialize for MessageContent {
+    /// 纯文本序列化为字符串，多模态序列化为 parts 数组，空内容序列化为空字符串。
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             MessageContent::Text(s) => serializer.serialize_str(s),
@@ -130,6 +153,7 @@ impl Serialize for MessageContent {
 }
 
 impl<'de> Deserialize<'de> for MessageContent {
+    /// 字符串解析为文本（空串视为空内容），数组解析为 parts，其余类型视为空内容。
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
         match value {
@@ -209,8 +233,10 @@ impl MessageContent {
         }
     }
 
-    /// 保守估算提供方可见的输入 token 数，包括被 [`Self::as_text`]
-    /// 刻意忽略的多模态负载。
+    /**
+    保守估算提供方可见的输入 token 数，包括被 [`Self::as_text`]
+    刻意忽略的多模态负载。
+    */
     pub fn estimated_tokens(&self, tokenizer: &dyn crate::tokenizer::Tokenizer) -> usize {
         match self {
             MessageContent::Text(text) => tokenizer.count_tokens(text),
@@ -220,9 +246,11 @@ impl MessageContent {
                     ContentPart::Text { text } => tokenizer.count_tokens(text),
                     ContentPart::ImageUrl { image_url } => {
                         if image_url.url.starts_with("data:") {
-                            // Base64 大约每 4 个字符对应 3 字节；按每 4 个字符
-                            // 计 1 个 token 是一个保守估计，在受支持的视觉
-                            // 供应商上都适用。
+                            /*
+                            Base64 大约每 4 个字符对应 3 字节；按每 4 个字符
+                            计 1 个 token 是一个保守估计，在受支持的视觉
+                            供应商上都适用。
+                            */
                             image_url.url.chars().count().div_ceil(4)
                         } else if image_url.detail.as_deref() == Some("low") {
                             100
@@ -245,10 +273,12 @@ impl MessageContent {
 
 // ── 消息角色 ────────────────────────────────────────────────────────────
 
-/// 带类型的消息角色，兼容旧版序列化格式。
-///
-/// 标准角色（`system`、`user`、`assistant`、`tool`）是类型安全的变体。
-/// 供应商特有或未知的角色落入 `Custom(String)`。
+/**
+带类型的消息角色，兼容旧版序列化格式。
+
+标准角色（`system`、`user`、`assistant`、`tool`）是类型安全的变体。
+供应商特有或未知的角色落入 `Custom(String)`。
+*/
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Role {
     /// 系统指令消息
@@ -278,12 +308,14 @@ impl Role {
 }
 
 impl Serialize for Role {
+    /// 以角色的线上字符串形式序列化。
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(self.as_str())
     }
 }
 
 impl<'de> Deserialize<'de> for Role {
+    /// 从字符串反序列化，标准角色映射为对应变体，其余映射为 `Custom`。
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         match s.as_str() {
@@ -297,12 +329,14 @@ impl<'de> Deserialize<'de> for Role {
 }
 
 impl From<Role> for String {
+    /// 将角色转换为其线上字符串。
     fn from(role: Role) -> String {
         role.as_str().to_string()
     }
 }
 
 impl From<String> for Role {
+    /// 从字符串解析角色，未知角色映射为 `Custom`。
     fn from(s: String) -> Self {
         match s.as_str() {
             "system" => Role::System,
@@ -315,6 +349,7 @@ impl From<String> for Role {
 }
 
 impl From<&str> for Role {
+    /// 从字符串切片解析角色，未知角色映射为 `Custom`。
     fn from(s: &str) -> Self {
         match s {
             "system" => Role::System,
@@ -328,9 +363,11 @@ impl From<&str> for Role {
 
 // ── 会话消息 ─────────────────────────────────────────────────────────
 
-/// 会话消息
-///
-/// `content` 字段统一使用 [`MessageContent`] 枚举，支持纯文本与多模态内容。
+/**
+会话消息
+
+`content` 字段统一使用 [`MessageContent`] 枚举，支持纯文本与多模态内容。
+*/
 #[derive(Debug, Clone, Default)]
 pub struct Message {
     /// 消息角色：`system`、`user`、`assistant`、`tool`，或 `Custom`。
@@ -350,6 +387,7 @@ pub struct Message {
 }
 
 impl Serialize for Message {
+    /// 以 OpenAI 兼容的 map 形式序列化，省略值为空的可选字段。
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(None)?;
@@ -381,7 +419,9 @@ impl Serialize for Message {
 }
 
 impl<'de> Deserialize<'de> for Message {
+    /// 宽松地反序列化消息：缺失字段取默认值，`content` 兼容字符串与 parts 数组。
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        /// 反序列化中间结构，字段与线上格式一一对应。
         #[derive(Deserialize)]
         struct RawMessage {
             #[serde(default)]
@@ -458,19 +498,21 @@ impl Message {
         }
     }
 
-    /// 创建一条包含图片的用户消息
-    ///
-    /// # 示例
-    ///
-    /// ```rust
-    /// use echo_core::llm::types::Message;
-    ///
-    /// let msg = Message::user_with_image(
-    ///     "Please describe this image",
-    ///     "image/png",
-    ///     "iVBORw0KGgo...", // base64 数据
-    /// );
-    /// ```
+    /**
+    创建一条包含图片的用户消息
+
+    # 示例
+
+    ```rust
+    use echo_core::llm::types::Message;
+
+    let msg = Message::user_with_image(
+        "Please describe this image",
+        "image/png",
+        "iVBORw0KGgo...", // base64 数据
+    );
+    ```
+    */
     pub fn user_with_image(text: &str, media_type: &str, base64_data: &str) -> Self {
         Self::user_multimodal(vec![
             ContentPart::Text {
@@ -539,9 +581,11 @@ impl Message {
         }
     }
 
-    /// 获取纯文本内容。
-    ///
-    /// 若消息包含多模态内容，则提取并拼接所有 Text part。
+    /**
+    获取纯文本内容。
+
+    若消息包含多模态内容，则提取并拼接所有 Text part。
+    */
     pub fn text_content(&self) -> Option<String> {
         self.content.as_text()
     }
@@ -659,19 +703,25 @@ pub struct ChatCompletionRequest {
     /// 响应格式控制
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<ResponseFormat>,
-    /// OpenAI 推理模型（GPT-5 系列、o 系列）的 reasoning-effort。
-    ///
-    /// 取值为 `"minimal"`、`"low"`、`"medium"`、`"high"` 之一。仅在解析出的
-    /// 模型支持 `ThinkingProtocol::OpenaiReasoningEffort` 时才会发送；
-    /// 发送给非推理模型会返回 400。
+    /**
+    OpenAI 推理模型（GPT-5 系列、o 系列）的 reasoning-effort。
+
+    取值为 `"minimal"`、`"low"`、`"medium"`、`"high"` 之一。仅在解析出的
+    模型支持 `ThinkingProtocol::OpenaiReasoningEffort` 时才会发送；
+    发送给非推理模型会返回 400。
+    */
     #[serde(skip_serializing_if = "Option::is_none", rename = "reasoning_effort")]
     pub reasoning_effort: Option<String>,
-    /// Qwen3/GLM 的 `enable_thinking` 开关。仅对支持
-    /// `ThinkingProtocol::EnableThinkingFlag` 的模型发送。
+    /**
+    Qwen3/GLM 的 `enable_thinking` 开关。仅对支持
+    `ThinkingProtocol::EnableThinkingFlag` 的模型发送。
+    */
     #[serde(skip_serializing_if = "Option::is_none", rename = "enable_thinking")]
     pub enable_thinking: Option<bool>,
-    /// Qwen3 的 `thinking_budget`（整数 token 预算）。作为
-    /// `enable_thinking` 的可选配套项，供部分 Qwen3 模型接受显式预算。
+    /**
+    Qwen3 的 `thinking_budget`（整数 token 预算）。作为
+    `enable_thinking` 的可选配套项，供部分 Qwen3 模型接受显式预算。
+    */
     #[serde(skip_serializing_if = "Option::is_none", rename = "thinking_budget")]
     pub thinking_budget: Option<u32>,
     /// 通用的 `thinking:{type:"enabled"|"disabled"}` 块。
@@ -680,10 +730,12 @@ pub struct ChatCompletionRequest {
     /// Ollama 原生的 `think` 扩展：布尔值或表示努力程度的字符串。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub think: Option<serde_json::Value>,
-    /// 用于 KVCache 隔离的用户标识（DeepSeek 等）。
-    /// 设置后，供应商用它来划分 prompt cache 条目。
-    /// 若不设置，每个请求都可能被视为来自不同用户，
-    /// 从而阻止同一会话内多次请求复用缓存。
+    /**
+    用于 KVCache 隔离的用户标识（DeepSeek 等）。
+    设置后，供应商用它来划分 prompt cache 条目。
+    若不设置，每个请求都可能被视为来自不同用户，
+    从而阻止同一会话内多次请求复用缓存。
+    */
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
 }
@@ -691,6 +743,7 @@ pub struct ChatCompletionRequest {
 /// `thinking:{type:"enabled"|"disabled"}` 线上协议块。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingTypeBlock {
+    /// 块类型：`"enabled"` 或 `"disabled"`。
     #[serde(rename = "type")]
     pub block_type: String,
 }
@@ -793,8 +846,10 @@ pub struct Usage {
     /// Anthropic 本次请求的缓存读取量。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u32>,
-    /// DeepSeek：从上下文缓存（KV cache 命中）提供的 prompt token 数。
-    /// `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
+    /**
+    DeepSeek：从上下文缓存（KV cache 命中）提供的 prompt token 数。
+    `prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
+    */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_cache_hit_tokens: Option<u32>,
     /// DeepSeek：未从缓存提供的 prompt token 数（缓存未命中）。
@@ -803,12 +858,14 @@ pub struct Usage {
 }
 
 impl Usage {
-    /// 经供应商归一化后、模型实际处理的 prompt token 数，
-    /// 包括从 prompt cache 提供的 token。
-    ///
-    /// 兼容 OpenAI 格式的响应以及 DeepSeek 的响应中，`prompt_tokens`
-    /// 已经包含了缓存 token。Anthropic 则将缓存读取与缓存写入分开报告，
-    /// 因此二者都要加回来，以便计算上下文窗口和缓存相关指标。
+    /**
+    经供应商归一化后、模型实际处理的 prompt token 数，
+    包括从 prompt cache 提供的 token。
+
+    兼容 OpenAI 格式的响应以及 DeepSeek 的响应中，`prompt_tokens`
+    已经包含了缓存 token。Anthropic 则将缓存读取与缓存写入分开报告，
+    因此二者都要加回来，以便计算上下文窗口和缓存相关指标。
+    */
     pub fn effective_prompt_tokens(&self) -> u32 {
         let prompt = self.prompt_tokens.unwrap_or(0);
         if self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some() {
@@ -833,13 +890,15 @@ impl Usage {
         }
     }
 
-    /// 经供应商归一化后、从缓存读取的 prompt token 数。
-    ///
-    /// 按优先级依次检查：
-    /// 1. OpenAI `prompt_tokens_details.cached_tokens`
-    /// 2. 兼容供应商的 `input_tokens_details.cached_tokens`
-    /// 3. Anthropic 的 `cache_read_input_tokens`
-    /// 4. DeepSeek 的 `prompt_cache_hit_tokens`
+    /**
+    经供应商归一化后、从缓存读取的 prompt token 数。
+
+    按优先级依次检查：
+    1. OpenAI `prompt_tokens_details.cached_tokens`
+    2. 兼容供应商的 `input_tokens_details.cached_tokens`
+    3. Anthropic 的 `cache_read_input_tokens`
+    4. DeepSeek 的 `prompt_cache_hit_tokens`
+    */
     pub fn cached_prompt_tokens(&self) -> u32 {
         self.prompt_tokens_details
             .as_ref()
@@ -868,18 +927,20 @@ impl Usage {
             .unwrap_or(0)
     }
 
-    /// Prompt 缓存命中率，取值范围 [0.0, 1.0]。
-    ///
-    /// 不同供应商对 `prompt_tokens` 是否包含缓存 token 的语义不同：
-    /// - OpenAI / DeepSeek / 兼容供应商：`prompt_tokens` 是**总量**（含缓存部分）。
-    ///   按 DeepSeek 文档：`prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
-    ///   → 命中率 = cached / prompt_tokens
-    /// - Anthropic：`input_tokens`（映射为 `prompt_tokens`）既不包含缓存读取，
-    ///   也不包含缓存写入。
-    ///   → 命中率 = cached / (prompt_tokens + cache_read + cache_creation)
-    ///
-    /// 我们通过是否存在任一 Anthropic 缓存字段来判断走哪条路径；
-    /// 其余所有供应商都使用「总量已含缓存」的公式。
+    /**
+    Prompt 缓存命中率，取值范围 [0.0, 1.0]。
+
+    不同供应商对 `prompt_tokens` 是否包含缓存 token 的语义不同：
+    - OpenAI / DeepSeek / 兼容供应商：`prompt_tokens` 是**总量**（含缓存部分）。
+      按 DeepSeek 文档：`prompt_tokens = prompt_cache_hit_tokens + prompt_cache_miss_tokens`。
+      → 命中率 = cached / prompt_tokens
+    - Anthropic：`input_tokens`（映射为 `prompt_tokens`）既不包含缓存读取，
+      也不包含缓存写入。
+      → 命中率 = cached / (prompt_tokens + cache_read + cache_creation)
+
+    我们通过是否存在任一 Anthropic 缓存字段来判断走哪条路径；
+    其余所有供应商都使用「总量已含缓存」的公式。
+    */
     pub fn cache_hit_rate(&self) -> Option<f64> {
         let cached = self.cached_prompt_tokens();
         let total = self.effective_prompt_tokens();
@@ -932,14 +993,16 @@ where
 /// 流式候选响应
 #[derive(Debug, Deserialize, Clone)]
 pub struct ChunkChoice {
-    /// 增量消息内容。
-    ///
-    /// `deserialize_with = "deserialize_null_as_default"` 至关重要：当设置了
-    /// `stream_options.include_usage` 时，供应商返回携带 usage 的最后一个
-    /// chunk，其 `choices` 数组中的元素可能出现 `delta` 为 `null` 的情况
-    /// （如 `{"delta":null,"finish_reason":"stop"}`）。若没有这个反序列化器，
-    /// null delta 会解析失败，整个 chunk 被丢弃，`usage` 字段也随之悄悄丢失
-    /// —— 导致每次 LLM 调用在可观测性中都显示 `usage_reported: false`。
+    /**
+    增量消息内容。
+
+    `deserialize_with = "deserialize_null_as_default"` 至关重要：当设置了
+    `stream_options.include_usage` 时，供应商返回携带 usage 的最后一个
+    chunk，其 `choices` 数组中的元素可能出现 `delta` 为 `null` 的情况
+    （如 `{"delta":null,"finish_reason":"stop"}`）。若没有这个反序列化器，
+    null delta 会解析失败，整个 chunk 被丢弃，`usage` 字段也随之悄悄丢失
+    —— 导致每次 LLM 调用在可观测性中都显示 `usage_reported: false`。
+    */
     #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub delta: DeltaMessage,
     /// 结束原因
@@ -1257,8 +1320,10 @@ mod tests {
 
     #[test]
     fn usage_reads_deepseek_cache_hit_tokens() {
-        // DeepSeek 使用顶层的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，
-        // 而不是 OpenAI 那种 `prompt_tokens_details.cached_tokens` 的模式。
+        /*
+        DeepSeek 使用顶层的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，
+        而不是 OpenAI 那种 `prompt_tokens_details.cached_tokens` 的模式。
+        */
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "completion_tokens": 20,
@@ -1286,8 +1351,10 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_deepseek_prompt_tokens_includes_cached() {
-        // DeepSeek：prompt_tokens = cache_hit + cache_miss（总量已含）。
-        // 命中率 = 800 / 1000 = 0.8（而不是 800/1800）。
+        /*
+        DeepSeek：prompt_tokens = cache_hit + cache_miss（总量已含）。
+        命中率 = 800 / 1000 = 0.8（而不是 800/1800）。
+        */
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "prompt_cache_hit_tokens": 800,
@@ -1299,8 +1366,10 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_openai_prompt_tokens_includes_cached() {
-        // OpenAI：prompt_tokens 是总量（已含 cached_tokens）。
-        // 命中率 = 900 / 1000 = 0.9（而不是 900/1900）。
+        /*
+        OpenAI：prompt_tokens 是总量（已含 cached_tokens）。
+        命中率 = 900 / 1000 = 0.9（而不是 900/1900）。
+        */
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 1000,
             "prompt_tokens_details": { "cached_tokens": 900 }
@@ -1311,8 +1380,10 @@ mod tests {
 
     #[test]
     fn cache_hit_rate_anthropic_input_tokens_excludes_cached() {
-        // Anthropic：input_tokens（映射为 prompt_tokens）不包含 cache_read。
-        // 命中率 = 900 / (100 + 900) = 0.9。
+        /*
+        Anthropic：input_tokens（映射为 prompt_tokens）不包含 cache_read。
+        命中率 = 900 / (100 + 900) = 0.9。
+        */
         let usage: Usage = serde_json::from_value(serde_json::json!({
             "prompt_tokens": 100,
             "cache_read_input_tokens": 900,
@@ -1355,9 +1426,11 @@ mod tests {
 
     #[test]
     fn chunk_choice_handles_null_delta_in_usage_chunk() {
-        // 当设置了 stream_options.include_usage 时，部分供应商（DeepSeek、
-        // OpenAI 等）会在最后一个 chunk 中因模型已停止生成内容而让
-        // `delta` 为 null。该 chunk 仍携带 `usage`。
+        /*
+        当设置了 stream_options.include_usage 时，部分供应商（DeepSeek、
+        OpenAI 等）会在最后一个 chunk 中因模型已停止生成内容而让
+        `delta` 为 null。该 chunk 仍携带 `usage`。
+        */
         let json = serde_json::json!({
             "id": "chatcmpl-xxx",
             "choices": [{

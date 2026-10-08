@@ -1,51 +1,75 @@
-//! Unified error types
-//!
-//! All public APIs return [`Result<T>`]; underlying errors are automatically converted
-//! to [`ReactError`] through `From`.
+/*!
+统一错误类型。
+
+所有公开 API 均返回 [`Result<T>`]；底层错误通过 `From` 自动转换为 [`ReactError`]。
+*/
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Stable failure domain carried across Agent event and adapter boundaries.
+/// 跨 Agent 事件与适配器边界传递的稳定失败领域分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentFailureCategory {
+    /// LLM 调用失败。
     Llm,
+    /// 工具执行失败。
     Tool,
+    /// 解析失败。
     Parse,
+    /// Agent 执行失败。
     Agent,
+    /// 配置错误。
     Config,
+    /// MCP 相关失败。
     Mcp,
+    /// 记忆系统失败。
     Memory,
+    /// 沙箱失败。
     Sandbox,
+    /// 运行时状态失败。
     RuntimeState,
+    /// 渠道 / IM 集成失败。
     Channel,
+    /// I/O 失败。
     Io,
+    /// 其他失败。
     Other,
 }
 
-/// Terminal lifecycle class independent of display text.
+/// 与展示文本无关的终止生命周期类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentTerminalKind {
+    /// 执行失败。
     Failed,
+    /// 被取消。
     Cancelled,
+    /// 超时。
     TimedOut,
+    /// 权限被拒绝。
     PermissionDenied,
 }
 
-/// Serializable non-Tool failure contract for Agent event consumers.
+/// 面向 Agent 事件消费者的可序列化非工具失败契约。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentFailure {
+    /// 失败所属领域。
     pub category: AgentFailureCategory,
+    /// 终止生命周期类别。
     pub terminal_kind: AgentTerminalKind,
+    /// 是否可重试。
     pub retryable: bool,
+    /// 稳定的机器可读错误码。
     pub code: String,
+    /// 相关的 HTTP 状态码（如有）。
     pub http_status: Option<u16>,
+    /// 人类可读的错误消息。
     pub message: String,
 }
 
 impl From<&ReactError> for AgentFailure {
+    /// 将框架错误映射为稳定的失败契约（领域、终止类别、可重试性、错误码）。
     fn from(error: &ReactError) -> Self {
         let (category, terminal_kind, retryable, code, http_status) = match error {
             ReactError::Llm(inner) => match inner.as_ref() {
@@ -276,6 +300,7 @@ impl From<&ReactError> for AgentFailure {
 }
 
 impl AgentFailure {
+    /// 以来源作为错误码，构造一个"其他/失败/不可重试"的消息型失败。
     pub fn message(source: &str, message: impl Into<String>) -> Self {
         Self {
             category: AgentFailureCategory::Other,
@@ -288,378 +313,390 @@ impl AgentFailure {
     }
 }
 
-/// Top-level framework error, aggregating all subsystem errors
-///
-/// # Box wrapping convention
-///
-/// All sub-errors are `Box`-wrapped to keep the enum size small (Rust enums
-/// are sized by their largest variant). This avoids bloating the `Result<T>`
-/// return type on every call site. `From` impls are provided manually so
-/// callers can use `?` without explicit boxing.
+/**
+框架顶层错误，聚合所有子系统错误。
+
+# Box 包装约定
+
+所有子错误均使用 `Box` 包装以保持枚举体积较小（Rust 枚举大小由其最大变体决定），
+从而避免在每个调用点膨胀 `Result<T>` 返回类型。`From` 实现为手工提供，
+调用方无需显式装箱即可使用 `?`。
+*/
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ReactError {
-    /// LLM-related error
+    /// LLM 相关错误
     #[error("LLM Error: {0}")]
     Llm(Box<LlmError>),
-    /// Tool execution error
+    /// 工具执行错误
     #[error("Tool Error: {0}")]
     Tool(Box<ToolError>),
-    /// Parse error
+    /// 解析错误
     #[error("Parse Error: {0}")]
     Parse(Box<ParseError>),
-    /// Agent execution error
+    /// Agent 执行错误
     #[error("Agent Error: {0}")]
     Agent(Box<AgentError>),
-    /// Configuration error
+    /// 配置错误
     #[error("Config Error: {0}")]
     Config(Box<ConfigError>),
-    /// MCP-related error
+    /// MCP 相关错误
     #[cfg(feature = "mcp")]
     #[error("MCP Error: {0}")]
     Mcp(Box<McpError>),
-    /// Memory system error
+    /// 记忆系统错误
     #[error("Memory Error: {0}")]
     Memory(Box<MemoryError>),
-    /// Sandbox error
+    /// 沙箱错误
     #[error("Sandbox Error: {0}")]
     Sandbox(Box<SandboxError>),
-    /// Runtime state error
+    /// 运行时状态错误
     #[error("Runtime State Error: {0}")]
     RuntimeState(Box<RuntimeStateError>),
-    /// Channel / IM integration error
+    /// 渠道 / IM 集成错误
     #[cfg(feature = "channels")]
     #[error("Channel Error: {0}")]
     Channel(Box<ChannelError>),
-    /// IO error
+    /// IO 错误
     #[error("IO Error: {0}")]
     Io(#[from] std::io::Error),
-    /// Other error
+    /// 其他错误
     #[error("{0}")]
     Other(String),
 }
 
-/// Memory system error
+/// 记忆系统错误
 #[derive(Debug, Error)]
 pub enum MemoryError {
-    /// I/O error
+    /// I/O 错误
     #[error("IO error: {0}")]
     IoError(String),
-    /// Serialization error
+    /// 序列化错误
     #[error("Serialization error: {0}")]
     SerializationError(String),
-    /// Memory not found
+    /// 记忆条目不存在
     #[error("Memory '{0}' not found")]
     NotFound(String),
-    /// Unsupported operation
+    /// 不支持的操作
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
-    /// A legacy mutation attempted to overwrite a managed transcript authority.
+    /// 旧式变更试图覆盖受管的会话记录权威数据。
     #[error("Managed conversation requires projection operation: {0}")]
     ManagedConversationRequiresProjection(String),
-    /// A managed conversation epoch cannot be advanced without overflow.
+    /// 受管会话的投影纪元（epoch）无法再递增，否则会溢出。
     #[error("Conversation projection epoch exhausted: {0}")]
     ProjectionEpochExhausted(String),
-    /// A retryable failure known to have happened before any durable commit.
+    /// 已知发生在任何持久化提交之前的可重试失败。
     #[error("Transient no-commit failure: {0}")]
     TransientNoCommit(String),
-    /// A persistence call exhausted its shared absolute deadline.
+    /// 持久化调用耗尽了共享的绝对截止时间。
     #[error("Persistence deadline exceeded: {0}")]
     DeadlineExceeded(String),
-    /// A reviewed mutation proposal no longer matches current memory state.
+    /// 已审阅的变更提案与当前记忆状态不再匹配。
     #[error("Stale proposal: {0}")]
     StaleProposal(String),
 }
 
 impl From<std::io::Error> for MemoryError {
+    /// 将标准 I/O 错误转换为记忆系统 I/O 错误。
     fn from(err: std::io::Error) -> Self {
         MemoryError::IoError(err.to_string())
     }
 }
 
-/// LLM-related error
+/// LLM 相关错误
 #[derive(Debug, Error)]
 pub enum LlmError {
-    /// Network error
+    /// 网络错误
     #[error("Network error: {0}")]
     NetworkError(String),
-    /// API error (status code and message)
+    /// API 错误（状态码与消息）
     #[error("API error (status {status}): {message}")]
     ApiError {
-        /// HTTP status code
+        /// HTTP 状态码
         status: u16,
-        /// Error message
+        /// 错误消息
         message: String,
     },
-    /// Invalid response
+    /// 无效响应
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
-    /// Empty response
+    /// 空响应
     #[error("Empty response from LLM")]
     EmptyResponse,
-    /// Serialization error
+    /// 序列化错误
     #[error("Serialization error: {0}")]
     SerializationError(String),
 }
 
-/// Tool execution error
+/// 工具执行错误
 #[derive(Debug, Error)]
 pub enum ToolError {
-    /// Tool not found
+    /// 工具不存在
     #[error("Tool '{0}' not found")]
     NotFound(String),
-    /// Missing parameter
+    /// 缺少参数
     #[error("Missing parameter: {0}")]
     MissingParameter(String),
-    /// Invalid parameter
+    /// 参数无效
     #[error("Invalid parameter '{name}': {message}")]
     InvalidParameter {
-        /// Parameter name
+        /// 参数名
         name: String,
-        /// Error message
+        /// 错误消息
         message: String,
     },
-    /// Tool execution failed
+    /// 工具执行失败
     #[error("Tool '{tool}' execution failed: {message}")]
     ExecutionFailed {
-        /// Tool name
+        /// 工具名称
         tool: String,
-        /// Error message
+        /// 错误消息
         message: String,
     },
-    /// Execution timed out
+    /// 执行超时
     #[error("Tool '{0}' execution timed out")]
     Timeout(String),
-    /// Execution was cancelled by the owning run.
+    /// 执行被所属运行取消。
     #[error("Tool '{0}' execution cancelled")]
     Cancelled(String),
-    /// Invalid path (path traversal attack detected)
+    /// 路径无效（检测到路径穿越攻击）
     #[error("Invalid path: {path} ({reason})")]
     InvalidPath {
-        /// Rejected path
+        /// 被拒绝的路径
         path: String,
-        /// Rejection reason
+        /// 拒绝原因
         reason: String,
     },
-    /// Access denied (outside allowed directory scope)
+    /// 访问被拒绝（超出允许的目录范围）
     #[error("Access denied: {path} ({reason})")]
     AccessDenied {
-        /// Rejected path
+        /// 被拒绝的路径
         path: String,
-        /// Rejection reason
+        /// 拒绝原因
         reason: String,
     },
-    /// File too large
+    /// 文件过大
     #[error("File too large: {size} bytes (max: {max} bytes)")]
     FileTooLarge {
-        /// File size (bytes)
+        /// 文件大小（字节）
         size: u64,
-        /// Maximum allowed file size (bytes)
+        /// 允许的最大文件大小（字节）
         max: u64,
     },
 }
 
-/// Parse error
+/// 解析错误
 #[derive(Debug, Error)]
 pub enum ParseError {
-    /// Invalid Thought format
+    /// Thought 格式无效
     #[error("Invalid Thought: {0}")]
     InvalidThought(String),
-    /// Invalid Action format
+    /// Action 格式无效
     #[error("Invalid Action: {0}")]
     InvalidAction(String),
-    /// Invalid Action Input
+    /// Action Input 无效
     #[error("Invalid Action Input: {0}")]
     InvalidActionInput(String),
-    /// JSON parse error
+    /// JSON 解析错误
     #[error("JSON parse error: {0}")]
     JsonError(#[from] serde_json::Error),
-    /// Unexpected format
+    /// 意外的格式
     #[error("Unexpected format: {0}")]
     UnexpectedFormat(String),
 }
 
-/// Agent execution error
+/// Agent 执行错误
 #[derive(Debug, Error)]
 pub enum AgentError {
-    /// Max iterations exceeded
+    /// 超过最大迭代次数
     #[error("Max iterations exceeded: {0}")]
     MaxIterationsExceeded(usize),
-    /// No tools available
+    /// 没有可用工具
     #[error("No tools available")]
     NoToolsAvailable,
-    /// Initialization failed
+    /// 初始化失败
     #[error("Initialization failed: {0}")]
     InitializationFailed(String),
-    /// Execution interrupted
+    /// 执行被中断
     #[error("Execution interrupted")]
     Interrupted,
-    /// Execution cancelled via CancellationToken
+    /// 通过 CancellationToken 取消了执行
     #[error("Cancelled: {0}")]
     Cancelled(String),
-    /// No response from LLM
+    /// LLM 无响应
     #[error("No response from LLM (model: {model}, agent: {agent})")]
     NoResponse {
-        /// Model name used
+        /// 所使用的模型名称
         model: String,
-        /// Agent name
+        /// Agent 名称
         agent: String,
     },
-    /// Token limit exceeded
+    /// 超过 token 上限
     #[error("Token limit exceeded")]
     TokenLimitExceeded,
-    /// Permission denied
+    /// 权限被拒绝
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
-    /// Hook execution error
+    /// 钩子执行错误
     #[error("Hook error: {0}")]
     HookError(String),
-    /// Subagent execution error
+    /// 子 agent 执行错误
     #[error("Subagent error: {0}")]
     SubagentError(String),
-    /// Execution timeout
+    /// 执行超时
     #[error("Timeout: {0}")]
     Timeout(String),
-    /// Context limit exceeded (e.g. delegation depth, memory limit, etc.)
+    /// 超出上下文限制（例如委派深度、记忆上限等）
     #[error("Context limit exceeded: {0}")]
     ContextLimitExceeded(String),
 }
 
-/// MCP-related error
+/// MCP 相关错误
 #[cfg(feature = "mcp")]
 #[derive(Debug, Error)]
 pub enum McpError {
-    /// Connection failed
+    /// 连接失败
     #[error("Connection failed: {0}")]
     ConnectionFailed(String),
-    /// Initialization failed
+    /// 初始化失败
     #[error("Initialization failed: {0}")]
     InitializationFailed(String),
-    /// Protocol error
+    /// 协议错误
     #[error("Protocol error: {0}")]
     ProtocolError(String),
-    /// Tool call failed with a JSON-RPC error code.
+    /// 工具调用失败，并附带 JSON-RPC 错误码。
     #[error("Tool call failed ({code}): {message}")]
-    ToolCallFailed { code: i32, message: String },
-    /// Transport channel closed
+    ToolCallFailed {
+        /// JSON-RPC 错误码
+        code: i32,
+        /// 错误消息
+        message: String,
+    },
+    /// 传输通道已关闭
     #[error("MCP transport closed unexpectedly")]
     TransportClosed,
 }
 
-/// Sandbox error
+/// 沙箱错误
 #[derive(Debug, Error)]
 pub enum SandboxError {
-    /// Sandbox unavailable (Docker not installed, no K8s cluster, etc.)
+    /// 沙箱不可用（未安装 Docker、没有 K8s 集群等）
     #[error("Sandbox unavailable: {0}")]
     Unavailable(String),
-    /// Sandbox start failed
+    /// 沙箱启动失败
     #[error("Sandbox start failed: {0}")]
     StartFailed(String),
-    /// Execution timeout
+    /// 执行超时
     #[error("Sandbox timeout: {0}")]
     Timeout(String),
-    /// Execution cancelled by the owning run.
+    /// 执行被所属运行取消。
     #[error("Sandbox execution cancelled: {0}")]
     Cancelled(String),
-    /// Resource limit exceeded
+    /// 超出资源限制
     #[error("Resource exceeded: {0}")]
     ResourceExceeded(String),
-    /// Permission denied
+    /// 权限被拒绝
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
-    /// IO error
+    /// IO 错误
     #[error("IO error: {0}")]
     IoError(String),
 }
 
-/// Channel / IM integration error
+/// 渠道 / IM 集成错误
 #[cfg(feature = "channels")]
 #[derive(Debug, Error)]
 pub enum ChannelError {
-    /// Network error
+    /// 网络错误
     #[error("Network error: {0}")]
     NetworkError(String),
-    /// API error (status code and message)
+    /// API 错误（状态码与消息）
     #[error("API error (status {status}): {message}")]
     ApiError {
-        /// HTTP status code
+        /// HTTP 状态码
         status: u16,
-        /// Error message
+        /// 错误消息
         message: String,
     },
-    /// Auth error
+    /// 认证错误
     #[error("Auth error: {0}")]
     AuthError(String),
-    /// Connection error
+    /// 连接错误
     #[error("Connection error: {0}")]
     ConnectionError(String),
-    /// Send error
+    /// 发送错误
     #[error("Send error: {0}")]
     SendError(String),
-    /// Output belongs to a retired channel-session generation.
+    /// 输出属于已退役的渠道会话代次。
     #[error("Stale channel delivery generation: {incarnation_id}")]
     StaleDelivery {
-        /// Opaque incarnation that no longer owns channel delivery.
+        /// 已不再拥有渠道投递权的不透明化身（incarnation）标识。
         incarnation_id: String,
     },
-    /// Invalid config
+    /// 配置无效
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
-    /// Other error
+    /// 其他错误
     #[error("Channel error: {0}")]
     Other(String),
 }
 
-/// Configuration error
+/// 配置错误
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    /// Environment variable parse error
+    /// 环境变量解析错误
     #[error("Failed to parse environment variable: {0}")]
     EnvParseError(String),
-    /// Missing config entry
+    /// 缺少配置项
     #[error("Model '{0}' missing required config: {1}")]
     MissingConfig(String, String),
-    /// Invalid environment variable format
+    /// 环境变量格式无效
     #[error("Invalid environment variable format: {0}")]
     EnvFormatError(String),
-    /// Config mismatch
+    /// 配置不匹配
     #[error("Model '{0}' mismatched config error: {1}")]
     UnMatchConfigError(String, String),
-    /// Model config not found
+    /// 未找到模型配置
     #[error("No configuration found for model: {0}")]
     NotFindModelError(String),
-    /// Config file error
+    /// 配置文件错误
     #[error("Config file error: {0}")]
     ConfigFileError(String),
 }
 
-// ── From implementation (Box wrapping + custom conversions) ────────────────────────────────────
+// ── From 实现（Box 包装 + 自定义转换） ────────────────────────────────────
 
 impl From<LlmError> for ReactError {
+    /// 将 `LlmError` 转换为 `ReactError`。
     fn from(err: LlmError) -> Self {
         ReactError::Llm(Box::new(err))
     }
 }
 
 impl From<ToolError> for ReactError {
+    /// 将 `ToolError` 转换为 `ReactError`。
     fn from(err: ToolError) -> Self {
         ReactError::Tool(Box::new(err))
     }
 }
 
 impl From<ParseError> for ReactError {
+    /// 将 `ParseError` 转换为 `ReactError`。
     fn from(err: ParseError) -> Self {
         ReactError::Parse(Box::new(err))
     }
 }
 
 impl From<AgentError> for ReactError {
+    /// 将 `AgentError` 转换为 `ReactError`。
     fn from(err: AgentError) -> Self {
         ReactError::Agent(Box::new(err))
     }
 }
 
 impl From<ConfigError> for ReactError {
+    /// 将 `ConfigError` 转换为 `ReactError`。
     fn from(err: ConfigError) -> Self {
         ReactError::Config(Box::new(err))
     }
@@ -667,18 +704,21 @@ impl From<ConfigError> for ReactError {
 
 #[cfg(feature = "mcp")]
 impl From<McpError> for ReactError {
+    /// 将 `McpError` 转换为 `ReactError`。
     fn from(err: McpError) -> Self {
         ReactError::Mcp(Box::new(err))
     }
 }
 
 impl From<MemoryError> for ReactError {
+    /// 将 `MemoryError` 转换为 `ReactError`。
     fn from(err: MemoryError) -> Self {
         ReactError::Memory(Box::new(err))
     }
 }
 
 impl From<SandboxError> for ReactError {
+    /// 将 `SandboxError` 转换为 `ReactError`。
     fn from(err: SandboxError) -> Self {
         ReactError::Sandbox(Box::new(err))
     }
@@ -686,12 +726,14 @@ impl From<SandboxError> for ReactError {
 
 #[cfg(feature = "channels")]
 impl From<ChannelError> for ReactError {
+    /// 将 `ChannelError` 转换为 `ReactError`。
     fn from(err: ChannelError) -> Self {
         ReactError::Channel(Box::new(err))
     }
 }
 
 impl From<serde_json::Error> for ReactError {
+    /// 将 `serde_json::Error` 转换为 `ReactError`。
     fn from(err: serde_json::Error) -> Self {
         ReactError::Parse(Box::new(ParseError::JsonError(err)))
     }
@@ -699,6 +741,7 @@ impl From<serde_json::Error> for ReactError {
 
 #[cfg(feature = "reqwest")]
 impl From<reqwest::Error> for ReactError {
+    /// 将 `reqwest::Error` 转换为 `ReactError`。
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
             ReactError::Llm(Box::new(LlmError::NetworkError(
@@ -715,13 +758,14 @@ impl From<reqwest::Error> for ReactError {
     }
 }
 
-/// Convenience Result alias
+/// 便捷的 Result 类型别名
 pub type Result<T> = std::result::Result<T, ReactError>;
 
 #[cfg(test)]
 mod agent_failure_tests {
     use super::*;
 
+    /// 验证失败契约保留终止类别、可重试性与 HTTP 状态，并可序列化往返。
     #[test]
     fn preserves_terminal_and_retry_facts() -> std::result::Result<(), serde_json::Error> {
         let cases = [
@@ -822,45 +866,53 @@ mod agent_failure_tests {
     }
 }
 
-/// Runtime state error
+/// 运行时状态错误
 #[derive(Debug, Error)]
 pub enum RuntimeStateError {
-    /// I/O error
+    /// I/O 错误
     #[error("IO error: {0}")]
     Io(String),
-    /// Serialization error
+    /// 序列化错误
     #[error("Serialization error: {0}")]
     SerializationError(String),
-    /// State not found
+    /// 状态不存在
     #[error("State not found: {0}")]
     NotFound(String),
-    /// The backend does not implement a required atomic runtime-state contract.
+    /// 后端未实现所需的原子运行时状态契约。
     #[error("Unsupported operation: {0}")]
     Unsupported(String),
-    /// A legacy mutation attempted to overwrite revision-managed state.
+    /// 旧式变更试图覆盖受修订版本管理的状态。
     #[error("Managed runtime state requires compare-and-save: {0}")]
     ManagedStateRequiresCas(String),
-    /// A durable revision cannot be advanced without overflow.
+    /// 持久化修订版本无法再递增，否则会溢出。
     #[error("Runtime state revision exhausted: {0}")]
     RevisionExhausted(String),
-    /// A persistence call exceeded the shared absolute deadline.
+    /// 持久化调用超出了共享的绝对截止时间。
     #[error("Runtime state deadline exceeded: {0}")]
     DeadlineExceeded(String),
-    /// A durable transcript effect remains retryable before new admission.
+    /// 持久化的会话记录副作用在新的准入之前仍可重试。
     #[error("Transcript projection deferred ({operation_id:?}): {reason}")]
     TranscriptProjectionDeferred {
+        /// 相关操作 ID（如有）
         operation_id: Option<String>,
+        /// 延迟原因
         reason: String,
     },
-    /// A persistence failure was observed and must replace the original terminal.
+    /// 观察到持久化失败，必须替换原有的终止结果。
     #[error("Transcript projection blocked ({status}): {reason}")]
-    TranscriptProjectionBlocked { status: String, reason: String },
-    /// A retryable runtime-state failure known to have made no durable commit.
+    TranscriptProjectionBlocked {
+        /// 阻塞状态
+        status: String,
+        /// 阻塞原因
+        reason: String,
+    },
+    /// 已知未产生任何持久化提交的可重试运行时状态失败。
     #[error("Transient runtime-state no-commit failure: {0}")]
     TransientNoCommit(String),
 }
 
 impl From<RuntimeStateError> for ReactError {
+    /// 将 `RuntimeStateError` 转换为 `ReactError`。
     fn from(err: RuntimeStateError) -> Self {
         ReactError::RuntimeState(Box::new(err))
     }

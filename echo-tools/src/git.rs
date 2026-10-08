@@ -1,12 +1,14 @@
-//! Git version control tools
-//!
-//! Aligning with Claude Code/Cursor, provides full Git operation capabilities:
-//! - git_status: working directory status
-//! - git_diff: diff comparison (unstaged + staged)
-//! - git_log: commit history
-//! - git_blame: line-level annotation
-//! - git_branch: branch operations
-//! - git_commit: create commits
+/*!
+ * Git 版本控制工具
+ *
+ * 对齐 Claude Code/Cursor，提供完整的 Git 操作能力：
+ * - git_status：工作区状态
+ * - git_diff：差异对比（未暂存 + 已暂存）
+ * - git_log：提交历史
+ * - git_blame：逐行溯源
+ * - git_branch：分支操作
+ * - git_commit：创建提交
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -18,23 +20,29 @@ use echo_core::tools::pagination::PageRequest;
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolContext, ToolParameters, ToolResult, ToolRiskLevel};
 
+/// 单次 git 命令的超时时间
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// git 输出的最大字节数，超出部分被截断
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 
-// ── Git status ──────────────────────────────────────────────────────────────
+// ── Git 状态 ──────────────────────────────────────────────────────────────
 
 #[derive(Default)]
+/// 查看工作区状态的 git_status 工具
 pub struct GitStatusTool;
 
 impl Tool for GitStatusTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_status"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "View working directory status of the current repo: modified, staged, untracked files"
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -48,14 +56,17 @@ impl Tool for GitStatusTool {
         })
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -77,26 +88,32 @@ impl Tool for GitStatusTool {
     }
 }
 
-// ── Git diff ────────────────────────────────────────────────────────────────
+// ── Git 差异 ────────────────────────────────────────────────────────────────
 
+/// 查看差异的 git_diff 工具
 pub struct GitDiffTool;
 
 impl Tool for GitDiffTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_diff"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "View code diffs: unstaged changes, staged changes, or diffs between specified branches/commits"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -132,6 +149,7 @@ impl Tool for GitDiffTool {
         })
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -197,26 +215,32 @@ impl Tool for GitDiffTool {
     }
 }
 
-// ── Git log ─────────────────────────────────────────────────────────────────
+// ── Git 日志 ─────────────────────────────────────────────────────────────────
 
+/// 查看提交历史的 git_log 工具
 pub struct GitLogTool;
 
 impl Tool for GitLogTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_log"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "View Git commit history, with options for count limit and format"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -246,6 +270,7 @@ impl Tool for GitLogTool {
         })
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -298,26 +323,32 @@ impl Tool for GitLogTool {
     }
 }
 
-// ── Git blame ───────────────────────────────────────────────────────────────
+// ── Git 溯源 ───────────────────────────────────────────────────────────────
 
+/// 逐行溯源的 git_blame 工具
 pub struct GitBlameTool;
 
 impl Tool for GitBlameTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_blame"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "View line-by-line annotations for a file, showing the last author and commit for each line"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -353,6 +384,7 @@ impl Tool for GitBlameTool {
         })
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -381,7 +413,7 @@ impl Tool for GitBlameTool {
                 args.push("-L".to_string());
                 args.push(format!("{},{}", start, end));
             }
-            // Add -- separator before user-supplied file path to prevent argument injection
+            // 在用户提供的文件路径前加 -- 分隔符，防止参数注入
             args.push("--".to_string());
             args.push(file_path.to_string());
 
@@ -405,19 +437,23 @@ impl Tool for GitBlameTool {
     }
 }
 
-// ── Git branch ──────────────────────────────────────────────────────────────
+// ── Git 分支 ──────────────────────────────────────────────────────────────
 
+/// 分支操作的 git_branch 工具
 pub struct GitBranchTool;
 
 impl Tool for GitBranchTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_branch"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "View, create, or switch Git branches. No args lists all branches; with name creates a new branch"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![
             ToolPermission::Read,
@@ -425,10 +461,12 @@ impl Tool for GitBranchTool {
             ToolPermission::Execute,
         ]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -454,6 +492,7 @@ impl Tool for GitBranchTool {
         })
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -470,7 +509,7 @@ impl Tool for GitBranchTool {
             let args: Vec<String>;
 
             if let Some(name) = parameters.get("name").and_then(|v| v.as_str()) {
-                // -- separator: branch names starting with - are treated as names, not options
+                // -- 分隔符：以 - 开头的分支名被视为名称而非选项
                 args = vec!["branch".to_string(), "--".to_string(), name.to_string()];
                 action = format!("Create branch '{}'", name);
             } else if let Some(target) = parameters.get("switch").and_then(|v| v.as_str()) {
@@ -496,26 +535,32 @@ impl Tool for GitBranchTool {
     }
 }
 
-// ── Git commit ──────────────────────────────────────────────────────────────
+// ── Git 提交 ──────────────────────────────────────────────────────────────
 
+/// 创建提交的 git_commit 工具
 pub struct GitCommitTool;
 
 impl Tool for GitCommitTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "git_commit"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Create a Git commit. Files must be staged via git add first. Only call this tool when explicitly requested by the user."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write, ToolPermission::Execute]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -538,6 +583,7 @@ impl Tool for GitCommitTool {
         })
     }
 
+    /// 执行对应的 git 命令
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -554,13 +600,14 @@ impl Tool for GitCommitTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("message".to_string()))?;
 
-            // If file list is specified, run git add first
+            // 如果指定了文件列表，先执行 git add
             if let Some(files) = parameters.get("files").and_then(|v| v.as_array()) {
                 for f_val in files {
                     if let Some(f) = f_val.as_str() {
-                        // `--` separates paths from options so a filename
-                        // starting with `-` (e.g. `--upload-pack=...`) can't be
-                        // interpreted as a git flag (P1-2 argument injection).
+                        /*
+                         * `--` 把路径与选项分隔开，使以 `-` 开头的文件名
+                         * （例如 `--upload-pack=...`）不会被解释为 git 参数（P1-2 参数注入）。
+                         */
                         let add_args = ["add", "--", f];
                         run_git(&repo_path, &add_args, ctx).await?;
                     }
@@ -577,25 +624,27 @@ impl Tool for GitCommitTool {
     }
 }
 
-// ── Helper ──────────────────────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────────────────────
 
-/// Resolve the effective repository path for a git tool invocation.
-///
-/// When the LLM passes no `repo_path` (the default `"."`), run the git
-/// command inside the session-bound `working_dir` (e.g. a worktree) if one
-/// is set, so git operations target the isolated checkout instead of the
-/// process cwd. An explicit user-supplied `repo_path` always wins.
+/**
+ * 解析 git 工具调用的有效仓库路径。
+ *
+ * 当 LLM 未传入 `repo_path`（默认 `"."`）且会话绑定了 `working_dir`（例如 worktree）时，
+ * 在该目录中执行 git 命令，使 git 操作作用于隔离的检出目录而非进程 cwd。
+ * 用户显式提供的 `repo_path` 始终优先。
+ */
 fn effective_repo_path(user_repo_path: &str, ctx: &echo_core::tools::ToolContext) -> String {
-    // When working_dir is set (worktree binding), resolve relative paths
-    // against it — matching file tool semantics. Absolute paths and "." pass
-    // through ("." resolves to working_dir when set).
+    /*
+     * 设置了 working_dir（worktree 绑定）时，相对路径基于它解析——与文件工具语义一致。
+     * 绝对路径和 "." 直接透传（设置了 working_dir 时 "." 解析为 working_dir）。
+     */
     if user_repo_path == "." {
         if let Some(dir) = &ctx.working_dir {
             return dir.to_string_lossy().to_string();
         }
         return ".".to_string();
     }
-    // Relative path: join with working_dir if set
+    // 相对路径：若设置了 working_dir 则与之拼接
     if !std::path::Path::new(user_repo_path).is_absolute()
         && let Some(dir) = &ctx.working_dir
     {
@@ -604,8 +653,9 @@ fn effective_repo_path(user_repo_path: &str, ctx: &echo_core::tools::ToolContext
     user_repo_path.to_string()
 }
 
+/// 在指定仓库路径下执行 git 命令，返回标准输出或错误
 async fn run_git(repo_path: &str, args: &[&str], context: &ToolContext) -> Result<String> {
-    // Validate repo_path: reject path traversal and ensure the path exists
+    // 校验 repo_path：拒绝路径穿越并确保路径存在
     let path = Path::new(repo_path);
     if path
         .components()

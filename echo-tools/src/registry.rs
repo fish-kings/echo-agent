@@ -1,24 +1,28 @@
-//! Canonical standard tool pack.
+//! 规范的标准工具包。
 
 use echo_core::tools::cell::CommandCellRegistry;
 use echo_core::tools::{ToolPack, ToolPackEntry, ToolRegistrar};
 use std::sync::Arc;
 
-/// The framework's feature-gated standard tool composition.
-///
-/// Each entry declares its capabilities at construction time. Read-only
-/// surfaces are projections of this pack, not a second hand-maintained tool
-/// list, so a mutating tool cannot accidentally enter a read-only Agent.
+/**
+ * 框架按 feature 开关组合的标准工具集合。
+ *
+ * 每个条目在构造时声明自身能力。只读工具面是本工具包的投影，
+ * 而不是另一份手工维护的工具列表，因此有副作用的工具不会意外进入只读 Agent。
+ */
 #[derive(Clone, Default)]
 pub struct StandardToolPack {
+    /// 可选的命令单元注册表，注入给 shell 工具用于启动命令单元。
     cells: Option<Arc<dyn CommandCellRegistry>>,
 }
 
 impl StandardToolPack {
+    /// 创建不带命令单元注册表的标准工具包。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 注入命令单元注册表，使 shell 工具可通过它启动命令单元。
     pub fn with_command_cells(mut self, cells: Arc<dyn CommandCellRegistry>) -> Self {
         self.cells = Some(cells);
         self
@@ -26,10 +30,12 @@ impl StandardToolPack {
 }
 
 impl ToolPack for StandardToolPack {
+    /// 返回工具包名称 `standard`。
     fn name(&self) -> &str {
         "standard"
     }
 
+    /// 按已启用的 feature 构建全部工具条目，并标注其是否只读。
     #[allow(unused_mut)]
     fn tools(&self) -> Vec<ToolPackEntry> {
         let mut tools = Vec::new();
@@ -214,14 +220,17 @@ impl ToolPack for StandardToolPack {
     }
 }
 
+/// 仅注册标准工具包中的只读工具。
 pub fn register_readonly_tools(registrar: &mut dyn ToolRegistrar) {
     StandardToolPack::new().install_read_only(registrar);
 }
 
+/// 注册标准工具包中的全部工具。
 pub fn register_all_tools(registrar: &mut dyn ToolRegistrar) {
     StandardToolPack::new().install(registrar);
 }
 
+/// 注册全部工具；若提供命令单元注册表，则注入给 shell 工具。
 pub fn register_all_tools_with_cells(
     registrar: &mut dyn ToolRegistrar,
     cells: Option<Arc<dyn CommandCellRegistry>>,
@@ -239,17 +248,20 @@ mod tests {
     #[cfg(any(feature = "database", feature = "files", feature = "shell"))]
     use echo_core::tools::Tool;
 
+    /// 测试用注册器，仅收集被注册工具的名称。
     #[cfg(any(feature = "database", feature = "files", feature = "shell"))]
     #[derive(Default)]
     struct Collector(Vec<String>);
 
     #[cfg(any(feature = "database", feature = "files", feature = "shell"))]
     impl ToolRegistrar for Collector {
+        /// 记录工具名称。
         fn register(&mut self, tool: Box<dyn Tool>) {
             self.0.push(tool.name().to_string());
         }
     }
 
+    /// 只读投影应包含只读 SQL 工具。
     #[test]
     #[cfg(feature = "database")]
     fn read_only_projection_contains_only_read_only_sql() {
@@ -260,6 +272,7 @@ mod tests {
         assert!(collector.0.contains(&"describe_table".to_string()));
     }
 
+    /// 只读投影不得包含进程执行类工具。
     #[test]
     #[cfg(feature = "shell")]
     fn read_only_projection_excludes_process_execution() {
@@ -269,6 +282,7 @@ mod tests {
         assert!(!collector.0.contains(&"run_code".to_string()));
     }
 
+    /// 标准工具包只使用规范的 apply_patch 作为文件修改入口。
     #[test]
     #[cfg(feature = "files")]
     fn standard_pack_uses_only_canonical_patch_mutation() {

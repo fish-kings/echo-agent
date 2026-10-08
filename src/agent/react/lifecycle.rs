@@ -17,6 +17,7 @@ struct CloseState {
 }
 
 impl Default for CloseState {
+    /// 创建初始关闭状态：接受新轮次且尚未分配轮次 ID。
     fn default() -> Self {
         Self {
             accepting: true,
@@ -42,6 +43,7 @@ pub(crate) struct ReactAgentCloseAuthority {
 }
 
 impl Default for ReactAgentCloseAuthority {
+    /// 创建处于可接受状态的关闭权威对象。
     fn default() -> Self {
         Self {
             state: Mutex::new(CloseState::default()),
@@ -74,8 +76,10 @@ impl ReactAgentCloseAuthority {
         })?;
         let turn_id = state.next_turn_id;
         state.next_turn_id = next_turn_id;
-        // 关闭单个 Agent 时绝不能取消调用方的作用域。子令牌仍会
-        // 观察到调用方的取消，而 Agent 的关闭则保持在局部范围内。
+        /*
+        关闭单个 Agent 时绝不能取消调用方的作用域。子令牌仍会
+        观察到调用方的取消，而 Agent 的关闭则保持在局部范围内。
+        */
         let cancel = cancel
             .map(|parent| parent.child_token())
             .unwrap_or_default();
@@ -169,6 +173,7 @@ impl ReactAgentTurnLease {
 }
 
 impl Drop for ReactAgentTurnLease {
+    /// 租约被丢弃时释放轮次，并按是否已开始记录关闭债务。
     fn drop(&mut self) {
         self.release(self.started);
     }
@@ -178,6 +183,7 @@ impl Drop for ReactAgentTurnLease {
 mod tests {
     use super::*;
 
+    /// 验证关闭 Agent 只取消其子作用域，不影响调用方令牌。
     #[tokio::test]
     async fn close_cancels_only_the_agent_child_scope() -> Result<()> {
         let authority = Arc::new(ReactAgentCloseAuthority::default());
@@ -192,6 +198,7 @@ mod tests {
         authority.wait_until_idle().await
     }
 
+    /// 验证已开始的轮次被直接丢弃时会被记为关闭债务。
     #[tokio::test]
     async fn started_turn_drop_is_reported_as_close_debt() -> Result<()> {
         let authority = Arc::new(ReactAgentCloseAuthority::default());

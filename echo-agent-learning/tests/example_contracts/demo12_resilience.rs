@@ -16,8 +16,10 @@ async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
-/// demo12 契约测试：对比 `tool_error_feedback` 开关、偶发故障工具自动恢复、
-/// 以及 `llm_max_retries` 配置在不同场景下的行为差异。
+/**
+demo12 契约测试：对比 `tool_error_feedback` 开关、偶发故障工具自动恢复、
+以及 `llm_max_retries` 配置在不同场景下的行为差异。
+*/
 #[tokio::test]
 async fn contract_demo12_resilience() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -205,7 +207,7 @@ impl AgentCallback for SimpleLog {
     }
 }
 
-// ── Part 1 ──────────────────────────────────────────────────────────────────────
+// ── Part 1：关闭错误反馈 ───────────────────────────────────────────────────────────────
 
 /// 演示 `tool_error_feedback = false`（旧行为）：工具失败会直接中断 Agent 执行。
 async fn demo_feedback_off() -> Result<()> {
@@ -242,10 +244,12 @@ async fn demo_feedback_off() -> Result<()> {
     Ok(())
 }
 
-// ── Part 2 ──────────────────────────────────────────────────────────────────────
+// ── Part 2：开启错误反馈 ───────────────────────────────────────────────────────────────
 
-/// 演示 `tool_error_feedback = true`（默认新行为）：工具失败后错误会反馈给 LLM，
-/// Agent 可据此改用备用工具继续完成任务。
+/**
+演示 `tool_error_feedback = true`（默认新行为）：工具失败后错误会反馈给 LLM，
+Agent 可据此改用备用工具继续完成任务。
+*/
 async fn demo_feedback_on() -> echo_agent::error::Result<()> {
     println!("  配置：tool_error_feedback = true（默认）\n");
 
@@ -289,7 +293,7 @@ async fn demo_feedback_on() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 3 ──────────────────────────────────────────────────────────────────────
+// ── Part 3：偶发故障恢复 ───────────────────────────────────────────────────────────────
 
 /// 演示 `FlakyTool` 偶发故障后自动恢复的场景：前两次调用失败，第三次成功返回结果。
 async fn demo_flaky_tool() -> echo_agent::error::Result<()> {
@@ -328,7 +332,7 @@ async fn demo_flaky_tool() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 4 ──────────────────────────────────────────────────────────────────────
+// ── Part 4：LLM 重试配置 ─────────────────────────────────────────────────────────────
 
 /// 对比 `llm_max_retries` 开启与关闭时的配置行为，并校验配置值是否正确生效。
 fn demo_llm_retry_config() -> Result<()> {

@@ -1,17 +1,20 @@
-//! A2A 协议示例
-//!
-//! 演示 Agent Card 创建、A2A Server 和 Client 的使用，
-//! 包括任务状态机和流式事件。
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo23_a2a
-//! ```
+/*!
+A2A 协议示例
+
+演示 Agent Card 创建、A2A Server 和 Client 的使用，
+包括任务状态机和流式事件。
+
+```bash
+cargo run -p echo-agent-learning --example demo23_a2a
+```
+*/
 
 use echo_agent::a2a::*;
 use echo_agent::prelude::*;
 use futures::StreamExt;
 use std::sync::Arc;
 
+/// 示例入口：演示 A2A（Agent-to-Agent）协议的 Agent Card 构建与同步、流式任务请求格式。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();

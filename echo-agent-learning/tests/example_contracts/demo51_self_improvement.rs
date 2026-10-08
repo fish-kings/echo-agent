@@ -1,17 +1,19 @@
-//! demo51_self_improvement — 自进化系统示例
-//!
-//! 展示 echo-agent 自进化流水线的核心功能：
-//! 1. Analyzer —— 失败模式检测
-//! 2. RunCritique —— 人类可读的分析报告
-//! 3. Curator —— 技能生命周期管理
-//! 4. TrajectorySaver —— 微调数据生成（ShareGPT 格式）
-//!
-//! 全程无真实 LLM 调用，使用 Mock 数据演示离线分析能力。
-//!
-//! 运行方式：
-//! ```bash
-//! cargo test --test example_contracts contract_demo51_self_improvement
-//! ```
+/*!
+demo51_self_improvement — 自进化系统示例
+
+展示 echo-agent 自进化流水线的核心功能：
+1. Analyzer —— 失败模式检测
+2. RunCritique —— 人类可读的分析报告
+3. Curator —— 技能生命周期管理
+4. TrajectorySaver —— 微调数据生成（ShareGPT 格式）
+
+全程无真实 LLM 调用，使用 Mock 数据演示离线分析能力。
+
+运行方式：
+```bash
+cargo test --test example_contracts contract_demo51_self_improvement
+```
+*/
 
 use chrono::Utc;
 use echo_agent::evolution::{
@@ -28,6 +30,7 @@ use echo_agent::prelude::{MemoryMeta, MemorySource, MemoryType};
 use echo_agent::trace::{Run, RunEvent, RunStatus, RunTimings, TokenUsage};
 use std::sync::Arc;
 
+/// 打印带编号的场景分隔标题。
 macro_rules! section {
     ($n:expr, $title:expr) => {
         println!("\n══════════════════════════════════════════════════");
@@ -36,12 +39,14 @@ macro_rules! section {
     };
 }
 
+/// 打印一条场景通过的提示信息。
 macro_rules! pass {
     ($msg:expr) => {
         println!("  ✅  {}", $msg)
     };
 }
 
+/// 构造一条用于离线分析的模拟运行记录 `Run`，带固定的模型、token 用量与耗时信息。
 fn make_run(id: &str, input: &str, events: Vec<RunEvent>, status: RunStatus) -> Run {
     Run {
         run_id: id.to_string(),
@@ -73,6 +78,7 @@ fn make_run(id: &str, input: &str, events: Vec<RunEvent>, status: RunStatus) -> 
     }
 }
 
+/// 契约测试：依次运行 Analyzer、RunCritique 汇总、Curator 与 TrajectorySaver 四个离线场景。
 #[tokio::test]
 async fn contract_demo51_self_improvement() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔══════════════════════════════════════════════════╗");
@@ -91,6 +97,7 @@ async fn contract_demo51_self_improvement() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// 契约测试：分层记忆写入后按置信度与稳定性晋升到热层，重新打开存储后能恢复内容，且变更日志记录完整。
 #[tokio::test]
 async fn contract_demo51_layered_memory_recovery_api() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -148,6 +155,7 @@ async fn contract_demo51_layered_memory_recovery_api() -> Result<(), Box<dyn std
     Ok(())
 }
 
+/// 契约测试：记忆被后续写入覆盖后可按变更 ID 预览并回滚，重复回滚返回已应用结果。
 #[tokio::test]
 async fn contract_demo51_memory_later_rollback() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
@@ -197,6 +205,7 @@ async fn contract_demo51_memory_later_rollback() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+/// 契约测试：重复出现的工作流记忆会被识别为技能候选，新增相似记忆会强化已有候选，无新增时不再写入审计记录。
 #[tokio::test]
 async fn contract_demo51_skill_candidate_reinforcement_audit()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -248,6 +257,7 @@ async fn contract_demo51_skill_candidate_reinforcement_audit()
     Ok(())
 }
 
+/// 契约测试：外部代码仍可通过结构体字面量构造 `SkillMeta`，保持字段兼容。
 #[test]
 fn contract_demo51_skill_meta_external_struct_literal_remains_compatible() {
     let now = Utc::now();

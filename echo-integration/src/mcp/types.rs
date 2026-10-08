@@ -4,11 +4,13 @@ use serde_json::{Map, Value};
 /// MCP 协议版本（当前支持的最新稳定版本）
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
-/// 服务端支持的所有协议版本（最新在前）
-///
-/// 在 `initialize` 握手时用于版本协商：
-/// - 若客户端请求的版本在此列表中 → 回复相同版本
-/// - 若不支持 → 回复列表中最新版本，由客户端决定是否继续
+/**
+服务端支持的所有协议版本（最新在前）
+
+在 `initialize` 握手时用于版本协商：
+- 若客户端请求的版本在此列表中 → 回复相同版本
+- 若不支持 → 回复列表中最新版本，由客户端决定是否继续
+*/
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] =
     &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 
@@ -237,9 +239,11 @@ pub struct CompletionsCapability {}
 
 // ── MCP 通用类型 ──────────────────────────────────────────────────────────────
 
-/// 图标定义（2025-11-25 新增）
-///
-/// 为 Tool、Prompt、Resource、Implementation 提供可视化标识。
+/**
+图标定义（2025-11-25 新增）
+
+为 Tool、Prompt、Resource、Implementation 提供可视化标识。
+*/
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Icon {
@@ -311,9 +315,11 @@ pub struct McpTool {
     pub meta: Option<Value>,
 }
 
-/// 工具行为注解（2025-11-25 新增）
-///
-/// 描述工具的安全属性，客户端不应信任来自不可信服务端的注解。
+/**
+工具行为注解（2025-11-25 新增）
+
+描述工具的安全属性，客户端不应信任来自不可信服务端的注解。
+*/
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolAnnotations {
@@ -372,8 +378,10 @@ pub struct McpToolCallResult {
     /// 结构化输出（2025-11-25），与 outputSchema 配合使用
     #[serde(skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
-    /// 捕获 MCP 服务端返回的所有非标准扩展字段（如 queryRecordId 等），
-    /// 确保任意 MCP 服务端返回的额外字段都不会被静默丢弃。
+    /**
+    捕获 MCP 服务端返回的所有非标准扩展字段（如 queryRecordId 等），
+    确保任意 MCP 服务端返回的额外字段都不会被静默丢弃。
+    */
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, Value>,
 }

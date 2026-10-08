@@ -1,10 +1,12 @@
-//! 用于影响 agent 行为的干预回调接口
-//!
-//! 与只做观察的 `AgentCallback` 不同，`InterventionCallback` 可以*主动影响*
-//! agent 的行为：阻断工具调用、注入上下文、重定向执行、或取消操作。
-//!
-//! `CallbackBridge` 适配器可以将普通的 `AgentCallback` 实例转换为
-//! 中立的 `InterventionCallback` 实现，以保持向后兼容。
+/*!
+用于影响 agent 行为的干预回调接口
+
+与只做观察的 `AgentCallback` 不同，`InterventionCallback` 可以*主动影响*
+agent 的行为：阻断工具调用、注入上下文、重定向执行、或取消操作。
+
+`CallbackBridge` 适配器可以将普通的 `AgentCallback` 实例转换为
+中立的 `InterventionCallback` 实现，以保持向后兼容。
+*/
 
 use crate::llm::types::Message;
 use futures::future::BoxFuture;
@@ -67,10 +69,12 @@ impl InterventionResult {
     }
 }
 
-/// 可以影响 agent 行为的干预回调 trait。
-///
-/// 所有方法都提供了返回 `InterventionResult::allow()` 的默认实现，
-/// 因此实现者只需要覆盖自己关心的方法即可。
+/**
+可以影响 agent 行为的干预回调 trait。
+
+所有方法都提供了返回 `InterventionResult::allow()` 的默认实现，
+因此实现者只需要覆盖自己关心的方法即可。
+*/
 pub trait InterventionCallback: Send + Sync {
     /// 在工具调用执行前进行检查（可能阻断/修改该调用）。
     fn on_tool_call<'a>(
@@ -101,15 +105,17 @@ pub trait InterventionCallback: Send + Sync {
     }
 }
 
-/// 将 `AgentCallback` 包装为中立 `InterventionCallback` 的桥接适配器。
-///
-/// 所有干预检查都返回 `InterventionResult::allow()`，从而在满足
-/// `InterventionCallback` 接口的同时，保留 `AgentCallback` 纯观察的行为。
-///
-/// 注意：该结构体定义在此处，但引用了位于门面 crate 的 `agent` 模块中的
-/// `AgentCallback`。桥接实现从门面 crate 重新导出，因为只有在那里才能访问
-/// 到 `AgentCallback`。本文件只提供 trait 层面的定义；具体的
-/// `CallbackBridge` 实现位于门面 crate 中。
+/**
+将 `AgentCallback` 包装为中立 `InterventionCallback` 的桥接适配器。
+
+所有干预检查都返回 `InterventionResult::allow()`，从而在满足
+`InterventionCallback` 接口的同时，保留 `AgentCallback` 纯观察的行为。
+
+注意：该结构体定义在此处，但引用了位于门面 crate 的 `agent` 模块中的
+`AgentCallback`。桥接实现从门面 crate 重新导出，因为只有在那里才能访问
+到 `AgentCallback`。本文件只提供 trait 层面的定义；具体的
+`CallbackBridge` 实现位于门面 crate 中。
+*/
 pub struct CallbackBridge;
 
 #[cfg(test)]

@@ -1,34 +1,37 @@
-//! demo06_mcp.rs —— MCP (Model Context Protocol) 集成演示
-//!
-//! 演示如何将 MCP 服务端的工具接入 echo-agent 框架，
-//! 让 ReAct Agent 通过 MCP 协议使用外部工具完成任务。
-//!
-//! # 架构说明
-//!
-//! ```text
-//! ReactAgent
-//!    │ register_tools()
-//!    ▼
-//! McpToolAdapter──→McpClient──→[stdio Transport]──→MCP Server Process
-//!  (Tool trait)         (Arc)           stdin/stdout              npx @mcp/server-*
-//! ```
-//!
-//! # 前置条件
-//!
-//! 此示例使用官方文件系统 MCP 服务端，需要 Node.js (v18+) / npx：
-//!   https://nodejs.org/
-//!
-//! 首次运行时 npx 会自动下载 @modelcontextprotocol/server-filesystem。
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo06_mcp
-//! ```
+/*!
+ * demo06_mcp.rs —— MCP (Model Context Protocol) 集成演示
+ *
+ * 演示如何将 MCP 服务端的工具接入 echo-agent 框架，
+ * 让 ReAct Agent 通过 MCP 协议使用外部工具完成任务。
+ *
+ * # 架构说明
+ *
+ * ```text
+ * ReactAgent
+ *    │ register_tools()
+ *    ▼
+ * McpToolAdapter──→McpClient──→[stdio Transport]──→MCP Server Process
+ *  (Tool trait)         (Arc)           stdin/stdout              npx @mcp/server-*
+ * ```
+ *
+ * # 前置条件
+ *
+ * 此示例使用官方文件系统 MCP 服务端，需要 Node.js (v18+) / npx：
+ *   https://nodejs.org/
+ *
+ * 首次运行时 npx 会自动下载 @modelcontextprotocol/server-filesystem。
+ *
+ * # 运行方式
+ *
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo06_mcp
+ * ```
+ */
 
 use echo_agent::mcp::{McpManager, McpServerConfig};
 use echo_agent::prelude::*;
 
+/// 示例入口：先直接调用 MCP 工具，再将 MCP 工具接入 ReAct Agent。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();

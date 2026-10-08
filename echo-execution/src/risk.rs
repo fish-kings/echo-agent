@@ -75,7 +75,7 @@ impl ToolRiskClassifier {
             // 文件写入
             "apply_patch" | "write_file" | "append_file" | "create_file" | "update_file"
             | "move_file" => ToolRiskCategory::FileWrite,
-            // Shell
+            // Shell 执行
             "shell" | "execute" => ToolRiskCategory::ShellExec,
             // Git 写入
             "git_commit" | "git_add" | "git_push" | "git_tag" => ToolRiskCategory::GitWrite,

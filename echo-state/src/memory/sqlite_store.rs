@@ -1,46 +1,48 @@
-//! SQLite persistent Store (FTS5 full-text search + optional vector search)
-//!
-//! Production-grade persistent storage, based on SQLite + FTS5 full-text search engine,
-//! with optional vector similarity retrieval integration.
-//!
-//! ## Storage structure
-//!
-//! | Table | Purpose |
-//! |----|------|
-//! | `store_items` | KV main table (namespace, key, value, timestamps) |
-//! | `store_fts` | FTS5 full-text index (auto-synced) |
-//! | `store_vectors` | Vector table (optional, stores embedding vectors) |
-//!
-//! ## Quick start
-//!
-//! ```rust,no_run
-//! use echo_core::error::Result;
-//! use echo_state::memory::store::Store;
-//! use echo_state::memory::SqliteStore;
-//! use std::sync::Arc;
-//!
-//! # async fn example() -> Result<()> {
-//! // Basic usage: FTS5 full-text search
-//! let store = Arc::new(SqliteStore::new("~/.echo-agent/memory.db")?);
-//!
-//! store.put(&["alice", "memories"], "pref-001", serde_json::json!({
-//!     "content": "User prefers dark theme",
-//!     "importance": 8
-//! })).await?;
-//!
-//! // FTS5 full-text search
-//! let items = store.search(&["alice", "memories"], "dark theme", 5).await?;
-//!
-//! // With hybrid search (requires Embedder)
-//! use echo_state::memory::{Embedder, HttpEmbedder};
-//! let embedder: Arc<dyn Embedder> = Arc::new(HttpEmbedder::from_env());
-//! let store = Arc::new(SqliteStore::with_embedder("~/.echo-agent/memory.db", embedder)?);
-//! let items = store
-//!     .search_with(&["alice", "memories"], echo_state::memory::SearchQuery::hybrid("theme preference", 5))
-//!     .await?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+ * SQLite 持久化 Store（FTS5 全文检索 + 可选向量检索）
+ *
+ * 生产级持久化存储，基于 SQLite + FTS5 全文检索引擎，
+ * 并可选集成向量相似度检索。
+ *
+ * ## 存储结构
+ *
+ * | 表 | 用途 |
+ * |----|------|
+ * | `store_items` | KV 主表（namespace、key、value、时间戳） |
+ * | `store_fts` | FTS5 全文索引（自动同步） |
+ * | `store_vectors` | 向量表（可选，存储 embedding 向量） |
+ *
+ * ## 快速开始
+ *
+ * ```rust,no_run
+ * use echo_core::error::Result;
+ * use echo_state::memory::store::Store;
+ * use echo_state::memory::SqliteStore;
+ * use std::sync::Arc;
+ *
+ * # async fn example() -> Result<()> {
+ * // Basic usage: FTS5 full-text search
+ * let store = Arc::new(SqliteStore::new("~/.echo-agent/memory.db")?);
+ *
+ * store.put(&["alice", "memories"], "pref-001", serde_json::json!({
+ *     "content": "User prefers dark theme",
+ *     "importance": 8
+ * })).await?;
+ *
+ * // FTS5 full-text search
+ * let items = store.search(&["alice", "memories"], "dark theme", 5).await?;
+ *
+ * // With hybrid search (requires Embedder)
+ * use echo_state::memory::{Embedder, HttpEmbedder};
+ * let embedder: Arc<dyn Embedder> = Arc::new(HttpEmbedder::from_env());
+ * let store = Arc::new(SqliteStore::with_embedder("~/.echo-agent/memory.db", embedder)?);
+ * let items = store
+ *     .search_with(&["alice", "memories"], echo_state::memory::SearchQuery::hybrid("theme preference", 5))
+ *     .await?;
+ * # Ok(())
+ * # }
+ * ```
+ */
 
 use super::store::{namespace_key, parse_namespace_key};
 use crate::util::{expand_tilde, memory_io_error};
@@ -60,35 +62,45 @@ use tracing::{debug, info, warn};
 
 // ── SqliteStore ─────────────────────────────────────────────────────────────
 
-/// SQLite persistent Store with FTS5 full-text search and optional vector search.
-///
-/// Uses a single `Mutex<Connection>` to avoid opening a new connection on every
-/// put/get/delete/search (P1-2.5).  SQLite serialises all writes anyway, so a
-/// single connection eliminates `SQLITE_BUSY` storms under concurrent access.
+/**
+ * 支持 FTS5 全文检索与可选向量检索的 SQLite 持久化 Store。
+ *
+ * 使用单个 `Mutex<Connection>`，避免每次 put/get/delete/search 都新开连接（P1-2.5）。
+ * SQLite 本身就会串行化所有写操作，因此单连接可以消除并发访问下的 `SQLITE_BUSY` 风暴。
+ */
 pub struct SqliteStore {
+    /// 可选的向量嵌入器；配置后启用向量检索
     embedder: Option<Arc<dyn Embedder>>,
+    /// 共享的 SQLite 连接
     conn: Arc<Mutex<Connection>>,
 }
 
+/// 预先计算好的一次写入所需数据（在开启事务前准备，避免跨 await 持有事务）。
 struct PreparedStoreWrite {
+    /// 待写入的 JSON 值
     value: Value,
+    /// 序列化后的 JSON 字符串
     value_json: String,
+    /// 用于 FTS 索引的可检索文本
     search_text: String,
+    /// 写入时间戳（秒）
     now: i64,
+    /// 序列化后的 embedding 向量；为 `None` 时清除旧向量
     vector_bytes: Option<Vec<u8>>,
 }
 
 impl SqliteStore {
-    /// Open or create a SQLite database, auto-create tables and FTS5 index
+    /// 打开或创建 SQLite 数据库，自动建表并创建 FTS5 索引
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         Self::open(path, None)
     }
 
-    /// Open or create a SQLite database with vector search enabled
+    /// 打开或创建启用了向量检索的 SQLite 数据库
     pub fn with_embedder(path: impl AsRef<Path>, embedder: Arc<dyn Embedder>) -> Result<Self> {
         Self::open(path, Some(embedder))
     }
 
+    /// 打开数据库的公共实现：创建父目录、建立连接、初始化表结构。
     fn open(path: impl AsRef<Path>, embedder: Option<Arc<dyn Embedder>>) -> Result<Self> {
         let path = expand_tilde(path.as_ref());
         if let Some(parent) = path.parent() {
@@ -116,6 +128,7 @@ impl SqliteStore {
         })
     }
 
+    /// 在指定路径打开连接并设置 WAL 等 PRAGMA 参数。
     fn open_connection_at(path: &Path) -> Result<Connection> {
         let conn = Connection::open(path)
             .map_err(|e| memory_io_error("failed to open SQLite database", e))?;
@@ -130,6 +143,7 @@ impl SqliteStore {
         Ok(conn)
     }
 
+    /// 在阻塞线程池中持锁执行数据库操作。
     async fn run_db<T, F>(&self, operation: F) -> Result<T>
     where
         T: Send + 'static,
@@ -148,6 +162,7 @@ impl SqliteStore {
         })?
     }
 
+    /// 在事务内写入主表、FTS 索引与向量表。
     fn write_transaction_value(
         transaction: &Transaction<'_>,
         namespace: &str,
@@ -211,6 +226,7 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 创建所需的表与索引，执行列迁移并校验表结构。
     fn init_tables(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS store_items (
@@ -226,8 +242,10 @@ impl SqliteStore {
         )
         .map_err(|e| memory_io_error("failed to create main table", e))?;
 
-        // ── Schema migration: add importance/last_accessed/expires_at columns ──
-        // SQLite doesn't support IF NOT EXISTS for ALTER TABLE, so ignore "duplicate column" errors only.
+        /*
+         * ── 表结构迁移：添加 importance/last_accessed/expires_at 列 ──
+         * SQLite 的 ALTER TABLE 不支持 IF NOT EXISTS，因此只忽略 "duplicate column" 错误。
+         */
         for col_sql in [
             "ALTER TABLE store_items ADD COLUMN importance REAL NOT NULL DEFAULT 5.0",
             "ALTER TABLE store_items ADD COLUMN last_accessed INTEGER",
@@ -235,14 +253,14 @@ impl SqliteStore {
         ] {
             if let Err(error) = conn.execute_batch(col_sql) {
                 let msg = error.to_string();
-                // Only ignore "duplicate column" errors (column already exists)
+                // 只忽略 "duplicate column" 错误（列已存在）
                 if !msg.contains("duplicate column") {
                     return Err(memory_io_error("schema migration failed", error).into());
                 }
             }
         }
 
-        // FTS5 full-text index (content= external content table mode is not suitable for this scenario; use independent table)
+        // FTS5 全文索引（content= 外部内容表模式不适合此场景，改用独立表）
         conn.execute_batch(
             "CREATE VIRTUAL TABLE IF NOT EXISTS store_fts USING fts5(
                 namespace,
@@ -253,7 +271,7 @@ impl SqliteStore {
         )
         .map_err(|e| memory_io_error("failed to create FTS5 index", e))?;
 
-        // Vector table (optional, for cosine similarity retrieval)
+        // 向量表（可选，用于余弦相似度检索）
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS store_vectors (
                 namespace TEXT NOT NULL,
@@ -268,6 +286,7 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 校验主表列类型及辅助表是否存在。
     fn verify_schema(conn: &Connection) -> Result<()> {
         let mut statement = conn
             .prepare("PRAGMA table_info(store_items)")
@@ -327,15 +346,15 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// Extract searchable text from a JSON Value
+    /// 从 JSON 值中提取可检索文本
     fn extract_searchable_text(value: &Value) -> String {
         match value {
             Value::String(s) => s.clone(),
             Value::Object(map) => {
-                // Prefer the content field
+                // 优先使用 content 字段
                 if let Some(content) = map.get("content").and_then(|v| v.as_str()) {
                     let mut text = content.to_string();
-                    // Append tags
+                    // 追加标签
                     if let Some(tags) = map.get("tags").and_then(|v| v.as_array()) {
                         for tag in tags {
                             if let Some(t) = tag.as_str() {
@@ -362,7 +381,7 @@ impl SqliteStore {
         }
     }
 
-    /// Serialize an f32 vector to bytes (little-endian)
+    /// 将 f32 向量序列化为字节（小端序）
     fn vec_to_bytes(vec: &[f32]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(vec.len() * 4);
         for &v in vec {
@@ -371,7 +390,7 @@ impl SqliteStore {
         bytes
     }
 
-    /// Deserialize bytes back to an f32 vector
+    /// 将字节反序列化为 f32 向量
     fn bytes_to_vec(bytes: &[u8]) -> Result<Vec<f32>> {
         if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
             return Err(MemoryError::SerializationError(
@@ -394,7 +413,7 @@ impl SqliteStore {
         Ok(values)
     }
 
-    /// Cosine similarity
+    /// 余弦相似度
     fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32> {
         if a.len() != b.len() || a.is_empty() {
             return Err(MemoryError::SerializationError(format!(
@@ -427,9 +446,10 @@ impl SqliteStore {
 }
 
 impl SqliteStore {
-    /// Fetch complete items from the main table by key list (unified score)
-    /// Fetch complete items from the main table by key list (unified score).
-    /// Uses a single `WHERE key IN (...)` instead of N individual SELECTs (P1-2.6).
+    /**
+     * 按 key 列表从主表获取完整条目（统一分数）。
+     * 使用单条 `WHERE key IN (...)` 代替 N 次单独的 SELECT（P1-2.6）。
+     */
     fn fetch_items(
         conn: &Connection,
         namespace: &[&str],
@@ -502,8 +522,10 @@ impl SqliteStore {
         Ok(results)
     }
 
-    /// Fetch complete items from the main table by (key, score) list.
-    /// Uses a single `WHERE key IN (...)` instead of N individual SELECTs (P1-2.6).
+    /**
+     * 按 (key, score) 列表从主表获取完整条目。
+     * 使用单条 `WHERE key IN (...)` 代替 N 次单独的 SELECT（P1-2.6）。
+     */
     fn fetch_items_with_scores(
         conn: &Connection,
         namespace: &[&str],
@@ -571,6 +593,7 @@ impl SqliteStore {
         Ok(results)
     }
 
+    /// 语义检索实现：对查询做 embedding，与已存向量计算余弦相似度并排序。
     async fn semantic_search_impl(
         &self,
         namespace: &[&str],
@@ -640,12 +663,14 @@ impl SqliteStore {
         .await
     }
 
+    /// 语义检索时参与打分的最大候选向量数。
     fn max_candidates() -> usize {
         10_000
     }
 }
 
 impl Store for SqliteStore {
+    /// 写入（或覆盖）一个条目，并同步更新 FTS 与向量索引。
     fn put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -663,10 +688,12 @@ impl Store for SqliteStore {
                 )
             })?;
 
-            // Compute the embedding BEFORE opening the transaction. `Connection`
-            // holds a `RefCell` cache, so a `Transaction<'_>` is `!Send` — keeping
-            // an `.await` (here, the embedder call) alive across it would make the
-            // whole future `!Send` and break tokio multi-thread executors.
+            /*
+             * 在开启事务之前计算 embedding。`Connection` 持有 `RefCell` 缓存，
+             * 因此 `Transaction<'_>` 是 `!Send` 的——若跨越它保持一个 `.await`
+             * （此处为 embedder 调用），整个 future 都会变成 `!Send`，
+             * 从而无法在 tokio 多线程执行器上运行。
+             */
             let vector_bytes: Option<Vec<u8>> = if let Some(ref embedder) = self.embedder {
                 match embedder.embed(&search_text).await {
                     Ok(vec) => {
@@ -712,6 +739,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 比较并写入：当前值等于 `expected` 时才写入，检查与写入在同一事务内完成。
     fn compare_and_put<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -789,6 +817,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 按命名空间与 key 读取单个条目。
     fn get<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -841,6 +870,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 基于 FTS5 的关键词检索；无结果时回退到 LIKE 模糊匹配。
     fn search<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -853,7 +883,7 @@ impl Store for SqliteStore {
             let query = query.to_string();
             self.run_db(move |conn| {
 
-            // FTS5 query syntax: join space-separated words with OR
+            // FTS5 查询语法：用 OR 连接以空格分隔的词
             let keywords: Vec<&str> = query
                 .split(|c: char| c.is_whitespace() || "，。！？、；：,.!?;:".contains(c))
                 .filter(|s| !s.is_empty())
@@ -869,7 +899,7 @@ impl Store for SqliteStore {
                 .collect::<Vec<_>>()
                 .join(" OR ");
 
-            // First try FTS5 MATCH search
+            // 先尝试 FTS5 MATCH 检索
             let matched_keys: Vec<(String, f64)> = {
                 let mut stmt = conn
                     .prepare(
@@ -896,8 +926,10 @@ impl Store for SqliteStore {
                 matched
             };
 
-            // When FTS5 returns no results, fall back to LIKE fuzzy matching (suitable for CJK and other non-Latin scripts).
-            // For multi-keyword queries, match individual keywords separately rather than requiring the original text to contain the entire contiguous substring.
+            /*
+             * FTS5 无结果时回退到 LIKE 模糊匹配（适用于 CJK 等非拉丁文字）。
+             * 对多关键词查询，分别匹配各个关键词，而不要求原文包含完整的连续子串。
+             */
             if matched_keys.is_empty() {
                 debug!(namespace = %ns_key, query = %query, "FTS5 returned no results, falling back to LIKE fuzzy matching");
                 let mut fallback_keys = Vec::new();
@@ -962,12 +994,13 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 删除条目及其 FTS、向量索引；返回是否确有条目被删除。
     fn delete<'a>(&'a self, namespace: &'a [&'a str], key: &'a str) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let ns_key = namespace_key(namespace);
             let key = key.to_string();
             self.run_db(move |conn| {
-                // Wrap all three deletes in a transaction to prevent partial deletion
+                // 将三处删除包在同一事务中，避免部分删除
                 let tx = conn
                     .transaction()
                     .map_err(|e| memory_io_error("failed to begin delete transaction", e))?;
@@ -979,7 +1012,7 @@ impl Store for SqliteStore {
                     )
                     .map_err(|e| memory_io_error("failed to delete from main table", e))?;
 
-                // Clean up FTS index
+                // 清理 FTS 索引
                 tx.execute(
                     "DELETE FROM store_fts WHERE namespace = ?1 AND key = ?2",
                     params![ns_key, key],
@@ -1001,6 +1034,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 列出所有命名空间，可按前缀过滤。
     fn list_namespaces<'a>(
         &'a self,
         prefix: Option<&'a [&'a str]>,
@@ -1043,6 +1077,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 列出指定命名空间下的全部条目。
     fn list<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<StoreItem>>> {
         Box::pin(async move {
             let ns_key = namespace_key(namespace);
@@ -1110,6 +1145,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 按检索模式（关键词 / 语义 / 混合）执行检索；混合模式使用 RRF 融合排序。
     fn search_with<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -1133,8 +1169,7 @@ impl Store for SqliteStore {
                         Err(echo_core::error::ReactError::Memory(error))
                             if matches!(*error, MemoryError::Unsupported(_)) =>
                         {
-                            // Fallback to keyword-only: rank keyword items by RRF
-                            // (effectively vector_weight forced to 0.0)
+                            /* 回退为仅关键词检索：按 RRF 对关键词结果排序（相当于 vector_weight 被强制设为 0.0） */
                             let mut items = keyword_items;
                             items.sort_by(|a, b| {
                                 b.score
@@ -1148,7 +1183,7 @@ impl Store for SqliteStore {
                         Err(err) => return Err(err),
                     };
 
-                    // Build rank maps
+                    // 构建排名映射
                     let keyword_ranks: HashMap<&str, usize> = keyword_items
                         .iter()
                         .enumerate()
@@ -1196,6 +1231,7 @@ impl Store for SqliteStore {
         })
     }
 
+    /// 清理命名空间内已过期的条目（含 FTS 与向量索引），返回删除数量。
     fn prune_expired<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<u64>> {
         let ns_key = namespace_key(namespace);
         Box::pin(async move {
@@ -1204,7 +1240,7 @@ impl Store for SqliteStore {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                // Delete items where value contains an expired "expires_at" JSON field
+                // 删除 value 中 "expires_at" JSON 字段已过期的条目
                 let now = i64::try_from(now).map_err(|_| {
                     MemoryError::SerializationError(
                         "current timestamp exceeds SQLite range".to_string(),
@@ -1257,10 +1293,12 @@ impl Store for SqliteStore {
     }
 }
 
-// ── Utility functions ─────────────────────────────────────────────────────────
+// ── 工具函数 ─────────────────────────────────────────────────────────
 
-/// Apply metadata from JSON value to a StoreItem after reading from SQL.
-/// Extracts `importance`, `expires_at`, and `last_accessed` if present in the JSON.
+/**
+ * 从 SQL 读取后，将 JSON 值中的元数据应用到 StoreItem。
+ * 若 JSON 中存在 `importance`、`expires_at`、`last_accessed`，则提取之。
+ */
 fn apply_json_metadata(item: &mut StoreItem) {
     if let Some(imp) = item.value.get("importance").and_then(|v| v.as_f64()) {
         item.importance = imp as f32;
@@ -1273,7 +1311,7 @@ fn apply_json_metadata(item: &mut StoreItem) {
     }
 }
 
-// ── Unit tests ────────────────────────────────────────────────────────────────
+// ── 单元测试 ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1281,6 +1319,7 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
+    /// 在临时目录创建一个测试用数据库。
     fn temp_db() -> SqliteStore {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1397,7 +1436,7 @@ mod tests {
 
         let results = store.search(ns, "dark theme", 5).await.unwrap();
         assert!(!results.is_empty());
-        // "dark" only appears in k1
+        // "dark" 只出现在 k1 中
         assert_eq!(results[0].key, "k1");
     }
 

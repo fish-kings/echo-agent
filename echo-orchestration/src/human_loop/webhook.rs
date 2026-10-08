@@ -8,38 +8,40 @@ use serde::{Deserialize, Serialize};
 use super::{HumanLoopKind, HumanLoopProvider, HumanLoopRequest, HumanLoopResponse};
 use echo_core::error::{ReactError, Result};
 
-/// HTTP Webhook 人工介入 Provider。
-///
-/// 向配置的 URL 发送 POST 请求，等待响应中返回的决策结果。
-/// 适合与企业审批系统、Slack Bot、钉钉机器人等外部平台集成。
-///
-/// # 协议
-///
-/// **请求** POST body（`kind` 字段区分场景）：
-/// ```json
-/// {
-///   "kind": "approval",
-///   "prompt": "工具 [xxx] 需要人工审批...",
-///   "tool_name": "xxx",
-///   "args": { ... }
-/// }
-/// ```
-/// 或：
-/// ```json
-/// {
-///   "kind": "input",
-///   "prompt": "请补充你的意图..."
-/// }
-/// ```
-///
-/// **响应**（统一格式）：
-/// ```json
-/// {
-///   "decision": "approved" | "rejected" | "timeout",
-///   "text": "用户输入的文本（input 场景）",
-///   "reason": "可选说明"
-/// }
-/// ```
+/**
+HTTP Webhook 人工介入 Provider。
+
+向配置的 URL 发送 POST 请求，等待响应中返回的决策结果。
+适合与企业审批系统、Slack Bot、钉钉机器人等外部平台集成。
+
+# 协议
+
+**请求** POST body（`kind` 字段区分场景）：
+```json
+{
+  "kind": "approval",
+  "prompt": "工具 [xxx] 需要人工审批...",
+  "tool_name": "xxx",
+  "args": { ... }
+}
+```
+或：
+```json
+{
+  "kind": "input",
+  "prompt": "请补充你的意图..."
+}
+```
+
+**响应**（统一格式）：
+```json
+{
+  "decision": "approved" | "rejected" | "timeout",
+  "text": "用户输入的文本（input 场景）",
+  "reason": "可选说明"
+}
+```
+*/
 pub struct WebhookHumanLoopProvider {
     /// 底层 HTTP 客户端
     client: Arc<Client>,
@@ -98,6 +100,7 @@ struct WebhookResponse {
 }
 
 impl HumanLoopProvider for WebhookHumanLoopProvider {
+    /// 将请求 POST 到 Webhook 地址，并把回调响应解析为人工介入结果。
     fn request(&self, req: HumanLoopRequest) -> BoxFuture<'_, Result<HumanLoopResponse>> {
         Box::pin(async move {
             let kind_str = match req.kind {

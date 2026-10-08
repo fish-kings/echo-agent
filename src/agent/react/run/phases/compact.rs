@@ -161,11 +161,13 @@ mod tests {
     use futures::future::BoxFuture;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 测试用投影器：每次调用都产出内容随调用次数与迭代号变化的投影。
     struct IterationProjector {
         calls: AtomicUsize,
     }
 
     impl PreModelContextProjector for IterationProjector {
+        /// 按调用计数与当前迭代生成一条带标记的用户消息投影。
         fn project(
             &self,
             context: &ProjectionContext,
@@ -184,11 +186,13 @@ mod tests {
         }
     }
 
+    /// 测试用投影器：首次调用成功，之后每次调用都返回错误。
     struct FailsAfterFirstProjection {
         calls: AtomicUsize,
     }
 
     impl PreModelContextProjector for FailsAfterFirstProjection {
+        /// 首次返回一条投影，后续调用返回 `projection unavailable` 错误。
         fn project(
             &self,
             _context: &ProjectionContext,
@@ -271,6 +275,7 @@ mod tests {
         );
     }
 
+    /// 验证自动压缩会被记录到持久化追踪中。
     #[tokio::test]
     async fn run_compact_records_auto_compression_in_durable_trace() -> Result<()> {
         /* 关闭规则注入：检出目录中的大型规则文件（AGENTS.md 等）
@@ -316,6 +321,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证在替换活跃历史之前，会先持久化完整对话记录。
     #[tokio::test]
     async fn run_compact_persists_full_transcript_before_replacing_active_history() -> Result<()> {
         use crate::memory::{ConversationStore, FileConversationStore};
@@ -370,6 +376,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证每次 prepare 之前都会替换上一次的投影内容。
     #[tokio::test]
     async fn run_compact_replaces_projection_before_each_prepare() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
@@ -423,6 +430,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证投影提供者失败后，已有投影会被清除。
     #[tokio::test]
     async fn run_compact_clears_projection_after_provider_failure() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
@@ -448,6 +456,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证投影提供者被移除后，已有投影会被清除。
     #[tokio::test]
     async fn run_compact_clears_projection_after_provider_removal() -> Result<()> {
         let agent = ReactAgent::new(AgentConfig::new("test-model", "agent", "sys"));
@@ -478,6 +487,7 @@ mod tests {
 
 // ── stage4 E1：pre_compaction_flush ────────────────────────────────────
 
+/// stage4 E1：`pre_compaction_flush` 相关测试。
 #[cfg(test)]
 mod stage4_e1_tests {
     use crate::agent::ReactAgent;

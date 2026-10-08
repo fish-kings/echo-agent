@@ -1,7 +1,9 @@
-//! Grep tool — search file contents by regex pattern
-//!
-//! Uses the `regex` crate for pattern matching. Supports context lines,
-//! file type filtering, and case-insensitive mode.
+/*!
+Grep 工具：按正则表达式搜索文件内容
+
+使用 `regex` crate 进行模式匹配。支持上下文行、
+文件类型过滤以及大小写不敏感模式。
+*/
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::pagination::PageRequest;
@@ -13,20 +15,25 @@ use tokio::fs;
 
 // ── GrepTool ────────────────────────────────────────────────────────────────
 
-/// Search file contents by regex pattern.
-///
-/// Walks the directory tree from `path` (default: `.`), reads each file,
-/// and returns lines matching the `pattern` regex. Supports context lines,
-/// file glob filtering, and case-insensitive mode.
+/**
+按正则表达式搜索文件内容。
+
+从 `path`（默认 `.`）开始遍历目录树，读取每个文件，
+返回匹配 `pattern` 正则的行。支持上下文行、
+文件 glob 过滤以及大小写不敏感模式。
+*/
 pub struct GrepTool {
+    /// 构造时指定的基础目录；用于解析相对路径并限制搜索范围
     base_dir: Option<PathBuf>,
 }
 
 impl GrepTool {
+    /// 创建未绑定基础目录的 grep 工具
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建以 `base` 为基础目录的 grep 工具
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -35,27 +42,33 @@ impl GrepTool {
 }
 
 impl Default for GrepTool {
+    /// 创建默认实例
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for GrepTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "grep"
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Exact text search over file contents using a regex. Returns matching lines with file paths and line numbers; use code_search for symbol-oriented code discovery."
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
         vec![echo_core::tools::permission::ToolPermission::Read]
     }
+    /// 返回工具风险等级
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -95,6 +108,7 @@ impl Tool for GrepTool {
         })
     }
 
+    /// 结合工具上下文执行工具逻辑
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -136,7 +150,7 @@ impl Tool for GrepTool {
                 Err(error) => return Ok(ToolResult::invalid_arguments(error.to_string())),
             };
 
-            // Compile regex
+            // 编译正则表达式
             let regex = regex::RegexBuilder::new(pattern_str)
                 .case_insensitive(case_insensitive)
                 .build()
@@ -145,18 +159,19 @@ impl Tool for GrepTool {
                     message: format!("Invalid regex pattern '{}': {}", pattern_str, e),
                 })?;
 
-            // Allowed root set (all canonicalized so symlinks/`..` can't escape):
-            //   1. construction-time base_dir (highest priority for resolution)
-            //   2. runtime working_dir
-            //   3. output_artifacts.root_dir — lets the model grep spilled
-            //      tool output and user-input artifacts by absolute path, the
-            //      same paths `read_artifact` already hands out. Mirrors
-            //      `resolve_artifact_path` in `artifact.rs`.
-            // Relative `path` is joined to the first available root (base_dir,
-            // working_dir, then artifact root) to preserve the existing
-            // single-root behavior;
-            // absolute `path` is used as-is. Confinement passes if the
-            // canonicalized path starts with *any* allowed root.
+            /*
+            允许的根目录集合（均会规范化，防止通过符号链接或 `..` 逃逸）：
+              1. 构造时的 base_dir（解析时优先级最高）
+              2. 运行时的 working_dir
+              3. output_artifacts.root_dir：让模型可以按绝对路径 grep
+                 溢出的工具输出和用户输入 artifact，即 `read_artifact`
+                 已经给出的那些路径。与 `artifact.rs` 中的
+                 `resolve_artifact_path` 保持一致。
+            相对 `path` 会拼接到第一个可用的根目录（依次为 base_dir、
+            working_dir、artifact 根目录），以保留原有的单根目录行为；
+            绝对 `path` 原样使用。只要规范化后的路径以*任一*允许的根目录
+            开头，即通过范围限制检查。
+            */
             let mut allowed_roots: Vec<PathBuf> = Vec::new();
             if let Some(base) = &self.base_dir {
                 allowed_roots.push(base.clone());
@@ -184,9 +199,8 @@ impl Tool for GrepTool {
                 } else {
                     base.join(path_str)
                 };
-                // Canonicalize both the candidate and the roots so symlink /
-                // `..` escapes are caught. Missing roots (e.g. an uncreated
-                // artifact dir) are skipped rather than erroring.
+                /* 同时规范化候选路径与各根目录，以捕获符号链接或 `..` 逃逸。
+                不存在的根目录（如尚未创建的 artifact 目录）会被跳过而不是报错。 */
                 let resolved_canon = match tokio::fs::canonicalize(&resolved).await {
                     Ok(p) => p,
                     Err(_) => resolved.clone(),
@@ -203,8 +217,7 @@ impl Tool for GrepTool {
                 }
                 resolved
             } else {
-                // No roots of any kind are configured — preserve the legacy
-                // unrestricted behavior.
+                // 未配置任何根目录：保留旧的无限制行为。
                 PathBuf::from(path_str)
             };
 
@@ -265,13 +278,15 @@ impl Tool for GrepTool {
     }
 }
 
-/// Resolve each candidate root to its canonical form, skipping any that do not
-/// exist on disk (e.g. an artifact dir not yet created). Used for confinement
-/// checks so symlinks and `..` cannot escape the allowed scope.
+/**
+将每个候选根目录解析为规范形式，跳过磁盘上不存在的目录
+（如尚未创建的 artifact 目录）。用于范围限制检查，
+确保符号链接和 `..` 无法逃逸出允许的范围。
+*/
 async fn canonicalize_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut canon: Vec<PathBuf> = Vec::with_capacity(roots.len());
     for root in roots {
-        // Missing root (e.g. an uncreated artifact dir) is skipped, not errored.
+        // 不存在的根目录（如尚未创建的 artifact 目录）直接跳过，不报错。
         if let Ok(p) = tokio::fs::canonicalize(root).await {
             canon.push(p);
         }
@@ -279,6 +294,7 @@ async fn canonicalize_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
     canon
 }
 
+/// 在单个文件中搜索匹配行，并将格式化结果追加到 `results`
 async fn search_file(
     path: &Path,
     regex: &regex::Regex,
@@ -286,7 +302,7 @@ async fn search_file(
     context_lines: usize,
     results: &mut Vec<String>,
 ) -> Result<()> {
-    // Check glob filter
+    // 检查 glob 过滤条件
     if let Some(glob) = glob_filter
         && let Some(name) = path.file_name().and_then(|n| n.to_str())
         && !glob_matches(glob, name)
@@ -294,7 +310,7 @@ async fn search_file(
         return Ok(());
     }
 
-    // Skip binary files and large files
+    // 跳过二进制文件和大文件
     let metadata = fs::metadata(path)
         .await
         .map_err(|e| ToolError::ExecutionFailed {
@@ -303,13 +319,13 @@ async fn search_file(
         })?;
 
     if metadata.len() > 10 * 1024 * 1024 {
-        // Skip files > 10MB
+        // 跳过大于 10MB 的文件
         return Ok(());
     }
 
     let content = match fs::read_to_string(path).await {
         Ok(c) => c,
-        Err(_) => return Ok(()), // Skip binary/unreadable files
+        Err(_) => return Ok(()), // 跳过二进制或不可读文件
     };
 
     let lines: Vec<&str> = content.lines().collect();
@@ -345,6 +361,7 @@ async fn search_file(
     Ok(())
 }
 
+/// 递归遍历目录并对其中的文件执行搜索
 async fn walk_and_search(
     dir: &Path,
     regex: &regex::Regex,
@@ -357,11 +374,11 @@ async fn walk_and_search(
         Err(_) => return Ok(()),
     };
 
-    // Collect and sort entries for deterministic output
+    // 收集并排序目录项，保证输出顺序确定
     let mut entry_paths: Vec<PathBuf> = Vec::new();
     while let Ok(Some(entry)) = entries.next_entry().await {
         let path = entry.path();
-        // Skip hidden directories and common ignore patterns
+        // 跳过隐藏目录和常见的忽略目录
         if let Some(name) = path.file_name().and_then(|n| n.to_str())
             && (name.starts_with('.')
                 || name == "target"
@@ -396,9 +413,9 @@ async fn walk_and_search(
     Ok(())
 }
 
-/// Simple glob matching supporting * and ? wildcards
+/// 简单 glob 匹配，支持 `*` 和 `?` 通配符以及 `{a,b}` 花括号展开
 fn glob_matches(pattern: &str, name: &str) -> bool {
-    // Handle brace patterns like *.{rs,ts}
+    // 处理 *.{rs,ts} 这类花括号模式
     if let Some((prefix, remainder)) = pattern.split_once('{')
         && let Some((alternatives, suffix)) = remainder.split_once('}')
     {
@@ -414,19 +431,21 @@ fn glob_matches(pattern: &str, name: &str) -> bool {
     glob_matches_simple(pattern, name)
 }
 
+/// 不含花括号的简单 glob 匹配
 fn glob_matches_simple(pattern: &str, name: &str) -> bool {
     let pat_chars: Vec<char> = pattern.chars().collect();
     let name_chars: Vec<char> = name.chars().collect();
     glob_match_inner(&pat_chars, &name_chars, 0, 0)
 }
 
+/// glob 匹配的递归实现：`pi`、`ni` 分别为模式与名称的当前下标
 fn glob_match_inner(pat: &[char], name: &[char], pi: usize, ni: usize) -> bool {
     if pi == pat.len() {
         return ni == name.len();
     }
 
     if pat.get(pi).is_some_and(|character| *character == '*') {
-        // Try matching 0 or more characters
+        // 尝试匹配 0 个或多个字符
         for skip in ni..=name.len() {
             if glob_match_inner(pat, name, pi.saturating_add(1), skip) {
                 return true;
@@ -450,12 +469,13 @@ fn glob_match_inner(pat: &[char], name: &[char], pi: usize, ni: usize) -> bool {
     false
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
+// ── 测试 ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证 `*` 通配符匹配
     #[test]
     fn test_glob_matches_star() {
         assert!(glob_matches("*.rs", "main.rs"));
@@ -463,6 +483,7 @@ mod tests {
         assert!(!glob_matches("*.rs", "main.py"));
     }
 
+    /// 验证花括号展开匹配
     #[test]
     fn test_glob_matches_brace() {
         assert!(glob_matches("*.{rs,ts}", "main.rs"));
@@ -470,27 +491,30 @@ mod tests {
         assert!(!glob_matches("*.{rs,ts}", "main.py"));
     }
 
+    /// 验证 `?` 通配符匹配单个字符
     #[test]
     fn test_glob_matches_question_mark() {
         assert!(glob_matches("?.rs", "a.rs"));
         assert!(!glob_matches("?.rs", "ab.rs"));
     }
 
+    /// 验证无通配符时的精确匹配
     #[test]
     fn test_glob_matches_exact() {
         assert!(glob_matches("main.rs", "main.rs"));
         assert!(!glob_matches("main.rs", "lib.rs"));
     }
 
-    // ── confinement / artifact-root extension (execute_with_context) ──
-    // These verify the new candidate-root-set logic: grep can search files
-    // under the artifact root (so the model can grep spilled tool output /
-    // user-input artifacts by absolute path) while still rejecting paths
-    // outside every allowed root.
+    // ── 范围限制 / artifact 根目录扩展（execute_with_context） ──
+    /*
+    以下测试验证新的候选根目录集合逻辑：grep 可以搜索 artifact 根目录下的文件
+    （使模型能按绝对路径 grep 溢出的工具输出或用户输入 artifact），
+    同时仍会拒绝位于所有允许根目录之外的路径。
+    */
 
     use echo_core::tools::artifact::ToolOutputArtifactConfig;
 
-    /// Build grep parameters for the given path/pattern.
+    /// 根据给定的路径与模式构造 grep 参数。
     fn grep_params(pattern: &str, path: &str) -> ToolParameters {
         ToolParameters::from([
             ("pattern".to_string(), Value::String(pattern.to_string())),
@@ -498,6 +522,7 @@ mod tests {
         ])
     }
 
+    /// 仅配置 artifact 根目录时，相对路径可在其下找到内容
     #[tokio::test]
     async fn grep_finds_relative_content_under_artifact_only_root() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -517,10 +542,10 @@ mod tests {
         Ok(())
     }
 
+    /// 位于所有允许根目录之外的路径会被拒绝
     #[tokio::test]
     async fn grep_rejects_path_outside_all_roots() -> Result<()> {
-        // A temp file under neither working_dir nor the artifact root must be
-        // rejected as outside the allowed scope.
+        // 既不在 working_dir 也不在 artifact 根目录下的临时文件，必须因超出允许范围而被拒绝。
         let outside_root = tempfile::tempdir()?;
         let outside = outside_root.path().join("outside.txt");
         std::fs::write(&outside, "SECRET")?;
@@ -540,9 +565,10 @@ mod tests {
         Ok(())
     }
 
+    /// 相对路径仍基于 working_dir 解析
     #[tokio::test]
     async fn grep_relative_path_still_uses_working_dir() -> Result<()> {
-        // Relative path resolves against working_dir (preferred root) as before.
+        // 相对路径仍按原有方式基于 working_dir（首选根目录）解析。
         let working = tempfile::tempdir()?;
         std::fs::write(working.path().join("notes.txt"), "TODO fix this\n")?;
 

@@ -24,8 +24,10 @@ pub struct FrameworkConfig {
     pub agent: AgentSettings,
 }
 
-/// 解析出实际使用的上下文窗口大小：优先使用显式配置，其次按 provider/model 推断，
-/// 最后回退到默认 token 限制
+/**
+ * 解析出实际使用的上下文窗口大小：优先使用显式配置，其次按 provider/model 推断，
+ * 最后回退到默认 token 限制
+ */
 fn resolve_context_window(explicit: Option<u32>, provider: &str, model_name: &str) -> usize {
     explicit
         .or_else(|| infer_context_window(provider, model_name))
@@ -35,6 +37,7 @@ fn resolve_context_window(explicit: Option<u32>, provider: &str, model_name: &st
 
 /// 将 `FrameworkConfig` 转换为底层的 `AgentConfig`
 impl From<FrameworkConfig> for AgentConfig {
+    /// 执行从框架配置到 Agent 配置的转换。
     fn from(value: FrameworkConfig) -> Self {
         let FrameworkConfig { model, agent } = value;
         let context_window =
@@ -212,7 +215,7 @@ impl ModelConfig {
 pub struct AgentSettings {
     /// Agent 名称
     pub name: String,
-    /// system prompt
+    /// 系统提示词
     pub system_prompt: String,
     /// 最大迭代次数
     pub max_iterations: usize,
@@ -243,6 +246,7 @@ pub struct AgentSettings {
 }
 
 impl Default for AgentSettings {
+    /// 创建默认实例。
     fn default() -> Self {
         Self {
             name: "assistant".to_string(),
@@ -277,4 +281,3 @@ mod tests {
         assert!(config.model.name.is_empty());
     }
 }
-</content>

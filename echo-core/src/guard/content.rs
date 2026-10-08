@@ -1,16 +1,18 @@
-//! 内容安全护栏 —— PII 检测、敏感信息过滤
-//!
-//! 提供内容级安全检查，检测并处理：
-//! - 中国手机号码
-//! - 中国身份证号（18位）
-//! - 邮箱地址
-//! - API Key（OpenAI / GitHub / Anthropic 格式）
-//! - 信用卡号（Visa / MasterCard）
-//!
-//! # 三种处理模式
-//! - **Detect**: 只检测，记录日志，不修改内容
-//! - **Redact**: 自动替换为 `[REDACTED]`
-//! - **Reject**: 拒绝包含敏感信息的内容
+/*!
+内容安全护栏 —— PII 检测、敏感信息过滤
+
+提供内容级安全检查，检测并处理：
+- 中国手机号码
+- 中国身份证号（18位）
+- 邮箱地址
+- API Key（OpenAI / GitHub / Anthropic 格式）
+- 信用卡号（Visa / MasterCard）
+
+# 三种处理模式
+- **Detect**: 只检测，记录日志，不修改内容
+- **Redact**: 自动替换为 `[REDACTED]`
+- **Reject**: 拒绝包含敏感信息的内容
+*/
 
 use crate::error::Result;
 use regex::Regex;
@@ -31,6 +33,7 @@ pub enum PiiType {
 }
 
 impl std::fmt::Display for PiiType {
+    /// 输出 PII 类型的 snake_case 标识
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PiiType::PhoneCn => write!(f, "phone_cn"),
@@ -45,6 +48,7 @@ impl std::fmt::Display for PiiType {
 /// 检测到的敏感信息实例
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PiiMatch {
+    /// 匹配到的 PII 类型
     pub pii_type: PiiType,
     /// 起始字节位置
     pub start: usize,
@@ -67,7 +71,9 @@ pub enum ContentGuardMode {
 
 /// 内容护栏
 pub struct ContentGuard {
+    /// PII 类型与对应正则的列表
     patterns: Vec<(PiiType, Regex)>,
+    /// 命中敏感信息时的处理模式
     mode: ContentGuardMode,
 }
 
@@ -152,14 +158,21 @@ pub enum ContentGuardResult {
     /// 无敏感信息
     Pass,
     /// 检测到敏感信息（Detect 模式）
-    Detected { pii_types: Vec<String> },
+    Detected {
+        /// 检测到的 PII 类型名称列表
+        pii_types: Vec<String>,
+    },
     /// 已拒绝（Reject 模式）
-    Rejected { pii_types: Vec<String> },
+    Rejected {
+        /// 导致拒绝的 PII 类型名称列表
+        pii_types: Vec<String>,
+    },
     /// 已脱敏（Redact 模式），返回脱敏后的内容
     Redacted(String),
 }
 
 impl ContentGuardResult {
+    /// 判断结果是否为拒绝
     pub fn is_rejected(&self) -> bool {
         matches!(self, ContentGuardResult::Rejected { .. })
     }
@@ -167,6 +180,7 @@ impl ContentGuardResult {
 
 // ── 默认正则模式 ──────────────────────────────────────────────────────────
 
+/// 构建默认的 PII 正则模式列表（编译失败的模式会被跳过）
 fn build_default_patterns() -> Vec<(PiiType, Regex)> {
     [
         // 中国手机号：1[3-9]xxxxxxxxx
@@ -200,10 +214,12 @@ fn build_default_patterns() -> Vec<(PiiType, Regex)> {
 // ── Guard trait 实现 ─────────────────────────────────────────────────────
 
 impl crate::guard::Guard for ContentGuard {
+    /// 护栏名称
     fn name(&self) -> &str {
         "content_guard"
     }
 
+    /// 将内容护栏检查结果映射为通用 `GuardResult`
     fn check<'a>(
         &'a self,
         content: &'a str,
@@ -228,10 +244,12 @@ impl crate::guard::Guard for ContentGuard {
     }
 }
 
+/// 内容守卫的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证手机号检测。
     #[test]
     fn test_detect_phone() {
         let guard = ContentGuard::new(ContentGuardMode::Detect);
@@ -240,6 +258,7 @@ mod tests {
         assert_eq!(matches[0].pii_type, PiiType::PhoneCn);
     }
 
+    /// 验证邮箱检测。
     #[test]
     fn test_detect_email() {
         let guard = ContentGuard::new(ContentGuardMode::Detect);
@@ -248,6 +267,7 @@ mod tests {
         assert_eq!(matches[0].pii_type, PiiType::Email);
     }
 
+    /// 验证 API Key 检测。
     #[test]
     fn test_detect_api_key() {
         let guard = ContentGuard::new(ContentGuardMode::Detect);
@@ -256,6 +276,7 @@ mod tests {
         assert_eq!(matches[0].pii_type, PiiType::ApiKey);
     }
 
+    /// 验证脱敏模式会替换敏感内容。
     #[test]
     fn test_redact() {
         let guard = ContentGuard::new(ContentGuardMode::Redact);
@@ -266,6 +287,7 @@ mod tests {
         assert!(redacted.contains("[REDACTED:EMAIL]"));
     }
 
+    /// 验证拒绝模式会拦截敏感内容。
     #[test]
     fn test_reject_mode() {
         let guard = ContentGuard::new(ContentGuardMode::Reject);
@@ -273,6 +295,7 @@ mod tests {
         assert!(result.is_rejected());
     }
 
+    /// 验证无敏感信息的内容可以通过。
     #[test]
     fn test_clean_content_passes() {
         let guard = ContentGuard::new(ContentGuardMode::Reject);

@@ -1,9 +1,11 @@
-//! PDF document processing tool
-//!
-//! Provides PDF text extraction capabilities, supporting:
-//! - Extract all text content
-//! - Extract specified page ranges
-//! - Retrieve document metadata (title, author, page count, etc.)
+/*!
+ * PDF 文档处理工具
+ *
+ * 提供 PDF 文本提取能力，支持：
+ * - 提取全部文本内容
+ * - 提取指定页码范围
+ * - 获取文档元数据（标题、作者、页数等）
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -13,24 +15,29 @@ use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
+/// 错误信息中使用的工具名
 const TOOL_NAME: &str = "pdf_tools";
 
-/// PDF text extraction tool
+/// PDF 文本提取工具
 pub struct PdfExtractTool;
 
 impl Tool for PdfExtractTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "extract_pdf"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Extract text content from PDF documents. Supports extracting all text, specified page ranges, or retrieving document metadata."
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -52,6 +59,7 @@ impl Tool for PdfExtractTool {
         })
     }
 
+    /// 执行 PDF 文本提取（可选附带元数据）
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -72,29 +80,29 @@ impl Tool for PdfExtractTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(file_path)?;
 
-            // Open PDF document with lopdf
+            // 使用 lopdf 打开 PDF 文档
             let pdf = lopdf::Document::load(&path).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to open PDF: {}", e),
             })?;
 
-            // Get page count
+            // 获取页数
             let total_pages = pdf.get_pages().len();
 
-            // Extract metadata
+            // 提取元数据
             let metadata_str = if extract_metadata {
                 extract_pdf_metadata(&pdf)?
             } else {
                 String::new()
             };
 
-            // Parse page range
+            // 解析页码范围
             let page_numbers = parse_page_range(pages, total_pages, &security.limits)?;
 
-            // Extract text from specified pages
+            // 从指定页提取文本
             let text_content = extract_pages_text(&pdf, &page_numbers, &security.limits)?;
 
-            // Build result
+            // 构建结果
             let result = if extract_metadata {
                 format!(
                     "=== PDF Metadata ===\n{}\n\n=== Text Content (pages {}, total {} pages) ===\n{}",
@@ -112,22 +120,26 @@ impl Tool for PdfExtractTool {
     }
 }
 
-/// PDF info tool (get document overview)
+/// PDF 信息工具（获取文档概览）
 pub struct PdfInfoTool;
 
 impl Tool for PdfInfoTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "pdf_info"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Get basic information about a PDF document: page count, title, author, creation time, and other metadata. Does not extract text content."
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -141,6 +153,7 @@ impl Tool for PdfInfoTool {
         })
     }
 
+    /// 执行 PDF 元数据读取
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -163,9 +176,9 @@ impl Tool for PdfInfoTool {
     }
 }
 
-// ── Helper functions ────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────
 
-/// Extract PDF metadata
+/// 提取 PDF 元数据
 fn extract_pdf_metadata(pdf: &lopdf::Document) -> Result<String> {
     use lopdf::Object;
 
@@ -173,7 +186,7 @@ fn extract_pdf_metadata(pdf: &lopdf::Document) -> Result<String> {
 
     info.push(format!("Page count: {}", pdf.get_pages().len()));
 
-    // Try to get metadata from trailer
+    // 尝试从 trailer 中获取元数据
     if let Ok(trailer) = pdf.trailer.get(b"Info")
         && let Object::Dictionary(dict) = trailer
     {
@@ -191,7 +204,7 @@ fn extract_pdf_metadata(pdf: &lopdf::Document) -> Result<String> {
 
             let value_str = match value {
                 Object::String(s, _) => {
-                    // PDF date format conversion
+                    // PDF 日期格式转换
                     if key.as_slice() == b"CreationDate" || key.as_slice() == b"ModDate" {
                         parse_pdf_date(s)
                     } else {
@@ -209,15 +222,15 @@ fn extract_pdf_metadata(pdf: &lopdf::Document) -> Result<String> {
         }
     }
 
-    // Get page count as basic info
+    // 追加页数作为基础信息
     info.push(format!("Total pages: {}", pdf.get_pages().len()));
 
     Ok(info.join("\n"))
 }
 
-/// Parse PDF date format
+/// 解析 PDF 日期格式
 fn parse_pdf_date(date: &[u8]) -> String {
-    // PDF date format: D:YYYYMMDDHHmmSS
+    // PDF 日期格式：D:YYYYMMDDHHmmSS
     let date_str = String::from_utf8_lossy(date);
     if let Some(rest) = date_str.strip_prefix("D:") {
         let mut chars = rest.chars();
@@ -239,20 +252,20 @@ fn parse_pdf_date(date: &[u8]) -> String {
     date_str.to_string()
 }
 
-/// Parse page range string
+/// 解析页码范围字符串
 fn parse_page_range(range: &str, total_pages: usize, limits: &ResourceLimits) -> Result<Vec<u32>> {
     if range == "all" {
-        // Limit max preview pages
+        // 限制最大预览页数
         let max_pages = limits.max_preview_pages.min(total_pages);
         return Ok((1..=max_pages as u32).collect());
     }
 
     let mut pages = Vec::new();
 
-    // Process comma-separated single pages
+    // 处理逗号分隔的各个部分
     for part in range.split(',') {
         if part.contains('-') {
-            // Process range
+            // 处理范围
             let bounds: Vec<&str> = part.split('-').collect();
             if bounds.len() != 2 {
                 return Err(ToolError::InvalidParameter {
@@ -283,7 +296,7 @@ fn parse_page_range(range: &str, total_pages: usize, limits: &ResourceLimits) ->
                 .into());
             }
 
-            // Limit extracted pages to max_preview_pages
+            // 将提取页数限制在 max_preview_pages 以内
             let limited_end = (end - start + 1).min(limits.max_preview_pages as u32);
             for p in start..(start + limited_end) {
                 if !pages.contains(&p) {
@@ -291,7 +304,7 @@ fn parse_page_range(range: &str, total_pages: usize, limits: &ResourceLimits) ->
                 }
             }
         } else {
-            // Single page
+            // 单页
             let page: u32 = part.parse().map_err(|_| ToolError::InvalidParameter {
                 name: "pages".to_string(),
                 message: format!("Invalid page number: {}", part),
@@ -314,7 +327,7 @@ fn parse_page_range(range: &str, total_pages: usize, limits: &ResourceLimits) ->
         }
     }
 
-    // Check total page limit
+    // 检查总页数限制
     if pages.len() > limits.max_preview_pages {
         pages = pages.into_iter().take(limits.max_preview_pages).collect();
     }
@@ -323,7 +336,7 @@ fn parse_page_range(range: &str, total_pages: usize, limits: &ResourceLimits) ->
     Ok(pages)
 }
 
-/// Extract text content from specified pages
+/// 从指定页提取文本内容
 fn extract_pages_text(
     pdf: &lopdf::Document,
     page_numbers: &[u32],
@@ -348,7 +361,7 @@ fn extract_pages_text(
         if let Ok(page_obj) = pdf.get_object(page_id)
             && let Object::Dictionary(dict) = page_obj
         {
-            // Get page content stream
+            // 获取页面内容流
             if let Ok(contents_ref) = dict.get(b"Contents") {
                 let content_stream: Option<lopdf::Stream> = match contents_ref {
                     Object::Reference(id) => pdf.get_object(*id).ok().and_then(|obj| {
@@ -359,7 +372,7 @@ fn extract_pages_text(
                         }
                     }),
                     Object::Array(arr) => {
-                        // Multiple content streams, merge them
+                        // 多个内容流，合并处理
                         let mut combined = Vec::new();
                         for obj_ref in arr.iter() {
                             if let Object::Reference(id) = obj_ref
@@ -369,7 +382,7 @@ fn extract_pages_text(
                                 combined.extend_from_slice(&stream.content);
                             }
                         }
-                        // Parse merged content
+                        // 解析合并后的内容
                         let text = extract_text_from_stream(&combined, limits);
                         total_chars += text.len();
                         all_text.push(format!("--- Page {} ---\n{}", page_num, text));
@@ -391,13 +404,13 @@ fn extract_pages_text(
     Ok(all_text.join("\n\n"))
 }
 
-/// Extract text from PDF content stream
+/// 从 PDF 内容流中提取文本
 fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
-    // Simplified text extraction: find Tj and TJ operators
+    // 简化的文本提取：查找 Tj 和 TJ 操作符
     let content_str = String::from_utf8_lossy(content);
     let mut text_parts = Vec::new();
 
-    // Use safe regex, limit size
+    // 使用安全的正则，限制其大小
     let tj_regex = regex::RegexBuilder::new(r"\(([^)]*)\)\s*Tj")
         .size_limit(limits.regex_max_size)
         .dfa_size_limit(limits.regex_max_size)
@@ -411,7 +424,7 @@ fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
         }
     }
 
-    // Match hexadecimal text in <...>Tj format
+    // 匹配 <...>Tj 格式的十六进制文本
     let hex_regex = regex::RegexBuilder::new(r"<([0-9a-fA-F]*)>\s*Tj")
         .size_limit(limits.regex_max_size)
         .dfa_size_limit(limits.regex_max_size)
@@ -420,7 +433,7 @@ fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
     if let Some(hex_regex) = hex_regex {
         for cap in hex_regex.captures_iter(&content_str) {
             if let Some(hex) = cap.get(1) {
-                // Try decoding hex to text
+                // 尝试将十六进制解码为文本
                 if let Ok(decoded) = hex_decode(hex.as_str()) {
                     text_parts.push(decoded);
                 }
@@ -428,7 +441,7 @@ fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
         }
     }
 
-    // Match array format [... TJ]
+    // 匹配数组格式 [... TJ]
     let tj_array_regex = regex::RegexBuilder::new(r"\[(.*?)\]\s*TJ")
         .size_limit(limits.regex_max_size)
         .dfa_size_limit(limits.regex_max_size)
@@ -451,7 +464,7 @@ fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
         }
     }
 
-    // Limit output length
+    // 限制输出长度
     let result = text_parts.join(" ");
     if result.len() > limits.max_preview_chars {
         result.chars().take(limits.max_preview_chars).collect()
@@ -460,7 +473,7 @@ fn extract_text_from_stream(content: &[u8], limits: &ResourceLimits) -> String {
     }
 }
 
-/// Decode PDF hexadecimal string
+/// 解码 PDF 十六进制字符串
 fn hex_decode(hex: &str) -> Result<String> {
     if !hex.is_ascii() {
         return Err(ToolError::InvalidParameter {

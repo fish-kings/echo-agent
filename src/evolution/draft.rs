@@ -343,6 +343,7 @@ mod tests {
     use chrono::Utc;
     use echo_core::memory::types::MemoryType;
 
+    /// 构造一个用于测试的技能候选项样例。
     fn sample_candidate() -> SkillCandidate {
         SkillCandidate {
             name: "cargo-build".to_string(),
@@ -361,6 +362,7 @@ mod tests {
         }
     }
 
+    /// 在给定根目录下创建一个带变更授权的草稿生成器。
     fn make_generator(root: PathBuf) -> Result<SkillDraftGenerator> {
         let curator = Curator::new(CuratorConfig::default(), root.join("curator_state.json"));
         let authority = Arc::new(SkillMutationAuthority::open(
@@ -370,6 +372,7 @@ mod tests {
         Ok(SkillDraftGenerator::new(root, authority))
     }
 
+    /// 注册候选项、生成预览并附带审批工件，走完一次经批准的草稿生成流程。
     async fn generate_approved(
         generator: &SkillDraftGenerator,
         candidate: &SkillCandidate,
@@ -390,6 +393,7 @@ mod tests {
         generator.generate_from_preview(preview, approval).await
     }
 
+    /// 验证草稿生成会创建 SKILL.md 文件并写入草稿生命周期。
     #[tokio::test]
     async fn test_draft_generation_creates_file() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -407,6 +411,7 @@ mod tests {
         assert!(content.contains("lifecycle: draft"));
     }
 
+    /// 验证包含路径逃逸的候选项名称会被拒绝。
     #[tokio::test]
     async fn draft_generation_rejects_path_escape_name() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -423,6 +428,7 @@ mod tests {
         assert!(outside.is_none_or(|path| !path.exists()));
     }
 
+    /// 验证候选项目录为符号链接时草稿生成会被拒绝。
     #[cfg(unix)]
     #[tokio::test]
     async fn draft_generation_rejects_symlink_candidate_directory() -> Result<()> {
@@ -445,6 +451,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证生成的草稿 YAML frontmatter 合法。
     #[tokio::test]
     async fn test_draft_yaml_frontmatter_valid() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -474,6 +481,7 @@ mod tests {
         assert!(parsed["allowed-tools"].as_str().is_some());
     }
 
+    /// 验证对同一候选项重复生成草稿时为幂等更新。
     #[tokio::test]
     async fn test_draft_idempotent_update() {
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -509,6 +517,7 @@ mod tests {
         assert!(content.contains("7 observed"));
     }
 
+    /// 验证 `render_skill_md` 渲染出的 SKILL.md 内容结构。
     #[test]
     fn test_render_skill_md_content() {
         let candidate = sample_candidate();

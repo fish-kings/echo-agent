@@ -1,9 +1,11 @@
-//! Text file processing tools
-//!
-//! Provides text file reading and processing capabilities, supporting:
-//! - Reading various text format files
-//! - Text search and statistics
-//! - Encoding detection
+/*!
+ * 文本文件处理工具
+ *
+ * 提供文本文件读取与处理能力，支持：
+ * - 读取多种文本格式文件
+ * - 文本搜索与统计
+ * - 编码检测
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -12,27 +14,33 @@ use crate::security::{SecurityConfig, create_safe_regex};
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
+/// 错误信息中使用的工具族名称。
 const TOOL_NAME: &str = "text_tools";
 
-/// Text search tool
+/// 文本搜索工具：在文本文件中按（正则）模式搜索内容。
 pub struct TextSearchTool;
 
 impl Tool for TextSearchTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "search_text"
     }
 
+    /// 返回工具功能描述。
     fn description(&self) -> &str {
         "Search content in text files, supports regular expressions."
     }
 
+    /// 返回工具所需的权限列表。
     fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
         vec![echo_core::tools::permission::ToolPermission::Read]
     }
+    /// 返回工具的风险等级。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -58,6 +66,7 @@ impl Tool for TextSearchTool {
         })
     }
 
+    /// 执行工具逻辑并返回结果。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -83,7 +92,7 @@ impl Tool for TextSearchTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(file_path)?;
 
-            // Read file
+            // 读取文件
             let bytes = std::fs::read(&path).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to read file: {}", e),
@@ -92,7 +101,7 @@ impl Tool for TextSearchTool {
             let content = String::from_utf8(bytes.clone())
                 .unwrap_or_else(|_| encoding_rs::GBK.decode(&bytes).0.into_owned());
 
-            // Build safe regex
+            // 构建安全的正则表达式
             let re = if ignore_case {
                 regex::RegexBuilder::new(pattern)
                     .case_insensitive(true)
@@ -111,7 +120,7 @@ impl Tool for TextSearchTool {
             let mut matches = Vec::new();
             let mut match_count = 0;
 
-            // Limit match count
+            // 限制匹配数量
             let max_matches = security.limits.max_preview_rows;
 
             for (idx, line) in lines.iter().enumerate() {
@@ -122,7 +131,7 @@ impl Tool for TextSearchTool {
                 if re.is_match(line) {
                     match_count += 1;
 
-                    // Add context lines
+                    // 添加上下文行
                     if context > 0 {
                         let start = idx.saturating_sub(context);
                         let end = (idx + context + 1).min(lines.len());
@@ -157,18 +166,21 @@ impl Tool for TextSearchTool {
     }
 }
 
-/// Text statistics tool
+/// 文本统计工具：统计行数、词数、字符数等信息。
 pub struct TextStatsTool;
 
 impl Tool for TextStatsTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "text_stats"
     }
 
+    /// 返回工具功能描述。
     fn description(&self) -> &str {
         "Statistics for text files: line count, word count, character count, etc."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -182,6 +194,7 @@ impl Tool for TextStatsTool {
         })
     }
 
+    /// 执行工具逻辑并返回结果。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -192,7 +205,7 @@ impl Tool for TextStatsTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(file_path)?;
 
-            // Read file
+            // 读取文件
             let bytes = std::fs::read(&path).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to read file: {}", e),
@@ -201,7 +214,7 @@ impl Tool for TextStatsTool {
             let content = String::from_utf8(bytes.clone())
                 .unwrap_or_else(|_| encoding_rs::GBK.decode(&bytes).0.into_owned());
 
-            // Statistics
+            // 统计信息
             let lines = content.lines().count();
             let chars = content.chars().count();
             let words = content.split_whitespace().count();
@@ -242,18 +255,21 @@ impl Tool for TextStatsTool {
     }
 }
 
-/// Text processing tool
+/// 文本处理工具：对文本行进行去重、排序、反转、截取等操作。
 pub struct TextProcessTool;
 
 impl Tool for TextProcessTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "process_text"
     }
 
+    /// 返回工具功能描述。
     fn description(&self) -> &str {
         "Process text: extract, merge, deduplicate lines, etc."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -275,6 +291,7 @@ impl Tool for TextProcessTool {
         })
     }
 
+    /// 执行工具逻辑并返回结果。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -295,7 +312,7 @@ impl Tool for TextProcessTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(file_path)?;
 
-            // Read file
+            // 读取文件
             let bytes = std::fs::read(&path).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to read file: {}", e),
@@ -353,22 +370,26 @@ impl Tool for TextProcessTool {
     }
 }
 
-/// Text export tool
+/// 文本导出工具：将（可选处理后的）文本导出到新文件。
 pub struct TextExportTool;
 
 impl Tool for TextExportTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "export_text"
     }
 
+    /// 返回工具功能描述。
     fn description(&self) -> &str {
         "Export processed text to a new file."
     }
 
+    /// 返回工具所需的权限列表。
     fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
         vec![echo_core::tools::permission::ToolPermission::Write]
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -390,6 +411,7 @@ impl Tool for TextExportTool {
         })
     }
 
+    /// 执行工具逻辑并返回结果。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let input_file = parameters
@@ -407,7 +429,7 @@ impl Tool for TextExportTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(input_file)?;
 
-            // Read file
+            // 读取文件
             let bytes = std::fs::read(&path).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to read file: {}", e),
@@ -416,7 +438,7 @@ impl Tool for TextExportTool {
             let mut content = String::from_utf8(bytes.clone())
                 .unwrap_or_else(|_| encoding_rs::GBK.decode(&bytes).0.into_owned());
 
-            // Execute operation
+            // 执行处理操作
             if let Some(op) = operation {
                 let mut lines: Vec<&str> = content.lines().collect();
                 match op {
@@ -432,7 +454,7 @@ impl Tool for TextExportTool {
                 content = lines.join("\n");
             }
 
-            // Create output directory
+            // 创建输出目录
             let output_path = security.validate_output_file(output_file)?;
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| ToolError::ExecutionFailed {
@@ -441,7 +463,7 @@ impl Tool for TextExportTool {
                 })?;
             }
 
-            // Write file
+            // 写入文件
             std::fs::write(output_path, content).map_err(|e| ToolError::ExecutionFailed {
                 tool: TOOL_NAME.to_string(),
                 message: format!("Failed to write file: {}", e),
@@ -461,7 +483,7 @@ mod tests {
     use echo_core::tools::Tool;
     use std::io::Write;
 
-    /// Helper to create a temporary file with content (unique per test)
+    /// 辅助函数：创建包含指定内容的临时文件（每个测试唯一）。
     fn create_temp_file(content: &str) -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -474,10 +496,12 @@ mod tests {
         path.to_string_lossy().to_string()
     }
 
+    /// 辅助函数：删除测试用的临时文件。
     fn cleanup_temp_file(path: &str) {
         let _ = std::fs::remove_file(path);
     }
 
+    /// 测试基本的文本搜索匹配计数。
     #[tokio::test]
     async fn test_text_search_basic() {
         let path = create_temp_file("hello world\nfoo bar\nhello again\n");
@@ -496,6 +520,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试忽略大小写的文本搜索。
     #[tokio::test]
     async fn test_text_search_case_insensitive() {
         let path = create_temp_file("Hello World\nhello world\nHELLO WORLD\n");
@@ -514,6 +539,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试正则表达式搜索。
     #[tokio::test]
     async fn test_text_search_regex() {
         let path = create_temp_file("error: 404\nwarning: slow\nerror: 500\ninfo: ok\n");
@@ -531,6 +557,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试文本统计结果（行数、中文字符、词数）。
     #[tokio::test]
     async fn test_text_stats() {
         let path = create_temp_file("hello world\n你好世界\nthird line\n");
@@ -549,6 +576,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试行去重操作。
     #[tokio::test]
     async fn test_text_process_unique() {
         let path = create_temp_file("apple\nbanana\napple\ncherry\nbanana\n");
@@ -567,6 +595,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试行排序操作。
     #[tokio::test]
     async fn test_text_process_sort() {
         let path = create_temp_file("cherry\napple\nbanana\n");
@@ -587,13 +616,14 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试 head / tail 截取操作。
     #[tokio::test]
     async fn test_text_process_head_tail() {
         let path = create_temp_file("line1\nline2\nline3\nline4\nline5\n");
 
         let tool = super::TextProcessTool;
 
-        // Test head
+        // 测试 head 操作
         let mut params = std::collections::HashMap::new();
         params.insert("file_path".to_string(), serde_json::json!(path));
         params.insert("operation".to_string(), serde_json::json!("head"));
@@ -603,7 +633,7 @@ mod tests {
         let output: serde_json::Value = serde_json::from_str(&result.output).unwrap();
         assert_eq!(output["result_lines"], 2);
 
-        // Test tail
+        // 测试 tail 操作
         let mut params = std::collections::HashMap::new();
         params.insert("file_path".to_string(), serde_json::json!(path));
         params.insert("operation".to_string(), serde_json::json!("tail"));
@@ -616,6 +646,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试移除空行操作。
     #[tokio::test]
     async fn test_text_process_trim() {
         let path = create_temp_file("hello\n\n\nworld\n\n");
@@ -632,6 +663,7 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试不支持的操作会返回错误。
     #[tokio::test]
     async fn test_text_process_invalid_operation() {
         let path = create_temp_file("hello\n");
@@ -647,22 +679,24 @@ mod tests {
         cleanup_temp_file(&path);
     }
 
+    /// 测试缺少必填参数时返回错误。
     #[tokio::test]
     async fn test_text_search_missing_params() {
         let tool = super::TextSearchTool;
 
-        // Missing file_path
+        // 缺少 file_path 参数
         let params = std::collections::HashMap::new();
         let result = tool.execute(params).await;
         assert!(result.is_err());
 
-        // Missing pattern
+        // 缺少 pattern 参数
         let mut params = std::collections::HashMap::new();
         params.insert("file_path".to_string(), serde_json::json!("/tmp/test.txt"));
         let result = tool.execute(params).await;
         assert!(result.is_err());
     }
 
+    /// 测试导出文本并在导出前排序。
     #[tokio::test]
     async fn test_text_export() {
         let input_path = create_temp_file("cherry\napple\nbanana\n");
@@ -677,7 +711,7 @@ mod tests {
         let result = tool.execute(params).await.unwrap();
         assert!(result.success);
 
-        // Verify output file exists and is sorted
+        // 验证输出文件存在且已排序
         let content = std::fs::read_to_string(&output_path).unwrap();
         assert!(content.starts_with("apple"));
         assert!(content.contains("banana"));

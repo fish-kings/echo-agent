@@ -1,33 +1,35 @@
-//! 综合示例：智能客服助手
-//!
-//! 展示 echo-agent 在客服场景中的完整能力：
-//!
-//! ## 功能清单
-//!
-//! | 功能模块 | 实现方式 |
-//! |---------|---------|
-//! | 工具调用 | `#[tool]` 宏定义客服工具 |
-//! | 长期记忆 | `SqliteStore` 持久化客户偏好和历史 |
-//! | 流式输出 | `chat_stream()` 实时打字效果 |
-//! | 护栏系统 | `RuleGuard` 敏感词过滤 |
-//! | 人工审批 | `PermissionService` 退款需要人工批准 |
-//! | 审计日志 | `InMemoryAuditLogger` 记录操作 |
-//! | 任务规划 | `task_create` / `task_update` 维护版本化任务图 |
-//! | 快照回滚 | `SnapshotPolicy` 支持会话恢复 |
-//! | 多模态 | `execute_with_image_url()` 处理图片问题 |
-//!
-//! ## 运行方式
-//!
-//! ```bash
-//! # 基础运行（需要 LLM API Key + sqlite + human-loop feature）
-//! QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
-//!
-//! # 带流式输出和彩色日志
-//! RUST_LOG=info QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
-//!
-//! # 若要验证图片输入，请先在 application configuration 中把 model.name 设为视觉模型
-//! cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
-//! ```
+/*!
+综合示例：智能客服助手
+
+展示 echo-agent 在客服场景中的完整能力：
+
+## 功能清单
+
+| 功能模块 | 实现方式 |
+|---------|---------|
+| 工具调用 | `#[tool]` 宏定义客服工具 |
+| 长期记忆 | `SqliteStore` 持久化客户偏好和历史 |
+| 流式输出 | `chat_stream()` 实时打字效果 |
+| 护栏系统 | `RuleGuard` 敏感词过滤 |
+| 人工审批 | `PermissionService` 退款需要人工批准 |
+| 审计日志 | `InMemoryAuditLogger` 记录操作 |
+| 任务规划 | `task_create` / `task_update` 维护版本化任务图 |
+| 快照回滚 | `SnapshotPolicy` 支持会话恢复 |
+| 多模态 | `execute_with_image_url()` 处理图片问题 |
+
+## 运行方式
+
+```bash
+# 基础运行（需要 LLM API Key + sqlite + human-loop feature）
+QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
+
+# 带流式输出和彩色日志
+RUST_LOG=info QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
+
+# 若要验证图片输入，请先在 application configuration 中把 model.name 设为视觉模型
+cargo run -p echo-agent-learning --example demo45_customer_service --features sqlite,human-loop
+```
+*/
 
 use echo_agent::human_loop::{
     HumanLoopEvent, HumanLoopManager, InMemoryPermissionAuditSink, PermissionService,
@@ -43,10 +45,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 工具定义 - 客服业务能力
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+工具定义 - 客服业务能力
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
+/// 全局工单编号计数器，用于为新建工单生成递增编号。
 static TICKET_COUNTER: AtomicU32 = AtomicU32::new(1);
 
 /// 一次客服流式对话的执行结果摘要。
@@ -134,12 +139,16 @@ async fn create_ticket(
     Ok(ToolResult::success(ticket.to_string()))
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Main
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ä¸»æµç¨
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
-/// 程序入口：搭建长期记忆、审计日志、人工审批、护栏系统并构建智能客服 Agent，
-/// 依次演示多轮客服对话、审计日志展示、快照展示与记忆检索展示。
+/**
+程序入口：搭建长期记忆、审计日志、人工审批、护栏系统并构建智能客服 Agent，
+依次演示多轮客服对话、审计日志展示、快照展示与记忆检索展示。
+*/
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -468,12 +477,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 辅助函数
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+辅助函数
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
-/// 以流式方式向 Agent 发送一条客服消息，实时打印 token、工具调用与结果，
-/// 并返回汇总后的最终答复与调用过的工具列表。
+/**
+以流式方式向 Agent 发送一条客服消息，实时打印 token、工具调用与结果，
+并返回汇总后的最终答复与调用过的工具列表。
+*/
 async fn stream_chat(agent: &mut ReactAgent, message: &str) -> Result<ChatRunSummary> {
     let mut stream = agent.chat_stream(message).await?;
     let mut summary = ChatRunSummary::default();
@@ -556,10 +569,13 @@ fn cleanup_sqlite_files(path: &Path) {
     let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 系统提示词
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+系统提示词
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
+/// 智能客服 Agent 的系统提示词，定义角色、工作流程与行为约束。
 const CUSTOMER_SERVICE_PROMPT: &str = r#"你是一个专业、友好的电商客服助手，名为"小艾"。
 
 【工作流程】

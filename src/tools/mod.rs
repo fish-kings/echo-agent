@@ -70,6 +70,7 @@ pub mod files {
 pub mod security {
     pub use echo_tools::security::*;
 }
+/// 工具权限模型与权限检查。
 pub mod permission;
 /// 工具调用风险分级（从 echo_execution 重新导出）。
 pub mod risk {
@@ -155,12 +156,15 @@ pub mod database {
     pub use echo_tools::database::*;
 }
 
+/// Git 相关工具（从 echo_tools 重新导出）。
 #[cfg(feature = "git")]
 pub mod git {
     pub use echo_tools::git::*;
-    // Worktree 工具随 git 能力一起提供（分组方式与
-    // `StandardToolPack` 相同），因此 facade 层使用方可以通过
-    // 同一个模块访问它们。
+    /*
+    Worktree 工具随 git 能力一起提供（分组方式与
+    `StandardToolPack` 相同），因此 facade 层使用方可以通过
+    同一个模块访问它们。
+    */
     pub use echo_tools::worktree_tool::{EnterWorktreeTool, ExitWorktreeTool, ListWorktreesTool};
 }
 

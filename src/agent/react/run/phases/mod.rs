@@ -23,11 +23,17 @@ prepare_turn  →  ┌─ run_compact ─→ run_think ─→ ┬─ run_tools�
 use crate::llm::types::Message;
 use std::collections::HashMap;
 
+/// 上下文压缩阶段。
 pub(crate) mod compact;
+/// 最终答案收尾阶段。
 pub(crate) mod finalize;
+/// 运行前准备阶段。
 pub(crate) mod prepare;
+/// LLM 思考（推理）阶段。
 pub(crate) mod think;
+/// 工具调用执行阶段。
 pub(crate) mod tools;
+/// 最终答案校验阶段。
 pub(crate) mod verify;
 
 // ── 循环级可变状态 ─────────────────────────────────────────
@@ -39,13 +45,17 @@ pub(crate) mod verify;
 再镜像一份 —— 它们克隆代价很低，且从不会被修改。
 */
 pub(crate) struct LoopState {
-    /// 本轮是否已经允许过 `Stop` 生命周期钩子注入 continue_reason。
-    /// 该钩子只允许触发一次，以避免陷入循环。
+    /**
+    本轮是否已经允许过 `Stop` 生命周期钩子注入 continue_reason。
+    该钩子只允许触发一次，以避免陷入循环。
+    */
     pub stop_hook_continued: bool,
     /// 本轮中校验器（verifier）拒绝答案的次数。
     pub verifier_retry_count: usize,
-    /// 本次调用范围内的预算计数器。在等待 HITL（人工介入）批准期间，
-    /// 它们会保留在循环状态中，因而能在暂停/恢复之间保持不变。
+    /**
+    本次调用范围内的预算计数器。在等待 HITL（人工介入）批准期间，
+    它们会保留在循环状态中，因而能在暂停/恢复之间保持不变。
+    */
     pub budget: RunBudgetState,
 }
 
@@ -92,8 +102,10 @@ impl LoopState {
 pub(crate) enum PrepareOutcome {
     /// 继续进入迭代循环。
     Continue,
-    /// `UserPromptSubmit` 钩子返回了 `block: true`。此时已经发出过
-    /// 一次 `FinalAnswer` 事件，并且已经触发了 `SessionEnd("blocked")`。
+    /**
+    `UserPromptSubmit` 钩子返回了 `block: true`。此时已经发出过
+    一次 `FinalAnswer` 事件，并且已经触发了 `SessionEnd("blocked")`。
+    */
     BlockedAndDone,
     /// 在准备阶段过程中通道被关闭；循环驱动器返回 `Ok(())`。
     Abandoned,
@@ -144,11 +156,15 @@ pub(crate) struct ThinkOutput {
 pub(crate) enum IterOutcome {
     /// 校验失败或钩子要求继续：进入下一次迭代。
     Continue,
-    /// 工具分支：一次 `final_answer` 工具调用通过了校验并被接受。
-    /// 驱动器将调用 `phases::finalize::finalize_completed_run`。
+    /**
+    工具分支：一次 `final_answer` 工具调用通过了校验并被接受。
+    驱动器将调用 `phases::finalize::finalize_completed_run`。
+    */
     Finish { output: String },
-    /// 纯文本分支：LLM 产出的正文内容通过了校验。
-    /// 驱动器将调用 `phases::finalize::emit_final_text`。
+    /**
+    纯文本分支：LLM 产出的正文内容通过了校验。
+    驱动器将调用 `phases::finalize::emit_final_text`。
+    */
     FinalText {
         answer: String,
         reasoning_content: String,
@@ -156,8 +172,10 @@ pub(crate) enum IterOutcome {
     },
     /// LLM 既没有产出工具调用，也没有产出正文内容。属于终态失败。
     NoResponse,
-    /// 迭代过程中通道被关闭（某个 yield/try_send 宏触发了
-    /// `return Ok(())`）。驱动器立即返回 `Ok(())`。
+    /**
+    迭代过程中通道被关闭（某个 yield/try_send 宏触发了
+    `return Ok(())`）。驱动器立即返回 `Ok(())`。
+    */
     Abandoned,
     /// 某个阶段已经完成了持久化、trace 记录，以及唯一一个终态的落地。
     TerminalSettled {
@@ -180,17 +198,21 @@ pub(crate) fn with_reasoning_content(
     message
 }
 
+/// 预算计数器在暂停/恢复边界上的行为测试。
 #[cfg(test)]
 mod budget_tests {
     use super::LoopState;
 
+    /// 验证预算计数器跨越异步暂停/恢复边界后保持不变。
     #[tokio::test]
     async fn budget_counters_survive_async_pause_resume_boundary() {
         let mut state = LoopState::new();
         state.budget.record_usage(12, true);
 
-        // HITL 批准会在同一个 run future 内部暂停。跨越一次 await
-        // 边界不应重置调用范围内的计数器。
+        /*
+        HITL 批准会在同一个 run future 内部暂停。跨越一次 await
+        边界不应重置调用范围内的计数器。
+        */
         tokio::task::yield_now().await;
         state.budget.record_usage(8, false);
 

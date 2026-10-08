@@ -14,18 +14,24 @@ use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-// Used for the existing UTF-8-first, GBK-fallback decoding behavior.
+// 用于现有的“优先 UTF-8、回退 GBK”解码行为。
 use encoding_rs;
 
+/// read_file 默认每页最大行数
 const DEFAULT_READ_MAX_LINES: usize = 500;
+/// read_file 单次输出的最大 token 数
 const MAX_READ_OUTPUT_TOKENS: usize = 4_000;
+/// 为续读提示等附加说明预留的 token 数
 const READ_NOTICE_TOKEN_RESERVE: usize = 128;
+/// 扣除预留后可用于文件内容的最大 token 数
 const MAX_READ_CONTENT_TOKENS: usize = MAX_READ_OUTPUT_TOKENS - READ_NOTICE_TOKEN_RESERVE;
 
+/// 计算内容的 SHA-256 十六进制哈希
 fn content_hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// 读取正整数参数；缺省时返回默认值，非法时返回错误信息
 fn positive_usize_parameter(
     parameters: &ToolParameters,
     name: &str,
@@ -41,6 +47,7 @@ fn positive_usize_parameter(
     usize::try_from(raw).map_err(|_| format!("'{name}' is too large"))
 }
 
+/// 为读取结果附加路径、哈希、编码、行号范围等元数据及文件读取效果
 fn with_read_file_metadata(
     mut result: ToolResult,
     path: &Path,
@@ -77,6 +84,7 @@ fn with_read_file_metadata(
     })
 }
 
+/// 生成文件操作的幂等键：优先使用 call_id，否则由工具名、路径和哈希组合
 fn file_idempotency_key(
     ctx: &echo_core::tools::ToolContext,
     tool_name: &str,
@@ -88,6 +96,7 @@ fn file_idempotency_key(
         .unwrap_or_else(|| format!("{tool_name}:{}:{hash}", path.display()))
 }
 
+/// 构造“可能已产生部分副作用”的文件操作失败结果
 fn partial_file_failure(
     ctx: &echo_core::tools::ToolContext,
     tool_name: &str,
@@ -106,15 +115,19 @@ fn partial_file_failure(
     )
 }
 // ── CreateFileTool ────────────────────────────────────────────────────────────
+/// 创建空文件的工具（自动创建父目录）
 pub struct CreateFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl CreateFileTool {
+    /// 创建不限定基础目录的 CreateFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 CreateFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -123,24 +136,29 @@ impl CreateFileTool {
 }
 
 impl Default for CreateFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for CreateFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "create_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Create a specified file."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -154,6 +172,7 @@ impl Tool for CreateFileTool {
         })
     }
 
+    /// 执行工具：创建空文件
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -172,7 +191,7 @@ impl Tool for CreateFileTool {
                 ctx.working_dir.as_deref(),
             )?;
 
-            // Auto-create parent directory
+            // 自动创建父目录
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await.map_err(|e| {
                     ToolError::ExecutionFailed {
@@ -215,15 +234,19 @@ impl Tool for CreateFileTool {
 }
 
 // ── DeleteFileTool ────────────────────────────────────────────────────────────
+/// 删除文件的工具（删除前创建 git 检查点）
 pub struct DeleteFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl DeleteFileTool {
+    /// 创建不限定基础目录的 DeleteFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 DeleteFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -232,27 +255,33 @@ impl DeleteFileTool {
 }
 
 impl Default for DeleteFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for DeleteFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "delete_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Delete a specified file."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -266,6 +295,7 @@ impl Tool for DeleteFileTool {
         })
     }
 
+    /// 执行工具：删除文件
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -297,7 +327,7 @@ impl Tool for DeleteFileTool {
                 ));
             }
 
-            // Create git checkpoint before deletion
+            // 删除前创建 git 检查点
             let checkpoint_tag =
                 crate::git_checkpoint::create_checkpoint(&path).map_err(|error| {
                     ToolError::ExecutionFailed {
@@ -332,16 +362,19 @@ impl Tool for DeleteFileTool {
 }
 
 // ── ReadFileTool ──────────────────────────────────────────────────────────────
-/// Read text with compact line numbers, bounded pagination, and encoding detection.
+/// 读取文本：带紧凑行号、有界分页和编码检测。
 pub struct ReadFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl ReadFileTool {
+    /// 创建不限定基础目录的 ReadFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 ReadFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -350,27 +383,33 @@ impl ReadFileTool {
 }
 
 impl Default for ReadFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for ReadFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "read_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Read compact line-numbered text with bounded output. Use offset/limit to paginate; prefer grep for known text."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -395,6 +434,7 @@ impl Tool for ReadFileTool {
         })
     }
 
+    /// 执行工具：分页读取文件内容
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -578,16 +618,19 @@ impl Tool for ReadFileTool {
 
 // ── WriteFileTool ─────────────────────────────────────────────────────────────
 
-/// Write (overwrite) file content, auto-create parent directories if they don't exist
+/// 写入（覆盖）文件内容，父目录不存在时自动创建
 pub struct WriteFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl WriteFileTool {
+    /// 创建不限定基础目录的 WriteFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 WriteFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -596,24 +639,29 @@ impl WriteFileTool {
 }
 
 impl Default for WriteFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for WriteFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "write_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Write content to a file at the specified path (overwrite), auto-creating parent directories"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -635,6 +683,7 @@ impl Tool for WriteFileTool {
         })
     }
 
+    /// 执行工具：覆盖写入文件内容
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -692,7 +741,7 @@ impl Tool for WriteFileTool {
 
             let target_hash = content_hash(content.as_bytes());
 
-            // Auto-create parent directory
+            // 自动创建父目录
             if let Some(parent) = path.parent()
                 && let Err(error) = tokio::fs::create_dir_all(parent).await
             {
@@ -705,7 +754,7 @@ impl Tool for WriteFileTool {
                 ));
             }
 
-            // Create git checkpoint before mutation (only if file already exists)
+            // 修改前创建 git 检查点（仅当文件已存在时）
             let checkpoint_tag = if path.exists() {
                 let tag = crate::git_checkpoint::create_checkpoint(&path).map_err(|error| {
                     ToolError::ExecutionFailed {
@@ -763,16 +812,19 @@ impl Tool for WriteFileTool {
 
 // ── AppendFileTool ────────────────────────────────────────────────────────────
 
-/// Append content to end of file
+/// 向文件末尾追加内容
 pub struct AppendFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl AppendFileTool {
+    /// 创建不限定基础目录的 AppendFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 AppendFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -781,24 +833,29 @@ impl AppendFileTool {
 }
 
 impl Default for AppendFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for AppendFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "append_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Append content to end of file (auto-create if file does not exist)"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -816,6 +873,7 @@ impl Tool for AppendFileTool {
         })
     }
 
+    /// 执行工具：向文件末尾追加内容
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -885,16 +943,19 @@ impl Tool for AppendFileTool {
 
 // ── UpdateFileTool ────────────────────────────────────────────────────────────────
 
-/// Update file content
+/// 更新文件内容
 pub struct UpdateFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl UpdateFileTool {
+    /// 创建不限定基础目录的 UpdateFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 UpdateFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -903,24 +964,29 @@ impl UpdateFileTool {
 }
 
 impl Default for UpdateFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for UpdateFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "update_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Update file content by replacing old content with new content."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -942,6 +1008,7 @@ impl Tool for UpdateFileTool {
         })
     }
 
+    /// 执行工具：替换更新文件内容
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -1014,16 +1081,19 @@ impl Tool for UpdateFileTool {
     }
 }
 // ── MoveFileTool ──────────────────────────────────────────────────────────────────
-/// Move file to a new path
+/// 将文件移动到新路径
 pub struct MoveFileTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl MoveFileTool {
+    /// 创建不限定基础目录的 MoveFileTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 MoveFileTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -1032,24 +1102,29 @@ impl MoveFileTool {
 }
 
 impl Default for MoveFileTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for MoveFileTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "move_file"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Move file to a new path"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -1066,6 +1141,7 @@ impl Tool for MoveFileTool {
         })
     }
 
+    /// 执行工具：移动文件
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -1113,7 +1189,7 @@ impl Tool for MoveFileTool {
                     format!("Target path already exists: {}", new_path.display()),
                 ));
             }
-            // Auto-create target parent directory
+            // 自动创建目标父目录
             if let Some(parent) = new_path.parent() {
                 fs::create_dir_all(parent)
                     .await
@@ -1151,16 +1227,19 @@ impl Tool for MoveFileTool {
 }
 // ── ListDirTool ───────────────────────────────────────────────────────────────
 
-/// List files and subdirectories in a directory
+/// 列出目录中的文件和子目录
 pub struct ListDirTool {
+    /// 构造时指定的基础目录；设置后路径被限制在该目录内
     base_dir: Option<PathBuf>,
 }
 
 impl ListDirTool {
+    /// 创建不限定基础目录的 ListDirTool
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建限定在指定基础目录内的 ListDirTool
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -1169,27 +1248,33 @@ impl ListDirTool {
 }
 
 impl Default for ListDirTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for ListDirTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "list_dir"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "List all files and subdirectories in a directory, returning a name list"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
+    /// 工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -1213,6 +1298,7 @@ impl Tool for ListDirTool {
         })
     }
 
+    /// 执行工具：列出目录内容
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -1315,12 +1401,13 @@ impl Tool for ListDirTool {
     }
 }
 
+/// 文件工具使用上下文 working_dir 的测试
 #[cfg(test)]
 mod worktree_cwd_tests {
     use super::*;
     use echo_core::tools::ToolContext;
 
-    /// Unique temp dir without the `tempfile` dev-dependency.
+    /// 不依赖 `tempfile` 开发依赖的唯一临时目录。
     fn unique_dir(prefix: &str) -> PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
         let nanos = SystemTime::now()
@@ -1332,10 +1419,13 @@ mod worktree_cwd_tests {
         dir
     }
 
+    /// 测试 create_file 在上下文 working_dir 中创建文件
     #[tokio::test]
     async fn test_create_file_lands_in_context_working_dir() {
-        // Regression for worktree cwd: a relative `path` must resolve under
-        // ctx.working_dir, not the process cwd.
+        /*
+         * worktree cwd 的回归测试：相对 `path` 必须在 ctx.working_dir 下解析，
+         * 而不是进程 cwd。
+         */
         let wt = unique_dir("echo-files-wt");
         let tool = CreateFileTool::new();
         let ctx = ToolContext {
@@ -1356,16 +1446,19 @@ mod worktree_cwd_tests {
             written,
             wt
         );
-        // CreateFileTool creates an empty file; content is verified to be empty.
+        // CreateFileTool 创建空文件；验证内容为空。
         assert_eq!(std::fs::read_to_string(&written).unwrap(), "");
 
         let _ = std::fs::remove_dir_all(&wt);
     }
 
+    /// 测试 list_dir 使用上下文 working_dir
     #[tokio::test]
     async fn test_list_dir_uses_context_working_dir() {
-        // Pre-create a marker file in the worktree dir, then list_dir with "."
-        // and ctx.working_dir set — the listing must include the marker.
+        /*
+         * 先在 worktree 目录中预建一个标记文件，然后在设置 ctx.working_dir 的情况下
+         * 以 "." 调用 list_dir——列表中必须包含该标记文件。
+         */
         let wt = unique_dir("echo-files-list");
         std::fs::write(wt.join("marker.txt"), "m").unwrap();
 
@@ -1389,6 +1482,7 @@ mod worktree_cwd_tests {
         let _ = std::fs::remove_dir_all(&wt);
     }
 
+    /// 测试 write_file 拒绝过期的 content_hash
     #[tokio::test]
     async fn write_file_rejects_stale_content_hash() -> Result<(), String> {
         let wt = unique_dir("echo-files-hash");
@@ -1439,6 +1533,7 @@ mod worktree_cwd_tests {
         Ok(())
     }
 
+    /// 测试 read_file 默认分页紧凑且有界
     #[tokio::test]
     async fn read_file_default_page_is_compact_and_bounded() -> Result<(), String> {
         let wt = unique_dir("echo-files-read-page");
@@ -1485,6 +1580,7 @@ mod worktree_cwd_tests {
         Ok(())
     }
 
+    /// 测试 read_file 显式范围给出精确的续读位置
     #[tokio::test]
     async fn read_file_explicit_range_has_precise_continuation() -> Result<(), String> {
         let wt = unique_dir("echo-files-read-range");
@@ -1515,6 +1611,7 @@ mod worktree_cwd_tests {
         Ok(())
     }
 
+    /// 测试 read_file 的 UTF-8 安全性并拒绝超大单行
     #[tokio::test]
     async fn read_file_is_utf8_safe_and_rejects_oversized_single_lines() -> Result<(), String> {
         let wt = unique_dir("echo-files-read-utf8");
@@ -1556,6 +1653,7 @@ mod worktree_cwd_tests {
         Ok(())
     }
 
+    /// 测试 read_file 拒绝未知和非法参数
     #[tokio::test]
     async fn read_file_rejects_unknown_and_invalid_parameters() -> Result<(), String> {
         let wt = unique_dir("echo-files-read-params");
@@ -1605,6 +1703,7 @@ mod worktree_cwd_tests {
         Ok(())
     }
 
+    /// 测试默认 token 限制触发分页，而显式范围超限则失败
     #[tokio::test]
     async fn read_file_default_token_limit_pages_but_explicit_overflow_fails() -> Result<(), String>
     {
@@ -1660,11 +1759,13 @@ mod worktree_cwd_tests {
     }
 }
 
+/// 文件修改效果上报的测试
 #[cfg(test)]
 mod mutation_effect_tests {
     use super::*;
     use echo_core::tools::ToolContext;
 
+    /// 测试文件修改类工具只报告已确认受影响的路径
     #[tokio::test]
     async fn file_mutators_report_only_confirmed_affected_paths() -> echo_core::error::Result<()> {
         let root = tempfile::tempdir()?;
@@ -1758,6 +1859,7 @@ mod mutation_effect_tests {
         Ok(())
     }
 
+    /// 测试读取成功时报告解析后的路径，失败时不报告
     #[tokio::test]
     async fn successful_read_reports_resolved_path_and_failed_read_reports_none()
     -> echo_core::error::Result<()> {

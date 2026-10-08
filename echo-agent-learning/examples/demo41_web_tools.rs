@@ -1,26 +1,28 @@
-//! demo41_web_tools.rs —— Web 搜索 + 页面获取综合演示
-//!
-//! 展示 echo-agent 的 Web 工具能力：
-//! - DuckDuckGo / Brave / Tavily 三个搜索 Provider 独立演示
-//! - WebSearchTool::auto() 自动选择策略
-//! - WebFetchTool: 获取网页内容并转换为可读文本
-//! - Agent 集成：让 LLM 自主决定何时搜索/获取
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! # DuckDuckGo（免费，无需 API Key）
-//! cargo run -p echo-agent-learning --example demo41_web_tools --features web
-//!
-//! # Brave Search（需 API Key）
-//! BRAVE_SEARCH_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
-//!
-//! # Tavily（需 API Key）
-//! TAVILY_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
-//!
-//! # 多个 Key 同时配置时，auto() 自动选择最佳
-//! TAVILY_API_KEY=xxx BRAVE_SEARCH_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
-//! ```
+/*!
+demo41_web_tools.rs —— Web 搜索 + 页面获取综合演示
+
+展示 echo-agent 的 Web 工具能力：
+- DuckDuckGo / Brave / Tavily 三个搜索 Provider 独立演示
+- WebSearchTool::auto() 自动选择策略
+- WebFetchTool: 获取网页内容并转换为可读文本
+- Agent 集成：让 LLM 自主决定何时搜索/获取
+
+# 运行方式
+
+```bash
+# DuckDuckGo（免费，无需 API Key）
+cargo run -p echo-agent-learning --example demo41_web_tools --features web
+
+# Brave Search（需 API Key）
+BRAVE_SEARCH_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
+
+# Tavily（需 API Key）
+TAVILY_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
+
+# 多个 Key 同时配置时，auto() 自动选择最佳
+TAVILY_API_KEY=xxx BRAVE_SEARCH_API_KEY=xxx cargo run -p echo-agent-learning --example demo41_web_tools --features web
+```
+*/
 
 use echo_agent::agent::Agent;
 use echo_agent::prelude::*;
@@ -30,8 +32,10 @@ use echo_agent::tools::web::providers::duckduckgo::DuckDuckGoProvider;
 use echo_agent::tools::web::providers::tavily::TavilyProvider;
 use echo_agent::tools::web::{WebFetchTool, WebSearchTool};
 
-/// demo41 主入口：依次演示 Provider 状态总览、三个搜索引擎、自动选择策略、
-/// 网页获取以及 Agent 集成 Web 工具的完整流程。
+/**
+demo41 主入口：依次演示 Provider 状态总览、三个搜索引擎、自动选择策略、
+网页获取以及 Agent 集成 Web 工具的完整流程。
+*/
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -117,7 +121,7 @@ async fn demo_duckduckgo_search() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 3: Brave Search ──────────────────────────────────────────────────────
+// ── Part 3: Brave 搜索 ──────────────────────────────────────────────────────
 
 /// 使用 Brave Search 执行搜索；若未配置 `BRAVE_SEARCH_API_KEY` 则返回错误。
 async fn demo_brave_search() -> echo_agent::error::Result<()> {

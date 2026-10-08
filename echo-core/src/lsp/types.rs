@@ -1,7 +1,9 @@
-//! 简化版 LSP 协议类型。
-//!
-//! 这些是 `LspClient` trait 与 LSP 工具所使用的类型。我们没有依赖完整的
-//! `lsp-types` crate，而是定义了自己的简化版本，以保持核心 crate 的轻量。
+/*!
+简化版 LSP 协议类型。
+
+这些是 `LspClient` trait 与 LSP 工具所使用的类型。我们没有依赖完整的
+`lsp-types` crate，而是定义了自己的简化版本，以保持核心 crate 的轻量。
+*/
 
 use serde::{Deserialize, Serialize};
 

@@ -1,10 +1,12 @@
-//! Brave 搜索 API 提供方
-//!
-//! 通过 Brave 搜索 API 提供高质量搜索，需要一个 API Key。
-//!
-//! # 获取 API Key
-//!
-//! 访问 <https://brave.com/search/api/> 注册并获取免费 API Key（每月 2000 次免费查询）。
+/*!
+Brave 搜索 API 提供方
+
+通过 Brave 搜索 API 提供高质量搜索，需要一个 API Key。
+
+# 获取 API Key
+
+访问 <https://brave.com/search/api/> 注册并获取免费 API Key（每月 2000 次免费查询）。
+*/
 
 use super::utils::{truncate_chars, urlencode};
 use super::{SearchProvider, SearchResult};
@@ -14,9 +16,11 @@ use reqwest::Client;
 use serde::Deserialize;
 use std::time::Duration;
 
-/// Brave 搜索 API 提供方
-///
-/// 通过 Brave 搜索 API 执行搜索，需要一个 API Key。
+/**
+Brave 搜索 API 提供方
+
+通过 Brave 搜索 API 执行搜索，需要一个 API Key。
+*/
 pub struct BraveSearchProvider {
     /// 用于发起 HTTP 请求的客户端。
     client: Client,
@@ -25,9 +29,11 @@ pub struct BraveSearchProvider {
 }
 
 impl BraveSearchProvider {
-    /// 创建一个新的 Brave 搜索提供方
-    ///
-    /// - `api_key`: Brave 搜索 API Key
+    /**
+    创建一个新的 Brave 搜索提供方
+
+    - `api_key`: Brave 搜索 API Key
+    */
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
@@ -39,9 +45,11 @@ impl BraveSearchProvider {
         }
     }
 
-    /// 从环境变量创建
-    ///
-    /// 读取 `BRAVE_SEARCH_API_KEY` 环境变量。
+    /**
+    从环境变量创建
+
+    读取 `BRAVE_SEARCH_API_KEY` 环境变量。
+    */
     pub fn from_env() -> Option<Self> {
         std::env::var("BRAVE_SEARCH_API_KEY").ok().map(Self::new)
     }

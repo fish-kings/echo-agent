@@ -1,10 +1,12 @@
-//! Agent 拓扑可视化示例
-//!
-//! 演示如何追踪 Agent 调用关系并导出为 Mermaid / DOT 格式。
-//!
-//! ```bash
-//! cargo test --all-features --locked contract_demo24_topology -- --nocapture
-//! ```
+/*!
+Agent 拓扑可视化示例
+
+演示如何追踪 Agent 调用关系并导出为 Mermaid / DOT 格式。
+
+```bash
+cargo test --all-features --locked contract_demo24_topology -- --nocapture
+```
+*/
 
 use echo_agent::advanced::*;
 use echo_agent::prelude::*;

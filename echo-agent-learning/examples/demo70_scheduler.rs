@@ -1,9 +1,11 @@
-//! demo70_scheduler.rs — Cron task scheduler demo
-//!
-//! Demonstrates the scheduler module: CronTask definitions, CronTaskStore
-//! persistence, and SchedulerRunner management API.
-//!
-//! Run: cargo run -p echo-agent-learning --example demo70_scheduler
+/*!
+ * demo70_scheduler.rs — Cron 任务调度器演示
+ *
+ * 演示 scheduler 模块：CronTask 定义、CronTaskStore 持久化，
+ * 以及 SchedulerRunner 管理 API。
+ *
+ * 运行：cargo run -p echo-agent-learning --example demo70_scheduler
+ */
 
 use echo_agent::scheduler::{
     CronTask, CronTaskStatus, CronTaskStore, OccurrenceFireFn, SchedulerRunner,
@@ -11,17 +13,18 @@ use echo_agent::scheduler::{
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+/// 示例入口：演示 cron 任务的存储、校验、手动触发与管理。
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("⏰ === demo70: Scheduler Module ===\n");
 
-    // ── 1. Create a file-based CronTaskStore (temp path) ──────────────
+    // ── 1. 创建基于文件的 CronTaskStore（临时路径） ──────────────
     let tmp = tempfile::tempdir()?;
     let store_path = tmp.path().join("tasks.json");
     let store = CronTaskStore::new().with_path(store_path.clone());
     println!("📁 Store path: {}", store_path.display());
 
-    // ── 2. Add two CronTasks with different schedules ─────────────────
+    // ── 2. 添加两个调度周期不同的 CronTask ─────────────────
     let daily = CronTask::new("daily-backup", "0 2 * * *", "Run nightly database backup");
     let weekly = CronTask::new(
         "weekly-report",
@@ -35,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         daily.name, weekly.name
     );
 
-    // ── 3. Validate cron expressions ──────────────────────────────────
+    // ── 3. 校验 cron 表达式 ──────────────────────────────────
     println!("🔍 Cron validation:");
     for t in [&daily, &weekly] {
         println!(
@@ -53,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         bad.validate_cron()
     );
 
-    // ── 4. Show next_run() calculation ────────────────────────────────
+    // ── 4. 展示 next_run() 计算结果 ────────────────────────────────
     println!("📅 Next run times:");
     for t in [&daily, &weekly] {
         if let Some(next) = t.next_run() {
@@ -62,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!("   '{}' → {:?}\n", bad.name, bad.next_run());
 
-    // ── 5. Create a SchedulerRunner with a simple fire function ───────
+    // ── 5. 使用简单的触发函数创建 SchedulerRunner ───────
     let cancel = CancellationToken::new();
     let fire_fn: OccurrenceFireFn = Arc::new(|invocation| {
         let name = invocation.task.name.clone();
@@ -76,12 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(SchedulerRunner::new_with_occurrence_context(store, cancel, fire_fn).await?);
     println!("🤖 SchedulerRunner created (fire fn prints task name)\n");
 
-    // ── 6. Manually trigger a task via run_once() ─────────────────────
+    // ── 6. 通过 run_once() 手动触发任务 ─────────────────────
     println!("▶️  Manual trigger (run_once):");
     let result = runner.run_once(&daily.id).await?;
     println!("   Result: {}\n", result);
 
-    // ── 7. list_tasks(), set_status(), remove_task() ──────────────────
+    // ── 7. list_tasks()、set_status()、remove_task() ──────────────────
     println!("📋 All tasks:");
     for t in runner.list_tasks().await {
         println!("   [{:?}] {} — {}", t.status, t.name, t.cron_expr);

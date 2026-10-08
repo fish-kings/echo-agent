@@ -1,25 +1,28 @@
-//! demo50_eval — 评估系统示例
-//!
-//! 展示 echo-agent 评估框架的核心功能：
-//! 1. EvalCase + SuccessCriteria —— 定义测试用例
-//! 2. EvalConstraints —— 行为约束
-//! 3. TrajectoryReplay —— 离线轨迹分析
-//! 4. TriggerAccuracy —— 子 Agent 触发准确率
-//! 5. HTML 报告生成
-//! 6. A/B 对比（概念演示）
-//!
-//! 全程无真实 LLM 调用，使用 Mock 数据演示离线分析能力。
-//!
-//! Contract test:
-//! ```bash
-//! cargo test --test example_contracts contract_demo50_eval
-//! ```
+/*!
+demo50_eval — 评估系统示例
+
+展示 echo-agent 评估框架的核心功能：
+1. EvalCase + SuccessCriteria —— 定义测试用例
+2. EvalConstraints —— 行为约束
+3. TrajectoryReplay —— 离线轨迹分析
+4. TriggerAccuracy —— 子 Agent 触发准确率
+5. HTML 报告生成
+6. A/B 对比（概念演示）
+
+全程无真实 LLM 调用，使用 Mock 数据演示离线分析能力。
+
+契约测试：
+```bash
+cargo test --test example_contracts contract_demo50_eval
+```
+*/
 
 use chrono::Utc;
 use echo_agent::eval::trigger::{TriggerAccuracy, TriggerTestCase};
 use echo_agent::eval::*;
 use echo_agent::trace::{Run, RunEvent, RunStatus, RunTimings, TokenUsage};
 
+/// 打印带编号的场景标题分隔块。
 macro_rules! section {
     ($n:expr, $title:expr) => {
         println!("\n══════════════════════════════════════════════════");
@@ -28,12 +31,14 @@ macro_rules! section {
     };
 }
 
+/// 打印一条通过（✅）提示信息。
 macro_rules! pass {
     ($msg:expr) => {
         println!("  ✅  {}", $msg)
     };
 }
 
+/// 构造一条用于离线分析的模拟 `Run` 轨迹记录，token 用量与耗时均为固定示例值。
 fn make_run(id: &str, input: &str, events: Vec<RunEvent>, status: RunStatus) -> Run {
     Run {
         run_id: id.to_string(),
@@ -65,6 +70,7 @@ fn make_run(id: &str, input: &str, events: Vec<RunEvent>, status: RunStatus) -> 
     }
 }
 
+/// demo50 契约测试：基于 Mock 数据离线演示评估用例、约束、轨迹回放、触发准确率与报告生成。
 #[tokio::test]
 async fn contract_demo50_eval() -> std::io::Result<()> {
     println!("╔══════════════════════════════════════════════════╗");
@@ -467,7 +473,7 @@ async fn demo_html_report() -> std::io::Result<()> {
     assert!(review_html.contains("feedback"));
     pass!("交互式审查 HTML 生成成功");
 
-    // Verify report persistence without leaving fixed artifacts behind.
+    // 验证报告可持久化，且不在固定位置遗留产物文件。
     let report_dir = tempfile::tempdir()?;
     let html_path = report_dir.path().join("eval_report.html");
     let review_path = report_dir.path().join("review.html");

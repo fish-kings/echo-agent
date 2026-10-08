@@ -1,9 +1,11 @@
-//! ReactAgent 结构化抽取
-//!
-//! 提供两类结构化输出能力：
-//!
-//! - **一次性抽取**（`extract_json` / `extract`）：不经过 ReAct 循环，直接从 LLM 抽取
-//! - **完整执行抽取**（`execute_typed`）：运行完整的 ReAct 循环，需要设置 `output_type`
+/*!
+ReactAgent 结构化抽取
+
+提供两类结构化输出能力：
+
+- **一次性抽取**（`extract_json` / `extract`）：不经过 ReAct 循环，直接从 LLM 抽取
+- **完整执行抽取**（`execute_typed`）：运行完整的 ReAct 循环，需要设置 `output_type`
+*/
 
 use super::ReactAgent;
 use crate::agent::Agent;

@@ -1,6 +1,8 @@
-//! BibTeX generation tool.
-//!
-//! Generates BibTeX entries from paper metadata (arxiv, Semantic Scholar results).
+/*!
+ * BibTeX 生成工具。
+ *
+ * 根据论文元数据（arxiv、Semantic Scholar 搜索结果）生成 BibTeX 条目。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -9,23 +11,29 @@ use futures::future::BoxFuture;
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// 工具名称
 const TOOL_NAME: &str = "bibtex_generate";
 
+/// 根据论文元数据生成 BibTeX 条目的工具。
 pub struct BibtexGenerateTool;
 
 impl Tool for BibtexGenerateTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         TOOL_NAME
     }
 
+    /// 所需权限：写入（可选写出 .bib 文件）。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Generate BibTeX entries from paper metadata. Accepts paper objects from arxiv_search or semantic_scholar_search results. Outputs standard .bib format. Example: bibtex_generate(papers=[{title: 'Attention Is All You Need', authors: ['Vaswani et al.'], year: 2017, arxiv_id: '1706.03762'}])"
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -57,6 +65,7 @@ impl Tool for BibtexGenerateTool {
         })
     }
 
+    /// 为每篇论文生成 BibTeX 条目，可选写入文件，并以 JSON 返回结果。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let papers_val = parameters
@@ -90,7 +99,7 @@ impl Tool for BibtexGenerateTool {
 
             let bibtex_content = bibtex_entries.join("\n\n");
 
-            // Optionally write to file
+            // 可选：写入文件
             if let Some(path) = output_file {
                 tokio::fs::write(path, &bibtex_content).await.map_err(|e| {
                     ToolError::ExecutionFailed {
@@ -111,8 +120,10 @@ impl Tool for BibtexGenerateTool {
     }
 }
 
-/// Generate a single BibTeX entry from a paper JSON object.
-/// `cite_key_counts` tracks how many times each base key has been used for disambiguation.
+/**
+ * 根据论文 JSON 对象生成单条 BibTeX 条目。
+ * `cite_key_counts` 记录每个基础引用键已被使用的次数，用于消歧。
+ */
 fn generate_bibtex_entry(
     paper: &Value,
     cite_key_counts: &mut HashMap<String, u32>,
@@ -148,7 +159,7 @@ fn generate_bibtex_entry(
     let url = paper.get("url").and_then(|v| v.as_str()).unwrap_or("");
     let venue = paper.get("venue").and_then(|v| v.as_str()).unwrap_or("");
 
-    // Generate citation key: first author last name + year, with disambiguation
+    // 生成引用键：第一作者姓氏 + 年份，并做消歧处理
     let base_cite_key = if let Some(first_author) = authors.first() {
         let last_name = first_author
             .split_whitespace()
@@ -161,7 +172,7 @@ fn generate_bibtex_entry(
         format!("unknown{}", year)
     };
 
-    // Disambiguate: smith2023, smith2023a, smith2023b, ...
+    // 消歧：smith2023、smith2023a、smith2023b……
     let count = cite_key_counts.entry(base_cite_key.clone()).or_insert(0);
     let cite_key = if *count == 0 {
         *count += 1;
@@ -172,7 +183,7 @@ fn generate_bibtex_entry(
         format!("{}{}", base_cite_key, suffix)
     };
 
-    // Escape BibTeX special characters
+    // 转义 BibTeX 特殊字符
     let escaped_title = escape_bibtex(title);
     let author_str = if authors.is_empty() {
         "Unknown".to_string()
@@ -190,7 +201,7 @@ fn generate_bibtex_entry(
             ",\n  eprint = {{{}}},\n  archivePrefix = {{arXiv}}",
             arxiv_id
         ));
-        // Extract primaryClass: old format "cs.AI/1234567" -> "cs", new format "2301.12345" -> skip
+        // 提取 primaryClass：旧格式 "cs.AI/1234567" -> "cs"，新格式 "2301.12345" -> 跳过
         let primary_class = extract_arxiv_primary_class(arxiv_id, paper);
         if let Some(class) = primary_class {
             entry.push_str(&format!(",\n  primaryClass = {{{}}}", class));
@@ -214,21 +225,23 @@ fn generate_bibtex_entry(
     Ok(entry)
 }
 
-/// Extract arxiv primary class from ID or paper metadata.
-/// Old format: "cs.AI/1234567" -> Some("cs")
-/// New format: "2301.12345" -> use fields_of_study if available, else None
+/**
+ * 从 arxiv ID 或论文元数据中提取主分类。
+ * 旧格式："cs.AI/1234567" -> Some("cs")
+ * 新格式："2301.12345" -> 若有 fields_of_study 则使用之，否则为 None
+ */
 fn extract_arxiv_primary_class(arxiv_id: &str, paper: &Value) -> Option<String> {
-    // Old format contains a slash: "cs.AI/1234567"
+    // 旧格式包含斜杠："cs.AI/1234567"
     if let Some(slash_pos) = arxiv_id.find('/') {
         let prefix = &arxiv_id[..slash_pos];
         // "cs.AI" -> "cs"
         return prefix.split('.').next().map(|s| s.to_string());
     }
-    // New format "2301.12345" — try fields_of_study from paper metadata
+    // 新格式 "2301.12345"——尝试使用论文元数据中的 fields_of_study
     if let Some(fields) = paper.get("fields_of_study").and_then(|v| v.as_array())
         && let Some(first) = fields.first().and_then(|f| f.as_str())
     {
-        // Map common field names to arxiv categories
+        // 将常见领域名称映射为 arxiv 分类
         let mapped = match first {
             "Computer Science" => "cs",
             "Mathematics" => "math",
@@ -245,7 +258,7 @@ fn extract_arxiv_primary_class(arxiv_id: &str, paper: &Value) -> Option<String> 
     None
 }
 
-/// Escape special BibTeX characters.
+/// 转义 BibTeX 特殊字符。
 fn escape_bibtex(s: &str) -> String {
     s.replace('&', r"\&")
         .replace('%', r"\%")

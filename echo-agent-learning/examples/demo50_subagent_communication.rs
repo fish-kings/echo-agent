@@ -1,19 +1,21 @@
-//! 子智能体通信原语:上行通道(uplink)与共享控制面
-//!
-//! 本示例不需要 LLM API Key,使用自定义 Agent 演示框架新增的通信原语:
-//!
-//! | 能力 | 演示方式 |
-//! |------|---------|
-//! | 身份/亲缘(lineage) | `dispatch_attempt` 派发时自动盖章(execution_id/task_id/attempt) |
-//! | 共享控制面 | 一个 `SubagentRegistry` 一个控制面,execution_id 跨执行器可寻址 |
-//! | 上行通道 | `default_uplink_sink`:Parent 方向 steer 父 / Sibling 方向 queue-only |
-//! | 事件可观测 | raw bus 收到 `UplinkReceived`; envelope bus 提供执行顺序与恢复 |
-//!
-//! ## 运行方式
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo50_subagent_communication --features subagent
-//! ```
+/*!
+子智能体通信原语:上行通道(uplink)与共享控制面
+
+本示例不需要 LLM API Key,使用自定义 Agent 演示框架新增的通信原语:
+
+| 能力 | 演示方式 |
+|------|---------|
+| 身份/亲缘(lineage) | `dispatch_attempt` 派发时自动盖章(execution_id/task_id/attempt) |
+| 共享控制面 | 一个 `SubagentRegistry` 一个控制面,execution_id 跨执行器可寻址 |
+| 上行通道 | `default_uplink_sink`:Parent 方向 steer 父 / Sibling 方向 queue-only |
+| 事件可观测 | raw bus 收到 `UplinkReceived`; envelope bus 提供执行顺序与恢复 |
+
+## 运行方式
+
+```bash
+cargo run -p echo-agent-learning --example demo50_subagent_communication --features subagent
+```
+*/
 
 use echo_agent::agent::{Agent, AgentEvent, AgentSteerError, AgentSteerReceipt, CancellationToken};
 use echo_agent::error::Result;
@@ -118,8 +120,10 @@ impl Agent for SteerableSubagent {
     }
 }
 
-/// demo50 主入口：演示子智能体上行通信（uplink）与共享控制面，
-/// 包括精确身份派发、兄弟消息、父方向 escalate、事件可观测性以及 envelope 总线的顺序与恢复能力。
+/**
+demo50 主入口：演示子智能体上行通信（uplink）与共享控制面，
+包括精确身份派发、兄弟消息、父方向 escalate、事件可观测性以及 envelope 总线的顺序与恢复能力。
+*/
 #[tokio::main]
 async fn main() {
     println!("=== demo50: 子智能体上行通信(uplink + 共享控制面) ===\n");

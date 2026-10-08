@@ -1,9 +1,11 @@
-//! 与具体产品无关的、基于键的执行准入控制。
-//!
-//! 本模块只负责管理不透明执行键（opaque execution key）的生命周期。应用层
-//! 自行决定某个键代表什么含义，以及它选中哪个 Agent 或工作区。准入控制的
-//! 所有者负责跟踪活跃租约、每个活跃键对应的一个进程许可、退役围栏
-//! （retirement fence）以及关闭等待，且不依赖任何应用层状态或持久化。
+/*!
+与具体产品无关的、基于键的执行准入控制。
+
+本模块只负责管理不透明执行键（opaque execution key）的生命周期。应用层
+自行决定某个键代表什么含义，以及它选中哪个 Agent 或工作区。准入控制的
+所有者负责跟踪活跃租约、每个活跃键对应的一个进程许可、退役围栏
+（retirement fence）以及关闭等待，且不依赖任何应用层状态或持久化。
+*/
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -81,28 +83,30 @@ impl AdmissionState {
     }
 }
 
-/// 用于不透明键控执行准入的共享权威对象。
-///
-/// 消费者可以对共享同一个 Agent 或其他执行资源的所有租约使用同一个键。
-/// 复用某个键不会消耗额外的进程许可；该许可会一直持有，直到该键的最后一个
-/// 租约被释放为止。
-///
-/// ```
-/// use std::sync::Arc;
-/// use tokio::sync::Semaphore;
-/// use echo_core::agent::admission::KeyedExecutionAdmission;
-///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let admission = Arc::new(KeyedExecutionAdmission::default());
-/// let process_limit = Arc::new(Semaphore::new(1));
-/// let lease = admission.issue_process_scoped("conversation", &process_limit)?;
-/// assert_eq!(admission.active_count(), 1);
-/// drop(lease);
-/// admission.wait_until_idle().await;
-/// assert_eq!(admission.active_count(), 0);
-/// # Ok(())
-/// # }
-/// ```
+/**
+用于不透明键控执行准入的共享权威对象。
+
+消费者可以对共享同一个 Agent 或其他执行资源的所有租约使用同一个键。
+复用某个键不会消耗额外的进程许可；该许可会一直持有，直到该键的最后一个
+租约被释放为止。
+
+```
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use echo_core::agent::admission::KeyedExecutionAdmission;
+
+# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+let admission = Arc::new(KeyedExecutionAdmission::default());
+let process_limit = Arc::new(Semaphore::new(1));
+let lease = admission.issue_process_scoped("conversation", &process_limit)?;
+assert_eq!(admission.active_count(), 1);
+drop(lease);
+admission.wait_until_idle().await;
+assert_eq!(admission.active_count(), 0);
+# Ok(())
+# }
+```
+*/
 pub struct KeyedExecutionAdmission {
     /// 受互斥锁保护的内部准入状态。
     state: Mutex<AdmissionState>,
@@ -137,10 +141,12 @@ impl KeyedExecutionAdmission {
         self.issue_inner(key.into(), None)
     }
 
-    /// 准入一个租约，并为新键预留一个进程许可。
-    ///
-    /// 针对已激活键的额外租约会复用该键已有的许可，最后一个租约被释放时
-    /// 该许可才会被归还。
+    /**
+    准入一个租约，并为新键预留一个进程许可。
+
+    针对已激活键的额外租约会复用该键已有的许可，最后一个租约被释放时
+    该许可才会被归还。
+    */
     pub fn issue_process_scoped(
         self: &Arc<Self>,
         key: impl Into<String>,
@@ -149,8 +155,10 @@ impl KeyedExecutionAdmission {
         self.issue_inner(key.into(), Some(Arc::clone(process_semaphore)))
     }
 
-    /// `issue` 与 `issue_process_scoped` 的共用实现：处理准入检查、
-    /// 已有键的计数复用，以及进程许可的获取与释放。
+    /**
+    `issue` 与 `issue_process_scoped` 的共用实现：处理准入检查、
+    已有键的计数复用，以及进程许可的获取与释放。
+    */
     fn issue_inner(
         self: &Arc<Self>,
         key: String,
@@ -229,8 +237,10 @@ impl KeyedExecutionAdmission {
         Ok(())
     }
 
-    /// 若该键已有活跃租约，则为其计数加一并返回 `true`；
-    /// 若该键尚未激活，返回 `false`，调用方需按新键流程处理。
+    /**
+    若该键已有活跃租约，则为其计数加一并返回 `true`；
+    若该键尚未激活，返回 `false`，调用方需按新键流程处理。
+    */
     fn increment_existing(
         &self,
         state: &mut AdmissionState,
@@ -381,11 +391,13 @@ pub struct KeyedExecutionRetirement {
     active: bool,
 }
 
-/// 共享执行准入的组合边界。
-///
-/// 该类型将键控生命周期跟踪与一个可选的进程级信号量组合在一起。消费者
-/// 在运行时和子代理入口之间共享这个值；键控原语始终是租约计数的唯一
-/// 所有者。
+/**
+共享执行准入的组合边界。
+
+该类型将键控生命周期跟踪与一个可选的进程级信号量组合在一起。消费者
+在运行时和子代理入口之间共享这个值；键控原语始终是租约计数的唯一
+所有者。
+*/
 pub struct ExecutionAdmission {
     /// 承担生命周期跟踪职责的键控准入原语。
     keyed: Arc<KeyedExecutionAdmission>,
@@ -437,8 +449,10 @@ impl ExecutionAdmission {
         }
     }
 
-    /// 等待直至能够签发一个租约。取消与超时仍由调用方通过在此 future
-    /// 外层包裹 `select!` 自行控制。
+    /**
+    等待直至能够签发一个租约。取消与超时仍由调用方通过在此 future
+    外层包裹 `select!` 自行控制。
+    */
     pub async fn issue_wait(
         &self,
         key: impl Into<String>,
@@ -497,10 +511,12 @@ impl Drop for KeyedExecutionRetirement {
     }
 }
 
+/// 执行准入控制的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证同一个键的多个租约只占用一个进程许可。
     #[tokio::test]
     async fn same_key_reuses_one_process_permit() -> Result<(), String> {
         let admission = Arc::new(KeyedExecutionAdmission::default());
@@ -521,6 +537,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证不同键之间受进程容量限制。
     #[tokio::test]
     async fn different_keys_observe_process_capacity() -> Result<(), String> {
         let admission = Arc::new(KeyedExecutionAdmission::default());
@@ -540,6 +557,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证退役围栏与关闭都会拒绝新租约。
     #[tokio::test]
     async fn retirement_and_close_are_fail_closed() -> Result<(), String> {
         let admission = Arc::new(KeyedExecutionAdmission::default());
@@ -564,6 +582,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证组合准入共享容量并能正确关闭。
     #[tokio::test]
     async fn execution_admission_shares_capacity_and_closes() -> Result<(), String> {
         let admission = ExecutionAdmission::with_capacity(1);

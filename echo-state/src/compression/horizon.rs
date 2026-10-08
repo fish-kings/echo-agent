@@ -1,28 +1,30 @@
-//! Visibility Horizon — sliding-window tool trace compaction.
-//!
-//! # Three-layer visibility model
-//!
-//! | Layer | Lifetime | Content | Treatment |
-//! |-------|----------|---------|-----------|
-//! | **Global Objective** | permanent | user's original task goal | injected as system message, never compressed |
-//! | **Active Plan Window** | last N turns | active conversation context | kept intact |
-//! | **Transient Tool Trace** | beyond window | completed tool call + result pairs | compacted to symbolic summary |
-//!
-//! # How it works
-//!
-//! ```text
-//! Messages: [sys] [u₁] [asst+tc] [tool] [tool] [u₂] [asst+tc] [tool] [u₃] ...
-//!                   ↑ Turn 1  ← ToolGroup 1 →        ← ToolGroup 2 →  ↑ Turn 3
-//!
-//! With active_window_turns = 2:
-//!   ToolGroup 1 has 2 user turns after it (u₂, u₃) → ≥ threshold → COMPACT
-//!   ToolGroup 2 has 1 user turn after it (u₃)      → < threshold → KEEP
-//! ```
-//!
-//! # Integration
-//!
-//! Use as a standalone [`ContextCompressor`] or integrate into
-//! [`ContextManager`](crate::compression::ContextManager) as a pre-compression pass.
+/*!
+可见性视界（Visibility Horizon）—— 基于滑动窗口的工具轨迹压缩。
+
+# 三层可见性模型
+
+| 层级 | 生命周期 | 内容 | 处理方式 |
+|-------|----------|---------|-----------|
+| **全局目标（Global Objective）** | 永久 | 用户最初的任务目标 | 以系统消息注入，永不压缩 |
+| **活跃计划窗口（Active Plan Window）** | 最近 N 轮 | 活跃的对话上下文 | 完整保留 |
+| **瞬态工具轨迹（Transient Tool Trace）** | 窗口之外 | 已完成的工具调用与结果对 | 压缩为符号化摘要 |
+
+# 工作原理
+
+```text
+Messages: [sys] [u₁] [asst+tc] [tool] [tool] [u₂] [asst+tc] [tool] [u₃] ...
+                  ↑ Turn 1  ← ToolGroup 1 →        ← ToolGroup 2 →  ↑ Turn 3
+
+With active_window_turns = 2:
+  ToolGroup 1 has 2 user turns after it (u₂, u₃) → ≥ threshold → COMPACT
+  ToolGroup 2 has 1 user turn after it (u₃)      → < threshold → KEEP
+```
+
+# 集成方式
+
+可作为独立的 [`ContextCompressor`] 使用，也可集成到
+[`ContextManager`](crate::compression::ContextManager) 中作为预压缩阶段。
+*/
 
 use crate::compression::CompressionCheckpoint;
 use echo_core::compression::{CompressionInput, CompressionOutput, ContextCompressor};
@@ -33,50 +35,52 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-// ── Configuration ────────────────────────────────────────────────────
+// ── 配置 ────────────────────────────────────────────────────
 
-/// Configuration for the visibility horizon compressor.
-///
-/// Controls when and how tool traces are compacted.
+/** 可见性视界压缩器的配置。
+
+控制工具轨迹何时以及如何被压缩。 */
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VisibilityHorizonConfig {
-    /// Number of recent user turns to keep intact.
-    ///
-    /// Tool groups inside this many newest user turns are always retained.
-    /// Older groups are compacted immediately unless `retained_tool_tokens`
-    /// gives them additional token-budgeted space.
+    /** 需要完整保留的最近用户轮次数。
+
+    位于最新这么多个用户轮次内的工具组始终保留。
+    更早的工具组会被立即压缩，除非 `retained_tool_tokens`
+    为它们提供了额外的 token 预算空间。 */
     #[serde(default = "default_active_window")]
     pub active_window_turns: usize,
 
-    /// Aggregate raw-result budget for tool groups older than the protected
-    /// recent turns. `None` preserves the original turn-only behavior.
+    /** 早于受保护最近轮次的工具组的原始结果总预算。
+    `None` 表示保持原有的仅按轮次判断的行为。 */
     #[serde(default)]
     pub retained_tool_tokens: Option<usize>,
 
-    /// Do not rewrite history unless selected raw results would free at least
-    /// this many estimated tokens. This avoids churn for tiny traces.
+    /** 除非选中的原始结果至少能释放这么多估算 token，否则不重写历史。
+    用于避免对很小的轨迹做无意义的反复改写。 */
     #[serde(default)]
     pub compact_minimum_tokens: usize,
 
-    /// Maximum token budget for each compacted summary.
+    /// 每条压缩摘要的最大 token 预算。
     #[serde(default = "default_compact_max_tokens")]
     pub compact_max_tokens: usize,
 
-    /// Whether to inject a Global Objective system message.
+    /// 是否注入全局目标（Global Objective）系统消息。
     #[serde(default)]
     pub enable_global_objective: bool,
 
-    /// The Global Objective text (user's original task goal).
-    ///
-    /// When `enable_global_objective` is true, this is injected as the
-    /// first system message and survives all compression.
+    /** 全局目标文本（用户最初的任务目标）。
+
+    当 `enable_global_objective` 为 true 时，该文本会作为第一条
+    系统消息注入，并在所有压缩中保留。 */
     #[serde(default)]
     pub global_objective: Option<String>,
 }
 
+/// `active_window_turns` 的默认值。
 fn default_active_window() -> usize {
     5
 }
+/// `compact_max_tokens` 的默认值。
 fn default_compact_max_tokens() -> usize {
     50
 }
@@ -94,52 +98,58 @@ impl Default for VisibilityHorizonConfig {
     }
 }
 
-// ── ToolGroup (internal) ─────────────────────────────────────────────
+// ── ToolGroup（内部） ─────────────────────────────────────────────
 
-/// A group of assistant tool_calls + their corresponding tool results.
+/// 一组助手 tool_calls 及其对应的工具结果。
 struct ToolGroup {
-    /// Index of the assistant message with `tool_calls`.
+    /// 带有 `tool_calls` 的助手消息的索引。
     assistant_idx: usize,
-    /// Index range `[start, end)` of the tool result messages.
+    /// 工具结果消息索引区间 `[start, end)` 的起点。
     result_start: usize,
+    /// 工具结果消息索引区间 `[start, end)` 的终点（不含）。
     result_end: usize,
-    /// Tool names extracted from the assistant's `tool_calls`.
+    /// 从助手 `tool_calls` 中提取的工具名称。
     tool_names: Vec<String>,
-    /// Number of successful tool results in this group.
+    /// 本组中成功的工具结果数量。
     success_count: usize,
-    /// Total number of tool results in this group.
+    /// 本组中工具结果的总数。
     total_count: usize,
-    /// Estimated token count of the tool result messages.
+    /// 工具结果消息的估算 token 数。
     result_tokens: usize,
-    /// Error messages (if any).
+    /// 错误信息（如有）。
     errors: Vec<String>,
-    /// How many `Role::User` messages appear after this group.
+    /// 本组之后出现的 `Role::User` 消息数量。
     user_turns_after: usize,
 }
 
 // ── VisibilityHorizonCompressor ──────────────────────────────────────
 
-/// Compresses tool traces beyond the active plan window into symbolic summaries.
-///
-/// Implements [`ContextCompressor`] for composability with other strategies
-/// (e.g. composed with other compressors in a pipeline).
+/** 将活跃计划窗口之外的工具轨迹压缩为符号化摘要。
+
+实现了 [`ContextCompressor`]，便于与其他策略组合
+（例如在流水线中与其他压缩器串联）。 */
 pub struct VisibilityHorizonCompressor {
+    /// 压缩器配置。
     config: VisibilityHorizonConfig,
 }
 
 impl VisibilityHorizonCompressor {
+    /// 使用给定配置创建可见性视界压缩器。
     pub fn new(config: VisibilityHorizonConfig) -> Self {
         Self { config }
     }
 
-    /// Core compaction: identify tool groups beyond the window, replace with summaries.
-    ///
-    /// Returns the evicted (original) messages for downstream memory promotion.
+    /** 核心压缩逻辑：识别窗口之外的工具组，并以摘要替换。
+
+    返回被驱逐的（原始）消息，供下游进行记忆提升。 */
     #[cfg(test)]
     fn compact_horizon(&self, messages: &mut Vec<Message>) -> Vec<Message> {
         self.compact_horizon_with(messages, &echo_core::tokenizer::HeuristicTokenizer)
     }
 
+    /** 使用指定分词器执行核心压缩。
+
+    返回被驱逐的原始工具结果消息。 */
     fn compact_horizon_with(
         &self,
         messages: &mut Vec<Message>,
@@ -147,9 +157,8 @@ impl VisibilityHorizonCompressor {
     ) -> Vec<Message> {
         let groups = self.identify_tool_groups(messages, tokenizer);
 
-        // Walk newest to oldest. Recent turns are always protected; older raw
-        // results share an optional aggregate token budget. The selected list
-        // is already in reverse-index order, which keeps in-place edits safe.
+        /* 从最新到最旧遍历。最近的轮次始终受保护；更早的原始结果共享一个
+        可选的总 token 预算。选中列表本身已按索引倒序排列，保证原地修改安全。 */
         let mut retained_tokens = 0usize;
         let mut budget_exhausted = false;
         let mut to_compact: Vec<&ToolGroup> = Vec::new();
@@ -182,19 +191,19 @@ impl VisibilityHorizonCompressor {
 
         let mut evicted = Vec::new();
 
-        // Process from back to front to preserve indices
+        // 从后往前处理，以保持索引有效
         for group in to_compact {
-            // 1. Build summary message
+            // 1. 构建摘要消息
             let summary_text = self.build_compact_summary(group);
             let summary_msg = Message::user(summary_text);
 
-            // 2. Strip tool_calls from the assistant message (keep reasoning text)
+            // 2. 移除助手消息中的 tool_calls（保留推理文本）
             if let Some(asst) = messages.get_mut(group.assistant_idx) {
-                // Preserve the assistant's text content as a user-visible note
+                // 将助手的文本内容保留为用户可见的说明
                 let original_text = asst.content.as_text().unwrap_or_default().to_string();
                 asst.tool_calls = None;
                 if original_text.trim().is_empty() {
-                    // No text — convert to a brief note
+                    // 无文本——转换为简短说明
                     asst.content = MessageContent::Text(format!(
                         "[Used tools: {}]",
                         group.tool_names.join(", ")
@@ -202,28 +211,27 @@ impl VisibilityHorizonCompressor {
                 }
             }
 
-            // 3. Collect evicted tool result messages
+            // 3. 收集被驱逐的工具结果消息
             for i in group.result_start..group.result_end {
                 if i < messages.len() {
                     evicted.push(messages[i].clone());
                 }
             }
 
-            // 4. Replace tool result range with a single summary message
+            // 4. 用单条摘要消息替换工具结果区间
             if group.result_start < messages.len() && group.result_end <= messages.len() {
                 let drain_range = group.result_start..group.result_end;
                 let drain_len = drain_range.end - drain_range.start;
-                // Drain the old tool results and insert the summary
+                // 移除旧的工具结果并插入摘要
                 let _: Vec<_> = messages.drain(drain_range).collect();
                 messages.insert(group.result_start, summary_msg);
 
-                // Note: we don't need to adjust indices of earlier groups
-                // because we process back-to-front.
-                let _ = drain_len; // suppress unused warning
+                // 注意：由于从后往前处理，无需调整更早工具组的索引。
+                let _ = drain_len; // 抑制未使用变量警告
             }
         }
 
-        // 5. Inject Global Objective if configured
+        // 5. 若已配置，则注入全局目标
         if self.config.enable_global_objective
             && let Some(ref objective) = self.config.global_objective
         {
@@ -233,7 +241,7 @@ impl VisibilityHorizonCompressor {
         evicted
     }
 
-    /// Identify all tool-call groups in the message list.
+    /// 识别消息列表中的所有工具调用组。
     fn identify_tool_groups(
         &self,
         messages: &[Message],
@@ -243,7 +251,7 @@ impl VisibilityHorizonCompressor {
         let mut i = 0;
 
         while i < messages.len() {
-            // Look for assistant messages with tool_calls
+            // 查找带有 tool_calls 的助手消息
             if messages[i].role == Role::Assistant
                 && let Some(ref tool_calls) = messages[i].tool_calls
             {
@@ -258,7 +266,7 @@ impl VisibilityHorizonCompressor {
                     .map(|tc| tc.function.name.clone())
                     .collect();
 
-                // Scan forward for tool result messages
+                // 向后扫描工具结果消息
                 let result_start = i + 1;
                 let mut result_end = result_start;
                 let mut success_count = 0;
@@ -270,7 +278,7 @@ impl VisibilityHorizonCompressor {
                     let content = messages[result_end].content.as_text().unwrap_or_default();
                     result_tokens += tokenizer.count_tokens(&content);
 
-                    // Heuristic: if content starts with "[Error" or "[error", count as failure
+                    // 启发式：内容以 "[Error" 或 "[error" 开头则计为失败
                     if content.trim_start().starts_with("[Error")
                         || content.trim_start().starts_with("[error")
                     {
@@ -282,7 +290,7 @@ impl VisibilityHorizonCompressor {
                     result_end += 1;
                 }
 
-                // Count user turns after this group
+                // 统计本组之后的用户轮次数
                 let user_turns_after = messages[result_end..]
                     .iter()
                     .filter(|m| m.role == Role::User)
@@ -309,7 +317,7 @@ impl VisibilityHorizonCompressor {
         groups
     }
 
-    /// Build a compact summary string for a tool group.
+    /// 为工具组构建紧凑的摘要字符串。
     fn build_compact_summary(&self, group: &ToolGroup) -> String {
         let tool_names = group.tool_names.join(", ");
         let status = if group.total_count == 0 {
@@ -336,7 +344,7 @@ impl VisibilityHorizonCompressor {
             tool_names, status, group.result_tokens, self.config.compact_max_tokens
         );
 
-        // Ensure summary stays within token budget
+        // 确保摘要不超出 token 预算
         let max_chars = self.config.compact_max_tokens.saturating_mul(4);
         if summary.chars().count() > max_chars {
             format!(
@@ -354,12 +362,12 @@ impl VisibilityHorizonCompressor {
         }
     }
 
-    /// Inject (or update) the Global Objective as the first system message.
+    /// 将全局目标作为第一条系统消息注入（若已存在则跳过）。
     fn inject_global_objective(&self, messages: &mut Vec<Message>, objective: &str) {
         let objective_marker = "[Global Objective]";
         let objective_text = format!("{} {}", objective_marker, objective);
 
-        // Check if already injected
+        // 检查是否已注入
         if let Some(first) = messages.first()
             && first.role == Role::System
             && first
@@ -367,15 +375,16 @@ impl VisibilityHorizonCompressor {
                 .as_text()
                 .is_some_and(|t| t.contains(objective_marker))
         {
-            return; // already present
+            return; // 已存在
         }
 
-        // Insert at the beginning
+        // 插入到开头
         messages.insert(0, Message::system(objective_text));
     }
 }
 
 impl ContextCompressor for VisibilityHorizonCompressor {
+    /// 执行可见性视界压缩，并返回压缩结果与检查点。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {
         Box::pin(async move {
             let start = Instant::now();
@@ -417,12 +426,13 @@ impl ContextCompressor for VisibilityHorizonCompressor {
         })
     }
 
+    /// 返回压缩器名称。
     fn name(&self) -> &str {
         "VisibilityHorizon"
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// ── 测试 ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -430,7 +440,7 @@ mod tests {
     use echo_core::llm::types::ToolCall;
     use echo_core::tokenizer::HeuristicTokenizer;
 
-    /// Helper: create an assistant message with tool_calls.
+    /// 辅助函数：创建带有 tool_calls 的助手消息。
     fn assistant_with_tools(calls: &[(&str, &str)]) -> Message {
         let tool_calls: Vec<ToolCall> = calls
             .iter()
@@ -446,21 +456,21 @@ mod tests {
         Message::assistant_with_tools(tool_calls)
     }
 
-    /// Helper: create a tool result message.
+    /// 辅助函数：创建工具结果消息。
     fn tool_result(id: &str, name: &str, content: &str) -> Message {
         Message::tool_result(id.to_string(), name.to_string(), content.to_string())
     }
 
-    /// Build a multi-turn conversation with tool calls.
-    /// Each turn produces: user → assistant(2 tool_calls) → 2 tool_results → assistant_answer
+    /** 构建包含工具调用的多轮对话。
+    每轮生成：user → assistant(2 个 tool_calls) → 2 个 tool_results → assistant_answer */
     fn build_conversation(turns: usize) -> Vec<Message> {
         let mut messages = vec![Message::system("You are a helpful assistant.".to_string())];
 
         for i in 1..=turns {
-            // User message
+            // 用户消息
             messages.push(Message::user(format!("Question {}", i)));
 
-            // Assistant with 2 parallel tool calls
+            // 带有 2 个并行工具调用的助手消息
             let call_id_a = format!("call_{}a", i);
             let call_id_b = format!("call_{}b", i);
             let tool_a = format!("read_file_{}", i);
@@ -470,7 +480,7 @@ mod tests {
                 (&call_id_b, &tool_b),
             ]));
 
-            // Two tool results (simulating parallel execution)
+            // 两条工具结果（模拟并行执行）
             messages.push(tool_result(
                 &call_id_a,
                 &tool_a,
@@ -482,13 +492,14 @@ mod tests {
                 &"grep output ".repeat(80 * i),
             ));
 
-            // Assistant final answer
+            // 助手最终回答
             messages.push(Message::assistant(format!("Answer to question {}", i)));
         }
 
         messages
     }
 
+    /// 窗口内的工具组不应被压缩。
     #[test]
     fn test_no_compaction_within_window() {
         let config = VisibilityHorizonConfig {
@@ -497,7 +508,7 @@ mod tests {
         };
         let compressor = VisibilityHorizonCompressor::new(config);
 
-        // 3-turn conversation — all within window of 5
+        // 3 轮对话——全部位于大小为 5 的窗口内
         let mut messages = build_conversation(3);
         let original_len = messages.len();
 
@@ -511,6 +522,7 @@ mod tests {
         );
     }
 
+    /// 窗口外的工具组应被压缩为摘要。
     #[test]
     fn test_compaction_beyond_window() {
         let config = VisibilityHorizonConfig {
@@ -520,7 +532,7 @@ mod tests {
         };
         let compressor = VisibilityHorizonCompressor::new(config);
 
-        // 6-turn conversation with window=2 → turns 1-4 should be compacted
+        // 6 轮对话且 window=2 → 第 1-4 轮应被压缩
         let mut messages = build_conversation(6);
         let original_len = messages.len();
 
@@ -534,7 +546,7 @@ mod tests {
             messages.len()
         );
 
-        // Verify compacted messages contain horizon summary
+        // 验证压缩后的消息包含视界摘要
         let has_summary = messages.iter().any(|m| {
             m.content
                 .as_text()
@@ -542,11 +554,12 @@ mod tests {
         });
         assert!(has_summary, "Should contain a horizon compact summary");
 
-        // Verify the two most recent turns are NOT compacted.
+        // 验证最近两轮未被压缩。
         let has_recent_tool = messages.iter().any(|m| m.role == Role::Tool);
         assert!(has_recent_tool, "Recent tool results should be preserved");
     }
 
+    /// 空消息列表不应产生任何压缩。
     #[test]
     fn test_empty_messages() {
         let config = VisibilityHorizonConfig::default();
@@ -559,6 +572,7 @@ mod tests {
         assert!(messages.is_empty());
     }
 
+    /// 不含工具消息的对话应保持不变。
     #[test]
     fn test_no_tool_messages() {
         let config = VisibilityHorizonConfig::default();
@@ -579,6 +593,7 @@ mod tests {
         assert_eq!(messages.len(), original_len);
     }
 
+    /// 并行工具调用应被压缩为同一条摘要。
     #[test]
     fn test_parallel_tool_calls() {
         let config = VisibilityHorizonConfig {
@@ -589,29 +604,29 @@ mod tests {
 
         let mut messages = vec![
             Message::system("sys".to_string()),
-            // Turn 1: user asks, assistant calls 2 tools in parallel
+            // 第 1 轮：用户提问，助手并行调用 2 个工具
             Message::user("do stuff".to_string()),
             assistant_with_tools(&[("call_a", "read_file"), ("call_b", "grep")]),
             tool_result("call_a", "read_file", &"file content".repeat(100)),
             tool_result("call_b", "grep", &"grep output".repeat(100)),
             Message::assistant("done".to_string()),
-            // Turn 2: user follows up
+            // 第 2 轮：用户追问
             Message::user("thanks".to_string()),
             Message::assistant("welcome".to_string()),
-            // Turn 3: another turn to push turn 1 beyond window
+            // 第 3 轮：再加一轮，把第 1 轮推出窗口
             Message::user("bye".to_string()),
             Message::assistant("bye".to_string()),
         ];
 
         let evicted = compressor.compact_horizon(&mut messages);
 
-        // Turn 1's tool group has 2 user turns after it → > 1 → should compact
+        // 第 1 轮的工具组之后有 2 个用户轮次 → > 1 → 应被压缩
         assert!(
             !evicted.is_empty(),
             "Parallel tool results should be evicted"
         );
 
-        // Verify the summary mentions both tools
+        // 验证摘要提及了两个工具
         let has_summary = messages.iter().any(|m| {
             m.content
                 .as_text()
@@ -620,6 +635,7 @@ mod tests {
         assert!(has_summary, "Summary should mention both parallel tools");
     }
 
+    /// token 预算与最小节省阈值共同控制旧工具组的压缩。
     #[test]
     fn test_token_budget_and_minimum_savings_control_old_tool_compaction() {
         let original = build_conversation(6);
@@ -673,6 +689,7 @@ mod tests {
         );
     }
 
+    /// 成功与失败混合时，摘要应反映部分成功。
     #[test]
     fn test_mixed_success_failure() {
         let config = VisibilityHorizonConfig {
@@ -688,14 +705,14 @@ mod tests {
             tool_result("call_ok", "shell", "command succeeded"),
             tool_result("call_err", "shell", "[Error] Permission denied"),
             Message::assistant("one failed".to_string()),
-            // Need at least 1 user turn after for window=0
+            // window=0 时，之后至少需要 1 个用户轮次
             Message::user("ok".to_string()),
         ];
 
         let evicted = compressor.compact_horizon(&mut messages);
         assert!(!evicted.is_empty());
 
-        // Summary should indicate partial success
+        // 摘要应表明部分成功
         let summary = messages
             .iter()
             .find(|m| {
@@ -713,6 +730,7 @@ mod tests {
         );
     }
 
+    /// 压缩时应保留非工具消息。
     #[test]
     fn test_preserves_non_tool_messages() {
         let config = VisibilityHorizonConfig {
@@ -733,7 +751,7 @@ mod tests {
 
         let _evicted = compressor.compact_horizon(&mut messages);
 
-        // The assistant's "important reasoning text" should be preserved
+        // 助手的 "important reasoning text" 应被保留
         let has_reasoning = messages.iter().any(|m| {
             m.content
                 .as_text()
@@ -744,15 +762,16 @@ mod tests {
             "Non-tool assistant messages should be preserved"
         );
 
-        // User messages should be preserved
+        // 用户消息应被保留
         let user_count = messages.iter().filter(|m| m.role == Role::User).count();
         assert!(user_count >= 2, "User messages should be preserved");
     }
 
+    /// 启用后应将全局目标注入为第一条消息。
     #[test]
     fn test_global_objective_injection() {
         let config = VisibilityHorizonConfig {
-            active_window_turns: 0, // compact all tool groups
+            active_window_turns: 0, // 压缩所有工具组
             enable_global_objective: true,
             global_objective: Some("Build a sorting algorithm".to_string()),
             ..Default::default()
@@ -770,10 +789,10 @@ mod tests {
 
         let evicted = compressor.compact_horizon(&mut messages);
 
-        // Compaction should have happened (1 user turn after > 0 threshold)
+        // 应已发生压缩（之后有 1 个用户轮次 > 阈值 0）
         assert!(!evicted.is_empty(), "Tool results should be evicted");
 
-        // Global objective should be injected as first message
+        // 全局目标应作为第一条消息注入
         assert!(
             messages[0]
                 .content
@@ -788,6 +807,7 @@ mod tests {
         );
     }
 
+    /// 通过 `ContextCompressor` trait 调用压缩。
     #[tokio::test]
     async fn test_context_compressor_trait() {
         let config = VisibilityHorizonConfig {
@@ -818,10 +838,10 @@ mod tests {
         assert_eq!(compressor.name(), "VisibilityHorizon");
     }
 
+    /// 25 轮内 token 增长应为次线性。
     #[test]
     fn test_token_stability_over_25_turns() {
-        // RFC 3.3 acceptance criterion: context token count remains stable
-        // as conversation grows beyond 20 turns.
+        // RFC 3.3 验收标准：对话超过 20 轮后，上下文 token 数保持稳定。
         let config = VisibilityHorizonConfig {
             active_window_turns: 5,
             compact_max_tokens: 50,
@@ -830,8 +850,8 @@ mod tests {
         let compressor = VisibilityHorizonCompressor::new(config);
         let tokenizer = HeuristicTokenizer;
 
-        // Build conversations with CONSTANT-SIZE tool outputs to isolate
-        // the effect of turn count on token growth.
+        // 使用固定大小的工具输出构建对话，以单独考察轮次数对 token 增长的影响。
+        /// 构建工具输出大小固定的多轮对话。
         fn build_constant_conversation(turns: usize) -> Vec<Message> {
             let mut messages = vec![Message::system("You are a helpful assistant.".to_string())];
             for i in 1..=turns {
@@ -842,7 +862,7 @@ mod tests {
                     (&ca, &format!("read_{}", i)),
                     (&cb, &format!("grep_{}", i)),
                 ]));
-                // Constant-size output (200 chars each)
+                // 固定大小输出（每条 200 字符）
                 messages.push(tool_result(&ca, &format!("read_{}", i), &"x".repeat(200)));
                 messages.push(tool_result(&cb, &format!("grep_{}", i), &"y".repeat(200)));
                 messages.push(Message::assistant(format!("Answer {}", i)));
@@ -850,7 +870,7 @@ mod tests {
             messages
         }
 
-        // Measure tokens after compaction at various turn counts
+        // 测量不同轮次数下压缩后的 token 数
         let mut token_counts: Vec<(usize, usize)> = Vec::new();
 
         for turns in [5, 10, 15, 20, 25] {
@@ -866,9 +886,9 @@ mod tests {
             token_counts.push((turns, total_tokens));
         }
 
-        // Key invariant: with active_window=5, only the last ~5 turns are kept
-        // in full detail. Older turns are compacted to ~50 token summaries.
-        // So token growth from 10→25 turns should be sub-linear.
+        /* 关键不变量：active_window=5 时，仅最近约 5 轮完整保留，
+        更早的轮次被压缩为约 50 token 的摘要。
+        因此从 10→25 轮的 token 增长应为次线性。 */
         let tokens_at_10 = token_counts[1].1;
         let tokens_at_25 = token_counts[4].1;
 
@@ -880,9 +900,10 @@ mod tests {
         );
     }
 
+    /// 30 轮工具调用的集成测试。
     #[test]
     fn test_30_round_integration() {
-        // RFC 3.3 acceptance criterion: 30 rounds of tool calls with horizon compaction.
+        // RFC 3.3 验收标准：在视界压缩下进行 30 轮工具调用。
         let config = VisibilityHorizonConfig {
             active_window_turns: 5,
             compact_max_tokens: 50,
@@ -893,13 +914,13 @@ mod tests {
         let mut messages = build_conversation(30);
         let original_count = messages.len();
 
-        // Each turn produces 5 messages: user, assistant(2tc), tool, tool, assistant_answer
-        // So 30 turns = 150 messages + 1 system = 151
+        /* 每轮产生 5 条消息：user、assistant(2tc)、tool、tool、assistant_answer，
+        因此 30 轮 = 150 条消息 + 1 条系统消息 = 151。 */
         assert_eq!(original_count, 151, "Expected 151 messages for 30 turns");
 
         let evicted = compressor.compact_horizon(&mut messages);
 
-        // With active_window=5 and 30 turns, only turns 26-30 stay intact.
+        // active_window=5 且共 30 轮时，只有第 26-30 轮保持完整。
         assert!(
             evicted.len() >= 40,
             "Should evict at least 40 tool result messages, got {}",
@@ -912,16 +933,16 @@ mod tests {
             messages.len()
         );
 
-        // Verify recent turns preserve real tool results
+        // 验证最近轮次保留了真实的工具结果
         let recent_tool_results: usize = messages.iter().filter(|m| m.role == Role::Tool).count();
-        // 6 preserved turns × 2 tool results = 12
+        // 6 个保留轮次 × 2 条工具结果 = 12
         assert!(
             recent_tool_results >= 10,
             "At least 10 recent tool results should be preserved, got {}",
             recent_tool_results
         );
 
-        // Verify no orphaned assistant tool_calls without matching results
+        // 验证不存在缺少对应结果的孤立助手 tool_calls
         let mut orphaned = 0;
         for (i, msg) in messages.iter().enumerate() {
             if msg.role == Role::Assistant
@@ -944,7 +965,7 @@ mod tests {
             "No orphaned tool_calls should exist after compaction"
         );
 
-        // Verify compacted summaries are present
+        // 验证存在压缩摘要
         let summary_count = messages
             .iter()
             .filter(|m| {
@@ -960,10 +981,10 @@ mod tests {
         );
     }
 
+    /// 50 轮对话压缩后 token 数应保持稳定。
     #[test]
     fn test_50_turn_token_stability() {
-        // RFC 5.2.1: Long conversations (>50 turns) should maintain stable token count
-        // with horizon compaction active.
+        // RFC 5.2.1：启用视界压缩时，长对话（>50 轮）应保持稳定的 token 数。
         let config = VisibilityHorizonConfig {
             active_window_turns: 5,
             compact_max_tokens: 50,
@@ -972,7 +993,8 @@ mod tests {
         let compressor = VisibilityHorizonCompressor::new(config);
         let tokenizer = HeuristicTokenizer;
 
-        // Constant-size outputs for predictable measurement
+        // 使用固定大小输出，便于可预测的测量
+        /// 构建工具输出大小固定的多轮对话。
         fn build_constant_conversation(turns: usize) -> Vec<Message> {
             let mut messages = vec![Message::system("You are a helpful assistant.".to_string())];
             for i in 1..=turns {
@@ -993,7 +1015,7 @@ mod tests {
             messages
         }
 
-        // Measure tokens for a 50-turn conversation after compaction.
+        // 测量 50 轮对话压缩后的 token 数。
         let mut msgs_50 = build_constant_conversation(50);
         let _ = compressor.compact_horizon(&mut msgs_50);
         let tokens_50: usize = msgs_50
@@ -1002,11 +1024,11 @@ mod tests {
             .map(|c| tokenizer.count_tokens(&c))
             .sum();
 
-        // With active_window=5, only the last ~5 turns are fully preserved.
-        // Without compaction, 50 turns × ~500 tokens/turn = ~25,000 tokens.
-        // With compaction, compacted turns become ~50 token summaries.
-        // The compacted size should be much smaller than uncompressed.
-        let uncompressed_50 = 50 * 500; // rough estimate: 50 turns × ~500 tokens each
+        /* active_window=5 时，仅最近约 5 轮完整保留。
+        不压缩时，50 轮 × 约 500 token/轮 ≈ 25,000 token。
+        压缩后，被压缩的轮次变为约 50 token 的摘要。
+        压缩后的大小应远小于未压缩时。 */
+        let uncompressed_50 = 50 * 500; // 粗略估计：50 轮 × 每轮约 500 token
         assert!(
             tokens_50 < uncompressed_50 / 3,
             "Compacted 50-turn conversation ({} tokens) should be <33% of uncompressed estimate ({} tokens)",
@@ -1014,7 +1036,7 @@ mod tests {
             uncompressed_50
         );
 
-        // Verify compaction happened for old turns
+        // 验证旧轮次已被压缩
         let compact_count = msgs_50
             .iter()
             .filter(|m| {

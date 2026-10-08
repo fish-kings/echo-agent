@@ -1,16 +1,18 @@
-//! 沙箱化的内联代码或持久化脚本执行。
-//!
-//! 允许子代理执行任意的 Python/R/JS/... 代码片段，或执行已保存在
-//! `ctx.working_dir` 中、可供审查的脚本。持久化脚本由对应语言的运行时
-//! 直接执行，而不是被读回并包装成内联代码再执行。
-//!
-//! `run_code` 是一个由代理控制的任意代码执行原语，因此它始终要求配置
-//! OS 级别或更强的 [`echo_core::sandbox::SandboxExecutor`]。交互式终端是
-//! 独立的、由用户控制的能力，不受此处的限制约束。
-//!
-//! 设计上参照 `ShellTool`（`shell.rs`）：持有 `Option<Arc<dyn SandboxExecutor>>`
-//! （echo-core 中定义的 trait，不依赖 echo-execution），并重写
-//! `execute_with_context` 以遵循 `ctx.working_dir`。
+/*!
+沙箱化的内联代码或持久化脚本执行。
+
+允许子代理执行任意的 Python/R/JS/... 代码片段，或执行已保存在
+`ctx.working_dir` 中、可供审查的脚本。持久化脚本由对应语言的运行时
+直接执行，而不是被读回并包装成内联代码再执行。
+
+`run_code` 是一个由代理控制的任意代码执行原语，因此它始终要求配置
+OS 级别或更强的 [`echo_core::sandbox::SandboxExecutor`]。交互式终端是
+独立的、由用户控制的能力，不受此处的限制约束。
+
+设计上参照 `ShellTool`（`shell.rs`）：持有 `Option<Arc<dyn SandboxExecutor>>`
+（echo-core 中定义的 trait，不依赖 echo-execution），并重写
+`execute_with_context` 以遵循 `ctx.working_dir`。
+*/
 
 use echo_core::error::{ReactError, Result, ToolError};
 use echo_core::sandbox::{
@@ -26,8 +28,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// [`RunCodeTool`] 支持的语言列表。内联代码使用现有的基于参数的 `Code`
-/// 后端；持久化脚本则直接调用对应的解释器程序。
+/**
+[`RunCodeTool`] 支持的语言列表。内联代码使用现有的基于参数的 `Code`
+后端；持久化脚本则直接调用对应的解释器程序。
+*/
 const SUPPORTED_LANGUAGES: &[&str] = &[
     "python",
     "python3",
@@ -44,20 +48,24 @@ const SUPPORTED_LANGUAGES: &[&str] = &[
 /// 默认保留的标准输出+标准错误字节预算上限。
 const DEFAULT_MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 
-/// 校验语言是否在支持集合内（大小写不敏感）。
-///
-/// 决策 D-10b-case-1：LLM 可能会给出 `Python`/`PYTHON`/`R` 等形式，因此
-/// 匹配前先统一归一化为小写。
-///
-/// 返回归一化后的小写语言名，或返回错误。
+/**
+校验语言是否在支持集合内（大小写不敏感）。
+
+决策 D-10b-case-1：LLM 可能会给出 `Python`/`PYTHON`/`R` 等形式，因此
+匹配前先统一归一化为小写。
+
+返回归一化后的小写语言名，或返回错误。
+*/
 fn validate_language(language: &str) -> Result<String> {
     let normalized = language.to_lowercase();
     if SUPPORTED_LANGUAGES.iter().any(|&l| l == normalized) {
         Ok(normalized)
     } else {
-        // ToolError::InvalidParameter 是一个结构体变体 {name, message}
-        // （echo-core/src/error.rs:118）。这里显式包装为 ReactError，
-        // 以避免调用处的 Into 转换产生歧义。
+        /*
+        ToolError::InvalidParameter 是一个结构体变体 {name, message}
+        （echo-core/src/error.rs:118）。这里显式包装为 ReactError，
+        以避免调用处的 Into 转换产生歧义。
+        */
         Err(ReactError::from(ToolError::InvalidParameter {
             name: "language".to_string(),
             message: format!(
@@ -86,10 +94,12 @@ fn script_program(language: &str) -> Result<&'static str> {
     }
 }
 
-/// 根据语言和（可选的）脚本执行画像构建持久化脚本的沙箱命令。
-///
-/// 若提供了 `profile`，会校验其语言与目标语言一致，并使用画像中指定的
-/// 解释器程序、前置参数与环境变量；否则退回使用默认的解释器程序。
+/**
+根据语言和（可选的）脚本执行画像构建持久化脚本的沙箱命令。
+
+若提供了 `profile`，会校验其语言与目标语言一致，并使用画像中指定的
+解释器程序、前置参数与环境变量；否则退回使用默认的解释器程序。
+*/
 fn script_command(
     language: &str,
     relative_script: &Path,
@@ -129,10 +139,12 @@ fn script_command(
     Ok((command, Some(profile.clone())))
 }
 
-/// 校验脚本路径必须是相对路径，且规范化后仍停留在执行工作目录之内
-/// （防止通过 `..`、绝对路径或跨目录符号链接逃逸出工作目录）。
-///
-/// 返回校验通过的相对路径。
+/**
+校验脚本路径必须是相对路径，且规范化后仍停留在执行工作目录之内
+（防止通过 `..`、绝对路径或跨目录符号链接逃逸出工作目录）。
+
+返回校验通过的相对路径。
+*/
 fn validate_script_path(script_path: &str, working_dir: Option<&Path>) -> Result<PathBuf> {
     let trimmed = script_path.trim();
     if trimmed.is_empty() {
@@ -189,9 +201,11 @@ fn validate_script_path(script_path: &str, working_dir: Option<&Path>) -> Result
 
 /// 沙箱化的内联代码/持久化脚本执行工具。
 pub struct RunCodeTool {
-    /// 使用内部可变性，使得 `Tool::set_sandbox`（一个 `&self` 方法）能够
-    /// 在构造之后（通过 `set_sandbox_manager` → `ToolManager::apply_sandbox`）
-    /// 注入执行器，而无需 `&mut self`。
+    /**
+    使用内部可变性，使得 `Tool::set_sandbox`（一个 `&self` 方法）能够
+    在构造之后（通过 `set_sandbox_manager` → `ToolManager::apply_sandbox`）
+    注入执行器，而无需 `&mut self`。
+    */
     sandbox: Mutex<Option<Arc<dyn SandboxExecutor>>>,
     /// 应用侧持有的、用于持久化脚本的可选惰性运行时解析器。
     script_profile_resolver: Mutex<Option<Arc<dyn ScriptExecutionProfileResolver>>>,
@@ -391,8 +405,10 @@ impl Tool for RunCodeTool {
                 .clamp(1, 300);
             let timeout_duration = Duration::from_secs(timeout_secs);
 
-            // 2. 绑定子代理的工作目录，并设置最低隔离级别。
-            //    `with_timeout` 接收一个 Duration（echo-core/src/sandbox.rs:148）。
+            /*
+            2. 绑定子代理的工作目录，并设置最低隔离级别。
+               `with_timeout` 接收一个 Duration（echo-core/src/sandbox.rs:148）。
+            */
             sandbox_cmd = sandbox_cmd.with_minimum_isolation(IsolationLevel::OsSandbox);
             if let Some(dir) = &ctx.working_dir {
                 sandbox_cmd = sandbox_cmd.with_working_dir(dir.clone());
@@ -492,8 +508,10 @@ fn sandbox_error_result(error: ReactError) -> ToolResult {
     ToolResult::error(format!("Sandbox execution failed: {error}")).with_failure(failure)
 }
 
-/// 将沙箱的原始 `ExecutionResult` 转换为携带完整元数据的 `ToolResult`
-/// （包括退出码、耗时、隔离级别、是否超时/被取消/被截断等信息）。
+/**
+将沙箱的原始 `ExecutionResult` 转换为携带完整元数据的 `ToolResult`
+（包括退出码、耗时、隔离级别、是否超时/被取消/被截断等信息）。
+*/
 fn tool_result_from_execution(
     mut execution: ExecutionResult,
     working_dir: Option<&std::path::PathBuf>,
@@ -673,8 +691,10 @@ mod tests {
             Box::pin(async move { Ok(result) })
         }
 
-        /// 记录调用后返回预设结果，并附带 `actual_isolation`（若未设置则回退为
-        /// `isolation`），用于测试实际隔离级别的上报逻辑。
+        /**
+        记录调用后返回预设结果，并附带 `actual_isolation`（若未设置则回退为
+        `isolation`），用于测试实际隔离级别的上报逻辑。
+        */
         fn execute_with_isolation_receipt(
             &self,
             command: SandboxCommand,

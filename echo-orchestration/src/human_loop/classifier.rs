@@ -1,11 +1,13 @@
-//! 权限分类器 (Classifier)
-//!
-//! 在 `auto` 权限模式下，使用 Classifier 自动决策工具调用是否应该被阻止。
-//! 抽象 trait 设计支持自定义实现：
-//! - LlmClassifier: 使用 LLM 进行智能决策
-//! - RuleClassifier: 基于简单规则匹配（无需 LLM）
-//!
-//! 参考 Claude Code 的 YoloClassifier 设计
+/*!
+权限分类器 (Classifier)
+
+在 `auto` 权限模式下，使用 Classifier 自动决策工具调用是否应该被阻止。
+抽象 trait 设计支持自定义实现：
+- LlmClassifier: 使用 LLM 进行智能决策
+- RuleClassifier: 基于简单规则匹配（无需 LLM）
+
+参考 Claude Code 的 YoloClassifier 设计
+*/
 
 use async_trait::async_trait;
 use echo_core::llm::{ChatRequest, LlmClient, Message};
@@ -16,25 +18,29 @@ use tokio::sync::Mutex;
 
 use echo_core::error::Result;
 
-// ── Classifier Trait ───────────────────────────────────────────────────────────
+// ── 分类器 Trait ───────────────────────────────────────────────────────────
 
-/// Classifier trait - 抽象分类器接口
-///
-/// 实现此 trait 可自定义 auto 模式下的权限决策逻辑。
-/// 内置实现：
-/// - `LlmClassifier`: 使用 LLM 进行智能决策
-/// - `RuleClassifier`: 基于简单规则匹配
+/**
+Classifier trait - 抽象分类器接口
+
+实现此 trait 可自定义 auto 模式下的权限决策逻辑。
+内置实现：
+- `LlmClassifier`: 使用 LLM 进行智能决策
+- `RuleClassifier`: 基于简单规则匹配
+*/
 #[async_trait]
 pub trait Classifier: Send + Sync {
-    /// 分类工具调用是否应该被阻止
-    ///
-    /// # Arguments
-    /// * `tool_name` - 工具名称
-    /// * `tool_input` - 工具输入参数
-    /// * `context` - 分类器上下文（包含对话历史、规则等）
-    ///
-    /// # Returns
-    /// * `ClassifierResult` - 分类结果（是否阻止、原因、置信度）
+    /**
+    分类工具调用是否应该被阻止
+
+    # 参数
+    * `tool_name` - 工具名称
+    * `tool_input` - 工具输入参数
+    * `context` - 分类器上下文（包含对话历史、规则等）
+
+    # 返回
+    * `ClassifierResult` - 分类结果（是否阻止、原因、置信度）
+    */
     async fn classify(
         &self,
         tool_name: &str,
@@ -43,7 +49,7 @@ pub trait Classifier: Send + Sync {
     ) -> Result<ClassifierResult>;
 }
 
-// ── Classifier Context ─────────────────────────────────────────────────────────
+// ── 分类器上下文 ─────────────────────────────────────────────────────────
 
 /// 风险上下文 — 描述当前操作的环境风险信号
 #[derive(Debug, Clone, Default)]
@@ -126,7 +132,7 @@ impl ClassifierContext {
     }
 }
 
-// ── Classifier Result ──────────────────────────────────────────────────────────
+// ── 分类结果 ──────────────────────────────────────────────────────────
 
 /// 分类结果
 #[derive(Debug, Clone)]
@@ -165,16 +171,18 @@ impl ClassifierResult {
     }
 }
 
-// ── Denial Tracker ─────────────────────────────────────────────────────────────
+// ── 拒绝跟踪器 ─────────────────────────────────────────────────────────────
 
-/// 拒绝跟踪器 - 防止 auto 模式拒绝循环
-///
-/// 当 Classifier 连续拒绝过多时，自动回退到用户交互模式，
-/// 防止 Agent 陷入无限拒绝循环。
-///
-/// 参考 Claude Code 的 YoloClassifier 设计：
-/// - 连续拒绝 N 次 → 回退
-/// - 总拒绝 M 次 → 回退（默认 N=3, M=20）
+/**
+拒绝跟踪器 - 防止 auto 模式拒绝循环
+
+当 Classifier 连续拒绝过多时，自动回退到用户交互模式，
+防止 Agent 陷入无限拒绝循环。
+
+参考 Claude Code 的 YoloClassifier 设计：
+- 连续拒绝 N 次 → 回退
+- 总拒绝 M 次 → 回退（默认 N=3, M=20）
+*/
 #[derive(Debug)]
 pub struct DenialTracker {
     /// 连续拒绝次数
@@ -235,11 +243,13 @@ impl DenialTracker {
         self.consecutive_denials = 0;
     }
 
-    /// 检查是否应该回退到用户交互模式
-    ///
-    /// 触发条件（任一满足）：
-    /// - 连续拒绝次数 ≥ max_consecutive（默认 3）
-    /// - 总拒绝次数 ≥ max_total_denials（默认 20）
+    /**
+    检查是否应该回退到用户交互模式
+
+    触发条件（任一满足）：
+    - 连续拒绝次数 ≥ max_consecutive（默认 3）
+    - 总拒绝次数 ≥ max_total_denials（默认 20）
+    */
     pub fn should_fallback(&self) -> bool {
         self.consecutive_denials >= self.max_consecutive
             || self.total_denials >= self.max_total_denials
@@ -262,18 +272,21 @@ impl DenialTracker {
 }
 
 impl Default for DenialTracker {
+    /// 创建使用默认阈值的拒绝跟踪器。
     fn default() -> Self {
         Self::new()
     }
 }
 
-// ── Rule Classifier ────────────────────────────────────────────────────────────
+// ── 规则分类器 ────────────────────────────────────────────────────────────
 
-/// 基于规则的简单 Classifier（无需 LLM）
-///
-/// 使用预定义的模式匹配规则进行分类：
-/// - `deny_patterns`: 匹配则阻止
-/// - `allow_patterns`: 匹配则允许
+/**
+基于规则的简单 Classifier（无需 LLM）
+
+使用预定义的模式匹配规则进行分类：
+- `deny_patterns`: 匹配则阻止
+- `allow_patterns`: 匹配则允许
+*/
 pub struct RuleClassifier {
     /// 阻止模式列表
     deny_patterns: Vec<String>,
@@ -322,6 +335,7 @@ impl RuleClassifier {
 }
 
 impl Default for RuleClassifier {
+    /// 创建空的规则分类器。
     fn default() -> Self {
         Self::new()
     }
@@ -329,6 +343,7 @@ impl Default for RuleClassifier {
 
 #[async_trait]
 impl Classifier for RuleClassifier {
+    /// 先匹配允许规则，再匹配阻止规则；均未命中时返回低置信度阻止结果。
     async fn classify(
         &self,
         tool_name: &str,
@@ -366,14 +381,16 @@ impl Classifier for RuleClassifier {
     }
 }
 
-// ── LLM Classifier ─────────────────────────────────────────────────────────────
+// ── LLM 分类器 ─────────────────────────────────────────────────────────────
 
-/// 使用 LLM 进行智能决策的分类器
-///
-/// 参考 Claude Code 的 YoloClassifier 实现：
-/// 1. 构建分类提示词（包含 allow/soft_deny 规则）
-/// 2. 调用 LLM 进行分类
-/// 3. 解析结果并跟踪拒绝次数
+/**
+使用 LLM 进行智能决策的分类器
+
+参考 Claude Code 的 YoloClassifier 实现：
+1. 构建分类提示词（包含 allow/soft_deny 规则）
+2. 调用 LLM 进行分类
+3. 解析结果并跟踪拒绝次数
+*/
 pub struct LlmClassifier {
     /// LLM 客户端
     client: Arc<dyn LlmClient>,
@@ -399,15 +416,17 @@ impl LlmClassifier {
         self
     }
 
-    /// 截断工具输入以避免超出 LLM 上下文
-    ///
-    /// 限制为 2000 字符，防止大参数消耗过多 token。
+    /**
+    截断工具输入以避免超出 LLM 上下文
+
+    限制为 2000 字符，防止大参数消耗过多 token。
+    */
     fn truncate_tool_input(tool_input: &Value) -> String {
         let full = serde_json::to_string_pretty(tool_input).unwrap_or_default();
         if full.len() <= 2000 {
             return full;
         }
-        // UTF-8 safe truncation
+        // 按 UTF-8 字符边界安全截断
         let end = full
             .char_indices()
             .take_while(|(idx, _)| *idx < 2000)
@@ -511,8 +530,10 @@ impl LlmClassifier {
 
     /// 解析 LLM 响应
     fn parse_response(response: &str) -> Option<ClassifierResult> {
-        // 尝试使用正则表达式提取 JSON 对象
-        // 匹配第一个完整的 JSON 对象（支持嵌套）
+        /*
+        尝试使用正则表达式提取 JSON 对象
+        匹配第一个完整的 JSON 对象（支持嵌套）
+        */
         if let Some(json_str) = Self::extract_json(response)
             && let Ok(json) = serde_json::from_str::<Value>(&json_str)
         {
@@ -540,10 +561,12 @@ impl LlmClassifier {
         }
     }
 
-    /// 从文本中提取第一个 JSON 对象
-    ///
-    /// 使用大括号计数来匹配完整嵌套的 JSON 对象，
-    /// 比简单的行过滤更可靠。
+    /**
+    从文本中提取第一个 JSON 对象
+
+    使用大括号计数来匹配完整嵌套的 JSON 对象，
+    比简单的行过滤更可靠。
+    */
     fn extract_json(text: &str) -> Option<String> {
         let trimmed = text.trim();
         let mut depth = 0i32;
@@ -571,6 +594,7 @@ impl LlmClassifier {
 
 #[async_trait]
 impl Classifier for LlmClassifier {
+    /// 调用 LLM 进行分类，并根据结果更新拒绝跟踪器；连续拒绝过多时直接回退。
     async fn classify(
         &self,
         tool_name: &str,
@@ -615,11 +639,13 @@ impl Classifier for LlmClassifier {
     }
 }
 
-// ── Composite Classifier ───────────────────────────────────────────────────────
+// ── 组合分类器 ───────────────────────────────────────────────────────
 
-/// 组合分类器 - 依次执行多个分类器
-///
-/// 按优先级顺序执行分类器，取第一个非默认结果。
+/**
+组合分类器 - 依次执行多个分类器
+
+按优先级顺序执行分类器，取第一个非默认结果。
+*/
 pub struct CompositeClassifier {
     /// 分类器列表（按优先级排序）
     classifiers: Vec<Arc<dyn Classifier>>,
@@ -646,6 +672,7 @@ impl CompositeClassifier {
 }
 
 impl Default for CompositeClassifier {
+    /// 创建空的组合分类器。
     fn default() -> Self {
         Self::new()
     }
@@ -653,6 +680,7 @@ impl Default for CompositeClassifier {
 
 #[async_trait]
 impl Classifier for CompositeClassifier {
+    /// 按顺序执行分类器，返回首个置信度 ≥ 0.8 的结果；否则要求用户确认。
     async fn classify(
         &self,
         tool_name: &str,
@@ -681,6 +709,7 @@ impl Classifier for CompositeClassifier {
 mod tests {
     use super::*;
 
+    /// 验证允许结果的构造。
     #[test]
     fn test_classifier_result_allow() {
         let result = ClassifierResult::allow("test reason".to_string());
@@ -689,6 +718,7 @@ mod tests {
         assert_eq!(result.confidence, 1.0);
     }
 
+    /// 验证阻止结果的构造。
     #[test]
     fn test_classifier_result_block() {
         let result = ClassifierResult::block("dangerous".to_string());
@@ -697,12 +727,14 @@ mod tests {
         assert_eq!(result.confidence, 1.0);
     }
 
+    /// 验证置信度设置与截断。
     #[test]
     fn test_classifier_result_with_confidence() {
         let result = ClassifierResult::allow("test".to_string()).with_confidence(0.5);
         assert_eq!(result.confidence, 0.5);
     }
 
+    /// 验证新建拒绝跟踪器的初始状态。
     #[test]
     fn test_denial_tracker_new() {
         let tracker = DenialTracker::new();
@@ -711,6 +743,7 @@ mod tests {
         assert!(!tracker.should_fallback());
     }
 
+    /// 验证记录拒绝会累加计数。
     #[test]
     fn test_denial_tracker_record() {
         let mut tracker = DenialTracker::new();
@@ -720,6 +753,7 @@ mod tests {
         assert!(tracker.last_denial_time().is_some());
     }
 
+    /// 验证达到连续拒绝阈值后触发回退。
     #[test]
     fn test_denial_tracker_fallback() {
         let mut tracker = DenialTracker::with_max_consecutive(2);
@@ -729,6 +763,7 @@ mod tests {
         assert!(tracker.should_fallback());
     }
 
+    /// 验证重置只清零连续拒绝计数。
     #[test]
     fn test_denial_tracker_reset() {
         let mut tracker = DenialTracker::new();
@@ -739,12 +774,14 @@ mod tests {
         assert_eq!(tracker.total_denials(), 2); // 总数不重置
     }
 
+    /// 验证空上下文的构造。
     #[test]
     fn test_classifier_context_new() {
         let ctx = ClassifierContext::new();
         assert!(ctx.messages.is_empty());
     }
 
+    /// 验证规则分类器的模式匹配。
     #[test]
     fn test_rule_classifier_matches_pattern() {
         assert!(RuleClassifier::matches_pattern("*", "Bash"));
@@ -753,6 +790,7 @@ mod tests {
         assert!(!RuleClassifier::matches_pattern("Bash", "BashExtra"));
     }
 
+    /// 验证命中允许规则时放行。
     #[tokio::test]
     async fn test_rule_classifier_allow() {
         let classifier =
@@ -766,6 +804,7 @@ mod tests {
         assert!(!result.should_block);
     }
 
+    /// 验证命中阻止规则时阻止。
     #[tokio::test]
     async fn test_rule_classifier_deny() {
         let classifier = RuleClassifier::new().with_deny_patterns(vec!["Bash(rm:*)".to_string()]);
@@ -782,6 +821,7 @@ mod tests {
         assert!(result.should_block);
     }
 
+    /// 验证未命中任何规则时返回低置信度阻止结果。
     #[tokio::test]
     async fn test_rule_classifier_default() {
         let classifier = RuleClassifier::new();
@@ -794,6 +834,7 @@ mod tests {
         assert_eq!(result.confidence, 0.0);
     }
 
+    /// 验证 LLM 分类器的提示词构建。
     #[test]
     fn test_llm_classifier_build_prompt() {
         // 使用 mock client 测试提示词构建
@@ -801,9 +842,11 @@ mod tests {
         use futures::future::BoxFuture;
         use futures::stream::BoxStream;
 
+        /// 仅用于构造分类器的模拟 LLM 客户端。
         struct MockClient;
 
         impl LlmClient for MockClient {
+            /// 返回固定的允许分类 JSON 响应。
             fn chat(&self, _request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
                 Box::pin(async move {
                     Ok(ChatResponse {
@@ -817,6 +860,7 @@ mod tests {
                 })
             }
 
+            /// 模拟客户端不支持流式输出。
             fn chat_stream(
                 &self,
                 _request: ChatRequest,
@@ -828,6 +872,7 @@ mod tests {
                 })
             }
 
+            /// 返回模拟模型名称。
             fn model_name(&self) -> &str {
                 "mock"
             }
@@ -846,6 +891,7 @@ mod tests {
         assert!(prompt.contains("Bash(rm:*)"));
     }
 
+    /// 验证从 JSON 响应中解析分类结果。
     #[test]
     fn test_llm_classifier_parse_response_json() {
         // 直接测试 parse_response 函数
@@ -857,6 +903,7 @@ mod tests {
         assert_eq!(r.reason, "危险操作");
     }
 
+    /// 验证从纯文本响应中推断分类结果。
     #[test]
     fn test_llm_classifier_parse_response_text() {
         let result = parse_hook_output_for_test("我认为应该阻止此操作");
@@ -864,9 +911,9 @@ mod tests {
         assert!(result.unwrap().should_block);
     }
 
-    // Helper function for testing
+    /// 测试用辅助函数：从响应中解析分类结果
     fn parse_hook_output_for_test(response: &str) -> Option<ClassifierResult> {
-        // Try to extract JSON
+        // 尝试提取 JSON
         let json_str = response
             .trim()
             .lines()
@@ -891,7 +938,7 @@ mod tests {
             });
         }
 
-        // Try to judge from text
+        // 尝试从文本中判断
         if response.contains("阻止") || response.contains("block") {
             Some(ClassifierResult::block("LLM 判断应阻止".to_string()))
         } else if response.contains("允许") || response.contains("allow") {

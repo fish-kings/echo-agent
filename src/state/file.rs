@@ -333,8 +333,10 @@ impl FileRuntimeStateStore {
         store
     }
 
-    /// 校验给定的持久化调用上下文尚未超出截止时间；若已超时，
-    /// 转换为对应操作名称的截止超时错误。
+    /**
+    校验给定的持久化调用上下文尚未超出截止时间；若已超时，
+    转换为对应操作名称的截止超时错误。
+    */
     fn ensure_call_deadline(
         context: crate::memory::PersistenceCallContext,
         operation: &str,
@@ -384,8 +386,10 @@ impl FileRuntimeStateStore {
         Ok(left == right)
     }
 
-    /// 校验一个非受管（unmanaged）检查点不携带待确认的转写投影
-    /// （待确认投影只允许存在于受版本管理的 CAS 路径上）。
+    /**
+    校验一个非受管（unmanaged）检查点不携带待确认的转写投影
+    （待确认投影只允许存在于受版本管理的 CAS 路径上）。
+    */
     fn validate_unmanaged_checkpoint(checkpoint: &AgentCheckpoint) -> crate::error::Result<()> {
         let payload = checkpoint.restore_managed_runtime_payload()?;
         if payload.pending_transcript_projection.is_some() {
@@ -396,8 +400,10 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 校验一条运行时 owner 记录的内部一致性：不同状态版本（未管理/受管/已退役）
-    /// 下检查点是否存在、待确认投影是否与修订号匹配、转写确认证明是否合法。
+    /**
+    校验一条运行时 owner 记录的内部一致性：不同状态版本（未管理/受管/已退役）
+    下检查点是否存在、待确认投影是否与修订号匹配、转写确认证明是否合法。
+    */
     fn validate_runtime_owner_payload(owner: &RuntimeStateOwner) -> crate::error::Result<()> {
         match owner.state_version.as_ref() {
             None | Some(RuntimeStateVersion::Unmanaged { .. }) => {
@@ -466,8 +472,10 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 获取一条 owner 记录的状态版本：优先使用显式的 `state_version` 字段，
-    /// 若不存在（旧式记录）则用检查点摘要合成一个 `Unmanaged` 版本。
+    /**
+    获取一条 owner 记录的状态版本：优先使用显式的 `state_version` 字段，
+    若不存在（旧式记录）则用检查点摘要合成一个 `Unmanaged` 版本。
+    */
     fn owner_state_version(owner: &RuntimeStateOwner) -> crate::error::Result<RuntimeStateVersion> {
         if let Some(version) = owner.state_version.as_ref() {
             return Ok(version.clone());
@@ -517,9 +525,11 @@ impl FileRuntimeStateStore {
         epoch.is_none_or(|epoch| (1..=MAX_CONVERSATION_EPOCH).contains(&epoch))
     }
 
-    /// 校验一个检查点 CAS 请求的基本合法性：id 可安全编码为路径、
-    /// 检查点身份与请求身份一致、epoch 合法、待确认转写投影与请求的
-    /// 作用域/epoch/游标一致。
+    /**
+    校验一个检查点 CAS 请求的基本合法性：id 可安全编码为路径、
+    检查点身份与请求身份一致、epoch 合法、待确认转写投影与请求的
+    作用域/epoch/游标一致。
+    */
     fn validate_checkpoint_cas_request(
         request: &RuntimeCheckpointCasRequest,
     ) -> crate::error::Result<()> {
@@ -548,10 +558,12 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 校验一次检查点更新中"待确认转写投影"字段的状态迁移是否合法：
-    /// 新增待确认投影的基准修订号必须等于本次写入后的修订号；已存在的待确认投影
-    /// 在被确认之前身份不可变（仅允许重试类的 attempt 推进）；出现新的待确认投影时
-    /// 消息内容必须与当前一致。
+    /**
+    校验一次检查点更新中"待确认转写投影"字段的状态迁移是否合法：
+    新增待确认投影的基准修订号必须等于本次写入后的修订号；已存在的待确认投影
+    在被确认之前身份不可变（仅允许重试类的 attempt 推进）；出现新的待确认投影时
+    消息内容必须与当前一致。
+    */
     fn validate_pending_transition(
         owner: Option<&RuntimeStateOwner>,
         checkpoint: &AgentCheckpoint,
@@ -651,8 +663,10 @@ impl FileRuntimeStateStore {
         }
     }
 
-    /// 判断待确认转写投影的 attempt 计数迁移是否合法：要么是同一次 attempt
-    /// 首次记录失败信息，要么是在上一次失败可重试的前提下推进到下一次 attempt。
+    /**
+    判断待确认转写投影的 attempt 计数迁移是否合法：要么是同一次 attempt
+    首次记录失败信息，要么是在上一次失败可重试的前提下推进到下一次 attempt。
+    */
     fn valid_pending_attempt_transition(
         current: &super::PendingTranscriptProjection,
         next: &super::PendingTranscriptProjection,
@@ -690,9 +704,11 @@ impl FileRuntimeStateStore {
         )
     }
 
-    /// 校验一次转写投影确认请求是否与当前 owner 记录中的待确认投影匹配
-    /// （操作 id、负载摘要、作用域、生成代、epoch、确认后的游标、消息内容
-    /// 及检查点其余字段均需一致），否则拒绝该确认。
+    /**
+    校验一次转写投影确认请求是否与当前 owner 记录中的待确认投影匹配
+    （操作 id、负载摘要、作用域、生成代、epoch、确认后的游标、消息内容
+    及检查点其余字段均需一致），否则拒绝该确认。
+    */
     fn validate_transcript_ack(
         owner: &RuntimeStateOwner,
         request: &RuntimeTranscriptAckRequest,
@@ -740,8 +756,10 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 判断给定的 CAS 请求是否是对当前记录的一次幂等重放
-    /// （期望版本、期望作用域修订号、检查点内容均与当前一致）。
+    /**
+    判断给定的 CAS 请求是否是对当前记录的一次幂等重放
+    （期望版本、期望作用域修订号、检查点内容均与当前一致）。
+    */
     fn is_direct_cas_replay(
         owner: &RuntimeStateOwner,
         request: &RuntimeCheckpointCasRequest,
@@ -755,8 +773,10 @@ impl FileRuntimeStateStore {
             && Self::checkpoint_is_current(owner, &request.checkpoint)?)
     }
 
-    /// 判断给定的生成代退役请求是否是对当前已退役记录的一次幂等重放
-    /// （操作 id、期望版本、期望作用域修订号均一致）。
+    /**
+    判断给定的生成代退役请求是否是对当前已退役记录的一次幂等重放
+    （操作 id、期望版本、期望作用域修订号均一致）。
+    */
     fn is_direct_retirement_replay(
         owner: &RuntimeStateOwner,
         request: &RuntimeGenerationRetireRequest,
@@ -789,8 +809,10 @@ impl FileRuntimeStateStore {
         })
     }
 
-    /// 同步写入一个作用域索引文件；若索引中运行时状态 id 集合为空，则改为删除
-    /// 该索引文件（索引本身可重建，不需要保留空文件）。
+    /**
+    同步写入一个作用域索引文件；若索引中运行时状态 id 集合为空，则改为删除
+    该索引文件（索引本身可重建，不需要保留空文件）。
+    */
     fn write_scope_index_sync(&self, index: &RuntimeStateScopeIndex) -> crate::error::Result<()> {
         let path = self.scope_index_path(&index.scope_id)?;
         if index.runtime_state_ids.is_empty() {
@@ -807,8 +829,10 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
-    /// 同步读取并校验给定作用域的 owner 记录；文件不存在时返回 `None`，
-    /// 记录版本/身份/修订号/epoch 不合法或退役墓碑不一致时返回错误。
+    /**
+    同步读取并校验给定作用域的 owner 记录；文件不存在时返回 `None`，
+    记录版本/身份/修订号/epoch 不合法或退役墓碑不一致时返回错误。
+    */
     fn read_scope_owner_sync(
         &self,
         scope_id: &str,
@@ -858,9 +882,11 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
-    /// 校验作用域 owner 记录的内部一致性：退役中的作用域必须携带匹配的退役清单
-    /// （且清单 epoch 与作用域权威一致），非退役中的作用域不得携带清单；
-    /// 所有已完成的退役回执必须归属本作用域且状态确实为"已完成"。
+    /**
+    校验作用域 owner 记录的内部一致性：退役中的作用域必须携带匹配的退役清单
+    （且清单 epoch 与作用域权威一致），非退役中的作用域不得携带清单；
+    所有已完成的退役回执必须归属本作用域且状态确实为"已完成"。
+    */
     fn validate_scope_owner(owner: &RuntimeScopeOwner) -> crate::error::Result<()> {
         match (owner.authority.lifecycle, owner.current_retirement.as_ref()) {
             (RuntimeScopeLifecycle::Retiring, Some(manifest)) => {
@@ -904,9 +930,11 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 同步校验退役清单中每一个"已因删除而丢弃"的条目，都能在对应的
-    /// 运行时 owner 记录中找到匹配的退役墓碑（归属正确的作用域、处于删除阶段、
-    /// 状态版本为与本次删除操作 id 一致的 `Retired`）。
+    /**
+    同步校验退役清单中每一个"已因删除而丢弃"的条目，都能在对应的
+    运行时 owner 记录中找到匹配的退役墓碑（归属正确的作用域、处于删除阶段、
+    状态版本为与本次删除操作 id 一致的 `Retired`）。
+    */
     fn validate_retirement_tombstones_sync(
         &self,
         owner: &RuntimeScopeOwner,
@@ -949,8 +977,10 @@ impl FileRuntimeStateStore {
         Ok(())
     }
 
-    /// 当作用域自身没有 owner 记录时，从属于该作用域、修订号最高的运行时记录
-    /// 合成一个等价的作用域权威快照（用于恢复/兜底场景）。
+    /**
+    当作用域自身没有 owner 记录时，从属于该作用域、修订号最高的运行时记录
+    合成一个等价的作用域权威快照（用于恢复/兜底场景）。
+    */
     fn synthetic_scope_authority(
         scope_id: &str,
         owners: &[RuntimeStateOwner],
@@ -967,9 +997,11 @@ impl FileRuntimeStateStore {
             })
     }
 
-    /// 同步读取作用域 owner 记录，并在合成的权威（从运行时记录推导）比
-    /// 已保存记录更新时进行修复：提升修订号/epoch/生命周期，并按需更新
-    /// 退役清单中条目的丢弃状态；若记录完全不存在但能够合成，则新建之。
+    /**
+    同步读取作用域 owner 记录，并在合成的权威（从运行时记录推导）比
+    已保存记录更新时进行修复：提升修订号/epoch/生命周期，并按需更新
+    退役清单中条目的丢弃状态；若记录完全不存在但能够合成，则新建之。
+    */
     fn reconcile_scope_owner_sync(
         &self,
         scope_id: &str,
@@ -1022,9 +1054,11 @@ impl FileRuntimeStateStore {
         Ok(record)
     }
 
-    /// 同步读取并全面校验给定运行时状态的 owner 记录：版本号与身份匹配、
-    /// 旧式记录不含受管字段、受管记录携带完整的版本元数据、epoch 合法、
-    /// 转写确认证明合法、生命周期阶段与检查点存在性一致。文件不存在时返回 `None`。
+    /**
+    同步读取并全面校验给定运行时状态的 owner 记录：版本号与身份匹配、
+    旧式记录不含受管字段、受管记录携带完整的版本元数据、epoch 合法、
+    转写确认证明合法、生命周期阶段与检查点存在性一致。文件不存在时返回 `None`。
+    */
     fn read_runtime_owner_sync(
         &self,
         runtime_state_id: &str,
@@ -1144,9 +1178,11 @@ impl FileRuntimeStateStore {
         Ok(Some(owner))
     }
 
-    /// 在调用方已持有该运行时分片锁的前提下，读取记录并纠正旧式清除操作
-    /// 崩溃留下的中间态（legacy clear crash-cut）：旧式记录若已处于删除阶段，
-    /// 则直接彻底移除该记录并返回 `None`。
+    /**
+    在调用方已持有该运行时分片锁的前提下，读取记录并纠正旧式清除操作
+    崩溃留下的中间态（legacy clear crash-cut）：旧式记录若已处于删除阶段，
+    则直接彻底移除该记录并返回 `None`。
+    */
     fn read_live_runtime_owner_sync(
         &self,
         runtime_state_id: &str,
@@ -1176,8 +1212,10 @@ impl FileRuntimeStateStore {
         echo_core::utils::fs::atomic_write(&path, &raw).map_err(Self::to_react_err)
     }
 
-    /// 同步将一条存活的运行时记录标记为删除中（清空检查点，保留其余元数据）。
-    /// 记录不存在时返回 `false`；记录存在但归属不同作用域时返回错误。
+    /**
+    同步将一条存活的运行时记录标记为删除中（清空检查点，保留其余元数据）。
+    记录不存在时返回 `false`；记录存在但归属不同作用域时返回错误。
+    */
     fn mark_runtime_deleting_sync(
         &self,
         scope_id: &str,
@@ -1216,8 +1254,10 @@ impl FileRuntimeStateStore {
         remove_file_durable(&self.runtime_owner_path(runtime_state_id)?).map_err(Self::to_react_err)
     }
 
-    /// 同步扫描 `_runtime_owners` 目录，读取并校验全部运行时记录，
-    /// 过滤掉旧式的、已处于删除阶段的记录，并按 id 排序返回。
+    /**
+    同步扫描 `_runtime_owners` 目录，读取并校验全部运行时记录，
+    过滤掉旧式的、已处于删除阶段的记录，并按 id 排序返回。
+    */
     fn runtime_records_sync(&self) -> crate::error::Result<Vec<RuntimeStateOwner>> {
         let root = self.base.join("_runtime_owners");
         let mut records = Vec::new();
@@ -1281,8 +1321,10 @@ impl FileRuntimeStateStore {
         })
     }
 
-    /// 尽力重建给定作用域的索引投影；失败时仅记录警告日志而不中断调用方，
-    /// 因为索引只是可重建的投影，owner 记录始终是权威数据源。
+    /**
+    尽力重建给定作用域的索引投影；失败时仅记录警告日志而不中断调用方，
+    因为索引只是可重建的投影，owner 记录始终是权威数据源。
+    */
     fn repair_scope_index_best_effort(&self, scope_id: &str) {
         let repaired = self
             .runtime_records_sync()
@@ -1296,9 +1338,11 @@ impl FileRuntimeStateStore {
         }
     }
 
-    /// 解析出该作用域当前的权威快照：优先使用已保存的 owner 记录，
-    /// 其次尝试从运行时记录合成，都没有时回退为一个全新、未绑定 epoch 的
-    /// 活跃作用域默认值。
+    /**
+    解析出该作用域当前的权威快照：优先使用已保存的 owner 记录，
+    其次尝试从运行时记录合成，都没有时回退为一个全新、未绑定 epoch 的
+    活跃作用域默认值。
+    */
     fn authority_or_unmanaged(
         scope_id: &str,
         record: Option<&RuntimeScopeOwner>,
@@ -1339,8 +1383,10 @@ impl FileRuntimeStateStore {
             .map(|pending| pending.batch.operation_id))
     }
 
-    /// 根据作用域权威、退役清单和最终状态，组装一份退役回执
-    /// （汇总因删除而丢弃的待确认操作 id 列表及保留下限 epoch）。
+    /**
+    根据作用域权威、退役清单和最终状态，组装一份退役回执
+    （汇总因删除而丢弃的待确认操作 id 列表及保留下限 epoch）。
+    */
     fn retirement_receipt(
         scope: RuntimeScopeAuthority,
         manifest: ScopeRetirementManifest,
@@ -1368,8 +1414,10 @@ impl FileRuntimeStateStore {
         }
     }
 
-    /// 在已完成的退役历史中查找给定删除操作 id 对应的回执；找到后依据
-    /// 当前已知的保留下限 epoch 更新其状态（已完成 或 回执已过期）。
+    /**
+    在已完成的退役历史中查找给定删除操作 id 对应的回执；找到后依据
+    当前已知的保留下限 epoch 更新其状态（已完成 或 回执已过期）。
+    */
     fn completed_retirement(
         record: &RuntimeScopeOwner,
         delete_operation_id: &str,
@@ -1404,8 +1452,10 @@ impl FileRuntimeStateStore {
             })
     }
 
-    /// 判断一次会话删除回执是否代表删除成功，且保留下限 epoch 严格早于
-    /// 实际删除时的 epoch（否则该回执已被后续保留策略作废）。
+    /**
+    判断一次会话删除回执是否代表删除成功，且保留下限 epoch 严格早于
+    实际删除时的 epoch（否则该回执已被后续保留策略作废）。
+    */
     fn successful_conversation_delete(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> bool {
@@ -1416,8 +1466,10 @@ impl FileRuntimeStateStore {
         ) && receipt.retention_floor_epoch < receipt.deleted_epoch
     }
 
-    /// 将一次会话删除回执的失败状态映射为对应的作用域退役状态；
-    /// 删除成功（或本就已删除）时返回 `None`。
+    /**
+    将一次会话删除回执的失败状态映射为对应的作用域退役状态；
+    删除成功（或本就已删除）时返回 `None`。
+    */
     fn conversation_delete_failure_status(
         receipt: &crate::memory::ManagedConversationDeleteReceipt,
     ) -> Option<ScopeRetirementStatus> {
@@ -1436,8 +1488,10 @@ impl FileRuntimeStateStore {
         }
     }
 
-    /// 判断两次会话删除回执是否代表同一次成功删除的效果
-    /// （操作 id、负载摘要、删除 epoch 一致，且两者均为成功删除）。
+    /**
+    判断两次会话删除回执是否代表同一次成功删除的效果
+    （操作 id、负载摘要、删除 epoch 一致，且两者均为成功删除）。
+    */
     fn same_conversation_delete_effect(
         left: &crate::memory::ManagedConversationDeleteReceipt,
         right: &crate::memory::ManagedConversationDeleteReceipt,
@@ -1449,9 +1503,11 @@ impl FileRuntimeStateStore {
             && Self::successful_conversation_delete(right)
     }
 
-    /// 在按运行时状态 id（实体级）排队的阻塞线程上执行给定操作：先校验
-    /// 调用截止时间与 id 的路径安全性，再通过按键排队的阻塞文件操作
-    /// 运行器串行化执行，并将其错误转换为 [`ReactError`]。
+    /**
+    在按运行时状态 id（实体级）排队的阻塞线程上执行给定操作：先校验
+    调用截止时间与 id 的路径安全性，再通过按键排队的阻塞文件操作
+    运行器串行化执行，并将其错误转换为 [`ReactError`]。
+    */
     fn run_blocking<'a, T, F>(
         &'a self,
         conversation_id: String,
@@ -1479,8 +1535,10 @@ impl FileRuntimeStateStore {
         })
     }
 
-    /// 与 [`Self::run_blocking`] 类似，但按作用域 id（集合级）排队，
-    /// 用于需要遍历/修改整个作用域的操作。
+    /**
+    与 [`Self::run_blocking`] 类似，但按作用域 id（集合级）排队，
+    用于需要遍历/修改整个作用域的操作。
+    */
     fn run_scope_blocking<'a, T, F>(
         &'a self,
         scope_id: String,
@@ -1520,8 +1578,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         crate::memory::PersistenceCallCapability::AbsoluteDeadlineV1
     }
 
-    /// [`RuntimeStateStore::load_runtime_state_with_context`] 的文件后端实现：
-    /// 先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
+    /**
+    [`RuntimeStateStore::load_runtime_state_with_context`] 的文件后端实现：
+    先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
+    */
     fn load_runtime_state_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1537,8 +1597,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.load_runtime_state(&scope_id, &runtime_state_id).await })
     }
 
-    /// [`RuntimeStateStore::load_scope_authority_with_context`] 的文件后端实现：
-    /// 先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
+    /**
+    [`RuntimeStateStore::load_scope_authority_with_context`] 的文件后端实现：
+    先校验调用截止时间是否已过期，再委托给不带上下文的加载逻辑。
+    */
     fn load_scope_authority_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1552,8 +1614,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.load_scope_authority(&scope_id).await })
     }
 
-    /// [`RuntimeStateStore::compare_and_save_checkpoint_with_context`] 的文件
-    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    /**
+    [`RuntimeStateStore::compare_and_save_checkpoint_with_context`] 的文件
+    后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    */
     fn compare_and_save_checkpoint_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1566,8 +1630,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.compare_and_save_checkpoint(request).await })
     }
 
-    /// [`RuntimeStateStore::acknowledge_transcript_projection_with_context`] 的
-    /// 文件后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    /**
+    [`RuntimeStateStore::acknowledge_transcript_projection_with_context`] 的
+    文件后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    */
     fn acknowledge_transcript_projection_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1582,8 +1648,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.acknowledge_transcript_projection(request).await })
     }
 
-    /// [`RuntimeStateStore::retire_runtime_generation_with_context`] 的文件
-    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    /**
+    [`RuntimeStateStore::retire_runtime_generation_with_context`] 的文件
+    后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    */
     fn retire_runtime_generation_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1596,8 +1664,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.retire_runtime_generation(request).await })
     }
 
-    /// [`RuntimeStateStore::begin_scope_retirement_with_context`] 的文件
-    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    /**
+    [`RuntimeStateStore::begin_scope_retirement_with_context`] 的文件
+    后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    */
     fn begin_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1610,8 +1680,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         Box::pin(async move { store.begin_scope_retirement(request).await })
     }
 
-    /// [`RuntimeStateStore::continue_scope_retirement_with_context`] 的文件
-    /// 后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    /**
+    [`RuntimeStateStore::continue_scope_retirement_with_context`] 的文件
+    后端实现：先校验调用截止时间是否已过期，再委托给不带上下文的版本。
+    */
     fn continue_scope_retirement_with_context<'a>(
         &'a self,
         context: crate::memory::PersistenceCallContext,
@@ -1639,8 +1711,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 加载指定运行时状态的受管快照：对作用域与运行时记录分别加锁后，
-    /// 校正作用域权威快照并返回当前 owner 的检查点与状态版本。
+    /**
+    加载指定运行时状态的受管快照：对作用域与运行时记录分别加锁后，
+    校正作用域权威快照并返回当前 owner 的检查点与状态版本。
+    */
     fn load_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1674,8 +1748,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 加载指定作用域的当前权威快照：优先读取已保存的作用域 owner 记录，
-    /// 不存在时回退为从运行时记录合成的等价权威。
+    /**
+    加载指定作用域的当前权威快照：优先读取已保存的作用域 owner 记录，
+    不存在时回退为从运行时记录合成的等价权威。
+    */
     fn load_scope_authority<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2514,8 +2590,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 获取某个会话最近的一次检查点（如果存在）；若旧式记录处于删除阶段
-    /// 且尚未清理，则顺带将其彻底移除并返回 `None`。
+    /**
+    获取某个会话最近的一次检查点（如果存在）；若旧式记录处于删除阶段
+    且尚未清理，则顺带将其彻底移除并返回 `None`。
+    */
     fn get_checkpoint<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -2540,8 +2618,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         )
     }
 
-    /// 保存一个检查点；作用域即会话 id 本身，委托给
-    /// [`Self::save_checkpoint_for_scope`] 完成实际写入。
+    /**
+    保存一个检查点；作用域即会话 id 本身，委托给
+    [`Self::save_checkpoint_for_scope`] 完成实际写入。
+    */
     fn save_checkpoint<'a>(
         &'a self,
         checkpoint: &'a AgentCheckpoint,
@@ -2549,8 +2629,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         self.save_checkpoint_for_scope(&checkpoint.conversation_id, checkpoint)
     }
 
-    /// 保存一个旧式（非受管）检查点，并将其运行时身份绑定到给定作用域；
-    /// 若该作用域或该运行时状态已被纳入版本管理，则拒绝写入。
+    /**
+    保存一个旧式（非受管）检查点，并将其运行时身份绑定到给定作用域；
+    若该作用域或该运行时状态已被纳入版本管理，则拒绝写入。
+    */
     fn save_checkpoint_for_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2609,8 +2691,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 列出持久化绑定到 `scope_id` 的、已排序的运行时状态标识符；
-    /// 枚举过程中会尽力修复该作用域的索引投影文件。
+    /**
+    列出持久化绑定到 `scope_id` 的、已排序的运行时状态标识符；
+    枚举过程中会尽力修复该作用域的索引投影文件。
+    */
     fn runtime_state_ids<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2631,8 +2715,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 删除某一确切的运行时状态实例并移除其与作用域的绑定关系；
-    /// 若该作用域或该运行时状态已被纳入版本管理，则拒绝该操作。
+    /**
+    删除某一确切的运行时状态实例并移除其与作用域的绑定关系；
+    若该作用域或该运行时状态已被纳入版本管理，则拒绝该操作。
+    */
     fn clear_runtime_state<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2669,8 +2755,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 删除 `scope_id` 下建立了索引的全部运行时状态实例；
-    /// 若该作用域已被纳入版本管理，则拒绝该操作。
+    /**
+    删除 `scope_id` 下建立了索引的全部运行时状态实例；
+    若该作用域已被纳入版本管理，则拒绝该操作。
+    */
     fn clear_runtime_state_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -2703,8 +2791,10 @@ impl RuntimeStateStore for FileRuntimeStateStore {
         })
     }
 
-    /// 删除某个会话的全部状态；作用域即会话 id 本身，委托给
-    /// [`Self::clear_runtime_state`] 完成实际删除。
+    /**
+    删除某个会话的全部状态；作用域即会话 id 本身，委托给
+    [`Self::clear_runtime_state`] 完成实际删除。
+    */
     fn clear_conversation<'a>(
         &'a self,
         conversation_id: &'a str,

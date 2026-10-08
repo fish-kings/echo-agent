@@ -83,6 +83,7 @@ pub struct JwtConfigError {
 }
 
 impl std::fmt::Display for JwtConfigError {
+    /// 输出错误描述信息。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
@@ -157,6 +158,7 @@ impl JwtConfig {
 }
 
 impl std::fmt::Debug for JwtConfig {
+    /// 格式化调试输出，仅展示是否启用等元信息，隐藏密钥内容。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JwtConfig")
             .field("enabled", &self.is_enabled())
@@ -323,9 +325,12 @@ mod tests {
     use axum::http::HeaderValue;
     use jsonwebtoken::{EncodingKey, Header, encode};
 
+    /// 测试用 RSA 私钥（PEM 格式）。
     const RSA_PRIVATE_KEY: &[u8] = include_bytes!("../../tests/fixtures/rsa-private.pem");
+    /// 测试用 RSA 公钥（PEM 格式）。
     const RSA_PUBLIC_KEY: &str = include_str!("../../tests/fixtures/rsa-public.pem");
 
+    /// 构造一组用于签发测试 token 的 JWT 声明。
     fn claims() -> JwtClaims {
         JwtClaims {
             iss: Some("echo-agent".to_string()),
@@ -339,6 +344,7 @@ mod tests {
         }
     }
 
+    /// 验证能从合法的 `Authorization: Bearer` 头中提取 token。
     #[test]
     fn test_extract_bearer_token_valid() {
         let mut headers = axum::http::HeaderMap::new();
@@ -349,12 +355,14 @@ mod tests {
         assert_eq!(extract_bearer_token(&headers), Some("my.jwt.token"));
     }
 
+    /// 验证缺少 `Authorization` 头时提取结果为空。
     #[test]
     fn test_extract_bearer_token_missing() {
         let headers = axum::http::HeaderMap::new();
         assert_eq!(extract_bearer_token(&headers), None);
     }
 
+    /// 验证非 Bearer 方案的 `Authorization` 头不会被提取。
     #[test]
     fn test_extract_bearer_token_not_bearer() {
         let mut headers = axum::http::HeaderMap::new();
@@ -365,12 +373,14 @@ mod tests {
         assert_eq!(extract_bearer_token(&headers), None);
     }
 
+    /// 验证禁用状态的 JWT 配置报告为未启用。
     #[test]
     fn test_jwt_config_disabled() {
         let config = JwtConfig::disabled();
         assert!(!config.is_enabled());
     }
 
+    /// 验证 `JwtConfig` 的调试输出会隐藏密钥。
     #[test]
     fn test_jwt_config_debug_redacts_secret() {
         let config = JwtConfig::hs256("super-secret-key-1234567890");
@@ -380,6 +390,7 @@ mod tests {
         assert!(debug_str.contains("HS256"));
     }
 
+    /// 验证 HS256 配置只接受 HS256 签名的 token。
     #[test]
     fn hs256_validates_only_hs256_tokens() {
         let config = JwtConfig::hs256("a-test-secret-that-is-long-enough")
@@ -408,6 +419,7 @@ mod tests {
         assert!(validate_token(&config, &wrong_secret_token).is_err());
     }
 
+    /// 验证 RS256 配置只接受由匹配 RSA 密钥签名的 token。
     #[test]
     fn rs256_validates_only_matching_rsa_tokens() {
         let config_result = JwtConfig::rs256(RSA_PUBLIC_KEY).map(|config| {
@@ -443,11 +455,13 @@ mod tests {
         assert!(validate_token(&config, &hmac_token).is_err());
     }
 
+    /// 验证非法 PEM 公钥会在配置阶段即被拒绝。
     #[test]
     fn rs256_rejects_invalid_pem_at_configuration_time() {
         assert!(JwtConfig::rs256("not a PEM key").is_err());
     }
 
+    /// 验证 `subject()` 能返回声明中的主体。
     #[test]
     fn test_jwt_claims_subject() {
         let claims = JwtClaims {
@@ -463,6 +477,7 @@ mod tests {
         assert_eq!(claims.subject(), Some("client-123"));
     }
 
+    /// 验证声明中缺少主体时 `subject()` 返回 `None`。
     #[test]
     fn test_jwt_claims_no_subject() {
         let claims = JwtClaims {

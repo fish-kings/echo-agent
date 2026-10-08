@@ -1,7 +1,9 @@
-//! ReviewTool — 让 Agent 自我审查的工具
-//!
-//! 遵循业界模式（Hermes/Claude Code）：反思是工具级能力，不是独立 Agent 类型。
-//! Agent 可以在 ReAct 循环中调用此工具来评估自己的输出质量。
+/*!
+ReviewTool — 让 Agent 自我审查的工具
+
+遵循业界模式（Hermes/Claude Code）：反思是工具级能力，不是独立 Agent 类型。
+Agent 可以在 ReAct 循环中调用此工具来评估自己的输出质量。
+*/
 
 use crate::agent::critic::{Critic, LlmCritic};
 use crate::error::{Result, ToolError};
@@ -11,26 +13,29 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// ReviewTool — 评估 Agent 输出质量的工具
-///
-/// Agent 可以在推理过程中调用此工具来：
-/// 1. 评估自己的回答质量
-/// 2. 获取结构化反馈（分数、建议）
-/// 3. 根据反馈决定是否继续优化
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use echo_agent::agent::critic::{LlmCritic, ReviewTool};
-///
-/// let critic = LlmCritic::new(llm_client).with_pass_threshold(8.0);
-/// let review_tool = ReviewTool::new(Arc::new(critic));
-///
-/// // Agent 在 ReAct 循环中可以调用：
-/// // review(task="写一个排序算法", output="我的排序代码...")
-/// // 返回：{"score": 8.5, "passed": true, "feedback": "...", "suggestions": []}
-/// ```
+/**
+ReviewTool — 评估 Agent 输出质量的工具
+
+Agent 可以在推理过程中调用此工具来：
+1. 评估自己的回答质量
+2. 获取结构化反馈（分数、建议）
+3. 根据反馈决定是否继续优化
+
+# 示例
+
+```rust,ignore
+use echo_agent::agent::critic::{LlmCritic, ReviewTool};
+
+let critic = LlmCritic::new(llm_client).with_pass_threshold(8.0);
+let review_tool = ReviewTool::new(Arc::new(critic));
+
+// Agent 在 ReAct 循环中可以调用：
+// review(task="写一个排序算法", output="我的排序代码...")
+// 返回：{"score": 8.5, "passed": true, "feedback": "...", "suggestions": []}
+```
+*/
 pub struct ReviewTool {
+    /// 用于执行评审的 Critic 实现。
     critic: Arc<dyn Critic>,
 }
 
@@ -53,16 +58,19 @@ impl ReviewTool {
 }
 
 impl Tool for ReviewTool {
+    /// 工具名称：`review`。
     fn name(&self) -> &str {
         "review"
     }
 
+    /// 面向 LLM 的工具用途说明。
     fn description(&self) -> &str {
         "Evaluate the quality of your own output. Use this tool when you want to self-critique \
          before finalizing your answer. Returns a structured critique with score, pass/fail status, \
          and actionable feedback."
     }
 
+    /// 工具参数的 JSON Schema（task、output、context）。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -84,6 +92,7 @@ impl Tool for ReviewTool {
         })
     }
 
+    /// 调用 Critic 评估给定输出，并返回结构化评审结果。
     fn execute<'a>(
         &'a self,
         parameters: HashMap<String, Value>,
@@ -120,11 +129,13 @@ impl Tool for ReviewTool {
     }
 }
 
+/// `ReviewTool` 的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::critic::StaticCritic;
 
+    /// 验证使用固定评分 Critic 时工具返回预期评审结果。
     #[tokio::test]
     async fn test_review_tool_with_static_critic() {
         // 使用 StaticCritic 进行测试（总是返回固定分数）
@@ -142,6 +153,7 @@ mod tests {
         assert_eq!(parsed["passed"], true);
     }
 
+    /// 验证缺少必需参数时工具返回错误。
     #[tokio::test]
     async fn test_review_tool_missing_params() {
         let critic = StaticCritic::new(5.0, false, "Needs improvement");

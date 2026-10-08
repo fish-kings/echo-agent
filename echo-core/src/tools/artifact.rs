@@ -1,8 +1,9 @@
-//! Durable, bounded tool-output artifacts.
-//!
-//! Streaming tools can keep a small in-memory projection while this writer
-//! spills the complete text payload to disk once the configured threshold is
-//! crossed. Applications choose the root directory and retention policy.
+/*!
+持久化、有界的工具输出产物（artifact）。
+
+流式工具可以在内存中只保留一个较小的投影视图，而本写入器会在超过配置阈值后
+把完整的文本负载溢写到磁盘。根目录与保留策略由应用自行选择。
+*/
 
 use super::{ToolContext, ToolOutputChannel};
 use serde::{Deserialize, Serialize};
@@ -14,27 +15,39 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, SystemTime};
 
+/// 工具输出溢写到磁盘的默认阈值（字节），即 1 MiB。
 pub const DEFAULT_TOOL_OUTPUT_ARTIFACT_THRESHOLD_BYTES: usize = 1024 * 1024;
+/// 临时产物的默认最长保留时间（秒），即 1 小时。
 pub const DEFAULT_TEMP_ARTIFACT_MAX_AGE_SECS: u64 = 60 * 60;
 
+/// 产物作用域注册表：跟踪活跃写入器所在目录以及被延迟的清理请求。
 #[derive(Default)]
 struct ArtifactScopeRegistry {
+    /// 各作用域目录当前活跃写入器的引用计数。
     active_scopes: HashMap<PathBuf, usize>,
+    /// 因仍有活跃写入器而被延迟执行的清理根目录。
     pending_cleanup_roots: HashSet<PathBuf>,
 }
 
+/// 进程级全局产物作用域注册表，同时用作清理与文件创建之间的互斥锁。
 static ARTIFACT_SCOPE_REGISTRY: LazyLock<Mutex<ArtifactScopeRegistry>> =
     LazyLock::new(|| Mutex::new(ArtifactScopeRegistry::default()));
 
+/// 工具输出产物的配置：根目录、保留策略、溢写阈值与过期时间。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolOutputArtifactConfig {
+    /// 产物存放的根目录。
     pub root_dir: PathBuf,
+    /// 保留策略标签（写入产物引用中，供上层解释）。
     pub retention: String,
+    /// 负载超过该字节数时才溢写到磁盘。
     pub threshold_bytes: usize,
+    /// 产物最长保留秒数；`None` 表示不做按龄清理。
     pub max_age_secs: Option<u64>,
 }
 
 impl ToolOutputArtifactConfig {
+    /// 以根目录与保留策略创建配置，使用默认阈值且不设过期时间。
     pub fn new(root_dir: impl Into<PathBuf>, retention: impl Into<String>) -> Self {
         Self {
             root_dir: root_dir.into(),
@@ -44,11 +57,13 @@ impl ToolOutputArtifactConfig {
         }
     }
 
+    /// 设置溢写阈值（最小为 1 字节）。
     pub fn threshold_bytes(mut self, threshold_bytes: usize) -> Self {
         self.threshold_bytes = threshold_bytes.max(1);
         self
     }
 
+    /// 设置产物最长保留秒数。
     pub fn max_age_secs(mut self, max_age_secs: Option<u64>) -> Self {
         self.max_age_secs = max_age_secs;
         self
@@ -56,6 +71,7 @@ impl ToolOutputArtifactConfig {
 }
 
 impl Default for ToolOutputArtifactConfig {
+    /// 默认配置：系统临时目录下的 `echo_agent_artifacts/tool-logs`，保留 1 小时。
     fn default() -> Self {
         Self::new(
             std::env::temp_dir()
@@ -67,15 +83,21 @@ impl Default for ToolOutputArtifactConfig {
     }
 }
 
+/// 用于确定产物存放位置与文件名的身份信息。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolOutputArtifactIdentity {
+    /// 所属会话 ID（可选）。
     pub conversation_id: Option<String>,
+    /// 所属运行 ID（可选）。
     pub run_id: Option<String>,
+    /// 工具调用 ID。
     pub call_id: String,
+    /// 工具名称。
     pub tool_name: String,
 }
 
 impl ToolOutputArtifactIdentity {
+    /// 从工具上下文派生身份；缺少调用 ID 时生成随机 ID，缺少运行 ID 时回退为轮次 ID。
     pub fn from_context(ctx: &ToolContext, tool_name: impl Into<String>) -> Self {
         Self {
             conversation_id: ctx.conversation_id.clone(),
@@ -89,30 +111,49 @@ impl ToolOutputArtifactIdentity {
     }
 }
 
+/// 已发布到磁盘的工具输出产物引用。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolOutputArtifactRef {
+    /// 产物文件的最终路径。
     pub path: PathBuf,
+    /// 写入文件的总字节数（包含通道标签）。
     pub artifact_bytes: u64,
+    /// 原始负载字节数（不含通道标签）。
     pub payload_bytes: u64,
+    /// 产物内容的 SHA-256 十六进制摘要。
     pub sha256: String,
+    /// 保留策略标签。
     pub retention: String,
 }
 
+/// 工具输出产物写入器：低于阈值时缓存在内存，超过阈值后溢写到 `.partial` 文件并在完成时原子重命名。
 pub struct ToolOutputArtifactWriter {
+    /// 产物配置。
     config: ToolOutputArtifactConfig,
+    /// 本写入器注册的作用域目录。
     scope_dir: PathBuf,
+    /// 完成后产物文件的最终路径。
     final_path: PathBuf,
+    /// 写入过程中使用的临时 `.partial` 文件路径。
     partial_path: PathBuf,
+    /// 尚未溢写前的内存缓冲。
     buffered: Vec<u8>,
+    /// 已打开的溢写文件句柄。
     file: Option<File>,
+    /// 增量计算产物内容哈希。
     hasher: Sha256,
+    /// 已写入的产物字节数（含通道标签）。
     artifact_bytes: u64,
+    /// 已接收的负载字节数（不含通道标签）。
     payload_bytes: u64,
+    /// 上一次写入的输出通道，用于决定是否插入通道标签。
     last_channel: Option<ToolOutputChannel>,
+    /// 是否已完成（完成后 `Drop` 不再删除临时文件）。
     completed: bool,
 }
 
 impl ToolOutputArtifactWriter {
+    /// 根据配置与身份计算产物路径，并注册作用域目录。
     pub fn new(config: ToolOutputArtifactConfig, identity: ToolOutputArtifactIdentity) -> Self {
         let owner = artifact_scope_component(
             identity
@@ -145,6 +186,7 @@ impl ToolOutputArtifactWriter {
         }
     }
 
+    /// 追加某个输出通道的文本；通道切换时先写入通道标签。
     pub fn push_channel(&mut self, channel: ToolOutputChannel, text: &str) -> io::Result<()> {
         if self.last_channel.as_ref() != Some(&channel) {
             let label = match channel {
@@ -161,6 +203,7 @@ impl ToolOutputArtifactWriter {
         self.write_artifact_bytes(text.as_bytes())
     }
 
+    /// 追加不带通道标签的原始文本。
     pub fn push_raw(&mut self, text: &str) -> io::Result<()> {
         self.payload_bytes = self
             .payload_bytes
@@ -168,6 +211,7 @@ impl ToolOutputArtifactWriter {
         self.write_artifact_bytes(text.as_bytes())
     }
 
+    /// 同步完成写入：未超过阈值时返回 `None`，否则刷盘、重命名并返回产物引用。
     pub fn finish(mut self) -> io::Result<Option<ToolOutputArtifactRef>> {
         if self.payload_bytes < u64::try_from(self.config.threshold_bytes).unwrap_or(u64::MAX) {
             self.completed = true;
@@ -190,10 +234,11 @@ impl ToolOutputArtifactWriter {
         }))
     }
 
-    /// Finalize without blocking the async runtime thread on flush, sync, or rename.
-    ///
-    /// If the future is cancelled before publication, `Drop` removes the
-    /// partial file and releases the artifact scope.
+    /**
+    异步完成写入，刷盘、同步与重命名均不会阻塞异步运行时线程。
+
+    若该 future 在发布前被取消，`Drop` 会删除临时文件并释放产物作用域。
+    */
     pub async fn finish_async(mut self) -> io::Result<Option<ToolOutputArtifactRef>> {
         use tokio::io::AsyncWriteExt;
 
@@ -218,6 +263,7 @@ impl ToolOutputArtifactWriter {
         }))
     }
 
+    /// 写入产物字节并更新计数与哈希；未达阈值时仅写入内存缓冲。
     fn write_artifact_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.artifact_bytes = self
             .artifact_bytes
@@ -236,6 +282,7 @@ impl ToolOutputArtifactWriter {
         Ok(())
     }
 
+    /// 确保溢写文件已创建，并把已缓冲的内容写入其中。
     fn ensure_file(&mut self) -> io::Result<()> {
         if self.file.is_some() {
             return Ok(());
@@ -246,9 +293,10 @@ impl ToolOutputArtifactWriter {
                 "tool artifact path has no parent directory",
             ));
         };
-        // Cleanup and file creation share the scope registry lock. Explicit
-        // conversation cleanup is deferred while any writer in that scope is
-        // alive, including writers that have not crossed the spill threshold.
+        /*
+        清理与文件创建共享作用域注册表锁。只要该作用域内仍有任何存活的写入器
+        （包括尚未越过溢写阈值的写入器），显式的会话清理都会被延迟。
+        */
         let create_guard = ARTIFACT_SCOPE_REGISTRY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -268,6 +316,7 @@ impl ToolOutputArtifactWriter {
 }
 
 impl Drop for ToolOutputArtifactWriter {
+    /// 未完成时删除临时文件，并注销作用域（可能触发被延迟的清理）。
     fn drop(&mut self) {
         if !self.completed && self.partial_path.exists() {
             let _ = fs::remove_file(&self.partial_path);
@@ -276,6 +325,7 @@ impl Drop for ToolOutputArtifactWriter {
     }
 }
 
+/// 一次性持久化完整工具输出；未超过阈值时返回 `None`。
 pub fn persist_tool_output(
     config: ToolOutputArtifactConfig,
     identity: ToolOutputArtifactIdentity,
@@ -286,6 +336,7 @@ pub fn persist_tool_output(
     writer.finish()
 }
 
+/// 清理某会话（可选限定到某运行）的产物目录；若仍有活跃写入器则延迟到其结束后执行。
 pub fn cleanup_tool_output_scope(
     config: &ToolOutputArtifactConfig,
     conversation_id: &str,
@@ -311,6 +362,7 @@ pub fn cleanup_tool_output_scope(
     remove_artifact_scope(&path)
 }
 
+/// 为作用域目录增加一个活跃写入器引用计数。
 fn register_artifact_scope(scope_dir: &Path) {
     let mut registry = ARTIFACT_SCOPE_REGISTRY
         .lock()
@@ -322,6 +374,7 @@ fn register_artifact_scope(scope_dir: &Path) {
     *count = count.saturating_add(1);
 }
 
+/// 减少作用域目录的活跃引用计数，并执行已不再被占用的延迟清理。
 fn unregister_artifact_scope(scope_dir: &Path) {
     let mut registry = ARTIFACT_SCOPE_REGISTRY
         .lock()
@@ -357,6 +410,7 @@ fn unregister_artifact_scope(scope_dir: &Path) {
     }
 }
 
+/// 递归删除作用域目录，目录不存在时视为成功。
 fn remove_artifact_scope(path: &Path) -> io::Result<()> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
@@ -365,6 +419,7 @@ fn remove_artifact_scope(path: &Path) -> io::Result<()> {
     }
 }
 
+/// 将任意字符串转换为安全的路径组件：保留字母数字、`-`、`_`（最多 64 字符），并追加 12 位哈希后缀以避免冲突。
 pub fn artifact_scope_component(value: &str) -> String {
     let mut output = String::new();
     for character in value.chars().take(64) {
@@ -387,6 +442,7 @@ pub fn artifact_scope_component(value: &str) -> String {
     }
 }
 
+/// 删除根目录下修改时间早于 `max_age` 的产物。
 fn cleanup_artifacts_older_than(root: &Path, max_age: Duration) {
     let cutoff = SystemTime::now().checked_sub(max_age);
     let Some(cutoff) = cutoff else {
@@ -395,6 +451,7 @@ fn cleanup_artifacts_older_than(root: &Path, max_age: Duration) {
     cleanup_directory(root, cutoff);
 }
 
+/// 递归清理早于截止时间的文件与空目录；符号链接只删除链接本身，不跟随。
 fn cleanup_directory(directory: &Path, cutoff: SystemTime) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
@@ -441,6 +498,7 @@ fn cleanup_directory(directory: &Path, cutoff: SystemTime) {
 mod tests {
     use super::*;
 
+    /// 生成带进程 ID 与时间戳的唯一测试根目录。
     fn test_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -452,6 +510,7 @@ mod tests {
         ))
     }
 
+    /// 验证低于阈值的输出不会落盘。
     #[test]
     fn writer_keeps_small_output_inline() -> io::Result<()> {
         let root = test_root("inline");
@@ -469,6 +528,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证超过阈值的多通道输出被完整溢写，且可按会话清理。
     #[test]
     fn writer_spills_complete_multichannel_output() -> io::Result<()> {
         let root = test_root("multichannel");
@@ -498,6 +558,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证并发溢写不会删除仍在使用的作用域目录。
     #[test]
     fn concurrent_spills_do_not_remove_active_scope_directories() -> io::Result<()> {
         let root = test_root("concurrent");
@@ -535,6 +596,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证显式清理会等待活跃写入器结束后再执行。
     #[test]
     fn explicit_cleanup_waits_for_active_writer() -> io::Result<()> {
         let root = test_root("deferred-cleanup");
@@ -567,6 +629,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证按龄清理不会跟随符号链接删除产物根目录之外的文件。
     #[cfg(unix)]
     #[test]
     fn age_cleanup_does_not_follow_symlinks_outside_artifact_root() -> io::Result<()> {

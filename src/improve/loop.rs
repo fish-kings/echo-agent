@@ -1,8 +1,9 @@
-//! Self-improvement loop — evaluate → detect failures → improve → re-evaluate.
-//!
-//! Inspired by the skill-creator pattern: runs eval cases, detects failure
-//! patterns using the Analyzer, generates improvement suggestions, applies
-//! them, and re-tests to measure improvement.
+/*!
+自我改进循环 —— 评估 → 检测失败 → 改进 → 重新评估。
+
+思路借鉴自 skill-creator 模式：运行 eval 用例，使用 Analyzer 检测失败
+模式，生成改进建议并应用，然后重新测试以衡量改进效果。
+*/
 
 use crate::eval::{EvalCase, EvalReport, EvalRunner, SuccessCriteria};
 use crate::improve::{Analyzer, ImprovementSuggestion, RunCritique};
@@ -11,39 +12,54 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Result of one improvement iteration.
+/// 单次改进迭代的结果。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopIteration {
+    /// 迭代序号（从 0 开始）。
     pub iteration: usize,
+    /// 本轮在测试集（holdout）上的评估报告。
     pub eval_report: EvalReport,
+    /// 本轮在训练集上的平均得分。
     pub train_score: f64,
+    /// 对训练集失败运行的评析结果。
     pub critiques: Vec<RunCritique>,
+    /// 由评析汇总、去重后的改进建议。
     pub suggestions: Vec<ImprovementSuggestion>,
+    /// 本轮迭代耗时（毫秒）。
     pub duration_ms: u64,
 }
 
-/// Full improvement loop history.
+/// 完整的改进循环历史。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoopResult {
+    /// 所有已执行的迭代记录。
     pub iterations: Vec<LoopIteration>,
+    /// 测试集上取得的最佳平均得分。
     pub best_score: f64,
+    /// 取得最佳得分的迭代序号。
     pub best_iteration: usize,
+    /// 整个循环的总耗时（毫秒）。
     pub total_duration_ms: u64,
 }
 
-/// Analysis loop — evaluates, detects failures, and suggests improvements.
-///
-/// NOTE: This loop analyzes failures and generates suggestions for human review.
-/// It does NOT automatically apply suggestions to the agent. To apply suggestions,
-/// use [`PromptGenerator`](crate::improve::PromptGenerator) to generate an updated
-/// system prompt and pass it to a new agent via the factory.
+/**
+分析循环 —— 执行评估、检测失败并给出改进建议。
+
+注意：本循环只分析失败并生成供人工审阅的建议，**不会**自动将建议应用到
+agent 上。若要应用建议，请使用 [`PromptGenerator`](crate::improve::PromptGenerator)
+生成更新后的系统提示词，并通过工厂将其传给新的 agent。
+*/
 #[derive(Clone)]
 pub struct ImprovementLoop {
+    /// 最大迭代次数。
     pub max_iterations: usize,
+    /// 提前停止的得分阈值：测试集最佳得分达到该值即停止。
     pub improvement_threshold: f64,
+    /// 划入测试集（holdout）的用例比例。
     pub holdout_ratio: f64,
 }
 
+/// 默认配置：最多 5 轮、阈值 0.95、holdout 比例 0.4。
 impl Default for ImprovementLoop {
     fn default() -> Self {
         Self {
@@ -55,11 +71,12 @@ impl Default for ImprovementLoop {
 }
 
 impl ImprovementLoop {
+    /// 使用默认配置创建改进循环。
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Return the variant name of a SuccessCriteria for stratification.
+    /// 返回 SuccessCriteria 的变体名称，用于分层划分。
     fn criteria_variant(criteria: &SuccessCriteria) -> &str {
         match criteria {
             SuccessCriteria::TestPass { .. } => "test_pass",
@@ -76,7 +93,7 @@ impl ImprovementLoop {
         }
     }
 
-    /// Stratified split: group cases by criteria type, split each group proportionally.
+    /// 分层划分：按判定标准类型对用例分组，再按比例拆分每一组。
     fn stratified_split(
         cases: &[EvalCase],
         holdout_ratio: f64,
@@ -92,8 +109,8 @@ impl ImprovementLoop {
 
         for (_, group) in groups {
             let split_idx = if group.len() == 1 {
-                // A singleton cannot form an independent holdout without
-                // leaking its training sample into evaluation.
+                /* 单元素分组无法构成独立的 holdout，否则会把训练样本
+                泄漏到评估中。 */
                 1
             } else {
                 let proportional = ((1.0 - holdout_ratio) * group.len() as f64) as usize;
@@ -111,8 +128,10 @@ impl ImprovementLoop {
         (train, test)
     }
 
-    /// Run the analysis loop: eval → critique → suggest → re-eval.
-    /// Returns analysis results. Suggestions must be applied externally.
+    /**
+    运行分析循环：评估 → 评析 → 建议 → 重新评估。
+    返回分析结果；建议需由外部自行应用。
+    */
     pub async fn run(
         &self,
         cases: &[EvalCase],
@@ -123,8 +142,10 @@ impl ImprovementLoop {
             .await
     }
 
-    /// Run with a lazily invoked asynchronous Agent factory. Remote adapters
-    /// use this entry so early-stop does not trigger speculative construction.
+    /**
+    使用惰性调用的异步 Agent 工厂运行循环。远程适配器使用此入口，
+    以便提前停止时不会触发多余的预先构造。
+    */
     pub async fn run_async<F, Fut>(
         &self,
         cases: &[EvalCase],
@@ -148,18 +169,18 @@ impl ImprovementLoop {
         let mut best_score = 0.0;
         let mut best_iteration = 0;
 
-        // Stratified split by criteria type to prevent overfitting
+        // 按判定标准类型分层划分，防止过拟合
         let (train_cases, test_cases) = Self::stratified_split(cases, self.holdout_ratio);
         let runner = EvalRunner::new(std::env::temp_dir());
 
         for i in 0..self.max_iterations {
             let iter_start = Instant::now();
 
-            // a. Evaluate on train set
+            // a. 在训练集上评估
             let train_cases_vec: Vec<EvalCase> = train_cases.iter().map(|c| (*c).clone()).collect();
             let train_report = runner.run_all_async(&train_cases_vec, &agent_factory).await;
 
-            // b. Analyze failures — load runs and critique
+            // b. 分析失败 —— 加载运行记录并进行评析
             let mut critiques = Vec::new();
             if let Some(store) = run_store {
                 for result in &train_report.results {
@@ -172,20 +193,20 @@ impl ImprovementLoop {
                 }
             }
 
-            // c. Generate suggestions from critiques
+            // c. 根据评析生成建议
             let mut suggestions = Vec::new();
             for c in &critiques {
                 suggestions.extend(c.suggestions.clone());
             }
-            // Sort and deduplicate (dedup only removes consecutive, so sort first)
+            // 排序并去重（dedup 只移除相邻重复项，因此需先排序）
             suggestions.sort_by_key(|s| format!("{:?}", s));
             suggestions.dedup_by_key(|s| format!("{:?}", s));
 
-            // d. Re-evaluate on test set (blinded — test scores not visible to generator)
+            // d. 在测试集上重新评估（盲测 —— 生成器看不到测试集得分）
             let test_cases_vec: Vec<EvalCase> = test_cases.iter().map(|c| (*c).clone()).collect();
             let test_report = runner.run_all_async(&test_cases_vec, &agent_factory).await;
 
-            // e. Track best by test score
+            // e. 按测试集得分记录最佳结果
             if test_report.avg_score > best_score {
                 best_score = test_report.avg_score;
                 best_iteration = i;
@@ -201,7 +222,7 @@ impl ImprovementLoop {
             };
             iterations.push(iter);
 
-            // Stop early if threshold reached
+            // 达到阈值则提前停止
             if best_score >= self.improvement_threshold {
                 break;
             }
@@ -221,6 +242,7 @@ mod tests {
     use super::*;
     use crate::testing::MockAgent;
 
+    /// 构造一个测试用的 eval 用例。
     fn eval_case(id: &str, success_criteria: SuccessCriteria) -> EvalCase {
         EvalCase {
             id: id.to_string(),
@@ -234,6 +256,7 @@ mod tests {
         }
     }
 
+    /// 验证默认配置值。
     #[test]
     fn test_loop_defaults() {
         let lp = ImprovementLoop::new();
@@ -241,6 +264,7 @@ mod tests {
         assert_eq!(lp.improvement_threshold, 0.95);
     }
 
+    /// 单元素分组只进入训练集。
     #[test]
     fn singleton_criteria_group_is_train_only() {
         let cases = vec![eval_case(
@@ -257,6 +281,7 @@ mod tests {
         assert!(holdout.is_empty());
     }
 
+    /// 混合分组时单元素分组不会进入 holdout。
     #[test]
     fn mixed_groups_keep_singletons_out_of_holdout() {
         let cases = vec![
@@ -296,6 +321,7 @@ mod tests {
         );
     }
 
+    /// 多元素分组在极端比例下仍保持训练集与 holdout 均非空。
     #[test]
     fn multi_case_groups_remain_split_at_ratio_boundaries() {
         let cases = vec![
@@ -335,6 +361,7 @@ mod tests {
         }
     }
 
+    /// 并发且提前停止的循环使用各自独立且会被清理的工作目录。
     #[tokio::test]
     async fn concurrent_early_stop_loops_use_distinct_cleaned_generations()
     -> std::result::Result<(), String> {

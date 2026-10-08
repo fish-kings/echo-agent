@@ -1,7 +1,9 @@
-//! Web page fetching tool
-//!
-//! Provides [`WebFetchTool`], fetches URL content and converts it to readable text.
-//! Supports HTML → plain text conversion, suitable for LLM consumption.
+/*!
+ * 网页抓取工具
+ *
+ * 提供 [`WebFetchTool`]，抓取 URL 内容并转换为可读文本。
+ * 支持 HTML → 纯文本转换，便于 LLM 使用。
+ */
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::artifact::{ToolOutputArtifactIdentity, persist_tool_output};
@@ -13,28 +15,38 @@ use serde_json::Value;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// 默认最大内容长度（字符数）
 const DEFAULT_MAX_LENGTH: usize = 50_000;
+/// 默认请求超时（秒）
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
+/// 默认 HTML 转文本的行宽
 const DEFAULT_TEXT_WIDTH: usize = 120;
 
-/// Hard byte limit on the raw HTTP response body (10 MB).
-/// Responses larger than this are rejected before reading to prevent
-/// memory exhaustion from large or malicious payloads.
+/**
+ * 原始 HTTP 响应体的硬性字节上限（10 MB）。
+ * 超过该大小的响应会在读取前被拒绝，防止过大或恶意负载耗尽内存。
+ */
 const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
 
+/// 回退路径中用于剥离 HTML 标签的正则（惰性初始化）
 static HTML_TAG_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
+/// 回退路径中用于折叠空白的正则（惰性初始化）
 static WHITESPACE_RE: OnceLock<Option<regex::Regex>> = OnceLock::new();
 
-/// Web page fetching tool
-///
-/// Fetches content from the specified URL, converting HTML to readable text.
+/**
+ * 网页抓取工具
+ *
+ * 从指定 URL 抓取内容，并将 HTML 转换为可读文本。
+ */
 pub struct WebFetchTool {
+    /// 返回内容的最大长度（字符数）
     max_content_length: usize,
+    /// HTML 转文本时的行宽
     text_width: usize,
 }
 
 impl WebFetchTool {
-    /// Create a new WebFetchTool
+    /// 创建新的 WebFetchTool
     pub fn new() -> Self {
         Self {
             max_content_length: DEFAULT_MAX_LENGTH,
@@ -42,24 +54,24 @@ impl WebFetchTool {
         }
     }
 
-    /// Set the maximum content length (in characters)
+    /// 设置最大内容长度（字符数）
     pub fn with_max_content_length(mut self, n: usize) -> Self {
         self.max_content_length = n;
         self
     }
 
-    /// Set the HTML-to-text line width
+    /// 设置 HTML 转文本的行宽
     pub fn with_text_width(mut self, width: usize) -> Self {
         self.text_width = width;
         self
     }
 
-    /// Check whether the Content-Type requires HTML→text conversion
+    /// 判断该 Content-Type 是否需要 HTML→文本转换
     fn needs_html_conversion(content_type: &str) -> bool {
         content_type.contains("text/html") || content_type.contains("application/xhtml")
     }
 
-    /// Convert HTML to readable text
+    /// 将 HTML 转换为可读文本
     fn html_to_text(&self, html: &str) -> String {
         match html2text::from_read(html.as_bytes(), self.text_width) {
             Ok(text) => text,
@@ -69,7 +81,7 @@ impl WebFetchTool {
                     self.text_width,
                     e
                 );
-                // Fallback: strip HTML tags with a simple regex, then collapse whitespace
+                // 回退：用简单正则剥离 HTML 标签，再折叠空白
                 let stripped = HTML_TAG_RE
                     .get_or_init(|| regex::Regex::new(r"<[^>]*>").ok())
                     .as_ref()
@@ -88,7 +100,7 @@ impl WebFetchTool {
         }
     }
 
-    /// Truncate content by character count (safely handles multi-byte UTF-8)
+    /// 按字符数截断内容（安全处理多字节 UTF-8）
     fn truncate_content(content: &str, max_len: usize) -> String {
         if content.chars().count() <= max_len {
             content.to_string()
@@ -100,24 +112,29 @@ impl WebFetchTool {
 }
 
 impl Default for WebFetchTool {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for WebFetchTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "web_fetch"
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Fetch a URL as readable text; large content is stored as a recoverable artifact."
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -135,6 +152,7 @@ impl Tool for WebFetchTool {
         })
     }
 
+    /// 抓取 URL 内容并按类型转换为文本
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -150,7 +168,7 @@ impl Tool for WebFetchTool {
                 return Ok(ToolResult::error("URL cannot be empty"));
             }
 
-            // Basic URL format validation
+            // 基本的 URL 格式校验
             if !url.starts_with("http://") && !url.starts_with("https://") {
                 return Ok(ToolResult::error("URL must start with http:// or https://"));
             }
@@ -168,8 +186,10 @@ impl Tool for WebFetchTool {
                 None => self.max_content_length,
             };
 
-            // SSRF protection: resolve + validate + connect on pinned IPs, closing
-            // the DNS-rebinding TOCTOU window that validate_url+client.get leaves.
+            /*
+             * SSRF 防护：解析 + 校验 + 连接固定 IP，
+             * 消除 validate_url+client.get 方式遗留的 DNS 重绑定 TOCTOU 窗口。
+             */
             let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
             let response = match crate::security::local_http_get(url, timeout, 5).await {
                 Ok(r) => r,
@@ -195,7 +215,7 @@ impl Tool for WebFetchTool {
                 .unwrap_or("text/html")
                 .to_string();
 
-            // Reject oversized responses early via Content-Length header
+            // 通过 Content-Length 头提前拒绝过大的响应
             if let Some(content_length) = response.content_length()
                 && content_length > MAX_BODY_BYTES
             {
@@ -207,7 +227,7 @@ impl Tool for WebFetchTool {
                 )));
             }
 
-            // Stream the response body with a hard byte cap to prevent memory exhaustion
+            // 以硬性字节上限流式读取响应体，防止内存耗尽
             let mut body_bytes = Vec::new();
             let mut byte_stream = response.bytes_stream();
             while let Some(chunk_result) = byte_stream.next().await {
@@ -233,15 +253,15 @@ impl Tool for WebFetchTool {
             }
 
             let body = String::from_utf8(body_bytes).unwrap_or_else(|e| {
-                // Non-UTF-8: fall back to lossy conversion
+                // 非 UTF-8：回退到有损转换
                 String::from_utf8_lossy(e.as_bytes()).into_owned()
             });
 
-            // Process based on content type: only convert HTML/XHTML
+            // 按内容类型处理：仅转换 HTML/XHTML
             let content = if Self::needs_html_conversion(&content_type) {
                 self.html_to_text(&body)
             } else {
-                // Return raw content directly for text/plain, application/json, etc.
+                // text/plain、application/json 等直接返回原始内容
                 body
             };
 
@@ -309,18 +329,20 @@ impl Tool for WebFetchTool {
 mod tests {
     use super::*;
 
+    /// 测试 Content-Type 的 HTML 转换判断
     #[test]
     fn test_needs_html_conversion() {
         assert!(WebFetchTool::needs_html_conversion(
             "text/html; charset=utf-8"
         ));
         assert!(WebFetchTool::needs_html_conversion("application/xhtml+xml"));
-        // text/plain should not be HTML-converted
+        // text/plain 不应做 HTML 转换
         assert!(!WebFetchTool::needs_html_conversion("text/plain"));
         assert!(!WebFetchTool::needs_html_conversion("application/json"));
         assert!(!WebFetchTool::needs_html_conversion("image/png"));
     }
 
+    /// 测试短内容不截断
     #[test]
     fn test_truncate_content_short() {
         let content = "Hello world";
@@ -328,6 +350,7 @@ mod tests {
         assert_eq!(truncated, content);
     }
 
+    /// 测试长 ASCII 内容截断
     #[test]
     fn test_truncate_content_long_ascii() {
         let content = "a".repeat(200);
@@ -336,25 +359,28 @@ mod tests {
         assert!(truncated.starts_with(&"a".repeat(100)));
     }
 
+    /// 测试截断的多字节安全性
     #[test]
     fn test_truncate_content_multibyte_safe() {
-        // Multibyte character truncation should not panic
-        let content = "HelloWorld".repeat(50); // 200 chars, 600 bytes?
+        // 多字节字符截断不应 panic
+        let content = "HelloWorld".repeat(50); // 200 个字符，600 字节？
         let truncated = WebFetchTool::truncate_content(&content, 10);
         assert!(truncated.contains("truncated"));
         assert!(truncated.starts_with("HelloWorld"));
     }
 
+    /// 测试混合字符内容截断
     #[test]
     fn test_truncate_content_mixed() {
-        // Mixed ASCII + emoji
+        // ASCII 与 emoji 混合
         let content = "Hello 🌍 World 🚀 Rust 🦀".repeat(20);
         let truncated = WebFetchTool::truncate_content(&content, 10);
         assert!(truncated.contains("truncated"));
-        // Ensure truncated result is still valid UTF-8
+        // 确保截断结果仍是合法 UTF-8
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
+    /// 测试 HTML 转文本
     #[test]
     fn test_html_to_text() {
         let tool = WebFetchTool::new();

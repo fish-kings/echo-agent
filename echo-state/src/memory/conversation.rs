@@ -1,17 +1,22 @@
-//! 对话持久化——具体实现与辅助函数
-//!
-//! trait 定义与数据类型位于 [`echo_core::memory::conversation`]。
-//! 本模块提供 `project_messages`/`project_message` 辅助函数。
+/*!
+对话持久化——具体实现与辅助函数
+
+trait 定义与数据类型位于 [`echo_core::memory::conversation`]。
+本模块提供 `project_messages`/`project_message` 辅助函数。
+*/
 
 use echo_core::error::{MemoryError, Result};
 use echo_core::llm::types::{Message, MessageContent, Role, ToolCall};
 pub use echo_core::memory::conversation::StoredMessage;
 use sha2::{Digest, Sha256};
 
+/// 当前消息投影格式的版本号。
 const MESSAGE_PROJECTION_VERSION: u8 = 1;
 
-/// 消息投影的元数据结构，用于在 `attachments_json` 中携带无法用普通字段
-/// 表达的结构化信息，并支持后续版本演进。
+/**
+消息投影的元数据结构，用于在 `attachments_json` 中携带无法用普通字段
+表达的结构化信息，并支持后续版本演进。
+*/
 #[derive(serde::Serialize, serde::Deserialize)]
 struct MessageProjectionMeta {
     /// 投影格式版本号，用于兼容性校验。
@@ -46,10 +51,12 @@ pub struct TranscriptProjectionMeta {
     pub ordinal: u64,
 }
 
-/// 为单条用户可见的会话记录行计算稳定的生成游标指纹。
-///
-/// 计算时排除后端 ID、时间戳以及生成/序号元数据，使得当前活跃游标能够在
-/// 投影批次准备前后匹配到同一条逻辑消息。
+/**
+为单条用户可见的会话记录行计算稳定的生成游标指纹。
+
+计算时排除后端 ID、时间戳以及生成/序号元数据，使得当前活跃游标能够在
+投影批次准备前后匹配到同一条逻辑消息。
+*/
 pub fn transcript_projection_message_digest(message: &StoredMessage) -> Result<String> {
     let normalized = serde_json::to_vec(&(
         &message.role,
@@ -89,9 +96,11 @@ pub fn project_message(conversation_id: &str, message: &Message) -> Result<Store
         None
     };
 
-    // `content` 是可供搜索的文本投影。每条规范化的运行时消息都会携带该
-    // 标记（包括纯文本消息），使应用层投影能够可靠地区分由 Agent 生成的
-    // 会话记录与仅用于 UI 引导的记录。
+    /*
+    `content` 是可供搜索的文本投影。每条规范化的运行时消息都会携带该
+    标记（包括纯文本消息），使应用层投影能够可靠地区分由 Agent 生成的
+    会话记录与仅用于 UI 引导的记录。
+    */
     let structured_content = matches!(
         &message.content,
         MessageContent::Parts(_) | MessageContent::Empty
@@ -215,9 +224,12 @@ pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
             }
         }
         "tool" => {
+            /// `tool_result_json` 中携带的工具结果元数据。
             #[derive(serde::Deserialize)]
             struct ToolResultMeta {
+                /// 关联的工具调用 ID。
                 tool_call_id: Option<String>,
+                /// 工具名称。
                 name: Option<String>,
             }
             let meta = stored
@@ -225,9 +237,11 @@ pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
                 .as_deref()
                 .map(serde_json::from_str::<ToolResultMeta>)
                 .transpose()?;
-            // 如果投影携带了调用 ID/名称，则直接使用；否则回退到一个稳定的
-            // 占位符，保证工具消息依旧格式良好（下游代码依据 role==Tool
-            // 判断，而不是依据该 ID）。
+            /*
+            如果投影携带了调用 ID/名称，则直接使用；否则回退到一个稳定的
+            占位符，保证工具消息依旧格式良好（下游代码依据 role==Tool
+            判断，而不是依据该 ID）。
+            */
             let tool_call_id = meta
                 .as_ref()
                 .and_then(|value| value.tool_call_id.clone())
@@ -254,14 +268,18 @@ pub fn restore_message(stored: &StoredMessage) -> Result<Message> {
     Ok(message)
 }
 
-/// 尝试从 `attachments_json` 中解析出投影元数据；若不是本模块写入的
-/// 规范化投影负载，则返回 `None`。
+/**
+尝试从 `attachments_json` 中解析出投影元数据；若不是本模块写入的
+规范化投影负载，则返回 `None`。
+*/
 fn restore_projection_meta(stored: &StoredMessage) -> Result<Option<MessageProjectionMeta>> {
     let Some(raw) = stored.attachments_json.as_deref() else {
         return Ok(None);
     };
-    // 应用层也会使用 attachments_json 存放 UI 元数据。这里只认领携带
-    // 我们显式标记的负载；无关或历史遗留的负载会有意留给应用层投影处理。
+    /*
+    应用层也会使用 attachments_json 存放 UI 元数据。这里只认领携带
+    我们显式标记的负载；无关或历史遗留的负载会有意留给应用层投影处理。
+    */
     let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
         return Ok(None);
     };
@@ -279,18 +297,22 @@ fn restore_projection_meta(stored: &StoredMessage) -> Result<Option<MessageProje
     Ok(Some(projection))
 }
 
-/// 将一批持久化的会话记录还原为运行时 [`Message`] 列表。
-///
-/// 是 [`restore_message`] 的批量形式；遇到第一条无法还原的记录即失败
-/// （与 `project_messages` 的快速失败语义一致）。
+/**
+将一批持久化的会话记录还原为运行时 [`Message`] 列表。
+
+是 [`restore_message`] 的批量形式；遇到第一条无法还原的记录即失败
+（与 `project_messages` 的快速失败语义一致）。
+*/
 pub fn restore_messages(stored: &[StoredMessage]) -> Result<Vec<Message>> {
     stored.iter().map(restore_message).collect()
 }
 
+/// 对话投影与还原的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证空内容及消息身份字段（name、tool_call_id）可经投影无损往返。
     #[test]
     fn projection_round_trips_empty_content_and_message_identity() -> Result<()> {
         let mut original = Message::assistant(String::new());
@@ -307,6 +329,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证纯文本消息的投影同样携带规范化标记。
     #[test]
     fn plain_text_projection_carries_canonical_marker() -> Result<()> {
         let stored = project_message("conversation", &Message::user("hello".to_string()))?;

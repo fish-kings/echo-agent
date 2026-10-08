@@ -74,8 +74,10 @@ pub fn word_frequencies(input: &str) -> HashMap<String, usize> {
     frequencies
 }
 
-/// 规范化一组字符串：去除首尾空白、转为小写，并过滤掉空字符串；
-/// `into_iter` 会消费传入的 vector，因此无需克隆即可返回拥有所有权的文本。
+/**
+规范化一组字符串：去除首尾空白、转为小写，并过滤掉空字符串；
+`into_iter` 会消费传入的 vector，因此无需克隆即可返回拥有所有权的文本。
+*/
 pub fn normalize_owned(values: Vec<String>) -> Vec<String> {
     values
         .into_iter()

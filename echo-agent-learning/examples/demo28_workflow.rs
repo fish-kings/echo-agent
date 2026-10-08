@@ -1,17 +1,20 @@
-//! Workflow / Pipeline 抽象示例
-//!
-//! 演示三种工作流编排模式：
-//! 1. SequentialWorkflow — 顺序管道
-//! 2. ConcurrentWorkflow — 并发管道
-//! 3. DagWorkflow — DAG 管道
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo28_workflow
-//! ```
+/*!
+Workflow / Pipeline 抽象示例
+
+演示三种工作流编排模式：
+1. SequentialWorkflow — 顺序管道
+2. ConcurrentWorkflow — 并发管道
+3. DagWorkflow — DAG 管道
+
+```bash
+cargo run -p echo-agent-learning --example demo28_workflow
+```
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::workflow::{ConcurrentWorkflow, DagWorkflow, SequentialWorkflow, Workflow};
 
+/// 示例入口：依次演示顺序、并发与 DAG 三种工作流编排方式。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()

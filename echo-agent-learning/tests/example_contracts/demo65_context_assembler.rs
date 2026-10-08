@@ -1,15 +1,19 @@
-//! demo65_context_assembler.rs - ContextAssembler 完整示例
-//!
-//! 本示例演示如何使用 ContextAssembler 构建上下文消息列表，
-//! 包括优先级排序和预算感知的截断。
-//!
-//! 契约测试入口: `contract_demo65_context_assembler`
+/*!
+demo65_context_assembler.rs - ContextAssembler 完整示例
+
+本示例演示如何使用 ContextAssembler 构建上下文消息列表，
+包括优先级排序和预算感知的截断。
+
+契约测试入口: `contract_demo65_context_assembler`
+*/
 
 use echo_agent::context::{ContextAssembler, ContextBudget, ContextSources};
 use echo_agent::llm::types::{Message, Role};
 
-/// demo65 契约测试：依次演示 `ContextAssembler` 的基本用法、预算配置、
-/// 优先级排序以及动态预算调整四个示例。
+/**
+demo65 契约测试：依次演示 `ContextAssembler` 的基本用法、预算配置、
+优先级排序以及动态预算调整四个示例。
+*/
 #[test]
 fn contract_demo65_context_assembler() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== demo65: Context Assembler ===\n");

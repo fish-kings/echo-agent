@@ -1,10 +1,12 @@
-//! DuckDuckGo search Provider
-//!
-//! Dual-strategy implementation:
-//! 1. **HTML search** (`html.duckduckgo.com`): full search results, but may be blocked by anti-scraping CAPTCHA
-//! 2. **Instant Answer API** (`api.duckduckgo.com`): returns abstracts and related topics, stable and free
-//!
-//! Automatically falls back to the API when HTML search is blocked.
+/*!
+ * DuckDuckGo 搜索 Provider
+ *
+ * 双策略实现：
+ * 1. **HTML 搜索**（`html.duckduckgo.com`）：结果完整，但可能被反爬 CAPTCHA 拦截
+ * 2. **Instant Answer API**（`api.duckduckgo.com`）：返回摘要和相关主题，稳定且免费
+ *
+ * 当 HTML 搜索被拦截时自动回退到 API。
+ */
 
 use super::utils::{percent_decode, truncate_chars, urlencode};
 use super::{SearchProvider, SearchResult};
@@ -16,15 +18,18 @@ use serde::Deserialize;
 use std::time::Duration;
 use tracing::warn;
 
-/// DuckDuckGo search Provider (free, no API Key required)
-///
-/// Prefers HTML search for full results; automatically falls back to Instant Answer API if blocked by anti-scraping.
+/**
+ * DuckDuckGo 搜索 Provider（免费，无需 API Key）
+ *
+ * 优先使用 HTML 搜索获取完整结果；若被反爬拦截，自动回退到 Instant Answer API。
+ */
 pub struct DuckDuckGoProvider {
+    /// 带浏览器 UA 与超时配置的 HTTP 客户端
     client: Client,
 }
 
 impl DuckDuckGoProvider {
-    /// Create a new DuckDuckGo provider instance.
+    /// 创建新的 DuckDuckGo Provider 实例。
     pub fn new() -> Self {
         let client = Client::builder()
             .user_agent(
@@ -38,9 +43,9 @@ impl DuckDuckGoProvider {
         Self { client }
     }
 
-    /// Extract the actual URL from a DuckDuckGo redirect URL
+    /// 从 DuckDuckGo 重定向 URL 中提取实际目标 URL
     fn extract_url(href: &str) -> String {
-        // Exact match query parameter uddg= (preceded by ? or &)
+        // 精确匹配查询参数 uddg=（前面是 ? 或 &）
         let search = "?uddg=";
         if let Some(pos) = href.find(search) {
             let encoded = &href[pos + search.len()..];
@@ -63,6 +68,7 @@ impl DuckDuckGoProvider {
 }
 
 impl Default for DuckDuckGoProvider {
+    /// 等价于 [`DuckDuckGoProvider::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -70,14 +76,16 @@ impl Default for DuckDuckGoProvider {
 
 #[async_trait]
 impl SearchProvider for DuckDuckGoProvider {
+    /// Provider 名称。
     fn name(&self) -> &str {
         "duckduckgo"
     }
 
+    /// 执行搜索：优先 HTML 搜索，被拦截或无结果时回退到 Instant Answer API。
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
         let encoded_query = urlencode(query);
 
-        // Strategy 1: HTML search
+        // 策略 1：HTML 搜索
         let url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
         let response = self
             .client
@@ -107,7 +115,7 @@ impl SearchProvider for DuckDuckGoProvider {
                 message: format!("Failed to read response body: {}", e),
             })?;
 
-        // Detect CAPTCHA / anti-scraping page
+        // 检测 CAPTCHA / 反爬页面
         if html.contains("anomaly-modal") || html.contains("bots use DuckDuckGo") {
             warn!(
                 "DuckDuckGo HTML search blocked by anti-scraping, falling back to Instant Answer API"
@@ -115,25 +123,27 @@ impl SearchProvider for DuckDuckGoProvider {
             return self.search_via_api(query, max_results).await;
         }
 
-        // Attempt to parse HTML search results
+        // 尝试解析 HTML 搜索结果
         let results = parse_ddg_html(&html, max_results)?;
         if !results.is_empty() {
             return Ok(results);
         }
 
-        // HTML parsing returned no results, falling back to API
+        // HTML 解析无结果，回退到 API
         warn!("DuckDuckGo HTML parsing returned no results, falling back to Instant Answer API");
         self.search_via_api(query, max_results).await
     }
 }
 
-// ── Instant Answer API fallback ───────────────────────────────────────────────────
+// ── Instant Answer API 回退 ───────────────────────────────────────────────────
 
 impl DuckDuckGoProvider {
-    /// Search using the DuckDuckGo Instant Answer API
-    ///
-    /// Returns the abstract (Abstract) and related topics (RelatedTopics).
-    /// Less comprehensive than full search, but stable and reliable, unaffected by anti-scraping.
+    /**
+     * 使用 DuckDuckGo Instant Answer API 搜索
+     *
+     * 返回摘要（Abstract）和相关主题（RelatedTopics）。
+     * 不如完整搜索全面，但稳定可靠，不受反爬影响。
+     */
     async fn search_via_api(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
         let url = format!(
             "https://api.duckduckgo.com/?q={}&format=json&no_html=1",
@@ -169,7 +179,7 @@ impl DuckDuckGoProvider {
 
         let mut results = Vec::new();
 
-        // Abstract as the first result
+        // 摘要作为第一条结果
         if !api_resp.abstract_text.is_empty() && !api_resp.abstract_url.is_empty() {
             results.push(SearchResult {
                 title: api_resp.heading.unwrap_or_else(|| query.to_string()),
@@ -178,7 +188,7 @@ impl DuckDuckGoProvider {
             });
         }
 
-        // Supplement with RelatedTopics
+        // 用 RelatedTopics 补充结果
         for topic in &api_resp.related_topics {
             if results.len() >= max_results {
                 break;
@@ -187,7 +197,7 @@ impl DuckDuckGoProvider {
                 let text = rt.get("Text").and_then(|v| v.as_str()).unwrap_or("");
                 let url = rt.get("FirstURL").and_then(|v| v.as_str()).unwrap_or("");
                 if !text.is_empty() && !url.is_empty() {
-                    // Extract the title from the text (the part before the first ' - ')
+                    // 从文本中提取标题（第一个 ' - ' 之前的部分）
                     let title = text.split(" - ").next().unwrap_or(text).to_string();
                     results.push(SearchResult {
                         title,
@@ -202,21 +212,26 @@ impl DuckDuckGoProvider {
     }
 }
 
-/// DuckDuckGo Instant Answer API response
+/// DuckDuckGo Instant Answer API 响应
 #[derive(Debug, Deserialize)]
 struct DdgApiResponse {
+    /// 摘要文本
     #[serde(rename = "AbstractText")]
     abstract_text: String,
+    /// 摘要来源 URL
     #[serde(rename = "AbstractURL")]
     abstract_url: String,
+    /// 标题
     #[serde(rename = "Heading")]
     heading: Option<String>,
+    /// 相关主题列表
     #[serde(rename = "RelatedTopics")]
     related_topics: Vec<serde_json::Value>,
 }
 
-// ── HTML search result parsing ─────────────────────────────────────────────────────────
+// ── HTML 搜索结果解析 ─────────────────────────────────────────────────────────
 
+/// 解析 DuckDuckGo HTML 搜索结果页，依次尝试多组选择器。
 fn parse_ddg_html(html: &str, max_results: usize) -> Result<Vec<SearchResult>> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
@@ -260,6 +275,7 @@ fn parse_ddg_html(html: &str, max_results: usize) -> Result<Vec<SearchResult>> {
     Ok(results)
 }
 
+/// 从结果元素中提取标题文本和目标 URL。
 fn extract_title_and_url(
     element: &scraper::ElementRef,
     title_selectors: &[&str],
@@ -277,6 +293,7 @@ fn extract_title_and_url(
     (String::new(), String::new())
 }
 
+/// 从结果元素中提取摘要文本。
 fn extract_snippet(element: &scraper::ElementRef, snippet_selectors: &[&str]) -> String {
     for sel_str in snippet_selectors {
         let Ok(selector) = Selector::parse(sel_str) else {
@@ -296,12 +313,14 @@ fn extract_snippet(element: &scraper::ElementRef, snippet_selectors: &[&str]) ->
 mod tests {
     use super::*;
 
+    /// 从重定向链接中提取 uddg 目标 URL。
     #[test]
     fn test_extract_url_redirect() {
         let href = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com&rut=abc";
         assert_eq!(DuckDuckGoProvider::extract_url(href), "https://example.com");
     }
 
+    /// 普通 URL 不应被误识别为重定向。
     #[test]
     fn test_extract_url_no_false_positive() {
         let href = "https://example.com/page?foo=bar";
@@ -311,6 +330,7 @@ mod tests {
         );
     }
 
+    /// 支持以 &uddg= 形式出现的参数。
     #[test]
     fn test_extract_url_amp_uddg() {
         let href = "//duckduckgo.com/l/?foo=1&uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc";
@@ -320,6 +340,7 @@ mod tests {
         );
     }
 
+    /// 协议相对 URL 补全为 https。
     #[test]
     fn test_extract_url_protocol_relative() {
         assert_eq!(
@@ -328,6 +349,7 @@ mod tests {
         );
     }
 
+    /// CAPTCHA 页面特征检测。
     #[test]
     fn test_detect_captcha() {
         let html =
@@ -335,6 +357,7 @@ mod tests {
         assert!(html.contains("anomaly-modal"));
     }
 
+    /// 解析包含结果的 HTML。
     #[test]
     fn test_parse_ddg_html_with_results() {
         let html = r#"
@@ -350,6 +373,7 @@ mod tests {
         assert_eq!(results[0].url, "https://www.rust-lang.org/");
     }
 
+    /// 解析无结果的 HTML 返回空列表。
     #[test]
     fn test_parse_ddg_html_empty() {
         let html = "<html><body><p>No results</p></body></html>";

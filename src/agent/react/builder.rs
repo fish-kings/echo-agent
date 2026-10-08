@@ -156,6 +156,7 @@ pub struct ReactAgentBuilder {
 }
 
 impl Default for ReactAgentBuilder {
+    /// 等价于 [`ReactAgentBuilder::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -1193,47 +1194,58 @@ impl ReactAgentBuilder {
 // ── AgentBuilder trait 实现 ─────────────────────────────────────────
 
 impl echo_core::agent::builder::AgentBuilder for ReactAgentBuilder {
+    /// 该构建器产出的 Agent 类型。
     type Agent = ReactAgent;
 
+    /// 设置模型名称。
     fn model(self, model: impl Into<String>) -> Self {
         self.model(model)
     }
 
+    /// 设置系统提示词。
     fn system_prompt(self, prompt: impl Into<String>) -> Self {
         self.system_prompt(prompt)
     }
 
+    /// 设置 Agent 名称。
     fn name(self, name: impl Into<String>) -> Self {
         self.name(name)
     }
 
+    /// 设置最大迭代次数。
     fn max_iterations(self, max: usize) -> Self {
         self.max_iterations(max)
     }
 
+    /// 设置 token 上限。
     fn token_limit(self, limit: usize) -> Self {
         self.token_limit(limit)
     }
 
+    /// 注册单个工具。
     fn tool(self, tool: Box<dyn crate::tools::Tool>) -> Self {
         self.tool(tool)
     }
 
+    /// 批量注册工具。
     fn tools(self, tools: Vec<Box<dyn crate::tools::Tool>>) -> Self {
         self.tools(tools)
     }
 
+    /// 构建 [`ReactAgent`]。
     fn build(self) -> Result<ReactAgent> {
         self.build()
     }
 }
 
+/// ReactAgentBuilder 的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::MockLlmClient;
     use std::sync::Arc;
 
+    /// 验证构建器的基本配置能正确生效。
     #[test]
     fn test_builder_basic() {
         let builder = ReactAgentBuilder::new()
@@ -1246,6 +1258,7 @@ mod tests {
         assert_eq!(builder.system_prompt, "Test");
     }
 
+    /// 验证构建器支持链式调用。
     #[test]
     fn test_builder_chaining() {
         let builder = ReactAgentBuilder::new()
@@ -1259,6 +1272,7 @@ mod tests {
         assert_eq!(builder.max_iterations, 20);
     }
 
+    /// 验证零迭代次数这种无界配置会被拒绝。
     #[test]
     fn rejects_unbounded_zero_iteration_configuration() {
         let result = ReactAgentBuilder::new()
@@ -1268,6 +1282,7 @@ mod tests {
         assert!(matches!(result, Err(crate::error::ReactError::Config(_))));
     }
 
+    /// 验证 ReactAgentBuilder 能正常构建出 Agent。
     #[test]
     fn test_react_agent_builder() {
         let builder = ReactAgentBuilder::new()
@@ -1278,6 +1293,7 @@ mod tests {
         assert!(builder.enable_builtin_tools);
     }
 
+    /// 验证默认 Agent 只使用唯一一套任务关系 API。
     #[test]
     fn default_agent_uses_one_task_relation_api() -> std::result::Result<(), String> {
         let agent = ReactAgentBuilder::new()
@@ -1293,6 +1309,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证构建器允许延后配置 LLM。
     #[test]
     fn builder_allows_deferred_llm_configuration() -> std::result::Result<(), String> {
         let agent = ReactAgentBuilder::new()
@@ -1306,6 +1323,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证非零的持久化结算超时会被正确应用。
     #[test]
     fn builder_applies_nonzero_persistence_settlement_timeout() -> std::result::Result<(), String> {
         let timeout = std::time::Duration::from_millis(750);
@@ -1317,6 +1335,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证零持久化结算超时会被拒绝。
     #[test]
     fn builder_rejects_zero_persistence_settlement_timeout() {
         let result = ReactAgentBuilder::new()
@@ -1325,6 +1344,7 @@ mod tests {
         assert!(matches!(result, Err(crate::error::ReactError::Config(_))));
     }
 
+    /// 验证设置 LLM 配置时会同步运行时模型名称。
     #[test]
     fn test_builder_llm_config_syncs_runtime_model_name() -> std::result::Result<(), String> {
         let config = LlmConfig::for_provider(
@@ -1349,6 +1369,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证设置 LLM 客户端时会同步运行时模型名称。
     #[test]
     fn test_builder_llm_client_syncs_runtime_model_name() {
         let agent = ReactAgentBuilder::new()
@@ -1362,6 +1383,7 @@ mod tests {
         assert_eq!(agent.config().get_model_name(), "mock-topology");
     }
 
+    /// 验证工具执行配置会被应用到构建出的 Agent。
     #[test]
     fn test_builder_tool_execution_config_is_applied() {
         let agent = ReactAgentBuilder::new()

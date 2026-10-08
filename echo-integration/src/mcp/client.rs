@@ -18,17 +18,21 @@ use super::types::{
 use crate::redaction::{text as redact_text, url as redact_url};
 use echo_core::error::{McpError, ReactError, Result};
 
-/// MCP 客户端
-///
-/// 管理与单个 MCP 服务端的完整生命周期：
-/// 1. 连接 → 2. 握手（initialize） → 3. 能力发现 → 4. 功能调用
-///
-/// 支持的功能：
-/// - **Tools**: 工具发现与调用
-/// - **Resources**: 资源列表与读取
-/// - **Prompts**: 提示词列表与获取
+/**
+MCP 客户端
+
+管理与单个 MCP 服务端的完整生命周期：
+1. 连接 → 2. 握手（initialize） → 3. 能力发现 → 4. 功能调用
+
+支持的功能：
+- **Tools**: 工具发现与调用
+- **Resources**: 资源列表与读取
+- **Prompts**: 提示词列表与获取
+*/
 pub struct McpClient {
+    /// 与服务端通信的传输层
     transport: Arc<dyn McpTransport>,
+    /// 服务端名称（用于日志与标识）
     server_name: String,
     /// 协商后的协议版本
     negotiated_version: String,
@@ -42,30 +46,36 @@ pub struct McpClient {
     prompts: Vec<McpPrompt>,
 }
 
-/// Retry owner returned when MCP preparation fails and transport cleanup also
-/// fails. The owner exposes cleanup only; it is never a usable initialized
-/// client and cannot publish tools, resources, or prompts.
+/**
+MCP 准备失败且传输层清理也失败时返回的重试所有者。
+
+该所有者只暴露清理能力；它绝不是一个可用的已初始化客户端，
+也不能发布工具、资源或提示词。
+*/
 pub struct McpClientCleanupOwner {
+    /// 仅用于清理的客户端（持有待关闭的传输层）
     client: Arc<McpClient>,
 }
 
 impl McpClientCleanupOwner {
-    /// Server identity associated with the failed preparation.
+    /// 与本次失败准备关联的服务端标识。
     pub fn server_name(&self) -> &str {
         self.client.server_name()
     }
 
-    /// Retry settlement of the transport retained by this receipt.
+    /// 重试结清本回执所保留的传输层。
     pub async fn retry_cleanup(&self) -> Result<()> {
         self.client.close().await
     }
 
+    /// 取出内部持有的仅清理客户端。
     pub(crate) fn into_client(self) -> Arc<McpClient> {
         self.client
     }
 }
 
 impl std::fmt::Debug for McpClientCleanupOwner {
+    /// 仅输出服务端名称，不暴露内部传输细节。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("McpClientCleanupOwner")
@@ -74,17 +84,24 @@ impl std::fmt::Debug for McpClientCleanupOwner {
     }
 }
 
-/// Typed preparation failure that preserves retry ownership when cleanup did
-/// not settle. This follows Rust owner-returning error conventions: callers
-/// can inspect the initialization cause and retry the retained cleanup owner.
+/**
+带类型的准备失败错误；当清理未能结清时保留重试所有权。
+
+遵循 Rust “错误中归还所有者”的惯例：调用方可以查看初始化失败原因，
+并对保留下来的清理所有者进行重试。
+*/
 #[derive(Debug)]
 pub struct McpClientPreparationError {
+    /// 初始化阶段的原始错误
     initialization_error: ReactError,
+    /// 最近一次清理失败的描述（清理已结清时为 `None`）
     cleanup_error: Option<String>,
+    /// 可重试的清理所有者（清理已结清时为 `None`）
     cleanup_owner: Option<McpClientCleanupOwner>,
 }
 
 impl McpClientPreparationError {
+    /// 构造清理已结清的准备错误（不携带清理所有者）。
     fn settled(initialization_error: ReactError) -> Self {
         Self {
             initialization_error,
@@ -93,6 +110,7 @@ impl McpClientPreparationError {
         }
     }
 
+    /// 构造清理仍待完成的准备错误，携带清理错误与可重试的清理所有者。
     fn pending(
         initialization_error: ReactError,
         cleanup_error: ReactError,
@@ -105,23 +123,26 @@ impl McpClientPreparationError {
         }
     }
 
-    /// Original initialize/notification/discovery failure.
+    /// 原始的 initialize / 通知 / 能力发现失败。
     pub fn initialization_error(&self) -> &ReactError {
         &self.initialization_error
     }
 
-    /// Last cleanup failure, when retry ownership remains outstanding.
+    /// 最近一次清理失败信息（仅当重试所有权仍未结清时存在）。
     pub fn cleanup_error(&self) -> Option<&str> {
         self.cleanup_error.as_deref()
     }
 
-    /// Borrow the retryable cleanup owner, when cleanup remains unsettled.
+    /// 借用可重试的清理所有者（仅当清理仍未结清时存在）。
     pub fn cleanup_owner(&self) -> Option<&McpClientCleanupOwner> {
         self.cleanup_owner.as_ref()
     }
 
-    /// Consume this error into the initialization cause and optional pending
-    /// cleanup receipt. Dropping a returned receipt explicitly abandons retry.
+    /**
+    将该错误拆分为初始化失败原因和可选的待清理回执。
+
+    丢弃返回的回执即表示显式放弃重试。
+    */
     pub fn into_parts(self) -> (ReactError, Option<(String, McpClientCleanupOwner)>) {
         (
             self.initialization_error,
@@ -131,6 +152,7 @@ impl McpClientPreparationError {
 }
 
 impl std::fmt::Display for McpClientPreparationError {
+    /// 输出初始化失败原因，并在清理未结清时附带清理错误。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
@@ -148,22 +170,34 @@ impl std::fmt::Display for McpClientPreparationError {
 }
 
 impl std::error::Error for McpClientPreparationError {
+    /// 以初始化错误作为错误源。
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.initialization_error)
     }
 }
 
-/// Result of preparing one MCP client.
+/// 准备单个 MCP 客户端的结果类型。
 pub type McpClientPreparationResult<T> = std::result::Result<T, McpClientPreparationError>;
 
+/**
+准备过程中的传输层守卫。
+
+若准备 future 在完成前被取消（守卫仍处于 armed 状态），
+Drop 时会在运行时中派生任务持续重试关闭传输层。
+*/
 struct McpPreparationOwner {
+    /// 服务端名称
     server_name: String,
+    /// 正在准备的传输层
     transport: Arc<dyn McpTransport>,
+    /// 用于在 Drop 时派生清理任务的运行时句柄
     runtime: tokio::runtime::Handle,
+    /// 是否仍需在 Drop 时执行清理
     armed: bool,
 }
 
 impl McpPreparationOwner {
+    /// 创建处于 armed 状态的守卫。
     fn new(
         server_name: String,
         transport: Arc<dyn McpTransport>,
@@ -177,10 +211,12 @@ impl McpPreparationOwner {
         }
     }
 
+    /// 解除守卫，Drop 时不再执行清理。
     fn disarm(&mut self) {
         self.armed = false;
     }
 
+    /// 解除守卫并把清理责任转交给返回的清理所有者。
     fn transfer_cleanup(&mut self) -> McpClientCleanupOwner {
         self.disarm();
         McpClientCleanupOwner {
@@ -190,6 +226,7 @@ impl McpPreparationOwner {
 }
 
 impl Drop for McpPreparationOwner {
+    /// 若仍处于 armed 状态，则派生后台任务结清被取消的准备过程。
     fn drop(&mut self) {
         if !self.armed {
             return;
@@ -202,6 +239,7 @@ impl Drop for McpPreparationOwner {
     }
 }
 
+/// 持续以指数退避（上限 5 秒）重试关闭传输层，直到成功为止。
 async fn settle_cancelled_preparation(server_name: String, transport: Arc<dyn McpTransport>) {
     let mut retry_delay_ms = 50_u64;
     loop {
@@ -254,10 +292,12 @@ impl McpClient {
         Self::from_transport(config.name, transport)?.await
     }
 
-    /// Connect through an application-supplied transport while preserving the
-    /// same initialize, notification and capability-discovery lifecycle as
-    /// [`Self::new`]. This is the public consumer boundary used by SDK
-    /// transport bridges; it does not let adapters bypass MCP negotiation.
+    /**
+    通过应用提供的传输层建立连接，并保持与 [`Self::new`] 相同的
+    initialize、通知与能力发现生命周期。
+
+    这是 SDK 传输桥接使用的公开消费边界；它不允许适配器绕过 MCP 协商。
+    */
     pub fn from_transport(
         server_name: impl Into<String>,
         transport: Arc<dyn McpTransport>,
@@ -305,6 +345,7 @@ impl McpClient {
         })
     }
 
+    /// 构造只用于清理传输层的空客户端（不含任何能力与缓存）。
     fn cleanup_only(server_name: String, transport: Arc<dyn McpTransport>) -> Arc<Self> {
         Arc::new(Self {
             transport,
@@ -317,6 +358,7 @@ impl McpClient {
         })
     }
 
+    /// 在给定传输层上完成握手、initialized 通知与能力发现。
     async fn initialize_from_transport(
         server_name: String,
         transport: Arc<dyn McpTransport>,
@@ -424,10 +466,11 @@ impl McpClient {
 
     /// 构建客户端能力声明
     fn build_client_capabilities() -> ClientCapabilities {
-        // Do not advertise server-to-client callbacks until the transport has
-        // a real request/notification dispatcher and typed handlers for them.
-        // An empty capability object is truthful: this client currently only
-        // sends requests and notifications to the MCP server.
+        /*
+        在传输层具备真正的请求/通知分发器及对应的类型化处理器之前，
+        不要声明服务端到客户端的回调能力。空能力对象是如实的：
+        本客户端目前只会向 MCP 服务端发送请求和通知。
+        */
         ClientCapabilities::default()
     }
 
@@ -441,6 +484,7 @@ impl McpClient {
         let mut all_tools = Vec::new();
         let mut cursor: Option<String> = None;
         let mut iterations = 0_usize;
+        /// 最大分页轮数
         const MAX_PAGINATION: usize = 100;
 
         loop {
@@ -536,6 +580,7 @@ impl McpClient {
         let mut all_resources = Vec::new();
         let mut cursor: Option<String> = None;
         let mut iterations = 0_usize;
+        /// 最大分页轮数
         const MAX_PAGINATION: usize = 100;
 
         loop {
@@ -603,6 +648,7 @@ impl McpClient {
         let mut all_templates = Vec::new();
         let mut cursor: Option<String> = None;
         let mut iterations = 0_usize;
+        /// 最大分页轮数
         const MAX_PAGINATION: usize = 100;
 
         loop {
@@ -693,6 +739,7 @@ impl McpClient {
         let mut all_prompts = Vec::new();
         let mut cursor: Option<String> = None;
         let mut iterations = 0;
+        /// 最大分页轮数
         const MAX_PAGINATION: usize = 100;
 
         loop {
@@ -843,6 +890,7 @@ impl McpClient {
             .join("\n")
     }
 
+    /// 仅测试使用：以给定传输层构造已声明资源能力的客户端。
     #[cfg(test)]
     pub(crate) fn with_test_transport(
         server_name: impl Into<String>,
@@ -870,21 +918,31 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::Mutex;
 
+    /// 初始化请求总是返回错误、并记录是否被关闭的测试传输。
     struct FailingInitializeTransport {
+        /// 传输是否已被关闭。
         closed: Arc<AtomicBool>,
     }
 
+    /// 初始化失败且前若干次关闭会注入失败的测试传输，用于验证清理重试。
     struct RetryCleanupInitializeTransport {
+        /// 关闭被调用的次数。
         close_count: Arc<std::sync::atomic::AtomicUsize>,
+        /// 剩余需要注入关闭失败的次数。
         failures_remaining: std::sync::atomic::AtomicUsize,
     }
 
+    /// 初始化请求永久阻塞的测试传输，用于验证取消准备过程后的清理移交。
     struct BlockingInitializeTransport {
+        /// 初始化请求开始发送时发出通知。
         send_started: Arc<tokio::sync::Notify>,
+        /// 关闭被调用的次数。
         close_count: Arc<std::sync::atomic::AtomicUsize>,
+        /// 剩余需要注入关闭失败的次数。
         failures_remaining: std::sync::atomic::AtomicUsize,
     }
 
+    /// 通过 `from_transport` 准备测试客户端并等待准备完成。
     async fn prepare_test_client(
         server_name: &str,
         transport: Arc<dyn McpTransport>,
@@ -896,6 +954,7 @@ mod tests {
     }
 
     impl McpTransport for FailingInitializeTransport {
+        /// 返回固定的初始化拒绝错误响应。
         fn send(
             &self,
             request: JsonRpcRequest,
@@ -914,15 +973,18 @@ mod tests {
             })
         }
 
+        /// 忽略通知，直接成功。
         fn notify(&self, _notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
+        /// 标记传输已关闭。
         fn close(&self) -> BoxFuture<'_, Result<()>> {
             self.closed.store(true, Ordering::Release);
             Box::pin(async { Ok(()) })
         }
 
+        /// 不提供通知接收器。
         fn notification_rx(
             &self,
         ) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
@@ -931,6 +993,7 @@ mod tests {
     }
 
     impl McpTransport for RetryCleanupInitializeTransport {
+        /// 返回固定的初始化拒绝错误响应。
         fn send(
             &self,
             request: JsonRpcRequest,
@@ -949,10 +1012,12 @@ mod tests {
             })
         }
 
+        /// 忽略通知，直接成功。
         fn notify(&self, _notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
+        /// 累加关闭次数，并在剩余失败次数内注入关闭失败。
         fn close(&self) -> BoxFuture<'_, Result<()>> {
             self.close_count.fetch_add(1, Ordering::AcqRel);
             let fail = self
@@ -970,6 +1035,7 @@ mod tests {
             })
         }
 
+        /// 不提供通知接收器。
         fn notification_rx(
             &self,
         ) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
@@ -978,6 +1044,7 @@ mod tests {
     }
 
     impl McpTransport for BlockingInitializeTransport {
+        /// 通知发送已开始后永久挂起，模拟阻塞的初始化请求。
         fn send(
             &self,
             _request: JsonRpcRequest,
@@ -989,10 +1056,12 @@ mod tests {
             })
         }
 
+        /// 忽略通知，直接成功。
         fn notify(&self, _notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
+        /// 累加关闭次数，并在剩余失败次数内注入关闭失败。
         fn close(&self) -> BoxFuture<'_, Result<()>> {
             self.close_count.fetch_add(1, Ordering::AcqRel);
             let fail = self
@@ -1012,6 +1081,7 @@ mod tests {
             })
         }
 
+        /// 不提供通知接收器。
         fn notification_rx(
             &self,
         ) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
@@ -1019,6 +1089,7 @@ mod tests {
         }
     }
 
+    /// 验证初始化失败后 `from_transport` 会关闭传输。
     #[tokio::test]
     async fn from_transport_closes_after_initialization_failure() {
         let closed = Arc::new(AtomicBool::new(false));
@@ -1029,6 +1100,7 @@ mod tests {
         assert!(closed.load(Ordering::Acquire));
     }
 
+    /// 验证无运行时环境时 `from_transport` 会同步返回清理所有者。
     #[test]
     fn from_transport_without_runtime_returns_cleanup_owner_synchronously() {
         let closed = Arc::new(AtomicBool::new(false));
@@ -1048,6 +1120,7 @@ mod tests {
         assert!(!closed.load(Ordering::Acquire));
     }
 
+    /// 验证准备失败时保留失败的清理操作以便重试。
     #[tokio::test]
     async fn preparation_error_retains_failed_cleanup_for_retry() -> std::result::Result<(), String>
     {
@@ -1074,6 +1147,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证取消准备过程后清理责任移交给自有的重试任务。
     #[tokio::test]
     async fn cancelled_preparation_transfers_cleanup_to_owned_retry_task()
     -> std::result::Result<(), String> {
@@ -1109,17 +1183,24 @@ mod tests {
         Ok(())
     }
 
+    /// 记录收到的初始化请求的测试传输。
     struct RecordingInitializeTransport {
+        /// 记录到的初始化请求。
         initialize: Arc<Mutex<Option<JsonRpcRequest>>>,
     }
 
+    /// 以指定协议版本响应初始化请求的测试传输。
     struct VersionInitializeTransport {
+        /// 响应中返回的协议版本。
         protocol_version: String,
+        /// 是否已收到 initialized 通知。
         initialized: Arc<AtomicBool>,
+        /// 传输是否已被关闭。
         closed: Arc<AtomicBool>,
     }
 
     impl McpTransport for VersionInitializeTransport {
+        /// 以配置的协议版本返回初始化成功响应。
         fn send(
             &self,
             request: JsonRpcRequest,
@@ -1139,6 +1220,7 @@ mod tests {
             })
         }
 
+        /// 收到 `notifications/initialized` 时记录已初始化。
         fn notify(&self, notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
             if notification.method == "notifications/initialized" {
                 self.initialized.store(true, Ordering::Release);
@@ -1146,11 +1228,13 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
 
+        /// 标记传输已关闭。
         fn close(&self) -> BoxFuture<'_, Result<()>> {
             self.closed.store(true, Ordering::Release);
             Box::pin(async { Ok(()) })
         }
 
+        /// 不提供通知接收器。
         fn notification_rx(
             &self,
         ) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
@@ -1158,6 +1242,7 @@ mod tests {
         }
     }
 
+    /// 验证客户端接受受支持的协议版本并拒绝未知版本。
     #[tokio::test]
     async fn client_accepts_supported_versions_and_rejects_unknown_selection()
     -> std::result::Result<(), String> {
@@ -1204,6 +1289,7 @@ mod tests {
     }
 
     impl McpTransport for RecordingInitializeTransport {
+        /// 记录初始化请求并返回成功响应。
         fn send(
             &self,
             request: JsonRpcRequest,
@@ -1236,14 +1322,17 @@ mod tests {
             })
         }
 
+        /// 忽略通知，直接成功。
         fn notify(&self, _notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
+        /// 关闭操作直接成功。
         fn close(&self) -> BoxFuture<'_, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
+        /// 不提供通知接收器。
         fn notification_rx(
             &self,
         ) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
@@ -1251,6 +1340,7 @@ mod tests {
         }
     }
 
+    /// 验证初始化请求不会声明尚未实现的回调能力。
     #[tokio::test]
     async fn initialize_wire_does_not_advertise_unimplemented_callbacks()
     -> std::result::Result<(), String> {

@@ -1,45 +1,47 @@
-//! mcp.json 配置文件加载器
-//!
-//! 支持与 Claude Desktop / Cursor / VS Code 等主流 Agent 工具兼容的
-//! `mcp.json` 配置格式，可直接复用现有的 MCP 服务端配置。
-//!
-//! ## 文件格式
-//!
-//! ```json
-//! {
-//!   "mcpServers": {
-//!     "filesystem": {
-//!       "command": "npx",
-//!       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-//!       "env": {
-//!         "OPTIONAL_VAR": "value"
-//!       }
-//!     },
-//!     "github": {
-//!       "command": "npx",
-//!       "args": ["-y", "@modelcontextprotocol/server-github"],
-//!       "env": {
-//!         "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
-//!       }
-//!     },
-//!     "remote-api": {
-//!       "url": "http://localhost:8080/mcp",
-//!       "headers": {
-//!         "Authorization": "Bearer token"
-//!       }
-//!     },
-//!     "legacy-sse": {
-//!       "url": "http://localhost:3000",
-//!       "transport": "sse"
-//!     },
-//!     "disabled-server": {
-//!       "command": "npx",
-//!       "args": ["-y", "@modelcontextprotocol/server-postgres", "postgres://localhost/db"],
-//!       "disabled": true
-//!     }
-//!   }
-//! }
-//! ```
+/*!
+mcp.json 配置文件加载器
+
+支持与 Claude Desktop / Cursor / VS Code 等主流 Agent 工具兼容的
+`mcp.json` 配置格式，可直接复用现有的 MCP 服务端配置。
+
+## 文件格式
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": {
+        "OPTIONAL_VAR": "value"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
+      }
+    },
+    "remote-api": {
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer token"
+      }
+    },
+    "legacy-sse": {
+      "url": "http://localhost:3000",
+      "transport": "sse"
+    },
+    "disabled-server": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "postgres://localhost/db"],
+      "disabled": true
+    }
+  }
+}
+```
+*/
 
 use std::collections::HashMap;
 use std::fmt;
@@ -57,9 +59,11 @@ pub const AGENT_PLUGIN_MCP_SCHEMA_V1: &str =
 
 // ── 配置文件结构 ──────────────────────────────────────────────────────────────
 
-/// mcp.json 文件的顶层结构
-///
-/// 与 Claude Desktop / Cursor 的 `mcp.json` 格式完全兼容。
+/**
+mcp.json 文件的顶层结构
+
+与 Claude Desktop / Cursor 的 `mcp.json` 格式完全兼容。
+*/
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct McpConfigFile {
     /** 可选的 schema 标识符。普通的 EchoAgent MCP 文件不需要它；
@@ -74,6 +78,7 @@ pub struct McpConfigFile {
 }
 
 impl fmt::Debug for McpConfigFile {
+    /// 格式化调试输出。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("McpConfigFile")
@@ -83,11 +88,13 @@ impl fmt::Debug for McpConfigFile {
     }
 }
 
-/// 单个 MCP 服务端的配置项
-///
-/// 支持两种模式：
-/// - **stdio**：提供 `command`，可选 `args` 和 `env`
-/// - **HTTP**：提供 `url`，可选 `headers` 和 `transport`
+/**
+单个 MCP 服务端的配置项
+
+支持两种模式：
+- **stdio**：提供 `command`，可选 `args` 和 `env`
+- **HTTP**：提供 `url`，可选 `headers` 和 `transport`
+*/
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct McpServerEntry {
     /// Agent Plugins 1.0 使用的显式传输类型区分字段
@@ -120,11 +127,13 @@ pub struct McpServerEntry {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
 
-    /// HTTP 传输类型（仅在提供 `url` 时有效）
-    ///
-    /// - `"sse"`：旧版 HTTP+SSE（适用于旧版 MCP SDK），
-    ///   在 `{url}/sse` 建立 SSE 连接，向动态获取的端点 POST 请求
-    /// - 默认（不指定或其他值）：MCP Streamable HTTP，直接 POST 到端点 URL
+    /**
+    HTTP 传输类型（仅在提供 `url` 时有效）
+
+    - `"sse"`：旧版 HTTP+SSE（适用于旧版 MCP SDK），
+      在 `{url}/sse` 建立 SSE 连接，向动态获取的端点 POST 请求
+    - 默认（不指定或其他值）：MCP Streamable HTTP，直接 POST 到端点 URL
+    */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
 
@@ -135,6 +144,7 @@ pub struct McpServerEntry {
 }
 
 impl fmt::Debug for McpServerEntry {
+    /// 格式化调试输出，对参数、环境变量、URL 与请求头做脱敏处理。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("McpServerEntry")
@@ -260,16 +270,18 @@ impl McpConfigFile {
         })
     }
 
-    /// 从文件路径加载配置
-    ///
-    /// # 示例
-    /// ```rust,no_run
-    /// use echo_integration::mcp::config_loader::McpConfigFile;
-    ///
-    /// let config = McpConfigFile::from_file("mcp.json")?;
-    /// println!("共 {} 个服务端", config.mcp_servers.len());
-    /// # Ok::<(), echo_core::error::ReactError>(())
-    /// ```
+    /**
+    从文件路径加载配置
+
+    # 示例
+    ```rust,no_run
+    use echo_integration::mcp::config_loader::McpConfigFile;
+
+    let config = McpConfigFile::from_file("mcp.json")?;
+    println!("共 {} 个服务端", config.mcp_servers.len());
+    # Ok::<(), echo_core::error::ReactError>(())
+    ```
+    */
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path).map_err(|e| {
@@ -375,8 +387,10 @@ enum AgentPluginRemoteType {
     Sse,
 }
 
-/// 根据 `type` 字段将一个原始 JSON 服务端条目解析并转换为 [`McpServerEntry`]，
-/// 同时展开 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 变量、校验命令与 URL 的安全性。
+/**
+根据 `type` 字段将一个原始 JSON 服务端条目解析并转换为 [`McpServerEntry`]，
+同时展开 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 变量、校验命令与 URL 的安全性。
+*/
 fn parse_agent_plugin_server(
     name: &str,
     value: serde_json::Value,
@@ -475,8 +489,10 @@ fn canonical_directory(path: &Path, label: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-/// 对输入字符串做单遍扫描，将其中的 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 占位符
-/// 替换为对应的实际路径（按 Unicode 字符边界安全处理，不做递归展开）
+/**
+对输入字符串做单遍扫描，将其中的 `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` 占位符
+替换为对应的实际路径（按 Unicode 字符边界安全处理，不做递归展开）
+*/
 fn expand_agent_plugin_variables(input: &str, plugin_root: &Path, plugin_data: &Path) -> String {
     let source = input.chars().collect::<Vec<_>>();
     let root_marker = "${PLUGIN_ROOT}".chars().collect::<Vec<_>>();
@@ -558,8 +574,10 @@ fn resolve_agent_plugin_cwd(
     Ok(canonical)
 }
 
-/// 校验 Agent Plugin 服务端命令的形式：不能为空、不能包含插件变量占位符，
-/// 且必须是裸可执行文件名或以 `./` 开头且不逃出插件根目录的相对路径
+/**
+校验 Agent Plugin 服务端命令的形式：不能为空、不能包含插件变量占位符，
+且必须是裸可执行文件名或以 `./` 开头且不逃出插件根目录的相对路径
+*/
 fn validate_agent_plugin_command(command: &str) -> std::result::Result<(), String> {
     if command.is_empty() {
         return Err("command must not be empty".to_string());
@@ -584,8 +602,10 @@ fn validate_agent_plugin_command(command: &str) -> std::result::Result<(), Strin
     Ok(())
 }
 
-/// 校验 Agent Plugin 远程服务端 URL 的安全性：必须是合法的 http/https URL，
-/// 不含用户信息或 URL fragment，且非回环地址必须使用 https
+/**
+校验 Agent Plugin 远程服务端 URL 的安全性：必须是合法的 http/https URL，
+不含用户信息或 URL fragment，且非回环地址必须使用 https
+*/
 fn validate_agent_plugin_url(value: &str) -> std::result::Result<(), String> {
     let url = url::Url::parse(value).map_err(|error| format!("invalid URL: {error}"))?;
     if !matches!(url.scheme(), "http" | "https") {

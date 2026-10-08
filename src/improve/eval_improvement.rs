@@ -45,6 +45,7 @@ pub struct EvalDrivenImprovement {
 }
 
 impl Default for EvalDrivenImprovement {
+    /// 使用 [`EvalDrivenImprovement::new`] 的默认配置创建实例。
     fn default() -> Self {
         Self::new()
     }
@@ -140,6 +141,7 @@ mod tests {
     use crate::testing::MockAgent;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 构造一个必然失败的评估用例，用于驱动改进迭代。
     fn failing_case() -> EvalCase {
         EvalCase {
             id: "iteration-config".to_string(),
@@ -155,6 +157,7 @@ mod tests {
         }
     }
 
+    /// 验证配置的最大迭代次数会真实控制改进运行的轮数。
     #[tokio::test]
     async fn configured_max_iterations_controls_real_run() -> std::result::Result<(), String> {
         let engine = EvalDrivenImprovement::new()
@@ -171,6 +174,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证迭代次数为 0 时不会构造任何 Agent。
     #[tokio::test]
     async fn zero_iterations_does_not_construct_an_agent() -> std::result::Result<(), String> {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -193,6 +197,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证禁用或无评估用例时同样跳过 Agent 构造。
     #[tokio::test]
     async fn disabled_or_empty_runs_still_skip_agent_construction() {
         let calls = Arc::new(AtomicUsize::new(0));

@@ -388,8 +388,8 @@ impl A2AClient {
 }
 
 impl Default for A2AClient {
+    /// 创建默认实例。
     fn default() -> Self {
         Self::new()
     }
 }
-</content>

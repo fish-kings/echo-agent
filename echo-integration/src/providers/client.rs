@@ -1,3 +1,10 @@
+/*!
+LLM provider 共享的 HTTP 传输层。
+
+提供 JSON 请求/响应、SSE 流式解码、超时与取消控制等通用能力，
+供 Chat Completions、Responses 与 Anthropic 等 provider 适配器复用。
+*/
+
 use echo_core::error::{LlmError, Result};
 use echo_core::llm::LlmTimeouts;
 use echo_core::llm::types::{ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse};
@@ -13,6 +20,7 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, trace};
 
+/// 构造流式请求超时错误，`kind` 标识超时类型（首块 / 空闲 / 总体）。
 fn timeout_error(kind: &str, duration: Duration) -> LlmError {
     LlmError::NetworkError(format!(
         "LLM stream {kind} timeout after {}ms",
@@ -20,10 +28,12 @@ fn timeout_error(kind: &str, duration: Duration) -> LlmError {
     ))
 }
 
+/// 构造请求被取消的错误。
 fn request_cancelled_error() -> LlmError {
     LlmError::NetworkError("LLM request cancelled".to_string())
 }
 
+/// 若取消令牌已触发则返回取消错误，否则返回 `Ok(())`。
 pub(crate) fn ensure_request_not_cancelled(cancel_token: Option<&CancellationToken>) -> Result<()> {
     if cancel_token.is_some_and(CancellationToken::is_cancelled) {
         Err(request_cancelled_error().into())
@@ -32,6 +42,11 @@ pub(crate) fn ensure_request_not_cancelled(cancel_token: Option<&CancellationTok
     }
 }
 
+/**
+等待到达总体截止时间，并返回对应的超时时长。
+
+未配置超时或截止时间时永远挂起，便于在 `select!` 中作为可选分支使用。
+*/
 async fn wait_for_deadline(
     timeout: Option<Duration>,
     deadline: Option<tokio::time::Instant>,
@@ -45,6 +60,11 @@ async fn wait_for_deadline(
     }
 }
 
+/**
+从缓冲区中切分出第一个完整的 SSE 事件（以空行分隔，兼容 `\n\n` 与 `\r\n\r\n`）。
+
+成功时从缓冲区移除该事件及分隔符；缓冲区中尚无完整事件时返回 `None`。
+*/
 pub(crate) fn split_sse_event(buffer: &mut String) -> Option<String> {
     let lf = buffer.find("\n\n");
     let crlf = buffer.find("\r\n\r\n");
@@ -61,6 +81,11 @@ pub(crate) fn split_sse_event(buffer: &mut String) -> Option<String> {
     Some(event)
 }
 
+/**
+提取 SSE 事件中的 `data:` 字段内容，多行 data 以换行拼接。
+
+注释行以及 `event:` / `id:` / `retry:` 字段会被忽略；没有 data 行时返回 `None`。
+*/
 pub(crate) fn parse_sse_data(event: &str) -> Option<String> {
     let mut data_lines = Vec::new();
     for raw_line in event.lines() {
@@ -84,14 +109,16 @@ pub(crate) fn parse_sse_data(event: &str) -> Option<String> {
     }
 }
 
-/// Incremental SSE decoder shared by provider adapters. It preserves partial
-/// UTF-8 code points and only exposes complete blank-line-delimited events.
+/// 各 provider 适配器共享的增量 SSE 解码器：保留被截断的 UTF-8 码点，只对外暴露以空行分隔的完整事件。
 pub(crate) struct SseDecoder {
+    /// 尚未构成完整 UTF-8 字符的待处理字节。
     pending_bytes: Vec<u8>,
+    /// 已解码但尚未切分成事件的文本缓冲。
     buffer: String,
 }
 
 impl SseDecoder {
+    /// 创建空的解码器。
     pub(crate) fn new() -> Self {
         Self {
             pending_bytes: Vec::new(),
@@ -99,6 +126,7 @@ impl SseDecoder {
         }
     }
 
+    /// 追加一段字节；遇到非法 UTF-8 时返回错误，不完整的多字节字符会暂存等待后续字节。
     pub(crate) fn push(&mut self, bytes: &[u8]) -> Result<()> {
         self.pending_bytes.extend_from_slice(bytes);
         match std::str::from_utf8(&self.pending_bytes) {
@@ -115,17 +143,18 @@ impl SseDecoder {
         }
     }
 
+    /// 取出下一个完整的 SSE 事件，没有则返回 `None`。
     pub(crate) fn next_event(&mut self) -> Option<String> {
         split_sse_event(&mut self.buffer)
     }
 
+    /// 在流结束时校验解码器状态：残留未完成的字节或事件都视为截断错误。
     pub(crate) fn finish(self) -> Result<Option<String>> {
         if !self.pending_bytes.is_empty() {
             return Err(LlmError::InvalidResponse("truncated UTF-8 at SSE EOF".to_string()).into());
         }
-        // An SSE event is complete only after a blank-line delimiter.  A
-        // delimiterless payload must never be reinterpreted as a valid event
-        // merely because its JSON happens to be complete.
+        /* SSE 事件只有在遇到空行分隔符后才算完整。
+        缺少分隔符的负载即使 JSON 恰好完整，也绝不能被当作有效事件。 */
         if self.buffer.is_empty() {
             Ok(None)
         } else {
@@ -134,20 +163,24 @@ impl SseDecoder {
     }
 }
 
+/// 测试用：解析后的 Chat Completions SSE 块。
 #[cfg(test)]
 enum ParsedSseChunk {
+    /// `[DONE]` 结束标记。
     Done,
+    /// 一个 Chat Completions 增量块。
     Chunk(ChatCompletionChunk),
 }
 
-/// Provider-neutral payload decoded from one SSE event.
+/// 从单个 SSE 事件解码出的、与 provider 无关的负载。
 pub(crate) enum JsonSseEvent {
-    /// Compatibility terminator used by Chat Completions streams.
+    /// Chat Completions 流使用的兼容性结束标记（`[DONE]`）。
     Done,
-    /// Semantic JSON event payload.
+    /// 语义 JSON 事件负载。
     Data(serde_json::Value),
 }
 
+/// 将 SSE data 解析为 [`JsonSseEvent`]；空数据返回 `None`，非法 JSON 返回错误。
 fn parse_json_sse_event(data: &str) -> Result<Option<JsonSseEvent>> {
     let trimmed = data.trim();
     if trimmed.is_empty() {
@@ -162,6 +195,7 @@ fn parse_json_sse_event(data: &str) -> Result<Option<JsonSseEvent>> {
         .map_err(|error| LlmError::InvalidResponse(format!("invalid SSE JSON: {error}")).into())
 }
 
+/// 测试用：将 SSE data 解析为 Chat Completions 块。
 #[cfg(test)]
 fn parse_sse_chunk(data: &str) -> Result<Option<ParsedSseChunk>> {
     let trimmed = data.trim();
@@ -182,6 +216,7 @@ fn parse_sse_chunk(data: &str) -> Result<Option<ParsedSseChunk>> {
     Ok(Some(ParsedSseChunk::Chunk(chunk)))
 }
 
+/// 发送非流式 Chat Completions 请求并返回完整响应。
 #[tracing::instrument(skip(client, request_body, header_map, cancel_token), fields(model = %request_body.model))]
 pub(crate) async fn post(
     client: Arc<Client>,
@@ -216,7 +251,7 @@ pub(crate) async fn post(
     Ok(completion_response)
 }
 
-/// Send a JSON request and return the complete JSON response body.
+/// 发送 JSON 请求并返回完整的 JSON 响应体。
 pub(crate) async fn post_json<T>(
     client: Arc<Client>,
     request_body: serde_json::Value,
@@ -236,12 +271,12 @@ where
     post_json_request(request, cancel_token).await
 }
 
-/// Send a request and decode its complete JSON response while honoring the
-/// owning request cancellation token across the entire transport lifecycle.
-///
-/// The same boundary covers waiting for response headers, reading an error or
-/// success body, and decoding JSON. Dropping the in-flight reqwest future on
-/// cancellation closes the response body and releases the connection.
+/**
+发送请求并解码完整的 JSON 响应，在整个传输生命周期内遵循所属请求的取消令牌。
+
+同一取消边界覆盖等待响应头、读取错误或成功响应体以及 JSON 解码。
+取消时丢弃正在进行的 reqwest future，会关闭响应体并释放连接。
+*/
 pub(crate) async fn post_json_request<T>(
     request: RequestBuilder,
     cancel_token: Option<CancellationToken>,
@@ -295,12 +330,16 @@ where
     decode_json_bytes(raw_bytes, cancel_token).await
 }
 
+/// 可取消的读取器：每次读取前检查取消令牌，并限制单次读取大小以便及时响应取消。
 struct CancellationReader<R> {
+    /// 被包装的底层读取器。
     inner: R,
+    /// 取消令牌。
     cancel_token: CancellationToken,
 }
 
 impl<R: Read> Read for CancellationReader<R> {
+    /// 已取消时返回 `ConnectionAborted`，否则最多读取 8 KiB。
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         if self.cancel_token.is_cancelled() {
             return Err(std::io::Error::new(
@@ -319,6 +358,7 @@ impl<R: Read> Read for CancellationReader<R> {
     }
 }
 
+/// 从读取器同步解码 JSON，期间支持取消；取消优先于解码结果。
 fn decode_json_reader<T, R>(reader: R, cancel_token: CancellationToken) -> Result<T>
 where
     T: DeserializeOwned,
@@ -334,6 +374,7 @@ where
     decoded.map_err(|error| LlmError::InvalidResponse(error.to_string()).into())
 }
 
+/// 在阻塞线程池中解码 JSON 字节，并与取消信号竞争。
 async fn decode_json_bytes<T>(
     raw_bytes: Vec<u8>,
     cancel_token: Option<CancellationToken>,
@@ -370,14 +411,14 @@ where
     }
 }
 
-/// Send a request with `stream: true`, returning a parsed SSE chunk stream.
-///
-/// Note: Takes ownership of `request_body` to avoid lifetime conflicts between
-/// references and the async stream.
-///
-/// `cancel_token` enables aborting the stream: the cancellation signal is checked
-/// between each SSE chunk, and iteration stops immediately once cancelled.
-/// A choice finish reason and usage are withheld until the final `[DONE]` marker.
+/**
+以 `stream: true` 发送请求，返回解析后的 SSE 块流。
+
+注意：获取 `request_body` 的所有权，以避免引用与异步流之间的生命周期冲突。
+
+`cancel_token` 用于中止流：每个 SSE 块之间都会检查取消信号，一旦取消立即停止迭代。
+choice 的 finish reason 与 usage 会被暂存，直到收到最终的 `[DONE]` 标记才发布。
+*/
 #[tracing::instrument(skip(client, request_body, header_map, url, cancel_token), fields(model = %request_body.model))]
 pub(crate) async fn stream_post(
     client: Arc<Client>,
@@ -455,9 +496,11 @@ pub(crate) async fn stream_post(
     })
 }
 
-/// Send a JSON request and decode its SSE response without assuming a provider
-/// event schema. Chat Completions, Responses, and Anthropic share this
-/// transport while retaining independent semantic event adapters.
+/**
+发送 JSON 请求并解码其 SSE 响应，不假定任何 provider 的事件 schema。
+
+Chat Completions、Responses 与 Anthropic 共享此传输层，同时保留各自独立的语义事件适配器。
+*/
 pub(crate) async fn stream_json_sse(
     request: RequestBuilder,
     model: String,
@@ -605,6 +648,7 @@ mod tests {
     use tokio::net::TcpListener;
     use tokio::sync::Notify;
 
+    /// 构造只含文本增量的 Chat Completions 块 JSON。
     fn chunk_json(content: &str) -> String {
         format!(
             r#"{{"choices":[{{"delta":{{"content":"{}"}},"index":0}}]}}"#,
@@ -612,6 +656,7 @@ mod tests {
         )
     }
 
+    /// 验证 `data:` 后无空格时也能正确解析。
     #[test]
     fn parse_data_without_space() -> Result<()> {
         let event = format!("data:{}", chunk_json("hello"));
@@ -630,6 +675,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 CRLF 分隔与 keepalive 注释行的处理。
     #[test]
     fn parse_data_with_crlf_and_keepalive() -> Result<()> {
         let mut buffer = format!(
@@ -655,6 +701,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 `[DONE]` 结束标记的解析。
     #[test]
     fn parse_done_marker() -> Result<()> {
         let data = parse_sse_data("data: [DONE]").ok_or_else(|| {
@@ -667,6 +714,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证被拆分的多字节 UTF-8 字符能正确拼接。
     #[test]
     fn decoder_preserves_split_multibyte_utf8() -> Result<()> {
         let payload = "data: {\"text\":\"你好\"}\n\n".as_bytes();
@@ -695,6 +743,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 EOF 时残留截断的 UTF-8 字节会报错。
     #[test]
     fn decoder_rejects_truncated_multibyte_utf8() -> Result<()> {
         let mut decoder = SseDecoder::new();
@@ -703,6 +752,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 EOF 时缺少分隔符的事件会被拒绝。
     #[test]
     fn decoder_rejects_delimiterless_event_at_eof() -> Result<()> {
         let mut decoder = SseDecoder::new();
@@ -719,6 +769,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 EOF 时残留空白字符也视为截断事件。
     #[test]
     fn decoder_rejects_whitespace_residue_at_eof() -> Result<()> {
         let mut decoder = SseDecoder::new();
@@ -731,6 +782,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证首块超时覆盖从发起请求到收到首批字节的全过程。
     #[tokio::test]
     async fn first_chunk_timeout_covers_request_start_through_first_bytes() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -761,6 +813,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证取消能中断挂起中的字节流。
     #[tokio::test]
     async fn cancellation_interrupts_parked_byte_stream() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -842,6 +895,7 @@ mod tests {
         Ok(())
     }
 
+    /// 断言结果是类型化的网络取消错误。
     fn assert_request_cancellation<T: Debug>(result: Result<T>) -> Result<()> {
         match result {
             Err(echo_core::error::ReactError::Llm(error)) if matches!(error.as_ref(), LlmError::NetworkError(message) if message.contains("cancelled")) => {
@@ -858,16 +912,22 @@ mod tests {
         }
     }
 
+    /// 测试覆盖的 provider 类型。
     #[derive(Clone, Copy)]
     enum TestProvider {
+        /// OpenAI Chat Completions。
         OpenAi,
+        /// OpenAI Responses。
         Responses,
+        /// Anthropic Messages。
         Anthropic,
     }
 
     impl TestProvider {
+        /// 全部 provider 类型。
         const ALL: [Self; 3] = [Self::OpenAi, Self::Responses, Self::Anthropic];
 
+        /// provider 名称。
         fn name(self) -> &'static str {
             match self {
                 Self::OpenAi => "openai",
@@ -877,6 +937,7 @@ mod tests {
         }
     }
 
+    /// 为指定 provider 创建指向测试服务器的客户端。
     fn test_provider_client(
         provider: TestProvider,
         base_url: String,
@@ -916,6 +977,7 @@ mod tests {
         }
     }
 
+    /// 启动返回给定 SSE 事件的本地服务器，收集 provider 流式输出的全部结果。
     async fn collect_provider_sse(
         provider: TestProvider,
         events: &[&str],
@@ -954,6 +1016,7 @@ mod tests {
         Ok(items)
     }
 
+    /// 验证各 provider 在部分输出后缺少语义结束信号时报错。
     #[tokio::test]
     async fn provider_streams_require_semantic_completion_after_partial_output() -> Result<()> {
         let cases: &[(TestProvider, &[&str])] = &[
@@ -1008,6 +1071,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证完整流只产生一个带用量信息的结束块。
     #[tokio::test]
     async fn provider_streams_complete_with_one_terminal_and_usage() -> Result<()> {
         let cases: &[(TestProvider, &[&str])] = &[
@@ -1072,6 +1136,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证不完整或非法的结束信号会被拒绝。
     #[tokio::test]
     async fn provider_streams_reject_incomplete_or_invalid_terminal_signals() -> Result<()> {
         let cases: &[(TestProvider, &[&str])] = &[
@@ -1131,6 +1196,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证截断流中 `[DONE]` 之前的 usage 不会被发布。
     #[tokio::test]
     async fn openai_usage_before_done_is_not_published_on_truncated_stream() -> Result<()> {
         let items = collect_provider_sse(
@@ -1150,6 +1216,7 @@ mod tests {
         Ok(())
     }
 
+    /// 断言 provider 的非流式请求在服务端挂起时（响应头前或后）能被取消。
     async fn assert_provider_cancels_while_stalled(
         provider: TestProvider,
         after_headers: bool,
@@ -1210,6 +1277,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证所有 provider 的非流式请求在响应头前可被取消。
     #[tokio::test]
     async fn all_nonstream_providers_cancel_before_response_headers() -> Result<()> {
         for provider in TestProvider::ALL {
@@ -1218,6 +1286,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证所有 provider 的非流式请求在响应头后可被取消。
     #[tokio::test]
     async fn all_nonstream_providers_cancel_after_response_headers() -> Result<()> {
         for provider in TestProvider::ALL {
@@ -1226,13 +1295,18 @@ mod tests {
         Ok(())
     }
 
+    /// 首次读取时暂停的读取器，用于在 JSON 解码进行中注入取消。
     struct PausingReader {
+        /// 底层数据。
         inner: Cursor<Vec<u8>>,
+        /// 首次读取时通知解码已开始。
         started: Option<tokio::sync::oneshot::Sender<()>>,
+        /// 等待恢复读取的信号。
         resume: mpsc::Receiver<()>,
     }
 
     impl Read for PausingReader {
+        /// 首次读取时发出开始通知并等待恢复信号，之后正常读取。
         fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
             if let Some(started) = self.started.take() {
                 started.send(()).map_err(|()| {
@@ -1252,6 +1326,7 @@ mod tests {
         }
     }
 
+    /// 验证 JSON 解码开始后取消仍然优先生效。
     #[tokio::test]
     async fn cancellation_wins_after_json_decode_has_started() -> Result<()> {
         let cancel_token = CancellationToken::new();
@@ -1284,6 +1359,7 @@ mod tests {
         assert_request_cancellation(result)
     }
 
+    /// 验证 Anthropic 非流式响应中的非法 UTF-8 JSON 会被拒绝。
     #[tokio::test]
     async fn anthropic_nonstream_rejects_invalid_utf8_json() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;

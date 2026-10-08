@@ -331,8 +331,10 @@ impl Tool for MockTool {
         })
     }
 
-    /// 携带上下文以流式方式执行工具，按脚本顺序弹出预设的事件流；
-    /// 若未预设流脚本，则退化为一次性返回执行结果的单事件流
+    /**
+     * 携带上下文以流式方式执行工具，按脚本顺序弹出预设的事件流；
+     * 若未预设流脚本，则退化为一次性返回执行结果的单事件流
+     */
     fn execute_stream_with_context<'a>(
         &'a self,
         params: ToolParameters,
@@ -368,4 +370,3 @@ impl Tool for MockTool {
             .is_empty()
     }
 }
-</content>

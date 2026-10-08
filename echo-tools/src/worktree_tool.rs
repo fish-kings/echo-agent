@@ -1,9 +1,11 @@
-//! Worktree tool wrappers — expose git worktree management as agent-callable tools.
-//!
-//! Provides three tools for parallel subagent isolation:
-//! - `enter_worktree`: Create a new git worktree for isolated parallel work
-//! - `exit_worktree`: Remove a managed worktree (optionally merging changes back)
-//! - `list_worktrees`: List all worktrees in the repository
+/*!
+ * Worktree 工具封装——将 git worktree 管理暴露为 Agent 可调用的工具。
+ *
+ * 为并行子 Agent 隔离提供三个工具：
+ * - `enter_worktree`：创建新的 git worktree，用于隔离的并行工作
+ * - `exit_worktree`：移除受管理的 worktree（可选先合并变更）
+ * - `list_worktrees`：列出仓库中的所有 worktree
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -20,18 +22,22 @@ use crate::git_worktree::{
 
 // ── Enter Worktree ──────────────────────────────────────────────────────────
 
-/// Creates a new git worktree for isolated parallel work.
-///
-/// When multiple subagents need to work on the same repository simultaneously,
-/// each should create its own worktree to avoid file conflicts. Worktrees share
-/// the same .git object store, so they are lightweight.
+/**
+ * 创建新的 git worktree，用于隔离的并行工作。
+ *
+ * 当多个子 Agent 需要同时操作同一仓库时，
+ * 每个子 Agent 都应创建自己的 worktree 以避免文件冲突。worktree 共享
+ * 同一个 .git 对象库，因此非常轻量。
+ */
 pub struct EnterWorktreeTool;
 
 impl Tool for EnterWorktreeTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "enter_worktree"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Create a new git worktree for isolated parallel work. \
          Use this when a subagent needs to work on a separate branch \
@@ -42,14 +48,17 @@ impl Tool for EnterWorktreeTool {
          (e.g. via the /worktree command), not via this tool."
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write, ToolPermission::Execute]
     }
 
+    /// 风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Standard
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -75,6 +84,7 @@ impl Tool for EnterWorktreeTool {
         })
     }
 
+    /// 创建 worktree 并在元数据中返回路径与分支。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -132,27 +142,32 @@ impl Tool for EnterWorktreeTool {
 
 // ── Exit Worktree ───────────────────────────────────────────────────────────
 
-/// Removes a managed worktree, optionally merging its changes back.
+/// 移除受管理的 worktree，可选先将其变更合并回目标分支。
 pub struct ExitWorktreeTool;
 
 impl Tool for ExitWorktreeTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "exit_worktree"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Remove a git worktree and clean up its branch. \
          Optionally merge the worktree branch into a target branch before removal."
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write, ToolPermission::Execute]
     }
 
+    /// 风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Dangerous
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -174,6 +189,7 @@ impl Tool for ExitWorktreeTool {
         })
     }
 
+    /// 可选合并后移除已登记的 worktree（分支予以保留）。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -191,8 +207,8 @@ impl Tool for ExitWorktreeTool {
                 .unwrap_or(".");
             let repo_path = context.resolve_path(Path::new(requested_repo_path));
 
-            // Determine the branch name from the worktree path.
-            // We look up the worktree in the list to get its branch.
+            /* 根据 worktree 路径确定分支名：
+            在 worktree 列表中查找该路径以获取其分支。 */
             let worktrees = list_worktrees_with_context(&repo_path, context)
                 .await
                 .map_err(|error| worktree_tool_error("exit_worktree", error))?;
@@ -214,7 +230,7 @@ impl Tool for ExitWorktreeTool {
                     message: "Refusing to remove an unknown or unregistered worktree".to_string(),
                 })?;
 
-            // Optionally merge before removal
+            // 可选：移除前先合并
             let merge_msg = if let Some(target) = merge_to {
                 let msg = merge_worktree_with_context(&repo_path, &wt, target, context)
                     .await
@@ -224,7 +240,7 @@ impl Tool for ExitWorktreeTool {
                 None
             };
 
-            // Remove the worktree
+            // 移除 worktree
             remove_worktree_with_context(&repo_path, &wt, context)
                 .await
                 .map_err(|error| worktree_tool_error("exit_worktree", error))?;
@@ -243,26 +259,31 @@ impl Tool for ExitWorktreeTool {
 
 // ── List Worktrees ──────────────────────────────────────────────────────────
 
-/// Lists all git worktrees in the repository.
+/// 列出仓库中的所有 git worktree。
 pub struct ListWorktreesTool;
 
 impl Tool for ListWorktreesTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "list_worktrees"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "List all git worktrees in the repository, showing their paths and branches."
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -276,6 +297,7 @@ impl Tool for ListWorktreesTool {
         })
     }
 
+    /// 列出仓库中的 worktree 及其分支。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -319,6 +341,7 @@ impl Tool for ListWorktreesTool {
     }
 }
 
+/// 将 worktree 操作的错误字符串映射为对应的 ToolError（取消、超时或执行失败）。
 fn worktree_tool_error(tool: &str, error: String) -> ToolError {
     if error.contains("execution cancelled") {
         return ToolError::Cancelled(tool.to_string());

@@ -132,6 +132,7 @@ pub enum MemoryLayer {
 }
 
 impl std::fmt::Display for MemoryLayer {
+    /// 以小写字符串形式输出层级名称。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Hot => write!(f, "hot"),
@@ -401,6 +402,7 @@ pub trait EvolutionObserver: Send + Sync {
  * kill -9 杀死时也会由操作系统自动释放，因此不会卡死其他进程）。
  */
 struct HotFileGuard<'a> {
+    /// 所属的管理器（仅测试使用）。
     #[cfg(test)]
     manager: &'a MemoryLayerManager,
     /// 已加载、可能会被修改的 MEMORY.md 结构。
@@ -411,8 +413,10 @@ struct HotFileGuard<'a> {
      * 阻止同一管理器上的其他任务进入临界区。
      */
     _inproc: tokio::sync::MutexGuard<'a, ()>,
-    /// 持有跨进程建议锁；丢弃时释放。该 flock 在文件描述符关闭时
-    /// 也会由操作系统释放（对 kill 是安全的）。
+    /**
+     * 持有跨进程建议锁；丢弃时释放。该 flock 在文件描述符关闭时
+     * 也会由操作系统释放（对 kill 是安全的）。
+     */
     _lock_file: std::fs::File,
 }
 
@@ -1118,17 +1122,21 @@ impl MemoryLayerManager {
 
     // ── 读取 ─────────────────────────────────────────────────────
 
-    /// 读取热层内容（MEMORY.md 正文，去除 frontmatter）。
-    ///
-    /// 若仍有操作在等待对账，会返回错误。
+    /**
+     * 读取热层内容（MEMORY.md 正文，去除 frontmatter）。
+     *
+     * 若仍有操作在等待对账，会返回错误。
+     */
     pub fn read_hot_content(&self) -> Result<String> {
         let _serial = self.clean_read_guard()?;
         Ok(self.parse_memory_file().body)
     }
 
-    /// 读取热层元数据（MEMORY.md 的 YAML frontmatter 条目）。
-    ///
-    /// 若仍有操作在等待对账，会返回错误。
+    /**
+     * 读取热层元数据（MEMORY.md 的 YAML frontmatter 条目）。
+     *
+     * 若仍有操作在等待对账，会返回错误。
+     */
     pub fn read_hot_meta(&self) -> Result<Vec<HotEntryMeta>> {
         let _serial = self.clean_read_guard()?;
         Ok(self.parse_memory_file().entries)
@@ -1578,9 +1586,11 @@ impl MemoryLayerManager {
         ))
     }
 
-    /// 若温层条目满足晋升资格且热层仍有容量，则考虑将其晋升到热层。
-    ///
-    /// 在每次新的记忆写入之后被调用。
+    /**
+     * 若温层条目满足晋升资格且热层仍有容量，则考虑将其晋升到热层。
+     *
+     * 在每次新的记忆写入之后被调用。
+     */
     pub async fn consider_promotion(&self, key: &str) -> Result<Option<LayerChangeResult>> {
         let Some((layer, entry)) = self.locate(key).await? else {
             return Ok(None);
@@ -1604,9 +1614,11 @@ impl MemoryLayerManager {
         self.promote_warm_to_hot(key, entry).await
     }
 
-    /// 通过降级优先级最低的条目来控制热层的 token 预算。
-    ///
-    /// 在每次热层写入之后被调用。返回降级结果列表。
+    /**
+     * 通过降级优先级最低的条目来控制热层的 token 预算。
+     *
+     * 在每次热层写入之后被调用。返回降级结果列表。
+     */
     pub async fn enforce_hot_budget(&self) -> Result<Vec<LayerChangeResult>> {
         let mut results = Vec::new();
         loop {
@@ -1633,7 +1645,7 @@ impl MemoryLayerManager {
         Ok(results)
     }
 
-    /* 计算一个热层条目的降级优先级分数。
+    /** 计算一个热层条目的降级优先级分数。
      * 分数越高，越容易被降级。 */
     fn demotion_score(meta: &HotEntryMeta) -> f32 {
         let confidence_factor = 1.0 - meta.confidence;
@@ -1654,9 +1666,11 @@ impl MemoryLayerManager {
 
     // ── 写入温层 ─────────────────────────────────────────
 
-    /// 向温层写入一条新的类型化记忆，并考虑是否晋升。
-    ///
-    /// 若该记忆被晋升到热层，返回 `Ok(Some(result))`。
+    /**
+     * 向温层写入一条新的类型化记忆，并考虑是否晋升。
+     *
+     * 若该记忆被晋升到热层，返回 `Ok(Some(result))`。
+     */
     pub async fn write_memory(
         &self,
         key: &str,
@@ -1708,9 +1722,11 @@ impl MemoryLayerManager {
 
     // ── 搜索 ──────────────────────────────────────────────────────
 
-    /// 跨热层与温层搜索。
-    ///
-    /// 热层结果排在前面（优先级更高），随后是温层结果。
+    /**
+     * 跨热层与温层搜索。
+     *
+     * 热层结果排在前面（优先级更高），随后是温层结果。
+     */
     pub async fn search_layered(
         &self,
         query: &str,
@@ -1781,10 +1797,12 @@ impl MemoryLayerManager {
         parse_memory_md(&raw)
     }
 
-    /// 将 MemoryFile 持久化写回磁盘。
-    ///
-    /// 采用原子写入（临时文件 + rename）并执行 `fsync`，因此崩溃不会
-    /// 导致 MEMORY.md 出现半写或被清空的情况。
+    /**
+     * 将 MemoryFile 持久化写回磁盘。
+     *
+     * 采用原子写入（临时文件 + rename）并执行 `fsync`，因此崩溃不会
+     * 导致 MEMORY.md 出现半写或被清空的情况。
+     */
     fn write_memory_file(&self, file: &MemoryFile) -> std::io::Result<()> {
         // 确保父目录存在
         if let Some(parent) = self.hot_path.parent() {
@@ -1849,7 +1867,9 @@ impl MemoryLayerManager {
         /* 有界的 flock 尝试。flock 每次调用都会阻塞；限制总尝试次数，
          * 以免一个卡死的对端把我们永远挂起。 */
         use fs2::FileExt;
+        // 获取文件锁的最大尝试次数。
         const MAX_ATTEMPTS: u32 = 600;
+        // 每次尝试获取文件锁失败后的等待间隔。
         const BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
         let mut got_lock = false;
         for _ in 0..MAX_ATTEMPTS {
@@ -2054,7 +2074,7 @@ impl MemoryLayerManager {
 
 // ── 解析函数 ──────────────────────────────────────────────────────
 
-/* 将一份 MEMORY.md 文件解析为结构化形式。
+/** 将一份 MEMORY.md 文件解析为结构化形式。
  * 该文件预期在 `---` 标记之间有 YAML frontmatter，
  * 随后是包含列表条目的 markdown 正文。 */
 fn parse_memory_md(raw: &str) -> MemoryFile {
@@ -2133,6 +2153,7 @@ fn format_memory_md(file: &MemoryFile) -> String {
 /// 用于 YAML frontmatter 反序列化的辅助结构体。
 #[derive(Debug, Serialize, Deserialize)]
 struct MemoryFileFrontmatter {
+    /// 热层条目元数据列表。
     #[serde(default)]
     entries: Option<Vec<HotEntryMeta>>,
 }
@@ -2145,6 +2166,7 @@ fn extract_hot_entry_content(body: &str, key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// 提取热层条目内容，必要时按 JSON 字符串解码。
 fn extract_hot_value_content(body: &str, meta: &HotEntryMeta) -> String {
     let raw = extract_hot_entry_content(body, &meta.key);
     if meta.content_json {
@@ -2154,7 +2176,7 @@ fn extract_hot_value_content(body: &str, meta: &HotEntryMeta) -> String {
     }
 }
 
-/* 估算一个字符串的 token 数量。
+/** 估算一个字符串的 token 数量。
  * 采用一种保守的启发式方法：拉丁字符约每 4 个字符 1 个 token，
  * 中日韩字符约每 1.5 个字符 1 个 token。我们取 3 字符/token 作为折中。 */
 fn estimate_tokens(text: &str) -> usize {
@@ -2173,6 +2195,7 @@ trait MemorySourceExt {
 }
 
 impl MemorySourceExt for MemorySource {
+    /// 返回该来源对应的字符串表示。
     fn as_str(&self) -> Option<&'static str> {
         match self {
             MemorySource::UserCorrection => Some("user_correction"),
@@ -2208,6 +2231,7 @@ mod security_ext {
     }
 }
 
+/// 记忆分层管理的单元测试。
 #[cfg(test)]
 mod tests {
     use super::super::audit::{ChangeEntry, ChangeRecordOutcome, JsonlChangeLog};
@@ -2220,18 +2244,22 @@ mod tests {
     /// 用于测试的一个空操作（no-op）ChangeLog。
     struct NullChangeLog;
     impl ChangeLog for NullChangeLog {
+        /// 空操作：直接丢弃条目。
         fn record(&self, _entry: ChangeEntry) -> Result<()> {
             Ok(())
         }
+        /// 空操作：总是视为已记录。
         fn record_idempotent(
             &self,
             _entry: ChangeEntry,
         ) -> Result<super::super::audit::ChangeRecordOutcome> {
             Ok(super::super::audit::ChangeRecordOutcome::AlreadyRecorded)
         }
+        /// 空操作：总是返回空列表。
         fn query(&self, _filter: &super::super::audit::ChangeFilter) -> Result<Vec<ChangeEntry>> {
             Ok(Vec::new())
         }
+        /// 空操作：总是返回 `None`。
         fn latest_for(
             &self,
             _entity_type: EntityType,
@@ -2239,17 +2267,21 @@ mod tests {
         ) -> Result<Option<ChangeEntry>> {
             Ok(None)
         }
+        /// 空操作：总是返回 `0`。
         fn len(&self) -> usize {
             0
         }
     }
 
+    /// 记录层级变更通知的测试观察者。
     #[derive(Default)]
     struct RecordingObserver {
+        /// 已收到的 (键, 源层, 目标层) 变更列表。
         changes: StdMutex<Vec<(String, String, String)>>,
     }
 
     impl RecordingObserver {
+        /// 返回已记录变更的快照。
         fn changes(&self) -> Vec<(String, String, String)> {
             self.changes
                 .lock()
@@ -2259,6 +2291,7 @@ mod tests {
     }
 
     impl EvolutionObserver for RecordingObserver {
+        /// 记录一次记忆层级变更。
         fn on_memory_layer_change<'a>(
             &'a self,
             key: &'a str,
@@ -2277,23 +2310,32 @@ mod tests {
         }
     }
 
+    /// 所有写入都失败的 ChangeLog。
     struct FailingChangeLog;
 
+    /// 下一次写入失败一次、之后委托给内部日志的 ChangeLog。
     struct FailOnceChangeLog {
+        /// 实际存储条目的内部日志。
         inner: JsonlChangeLog,
+        /// 下一次写入是否应失败。
         fail_next: AtomicBool,
     }
 
+    /// 第二次写入失败、其余委托给内部日志的 ChangeLog。
     struct FailSecondChangeLog {
+        /// 实际存储条目的内部日志。
         inner: JsonlChangeLog,
+        /// 已发生的写入调用次数。
         calls: AtomicUsize,
     }
 
     impl ChangeLog for FailSecondChangeLog {
+        /// 记录一条变更条目。
         fn record(&self, entry: ChangeEntry) -> Result<()> {
             self.record_idempotent(entry).map(|_| ())
         }
 
+        /// 以幂等方式记录一条变更条目，第二次调用时失败。
         fn record_idempotent(&self, entry: ChangeEntry) -> Result<ChangeRecordOutcome> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
                 return Err(merge_plan_error("injected second audit failure"));
@@ -2301,24 +2343,29 @@ mod tests {
             self.inner.record_idempotent(entry)
         }
 
+        /// 委托给内部日志查询。
         fn query(&self, filter: &super::super::audit::ChangeFilter) -> Result<Vec<ChangeEntry>> {
             self.inner.query(filter)
         }
 
+        /// 委托给内部日志返回最新条目。
         fn latest_for(&self, entity_type: EntityType, key: &str) -> Result<Option<ChangeEntry>> {
             self.inner.latest_for(entity_type, key)
         }
 
+        /// 返回内部日志的条目数量。
         fn len(&self) -> usize {
             self.inner.len()
         }
     }
 
     impl ChangeLog for FailOnceChangeLog {
+        /// 记录一条变更条目。
         fn record(&self, entry: ChangeEntry) -> Result<()> {
             self.record_idempotent(entry).map(|_| ())
         }
 
+        /// 以幂等方式记录一条变更条目，按需注入一次失败。
         fn record_idempotent(&self, entry: ChangeEntry) -> Result<ChangeRecordOutcome> {
             if self.fail_next.swap(false, Ordering::SeqCst) {
                 return Err(merge_plan_error("injected change-log failure"));
@@ -2326,10 +2373,12 @@ mod tests {
             self.inner.record_idempotent(entry)
         }
 
+        /// 委托给内部日志查询。
         fn query(&self, filter: &super::super::audit::ChangeFilter) -> Result<Vec<ChangeEntry>> {
             self.inner.query(filter)
         }
 
+        /// 委托给内部日志返回最新条目。
         fn latest_for(
             &self,
             entity_type: EntityType,
@@ -2338,16 +2387,19 @@ mod tests {
             self.inner.latest_for(entity_type, entity_key)
         }
 
+        /// 返回内部日志的条目数量。
         fn len(&self) -> usize {
             self.inner.len()
         }
     }
 
     impl ChangeLog for FailingChangeLog {
+        /// 总是返回错误。
         fn record(&self, _entry: ChangeEntry) -> Result<()> {
             Err(merge_plan_error("injected change-log failure"))
         }
 
+        /// 总是返回错误。
         fn record_idempotent(
             &self,
             _entry: ChangeEntry,
@@ -2355,10 +2407,12 @@ mod tests {
             Err(merge_plan_error("injected change-log failure"))
         }
 
+        /// 总是返回空列表。
         fn query(&self, _filter: &super::super::audit::ChangeFilter) -> Result<Vec<ChangeEntry>> {
             Ok(Vec::new())
         }
 
+        /// 总是返回 `None`。
         fn latest_for(
             &self,
             _entity_type: EntityType,
@@ -2367,11 +2421,13 @@ mod tests {
             Ok(None)
         }
 
+        /// 总是返回 `0`。
         fn len(&self) -> usize {
             0
         }
     }
 
+    /// 创建一个用于测试的记忆分层管理器。
     fn make_manager() -> MemoryLayerManager {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.keep();
@@ -2380,12 +2436,14 @@ mod tests {
         MemoryLayerManager::new(dir_path, store, change_log)
     }
 
+    /// 读取指定键最新的记忆审计条目。
     fn latest_memory_audit(path: &std::path::Path, key: &str) -> Result<ChangeEntry> {
         JsonlChangeLog::new(path.to_path_buf())?
             .latest_for(EntityType::Memory, key)?
             .ok_or_else(|| merge_plan_error(format!("expected audit for memory key {key}")))
     }
 
+    /// 从审计条目中取出变更前或变更后的层级投影。
     fn audit_projection_layer(entry: &ChangeEntry, before: bool) -> Option<&str> {
         let projection = if before {
             entry.before.as_ref()
@@ -2397,6 +2455,7 @@ mod tests {
             .and_then(serde_json::Value::as_str)
     }
 
+    /// 断言回滚审计条目包含机器可读的摘要。
     fn assert_machine_readable_rollback_summary(entry: &ChangeEntry) -> Result<()> {
         let before = entry.before.as_ref().and_then(serde_json::Value::as_object);
         let after = entry.after.as_ref().and_then(serde_json::Value::as_object);
@@ -2433,6 +2492,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证解析带 frontmatter 的记忆文件。
     #[test]
     fn test_parse_memory_file_with_frontmatter() {
         let raw = "\
@@ -2459,6 +2519,7 @@ entries:
         assert!(file.body.contains("**[style/concise]**"));
     }
 
+    /// 验证解析不带 frontmatter 的记忆文件。
     #[test]
     fn test_parse_memory_file_without_frontmatter() {
         let raw = "- Simple memory without frontmatter\n";
@@ -2467,6 +2528,7 @@ entries:
         assert!(file.body.contains("Simple memory without frontmatter"));
     }
 
+    /// 验证解析空记忆文件。
     #[test]
     fn test_parse_memory_file_empty() {
         let file = parse_memory_md("");
@@ -2474,6 +2536,7 @@ entries:
         assert!(file.body.is_empty());
     }
 
+    /// 验证 MEMORY.md 格式化与解析可往返。
     #[test]
     fn test_format_memory_md_roundtrip() {
         let file = MemoryFile {
@@ -2502,6 +2565,7 @@ entries:
         assert!(reparsed.body.contains("**[test_key]**"));
     }
 
+    /// 验证空热层读取返回空内容。
     #[test]
     fn test_read_hot_content_empty() -> Result<()> {
         let manager = make_manager();
@@ -2509,6 +2573,7 @@ entries:
         Ok(())
     }
 
+    /// 验证预算内可以写入热层。
     #[tokio::test]
     async fn test_add_to_hot_under_budget() -> Result<()> {
         let manager = make_manager();
@@ -2539,6 +2604,7 @@ entries:
         Ok(())
     }
 
+    /// 验证热层删除成功时只通知一次，重试删除缺失条目不再通知。
     #[tokio::test]
     async fn successful_hot_delete_notifies_once_and_missing_retry_does_not_notify() -> Result<()> {
         let dir = tempfile::tempdir()
@@ -2577,6 +2643,7 @@ entries:
         Ok(())
     }
 
+    /// 验证热层删除审计失败时不发出层级变更通知。
     #[tokio::test]
     async fn failed_hot_delete_audit_emits_no_layer_change() -> Result<()> {
         let dir = tempfile::tempdir()
@@ -2609,6 +2676,7 @@ entries:
         Ok(())
     }
 
+    /// 验证两个管理器共享同一根目录下的操作顺序。
     #[tokio::test]
     async fn two_managers_share_one_root_operation_order() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -2657,6 +2725,7 @@ entries:
         Ok(())
     }
 
+    /// 子进程探针：验证日志租约被占用时无法打开。
     #[test]
     fn journal_lease_child_probe() -> Result<()> {
         let Some(root) = std::env::var_os("ECHO_TEST_MEMORY_JOURNAL_ROOT") else {
@@ -2675,6 +2744,7 @@ entries:
         Ok(())
     }
 
+    /// 验证管理器持有日志时第二个进程以失败关闭方式处理。
     #[test]
     fn second_process_fails_closed_while_manager_owns_journal() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -2700,6 +2770,7 @@ entries:
         Ok(())
     }
 
+    /// 验证持久化写入在重启后只对账出一条审计。
     #[tokio::test]
     async fn durable_write_reconciles_one_audit_after_restart() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -2746,6 +2817,7 @@ entries:
         Ok(())
     }
 
+    /// 验证已结算历史可修复旧的存储投影且不重复审计。
     #[tokio::test]
     async fn settled_history_repairs_older_store_projection_without_duplicate_audit() -> Result<()>
     {
@@ -2804,6 +2876,7 @@ entries:
         Ok(())
     }
 
+    /// 验证准备阶段失败不会修改温层存储。
     #[tokio::test]
     async fn failed_prepare_does_not_mutate_warm_store() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -2827,6 +2900,7 @@ entries:
         Ok(())
     }
 
+    /// 验证重启后对进行到一半的晋升与降级只对账一次。
     #[tokio::test]
     async fn restart_reconciles_mid_promotion_and_demotion_once() -> Result<()> {
         for promote in [true, false] {
@@ -2936,6 +3010,7 @@ entries:
         Ok(())
     }
 
+    /// 验证重启后对进行到一半的温层删除与元数据更新进行对账。
     #[tokio::test]
     async fn restart_reconciles_mid_warm_delete_and_meta_update() -> Result<()> {
         for delete in [true, false] {
@@ -3023,6 +3098,7 @@ entries:
         Ok(())
     }
 
+    /// 验证第二次失败后合并分组会重放所有成员的审计。
     #[tokio::test]
     async fn merge_group_replays_all_member_audits_after_second_failure() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -3099,6 +3175,7 @@ entries:
         Ok(())
     }
 
+    /// 验证投影中断后已准备的合并会重放剩余成员。
     #[tokio::test]
     async fn prepared_merge_replays_remaining_member_after_interrupted_projection() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -3184,6 +3261,7 @@ entries:
         Ok(())
     }
 
+    /// 验证降级评分的排序。
     #[test]
     fn test_demotion_score_ordering() {
         let high_quality = HotEntryMeta {
@@ -3225,6 +3303,7 @@ entries:
         );
     }
 
+    /// 验证提取热层条目内容。
     #[test]
     fn test_extract_hot_entry_content() {
         let body = "- **[build_java8]** Maven needs Java 8\n- **[style/concise]** Be brief\n";
@@ -3236,6 +3315,7 @@ entries:
         assert_eq!(extract_hot_entry_content(body, "nonexistent"), "");
     }
 
+    /// 验证 token 数量估算。
     #[test]
     fn test_estimate_tokens() {
         // 纯拉丁字符
@@ -3248,6 +3328,7 @@ entries:
         assert!(tokens > 0);
     }
 
+    /// 验证写入记忆并考虑晋升。
     #[tokio::test]
     async fn test_write_memory_and_consider_promotion() -> Result<()> {
         let manager = make_manager();
@@ -3278,6 +3359,7 @@ entries:
         Ok(())
     }
 
+    /// 验证晋升后的空白与多行内容在对账后保持不变。
     #[tokio::test]
     async fn promoted_whitespace_and_multiline_content_survives_reconcile() -> Result<()> {
         for content in [
@@ -3336,6 +3418,7 @@ entries:
         Ok(())
     }
 
+    /// 验证过期的晋升快照不能覆盖更新的温层写入。
     #[tokio::test]
     async fn stale_promotion_snapshot_cannot_overwrite_newer_warm_write() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -3382,6 +3465,7 @@ entries:
         Ok(())
     }
 
+    /// 验证过期的降级快照不能覆盖更新的热层写入。
     #[tokio::test]
     async fn stale_demotion_snapshot_cannot_overwrite_newer_hot_write() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -3424,6 +3508,7 @@ entries:
         Ok(())
     }
 
+    /// 验证过期的温层归档快照不能覆盖更新的写入。
     #[tokio::test]
     async fn stale_warm_archive_snapshot_cannot_overwrite_newer_write() -> Result<()> {
         let dir = tempfile::tempdir().map_err(ReactError::from)?;
@@ -3477,6 +3562,7 @@ entries:
         Ok(())
     }
 
+    /// 验证不满足热层资格的记忆不会被晋升。
     #[tokio::test]
     async fn test_write_memory_not_eligible_for_hot() -> Result<()> {
         let manager = make_manager();
@@ -3501,6 +3587,7 @@ entries:
         Ok(())
     }
 
+    /// 验证已批准的合并可以被精确恢复。
     #[tokio::test]
     async fn approved_merge_can_be_restored_exactly() -> crate::error::Result<()> {
         let store = Arc::new(InMemoryStore::new());
@@ -3566,6 +3653,7 @@ entries:
         Ok(())
     }
 
+    /// 验证后续回滚能幂等地恢复已结算的记忆变更。
     #[tokio::test]
     async fn later_rollback_restores_a_settled_memory_change_idempotently()
     -> crate::error::Result<()> {
@@ -3614,6 +3702,7 @@ entries:
         Ok(())
     }
 
+    /// 验证后续回滚会拒绝非最新目标与 ABA 目标。
     #[tokio::test]
     async fn later_rollback_rejects_non_tip_and_aba_targets() -> crate::error::Result<()> {
         let store = Arc::new(InMemoryStore::new());
@@ -3651,6 +3740,7 @@ entries:
         Ok(())
     }
 
+    /// 验证回滚的回滚是一个新批次，且请求冲突时失败关闭。
     #[tokio::test]
     async fn rollback_of_rollback_is_a_new_batch_and_request_conflicts_fail_closed()
     -> crate::error::Result<()> {
@@ -3713,6 +3803,7 @@ entries:
         Ok(())
     }
 
+    /// 验证回滚回执在管理器重启后仍然保留。
     #[tokio::test]
     async fn rollback_receipt_survives_manager_restart() -> crate::error::Result<()> {
         let dir = tempfile::tempdir()
@@ -3765,6 +3856,7 @@ entries:
         Ok(())
     }
 
+    /// 验证回滚审计失败后重启会对账逆操作。
     #[tokio::test]
     async fn rollback_audit_failure_reconciles_inverse_after_restart() -> crate::error::Result<()> {
         let dir = tempfile::tempdir()
@@ -3833,6 +3925,7 @@ entries:
         Ok(())
     }
 
+    /// 验证逆投影与审计矩阵与真实记忆结果一致。
     #[tokio::test]
     async fn inverse_projection_and_audit_matrix_matches_real_memory_outcomes()
     -> crate::error::Result<()> {
@@ -4034,6 +4127,7 @@ entries:
         Ok(())
     }
 
+    /// 验证过期的合并提案在修改前即失败。
     #[tokio::test]
     async fn stale_merge_proposal_fails_before_mutation() -> crate::error::Result<()> {
         let store = Arc::new(InMemoryStore::new());
@@ -4073,6 +4167,7 @@ entries:
         Ok(())
     }
 
+    /// 验证能在温层中定位条目。
     #[tokio::test]
     async fn test_locate_in_warm() -> Result<()> {
         let manager = make_manager();
@@ -4095,6 +4190,7 @@ entries:
         Ok(())
     }
 
+    /// 验证定位不存在的条目返回空。
     #[tokio::test]
     async fn test_locate_not_found() -> Result<()> {
         let manager = make_manager();
@@ -4103,6 +4199,7 @@ entries:
         Ok(())
     }
 
+    /// 验证将热层条目降级到温层。
     #[tokio::test]
     async fn test_demote_hot_to_warm() -> Result<()> {
         let manager = make_manager();
@@ -4145,6 +4242,7 @@ entries:
         Ok(())
     }
 
+    /// 验证分层搜索时热层结果排在前面。
     #[tokio::test]
     async fn test_search_layered_returns_hot_first() {
         let manager = make_manager();
@@ -4192,13 +4290,14 @@ entries:
         assert!(results.iter().any(|(l, _)| *l == MemoryLayer::Hot));
     }
 
+    /// 验证 MemoryLayer 的 Display 输出。
     #[test]
     fn test_memory_layer_display() {
         assert_eq!(MemoryLayer::Hot.to_string(), "hot");
         assert_eq!(MemoryLayer::Warm.to_string(), "warm");
     }
 
-    /* P0-3（MEMORY.md 无锁）的回归测试：在同一个 `MemoryLayerManager` 上
+    /** P0-3（MEMORY.md 无锁）的回归测试：在同一个 `MemoryLayerManager` 上
      * 并发调用两次 `add_to_hot`，两次写入都必须生效。在加锁之前，
      * 每次调用都会读取文件、追加自己的条目、再写回——第二次写回会
      * 悄无声息地丢弃第一个写入者的条目。 */

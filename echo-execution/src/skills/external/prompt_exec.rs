@@ -1,22 +1,23 @@
-//! Inline shell execution and variable substitution for SKILL.md content.
-//!
-//! When a skill is activated, its Markdown body may contain:
-//!
-//! - **Inline commands**: `` !`pwd` `` -> replaced by the command's stdout
-//! - **Block commands**: `` ```! \n git status \n ``` `` -> replaced by stdout
-//! - **Variables**: `${SKILL_DIR}`, `${SESSION_ID}`, `${ARGUMENTS}`, `${1}`, `${2}`, etc.
-//!
-//! This mirrors the Claude Code `promptShellExecution.ts` behavior:
-//! commands are executed **at activation time** and their output is substituted
-//! inline, making skill instructions dynamic.
-//!
-//! ## Security
-//!
-//! - MCP-sourced skills **never** execute inline commands (untrusted remote content)
-//! - Local skills use at minimum Process isolation level via SandboxManager
-//! - Each command respects the configured timeout (default 10s per command)
-//! - After timeout, subprocess is killed via `Child::kill()`
-//! - Commands run in the skill's directory as working directory
+/*!
+SKILL.md 内容的内联 shell 执行与变量替换。
+
+技能被激活时，其 Markdown 正文中可能包含：
+
+- **内联命令**：`` !`pwd` `` -> 替换为该命令的 stdout
+- **块命令**：`` ```! \n git status \n ``` `` -> 替换为 stdout
+- **变量**：`${SKILL_DIR}`、`${SESSION_ID}`、`${ARGUMENTS}`、`${1}`、`${2}` 等
+
+这与 Claude Code 的 `promptShellExecution.ts` 行为一致：
+命令在**激活时**执行，其输出被内联替换，从而使技能指令具备动态性。
+
+## 安全
+
+- 来自 MCP 的技能**绝不**执行内联命令（不受信的远程内容）
+- 本地技能通过 SandboxManager 至少使用 Process 隔离级别
+- 每条命令都遵循配置的超时时间（默认每条 10 秒）
+- 超时后通过 `Child::kill()` 终止子进程
+- 命令以技能所在目录作为工作目录运行
+*/
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -30,57 +31,61 @@ use tracing::warn;
 use crate::sandbox::{SandboxCommand, SandboxExecutor};
 use crate::skills::minimal_env;
 
+/// 单条内联命令的默认超时时间。
 const DEFAULT_CMD_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Pre-compiled regex for block command syntax: ```! ... ```
+/// 预编译的块命令语法正则：```! ... ```
 static BLOCK_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"```!\s*\n?([\s\S]*?)\n?```").ok());
 
-/// Pre-compiled regex for inline command syntax: !`...`
+/// 预编译的内联命令语法正则：!`...`
 static INLINE_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)!`([^`]+)`").ok());
 
-/// Pre-compiled regex for detecting block command markers.
+/// 预编译的块命令标记检测正则。
 static BLOCK_MARKER_RE: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"```!\s*\n?").ok());
 
-/// Pre-compiled regex for detecting inline command markers.
+/// 预编译的内联命令标记检测正则。
 static INLINE_MARKER_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"(?:^|\s)!`[^`]*`").ok());
 
-/// Pre-compiled regex for SOH-delimited placeholders.
+/// 预编译的 SOH 分隔占位符正则。
 static PLACEHOLDER_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r"\x01CMD_OUT_\d+\x01").ok());
 
-/// Source of a skill (affects security policy).
+/// 技能来源（影响安全策略）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillSource {
-    /// Local filesystem skill (trusted).
+    /// 本地文件系统技能（受信）。
     Local,
-    /// Remote/MCP skill (untrusted -- no shell execution).
+    /// 远程/MCP 技能（不受信 —— 不执行 shell）。
     Mcp,
 }
 
-/// Context for variable substitution and command execution.
+/// 变量替换与命令执行所需的上下文。
 #[derive(Clone)]
 pub struct PromptContext {
-    /// Absolute path to the skill's directory.
+    /// 技能目录的绝对路径。
     pub skill_dir: String,
-    /// Session identifier (if available).
+    /// 会话标识（如有）。
     pub session_id: String,
-    /// User-provided arguments (positional).
+    /// 用户提供的参数（按位置）。
     pub arguments: Vec<String>,
-    /// Preferred shell supplied by a programmatic descriptor or host policy.
+    /// 由程序化描述符或宿主策略提供的首选 shell。
     pub shell: Option<String>,
-    /// Per-command timeout.
+    /// 单条命令的超时时间。
     pub timeout: Duration,
-    /// Skill source (local vs MCP).
+    /// 技能来源（本地或 MCP）。
     pub source: SkillSource,
-    /// Optional sandbox manager for command execution.
-    /// When Some, commands are routed through the sandbox.
+    /**
+    可选的沙箱管理器，用于执行命令。
+    为 Some 时，命令将经由沙箱执行。
+    */
     pub sandbox: Option<Arc<dyn SandboxExecutor>>,
 }
 
 impl Default for PromptContext {
+    /// 构造默认上下文：本地来源、默认超时、无沙箱。
     fn default() -> Self {
         Self {
             skill_dir: String::new(),
@@ -94,57 +99,58 @@ impl Default for PromptContext {
     }
 }
 
-/// Process a skill's Markdown body: substitute variables, then execute inline commands.
-///
-/// # Security
-///
-/// To prevent user-supplied arguments from injecting new commands:
-/// 1. All command regions are extracted FIRST from the original content.
-/// 2. Variable substitution runs only on non-command text (placeholders protect command
-///    regions from both substitution and injection).
-/// 3. After substitution, the result is scanned for any NEW command markers. If found,
-///    substitution is rejected and the content is returned without command execution.
-/// 4. Original commands are executed and their output replaces the placeholders.
+/**
+处理技能的 Markdown 正文：先替换变量，再执行内联命令。
+
+# 安全
+
+为防止用户提供的参数注入新命令：
+1. 首先从原始内容中提取所有命令区域。
+2. 变量替换只作用于非命令文本（占位符保护命令区域免受替换和注入）。
+3. 替换完成后，扫描结果中是否出现新的命令标记。若发现，
+   则拒绝替换，并返回不执行任何命令的内容。
+4. 执行原始命令，并用其输出替换占位符。
+*/
 pub async fn process_skill_content(content: &str, ctx: &PromptContext) -> String {
-    // MCP skills: completely forbid execution of inline commands
+    // MCP 技能：完全禁止执行内联命令
     if ctx.source == SkillSource::Mcp {
         return substitute_variables(content, ctx);
     }
 
-    // Step 1: Extract all command regions from ORIGINAL content (before substitution)
+    // 第 1 步：从原始内容（替换之前）中提取所有命令区域
     let regions = extract_command_regions(content);
 
-    // Step 2: Build a safe version with unique placeholders instead of command regions
+    // 第 2 步：构建安全版本，用唯一占位符替代命令区域
     let mut safe = String::with_capacity(content.len());
     let mut pos = 0;
     for (i, region) in regions.iter().enumerate() {
         safe.push_str(content.get(pos..region.start).unwrap_or_default());
-        safe.push_str(&format!("\x01CMD_OUT_{}\x01", i)); // SOH-delimited placeholder
+        safe.push_str(&format!("\x01CMD_OUT_{}\x01", i)); // SOH 分隔的占位符
         pos = region.end;
     }
     safe.push_str(content.get(pos..).unwrap_or_default());
 
-    // Step 3: Substitute variables only in the safe (non-command) content
+    // 第 3 步：仅在安全（非命令）内容中替换变量
     let substituted = substitute_variables(&safe, ctx);
 
-    // Step 4: Detect injected command markers introduced by variable expansion
+    // 第 4 步：检测变量展开后引入的注入命令标记
     if has_command_markers(&substituted) {
         warn!(
             "Possible command injection detected after variable substitution — \
                command execution disabled for this skill activation"
         );
-        // Return substituted content with placeholders removed (no command execution)
+        // 返回移除占位符后的替换结果（不执行命令）
         return strip_placeholders(&substituted);
     }
 
-    // Step 5: Execute original commands and collect outputs
+    // 第 5 步：执行原始命令并收集输出
     let mut cmd_outputs: HashMap<usize, String> = HashMap::new();
     for (i, region) in regions.iter().enumerate() {
         let output = run_command(&region.command_text, ctx).await;
         cmd_outputs.insert(i, output);
     }
 
-    // Step 6: Replace placeholders with command outputs
+    // 第 6 步：用命令输出替换占位符
     let mut result = substituted;
     for i in (0..regions.len()).rev() {
         let placeholder = format!("\x01CMD_OUT_{}\x01", i);
@@ -153,10 +159,10 @@ pub async fn process_skill_content(content: &str, ctx: &PromptContext) -> String
                 continue;
             };
             if region.is_block {
-                // Block commands: output replaces the entire ```! ... ``` block
+                // 块命令：输出替换整个 ```! ... ``` 块
                 result = result.replace(&placeholder, &output);
             } else {
-                // Inline commands: preserve leading whitespace from the original match
+                // 内联命令：保留原始匹配中的前导空白
                 let matched = content.get(region.start..region.end).unwrap_or_default();
                 let leading_ws: String =
                     matched.chars().take_while(|c| c.is_whitespace()).collect();
@@ -168,15 +174,19 @@ pub async fn process_skill_content(content: &str, ctx: &PromptContext) -> String
     result
 }
 
-/// A detected command region in skill content.
+/// 技能内容中检测到的命令区域。
 struct CmdRegion {
+    /// 区域在原始内容中的起始字节偏移。
     start: usize,
+    /// 区域在原始内容中的结束字节偏移（不含）。
     end: usize,
+    /// 待执行的命令文本。
     command_text: String,
+    /// 是否为块命令（否则为内联命令）。
     is_block: bool,
 }
 
-/// Extract all command regions (block and inline) from content, in order.
+/// 按顺序从内容中提取所有命令区域（块命令与内联命令）。
 fn extract_command_regions(content: &str) -> Vec<CmdRegion> {
     let mut regions: Vec<CmdRegion> = Vec::new();
 
@@ -217,7 +227,7 @@ fn extract_command_regions(content: &str) -> Vec<CmdRegion> {
     regions
 }
 
-/// Check if content contains block or inline command markers.
+/// 检查内容中是否包含块命令或内联命令标记。
 fn has_command_markers(content: &str) -> bool {
     BLOCK_MARKER_RE
         .as_ref()
@@ -227,7 +237,7 @@ fn has_command_markers(content: &str) -> bool {
             .is_some_and(|regex| regex.is_match(content))
 }
 
-/// Remove placeholder markers from content.
+/// 移除内容中的占位符标记。
 fn strip_placeholders(content: &str) -> String {
     PLACEHOLDER_RE.as_ref().map_or_else(
         || content.to_string(),
@@ -235,13 +245,15 @@ fn strip_placeholders(content: &str) -> String {
     )
 }
 
-/// Substitute template variables in skill content.
-///
-/// Supported variables:
-/// - `${SKILL_DIR}` -- absolute path to the skill directory
-/// - `${SESSION_ID}` -- current session identifier
-/// - `${ARGUMENTS}` -- all arguments joined by space
-/// - `${1}`, `${2}`, ... -- positional arguments
+/**
+替换技能内容中的模板变量。
+
+支持的变量：
+- `${SKILL_DIR}` -- 技能目录的绝对路径
+- `${SESSION_ID}` -- 当前会话标识
+- `${ARGUMENTS}` -- 以空格连接的全部参数
+- `${1}`、`${2}`、... -- 位置参数
+*/
 fn substitute_variables(content: &str, ctx: &PromptContext) -> String {
     let mut result = content.to_string();
 
@@ -254,7 +266,7 @@ fn substitute_variables(content: &str, ctx: &PromptContext) -> String {
     let args_joined = ctx.arguments.join(" ");
     result = result.replace("${ARGUMENTS}", &args_joined);
 
-    // Positional: ${1}, ${2}, ...
+    // 位置参数：${1}、${2}、...
     for (i, arg) in ctx.arguments.iter().enumerate() {
         let placeholder = format!("${{{}}}", i + 1);
         result = result.replace(&placeholder, arg);
@@ -263,17 +275,17 @@ fn substitute_variables(content: &str, ctx: &PromptContext) -> String {
     result
 }
 
-/// Execute block commands: ` ```! \n command \n ``` ` -> stdout
+/// 执行块命令：` ```! \n command \n ``` ` -> stdout
 #[cfg(test)]
 async fn execute_block_commands(content: &str, ctx: &PromptContext) -> String {
-    // Pattern: ```! followed by optional newline, then command(s), then ```
+    // 模式：```! 后跟可选换行，然后是命令，最后是 ```
     let mut result = content.to_string();
     let matches: Vec<_> = BLOCK_RE
         .as_ref()
         .map(|regex| regex.captures_iter(content).collect())
         .unwrap_or_default();
 
-    // Process in reverse order so byte offsets remain valid
+    // 逆序处理，保证字节偏移仍然有效
     for cap in matches.into_iter().rev() {
         let full_match = match cap.get(0) {
             Some(m) => m,
@@ -293,10 +305,12 @@ async fn execute_block_commands(content: &str, ctx: &PromptContext) -> String {
     result
 }
 
-/// Execute inline commands: `` !`command` `` -> stdout
-///
-/// The pattern requires whitespace or line start before `!`` to avoid
-/// matching Markdown image syntax (`![alt](url)`).
+/**
+执行内联命令：`` !`command` `` -> stdout
+
+该模式要求 `!`` 之前为空白或行首，以避免误匹配
+Markdown 图片语法（`![alt](url)`）。
+*/
 #[cfg(test)]
 async fn execute_inline_commands(content: &str, ctx: &PromptContext) -> String {
     let mut result = content.to_string();
@@ -318,7 +332,7 @@ async fn execute_inline_commands(content: &str, ctx: &PromptContext) -> String {
 
         let output = run_command(command, ctx).await;
 
-        // Preserve leading whitespace from the match
+        // 保留匹配中的前导空白
         let matched_str = full_match.as_str();
         let leading_ws: String = matched_str
             .chars()
@@ -332,30 +346,31 @@ async fn execute_inline_commands(content: &str, ctx: &PromptContext) -> String {
     result
 }
 
-/// Execute a shell command and return its stdout (or error message).
-///
-/// Sandbox routing:
-/// - If a SandboxManager is configured, commands go through the sandbox
-///   with at minimum Process isolation level.
-/// - If no sandbox, falls back to bare process spawning with minimal env
-///   and proper timeout + kill behavior.
+/**
+执行 shell 命令并返回其 stdout（或错误信息）。
+
+沙箱路由：
+- 若配置了 SandboxManager，命令经由沙箱执行，且至少使用 Process 隔离级别。
+- 若无沙箱，则回退为直接派生进程，使用最小化环境变量，
+  并具备正确的超时与终止行为。
+*/
 async fn run_command(command: &str, ctx: &PromptContext) -> String {
-    // Sandbox execution path
+    // 沙箱执行路径
     if let Some(ref manager) = ctx.sandbox {
         return run_command_sandboxed(command, ctx, manager.as_ref()).await;
     }
 
-    // Fallback: direct process execution with minimal env and proper kill
+    // 回退：以最小化环境直接执行进程，并正确终止
     run_command_direct(command, ctx).await
 }
 
-/// Execute a command through the SandboxManager.
+/// 通过 SandboxManager 执行命令。
 async fn run_command_sandboxed(
     command: &str,
     ctx: &PromptContext,
     manager: &dyn SandboxExecutor,
 ) -> String {
-    // Use minimal environment
+    // 使用最小化环境
     let env = minimal_env(&ctx.skill_dir, &ctx.session_id, HashMap::new());
 
     let mut sandbox_cmd = SandboxCommand::shell(command).with_timeout(ctx.timeout);
@@ -394,27 +409,28 @@ async fn run_command_sandboxed(
     }
 }
 
-/// Execute a command directly with minimal environment.
-///
-/// # ⚠️ 警告：Fallback 路径的限制
-///
-/// 此函数是 `run_command` 的 fallback 路径，仅在无 `SandboxManager` 时使用。
-/// 它有以下限制：
-///
-/// direct fallback 会使用 `kill_on_drop(true)` 配合 `timeout(...)` 尽力终止超时子进程，
-/// 但生产环境仍建议优先配置 `SandboxManager`（通过 `PromptContext::sandbox` 字段），
-/// 以获得更强的隔离、资源限制和统一清理。
-///
-/// **适用场景**：仅建议用于简单 demo、测试、或无沙箱依赖的开发环境。
-///
-/// **推荐做法**：在 `PromptContext` 中设置 `sandbox = Some(Arc::new(SandboxManager::auto_detect()))`
-/// 以启用沙箱执行路径，确保超时后进程被正确终止。
+/**
+使用最小化环境直接执行命令。
+
+# ⚠️ 警告：Fallback 路径的限制
+
+此函数是 `run_command` 的 fallback 路径，仅在无 `SandboxManager` 时使用。
+它有以下限制：
+
+direct fallback 会使用 `kill_on_drop(true)` 配合 `timeout(...)` 尽力终止超时子进程，
+但生产环境仍建议优先配置 `SandboxManager`（通过 `PromptContext::sandbox` 字段），
+以获得更强的隔离、资源限制和统一清理。
+
+**适用场景**：仅建议用于简单 demo、测试、或无沙箱依赖的开发环境。
+
+**推荐做法**：在 `PromptContext` 中设置 `sandbox = Some(Arc::new(SandboxManager::auto_detect()))`
+以启用沙箱执行路径，确保超时后进程被正确终止。
+*/
 async fn run_command_direct(command: &str, ctx: &PromptContext) -> String {
-    // Security gate: a skill's shell block is arbitrary code sourced from a
-    // SKILL.md file. When running without a sandbox (the default), validate it
-    // against the same strict policy the ShellTool uses, so a local skill can't
-    // use `!`-blocks to run `rm -rf` or other destructive commands. Skills
-    // needing such commands should be routed through a sandbox instead.
+    /* 安全闸门：技能的 shell 块是来自 SKILL.md 文件的任意代码。
+    在无沙箱（默认）运行时，使用与 ShellTool 相同的严格策略进行校验，
+    防止本地技能借助 `!` 块执行 `rm -rf` 等破坏性命令。
+    需要此类命令的技能应改为经由沙箱执行。 */
     if let Err(reason) = check_skill_command_safety(command) {
         warn!(command = command, reason = %reason, "Skill shell command rejected by safety policy");
         return format!("[error: command rejected by safety policy: {reason}]");
@@ -432,10 +448,10 @@ async fn run_command_direct(command: &str, ctx: &PromptContext) -> String {
         cmd.current_dir(&ctx.skill_dir);
     }
 
-    // Use minimal environment instead of inheriting everything
+    // 使用最小化环境，而非继承全部环境变量
     set_minimal_cmd_env(&mut cmd, ctx);
 
-    // Use output() to capture stdout/stderr
+    // 使用 output() 捕获 stdout/stderr
     match tokio::time::timeout(ctx.timeout, cmd.output()).await {
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -472,11 +488,15 @@ async fn run_command_direct(command: &str, ctx: &PromptContext) -> String {
     }
 }
 
+/// 待派生的 shell 程序及其参数。
 struct ShellCommand {
+    /// 可执行程序名或路径。
     program: String,
+    /// 传给程序的参数列表。
     args: Vec<String>,
 }
 
+/// 根据上下文中的 shell 偏好与当前平台构建 shell 调用命令。
 fn build_shell_command(command: &str, ctx: &PromptContext) -> ShellCommand {
     let shell_pref = ctx.shell.as_deref().unwrap_or("bash");
 
@@ -506,7 +526,7 @@ fn build_shell_command(command: &str, ctx: &PromptContext) -> ShellCommand {
             }
         }
     } else if cfg!(target_os = "windows") {
-        // Windows: try Git Bash first
+        // Windows：优先尝试 Git Bash
         if let Some(bash) = find_git_bash_path() {
             ShellCommand {
                 program: bash,
@@ -526,6 +546,7 @@ fn build_shell_command(command: &str, ctx: &PromptContext) -> ShellCommand {
     }
 }
 
+/// 通过运行 `<cmd> --version` 判断命令是否可用。
 fn which_exists(cmd: &str) -> bool {
     std::process::Command::new(cmd)
         .arg("--version")
@@ -535,6 +556,7 @@ fn which_exists(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// 在 Windows 上查找 Git Bash 的路径，找不到时回退为 PATH 中的 `bash`。
 #[cfg(target_os = "windows")]
 pub fn find_git_bash_path() -> Option<String> {
     let candidates = [
@@ -554,13 +576,16 @@ pub fn find_git_bash_path() -> Option<String> {
     None
 }
 
+/// 非 Windows 平台不需要 Git Bash，始终返回 `None`。
 #[cfg(not(target_os = "windows"))]
 pub fn find_git_bash_path() -> Option<String> {
     None
 }
 
-/// Set minimal environment variables for a subprocess.
-/// Only passes cleaned PATH, SKILL_DIR, and SESSION_ID.
+/**
+为子进程设置最小化环境变量。
+仅传递清理后的 PATH、SKILL_DIR 与 SESSION_ID。
+*/
 fn set_minimal_cmd_env(cmd: &mut tokio::process::Command, ctx: &PromptContext) {
     cmd.env_clear();
     if let Ok(path) = std::env::var("PATH") {
@@ -574,16 +599,16 @@ fn set_minimal_cmd_env(cmd: &mut tokio::process::Command, ctx: &PromptContext) {
     }
 }
 
-/// Check whether a skill's shell command may run outside a sandbox.
-///
-/// Skill `!`-blocks are arbitrary code sourced from a SKILL.md file (local or,
-/// in the future, fetched). When no sandbox is configured this validates the
-/// command against an execution-layer conservative gate, so a skill cannot use
-/// an inline shell block to run destructive commands (`rm -rf`, arbitrary
-/// metacharacters, etc.). Skills that need richer syntax must use a sandbox.
-///
-/// Returns `Ok(())` if the command is safe, or `Err(reason)` describing the
-/// rejection.
+/**
+检查技能的 shell 命令能否在沙箱之外运行。
+
+技能的 `!` 块是来自 SKILL.md 文件（本地文件，或将来远程获取）的任意代码。
+未配置沙箱时，此函数使用执行层的保守闸门校验命令，
+防止技能借助内联 shell 块执行破坏性命令（`rm -rf`、任意元字符等）。
+需要更丰富语法的技能必须使用沙箱。
+
+命令安全时返回 `Ok(())`，否则返回描述拒绝原因的 `Err(reason)`。
+*/
 fn check_skill_command_safety(command: &str) -> std::result::Result<(), String> {
     const SHELL_META: &[char] = &['|', ';', '&', '$', '`', '>', '<', '(', ')', '\n', '\r'];
     if command
@@ -607,12 +632,13 @@ fn check_skill_command_safety(command: &str) -> std::result::Result<(), String> 
     Ok(())
 }
 
-// -- Tests --
+// -- 测试 --
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 构造测试用的本地技能上下文。
     fn test_ctx() -> PromptContext {
         PromptContext {
             skill_dir: "/tmp/test-skill".into(),
@@ -625,6 +651,7 @@ mod tests {
         }
     }
 
+    /// 验证 SKILL_DIR、SESSION_ID、ARGUMENTS 与位置参数变量均被正确替换。
     #[test]
     fn test_substitute_variables() {
         let ctx = test_ctx();
@@ -636,6 +663,7 @@ mod tests {
         );
     }
 
+    /// 验证兼容 Claude Code 的 CLAUDE_SKILL_DIR 与 CLAUDE_SESSION_ID 变量被正确替换。
     #[test]
     fn test_substitute_claude_compat_vars() {
         let ctx = test_ctx();
@@ -644,6 +672,7 @@ mod tests {
         assert_eq!(result, "/tmp/test-skill/scripts/run.py session-abc123");
     }
 
+    /// 验证无参数时 ARGUMENTS 替换为空、未提供的位置参数保持原样。
     #[test]
     fn test_substitute_no_args() {
         let ctx = PromptContext {
@@ -655,6 +684,7 @@ mod tests {
         assert_eq!(result, "No args:  and ${1}");
     }
 
+    /// 验证块命令被执行且其输出替换整个块。
     #[tokio::test]
     async fn test_block_command_execution() {
         if cfg!(target_os = "windows") {
@@ -669,6 +699,7 @@ mod tests {
         assert!(!result.contains("```!"));
     }
 
+    /// 验证内联命令被执行且其输出替换命令语法。
     #[tokio::test]
     async fn test_inline_command_execution() {
         if cfg!(target_os = "windows") {
@@ -681,6 +712,7 @@ mod tests {
         assert!(!result.contains("!`"));
     }
 
+    /// 验证 MCP 来源的技能不会执行内联命令。
     #[tokio::test]
     async fn test_mcp_source_skips_execution() {
         let ctx = PromptContext {
@@ -696,6 +728,7 @@ mod tests {
         );
     }
 
+    /// 验证完整处理流程同时完成变量替换与命令执行。
     #[tokio::test]
     async fn test_full_processing() {
         if cfg!(target_os = "windows") {
@@ -708,6 +741,7 @@ mod tests {
         assert!(result.contains("1.0.0"));
     }
 
+    /// 验证内联命令不会继承未列入白名单的环境变量。
     #[tokio::test]
     async fn test_inline_command_does_not_inherit_unlisted_env() {
         if cfg!(target_os = "windows") {
@@ -716,7 +750,7 @@ mod tests {
 
         let key = "ECHO_EXECUTION_TEST_SECRET";
         let secret = "super-secret-value";
-        // Test-only process env mutation for validating env_clear() behavior.
+        // 仅用于测试的进程环境变量修改，用于验证 env_clear() 行为。
         unsafe {
             std::env::set_var(key, secret);
         }
@@ -736,21 +770,22 @@ mod tests {
         }
     }
 
-    // ── Injection prevention tests ──────────────────────────────────────────
+    // ── 注入防护测试 ──────────────────────────────────────────
 
+    /// 验证参数中的内联命令语法不会被执行。
     #[tokio::test]
     async fn test_injection_via_arguments_inline() {
         if cfg!(target_os = "windows") {
             return;
         }
-        // User argument containing inline command syntax should NOT be executed
+        // 包含内联命令语法的用户参数不应被执行
         let ctx = PromptContext {
             arguments: vec!["!`echo injected`".into()],
             ..test_ctx()
         };
         let content = "Args: ${ARGUMENTS}";
         let result = process_skill_content(content, &ctx).await;
-        // The full command syntax must remain literal (not executed and replaced by output)
+        // 完整的命令语法必须保持字面量（不被执行、不被输出替换）
         assert!(
             result.contains("!`echo injected`"),
             "Injected inline command should remain as literal text, got: {}",
@@ -758,19 +793,20 @@ mod tests {
         );
     }
 
+    /// 验证参数中的块命令语法不会被执行。
     #[tokio::test]
     async fn test_injection_via_arguments_block() {
         if cfg!(target_os = "windows") {
             return;
         }
-        // User argument containing block command syntax should NOT be executed
+        // 包含块命令语法的用户参数不应被执行
         let ctx = PromptContext {
             arguments: vec!["```!\necho injected\n```".into()],
             ..test_ctx()
         };
         let content = "Args: ${ARGUMENTS}";
         let result = process_skill_content(content, &ctx).await;
-        // The block command markers must remain as literal text
+        // 块命令标记必须保持为字面文本
         assert!(
             result.contains("```!"),
             "Injected block command marker should remain literal, got: {}",
@@ -778,6 +814,7 @@ mod tests {
         );
     }
 
+    /// 验证位置参数中注入的命令不会被执行。
     #[tokio::test]
     async fn test_injection_via_positional_arg() {
         if cfg!(target_os = "windows") {
@@ -796,6 +833,7 @@ mod tests {
         );
     }
 
+    /// 验证变量在文本区域中仍会展开，且原始命令仍会执行。
     #[tokio::test]
     async fn test_variables_still_expand_in_text_regions() {
         if cfg!(target_os = "windows") {
@@ -805,7 +843,7 @@ mod tests {
             arguments: vec!["world".into()],
             ..test_ctx()
         };
-        // Command is in the original content, variables in text region
+        // 命令位于原始内容中，变量位于文本区域
         let content = "Hello ${1}! Status: !`echo ok`";
         let result = process_skill_content(content, &ctx).await;
         assert!(
@@ -820,9 +858,10 @@ mod tests {
         );
     }
 
+    /// 验证不含命令语法的安全参数可正常替换。
     #[tokio::test]
     async fn test_injection_safe_argument_no_command() {
-        // Safe argument should work normally
+        // 安全参数应正常工作
         let ctx = PromptContext {
             arguments: vec!["safe-value".into()],
             ..test_ctx()

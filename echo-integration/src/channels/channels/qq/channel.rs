@@ -25,6 +25,7 @@ pub struct QqConfig {
 }
 
 impl fmt::Debug for QqConfig {
+    /// 输出配置信息，`client_secret` 以占位符脱敏。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("QqConfig")
@@ -44,7 +45,7 @@ impl QqConfig {
     }
 }
 
-// ── Channel ───────────────────────────────────────────────────────────────────
+// ── 渠道实现 ───────────────────────────────────────────────────────────────────
 
 /// QQ 机器人 IM 渠道实现
 pub struct QqChannel {
@@ -96,6 +97,7 @@ impl ChannelPlugin for QqChannel {
 
     /// 返回该渠道支持的能力（会话类型、媒体、话题等）。
     fn capabilities(&self) -> &ChannelCapabilities {
+        /// 渠道能力声明（惰性初始化的全局单例）
         static CAPS: std::sync::OnceLock<ChannelCapabilities> = std::sync::OnceLock::new();
         CAPS.get_or_init(|| ChannelCapabilities {
             chat_types: &[ChatType::Direct, ChatType::Group],
@@ -165,8 +167,9 @@ impl ChannelPlugin for QqChannel {
         let http_for_gw = self.http.clone();
         let gateway_handle = tokio::spawn(async move {
             let mut reconnect_delay: u64 = 1;
+            /// 重连退避的最大延迟（秒）
             const MAX_DELAY: u64 = 60;
-            // 若连接时长超过此阈值则视为稳定，重置退避延迟
+            /// 若连接时长超过此阈值则视为稳定，重置退避延迟
             const STABLE_THRESHOLD_SECS: u64 = 60;
 
             loop {
@@ -299,8 +302,10 @@ struct QqMessageHandler {
 
 #[async_trait]
 impl MessageHandler for QqMessageHandler {
-    /// 消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
-    /// (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
+    /**
+    消费 inner 的流式分段,逐 chunk 经 send_tx 投递(真流式);返回空 text 占位
+    (gateway 会再调 reply,reply 对空 text no-op 防双发,见 super::reply_with_empty_guard)。
+    */
     async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
         super::super::dispatch_stream_to_send_tx(&self.inner, &self.send_tx, msg).await
     }
@@ -316,6 +321,7 @@ mod config_tests {
     use super::*;
     use crate::channels::types::ChannelDeliveryFence;
 
+    /// 验证 Debug 输出不会暴露 client secret。
     #[test]
     fn debug_does_not_expose_client_secret() {
         let config = QqConfig::new("app-id", "qq-client-secret");
@@ -327,6 +333,7 @@ mod config_tests {
         );
     }
 
+    /// 验证直接发送会在访问通道状态前拒绝已退役的代次。
     #[tokio::test]
     async fn direct_send_rejects_retired_generation_before_channel_state() -> Result<()> {
         let channel = QqChannel::new(QqConfig::new("app-id", "client-secret"))?;

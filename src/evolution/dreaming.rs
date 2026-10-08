@@ -1,17 +1,16 @@
-//! (stage4 F1) Dreaming — recall-frequency-driven self-evolution.
-//!
-//! Replaces the old "every-N-writes triggers a full review" model (割裂点 6/9)
-//! with an OpenClaw-Dreaming-style scheduled pass: scan the unified memory
-//! store, promote high-recall memories (incl. Archived, revived first) to the
-//! hot layer (MEMORY.md → system prompt stable prefix), and batch-demote stale
-//! low-recall memories to Archived. Staleness is a recall-decay weight, not a
-//! death sentence — Archived memories stay recallable (with decay) and can be
-//! revived by future Dreaming passes.
-//!
-//! Design basis: `stage4-memory-evolution-compression-decision.md` (D14),
-//! OpenClaw Dreaming (cron + recall-statistics-driven promotion), hermes
-//! composite-score recall (`recall_count` bumped fire-and-forget by
-//! `MemoryRecaller`).
+/*!
+（stage4 F1）Dreaming —— 由召回频率驱动的自我演化。
+
+用 OpenClaw-Dreaming 风格的定时批处理，取代旧的“每 N 次写入触发一次全量
+审查”模型（割裂点 6/9）：扫描统一记忆存储，将高召回记忆（包括 Archived，
+先复活）提升到热层（MEMORY.md → 系统提示词稳定前缀），并将陈旧的低召回
+记忆批量降级为 Archived。陈旧度只是召回衰减权重，而非“死刑” ——
+Archived 记忆仍可被召回（带衰减），并可在未来的 Dreaming 过程中被复活。
+
+设计依据：`stage4-memory-evolution-compression-decision.md`（D14）、
+OpenClaw Dreaming（cron + 召回统计驱动的提升）、hermes 综合得分召回
+（`recall_count` 由 `MemoryRecaller` 以 fire-and-forget 方式递增）。
+*/
 
 use crate::evolution::layer::MemoryLayerManager;
 use echo_core::memory::types::MemoryStatus;
@@ -19,28 +18,36 @@ use echo_core::utils::time::now_secs;
 use echo_state::memory::typed_store::MemoryFilter;
 use std::sync::Arc;
 
-// ── Config ─────────────────────────────────────────────────────────────
+// ── 配置 ─────────────────────────────────────────────────────────────
 
-/// Configuration for a Dreaming pass.
+/// 单次 Dreaming 过程的配置。
 #[derive(Debug, Clone)]
 pub struct DreamingConfig {
-    /// Minimum `recall_count` for a memory to be considered for hot promotion.
-    /// Memories recalled fewer times than this are not promoted (even if old).
+    /**
+    记忆被考虑提升到热层所需的最小 `recall_count`。
+    召回次数低于该值的记忆不会被提升（即使很久以前就存在）。
+    */
     pub recall_count_threshold: u32,
-    /// Cap on how many memories a single pass promotes to hot (avoids flooding
-    /// MEMORY.md / the system prompt stable prefix in one run).
+    /**
+    单次过程最多提升到热层的记忆数量上限（避免一次运行就塞满
+    MEMORY.md / 系统提示词稳定前缀）。
+    */
     pub max_promoted_per_run: usize,
-    /// A high-recall memory must also have been used within this window before
-    /// it can be promoted or revived. This prevents lifetime recall counts from
-    /// making an obsolete fact permanently hot-eligible.
+    /**
+    高召回记忆还必须在该时间窗口（天）内被使用过，才能被提升或复活。
+    这可防止累计召回次数让一条过时事实永久具备热层资格。
+    */
     pub promotion_recency_days: u32,
-    /// A memory older than this many days AND below `low_recall_threshold` is
-    /// demoted to Archived (staleness decay, not deletion).
+    /**
+    存在时间超过该天数且低于 `low_recall_threshold` 的记忆会被降级为
+    Archived（陈旧衰减，而非删除）。
+    */
     pub stale_age_days: u32,
-    /// Below this `recall_count`, a stale Active memory is demoted to Archived.
+    /// `recall_count` 低于该值时，陈旧的 Active 记忆会被降级为 Archived。
     pub low_recall_threshold: u32,
 }
 
+/// 默认配置：召回阈值 5、单次最多提升 20 条、近期窗口 30 天、陈旧 30 天、低召回阈值 1。
 impl Default for DreamingConfig {
     fn default() -> Self {
         Self {
@@ -53,54 +60,67 @@ impl Default for DreamingConfig {
     }
 }
 
-// ── Report ─────────────────────────────────────────────────────────────
+// ── 报告 ─────────────────────────────────────────────────────────────
 
-/// Summary of one Dreaming pass.
+/// 单次 Dreaming 过程的汇总。
 #[derive(Debug, Clone, Default)]
 pub struct DreamingReport {
-    /// Total memories scanned in the unified namespace.
+    /// 在统一命名空间中扫描的记忆总数。
     pub scanned: usize,
-    /// Memories promoted to the hot layer (MEMORY.md).
+    /// 被提升到热层（MEMORY.md）的记忆数。
     pub promoted: usize,
-    /// Archived memories revived back to Active (G2 — prerequisite for promotion).
+    /// 从 Archived 复活为 Active 的记忆数（G2 —— 提升的前置条件）。
     pub revived: usize,
-    /// Stale low-recall Active memories demoted to Archived.
+    /// 被降级为 Archived 的陈旧低召回 Active 记忆数。
     pub demoted: usize,
-    /// Explainable deterministic changes applied by this pass.
+    /// 本次过程应用的可解释的确定性变更。
     pub decisions: Vec<DreamingDecision>,
 }
 
-/// One deterministic maintenance action applied by Dreaming.
+/// Dreaming 应用的一项确定性维护动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DreamingAction {
+    /// 从 Archived 复活为 Active。
     Revived,
+    /// 提升到热层（MEMORY.md）。
     PromotedToHot,
+    /// 降级为 Archived。
     Archived,
 }
 
+/// Dreaming 对单条记忆做出的一项决策记录，用于解释变更原因。
 #[derive(Debug, Clone)]
 pub struct DreamingDecision {
+    /// 记忆的键。
     pub key: String,
+    /// 应用的动作。
     pub action: DreamingAction,
+    /// 决策时该记忆的召回次数。
     pub recall_count: u32,
+    /// 距最近一次召回（或创建）的天数。
     pub inactive_days: f64,
+    /// 决策原因说明。
     pub reason: String,
 }
 
 // ── Dreaming ───────────────────────────────────────────────────────────
 
-/// Dreaming self-evolution pass driver.
-///
-/// Construct with the shared `MemoryLayerManager` (same store the agent recalls
-/// from, so revives/demotes land in the unified `["agent","memories"]` namespace
-/// the agent reads). Call [`Dreaming::run`] on a cron/daily schedule.
+/**
+Dreaming 自我演化过程的驱动器。
+
+使用共享的 `MemoryLayerManager` 构造（与 agent 召回所用的是同一存储，
+因此复活/降级会落在 agent 读取的统一 `["agent","memories"]` 命名空间中）。
+按 cron/每日计划调用 [`Dreaming::run`]。
+*/
 pub struct Dreaming {
+    /// Dreaming 配置。
     config: DreamingConfig,
+    /// 共享的记忆分层管理器。
     layer_manager: Arc<MemoryLayerManager>,
 }
 
 impl Dreaming {
-    /// Create a new Dreaming driver.
+    /// 创建新的 Dreaming 驱动器。
     pub fn new(layer_manager: Arc<MemoryLayerManager>, config: DreamingConfig) -> Self {
         Self {
             config,
@@ -108,10 +128,12 @@ impl Dreaming {
         }
     }
 
-    /// Run one Dreaming pass over the unified `["agent","memories"]` namespace.
-    ///
-    /// Best-effort per-memory: a revive/promote/demote error on one memory is
-    /// logged and does not abort the pass. Returns a summary report.
+    /**
+    在统一的 `["agent","memories"]` 命名空间上执行一次 Dreaming 过程。
+
+    按记忆尽力而为：某条记忆的复活/提升/降级出错只会记录日志，不会中止
+    整个过程。返回汇总报告。
+    */
     pub async fn run(&self) -> crate::error::Result<DreamingReport> {
         let now = now_secs();
         let entries = self
@@ -124,16 +146,16 @@ impl Dreaming {
         };
 
         for e in &entries {
-            // Superseded memories are tombstones — never revive/promote/demote.
+            // Superseded 记忆是墓碑 —— 永不复活/提升/降级。
             if e.meta.status == MemoryStatus::Superseded {
                 continue;
             }
             let inactive_days = age_days(e.meta.last_recalled_at.unwrap_or(e.raw.created_at), now);
 
-            // 1. Promote high-recall memories (incl Archived) to hot. G2: revive
-            //    Archived→Active first because `is_hot_eligible()` requires
-            //    `status == Active` (otherwise every Archived memory would fail
-            //    the gate regardless of confidence/stability).
+            /* 1. 将高召回记忆（包括 Archived）提升到热层。G2：先将
+               Archived→Active 复活，因为 `is_hot_eligible()` 要求
+               `status == Active`（否则无论置信度/稳定性如何，所有 Archived
+               记忆都无法通过该门槛）。 */
             if e.meta.recall_count >= self.config.recall_count_threshold
                 && inactive_days <= self.config.promotion_recency_days as f64
                 && report.promoted < self.config.max_promoted_per_run
@@ -175,9 +197,9 @@ impl Dreaming {
                 }
             }
 
-            // 2. Batch-demote stale low-recall Active memories to Archived
-            //    (replaces the old review's staleness demote; Archived stays
-            //    recallable with decay and can be revived by a future pass).
+            /* 2. 将陈旧的低召回 Active 记忆批量降级为 Archived
+               （取代旧审查中的陈旧降级；Archived 仍可带衰减地被召回，
+               并可在未来的过程中被复活）。 */
             if e.meta.status == MemoryStatus::Active
                 && e.meta.recall_count < self.config.low_recall_threshold
                 && inactive_days > self.config.stale_age_days as f64
@@ -216,6 +238,7 @@ impl Dreaming {
     }
 }
 
+/// 计算从 `created_at` 到 `now`（秒级时间戳）经过的天数。
 fn age_days(created_at: u64, now: u64) -> f64 {
     now.saturating_sub(created_at) as f64 / 86400.0
 }
@@ -230,6 +253,7 @@ mod tests {
     };
     use echo_state::memory::store::InMemoryStore;
 
+    /// 创建基于内存存储与临时目录的记忆分层管理器。
     fn make_manager() -> (Arc<MemoryLayerManager>, Arc<InMemoryStore>) {
         let store = Arc::new(InMemoryStore::new());
         let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -241,13 +265,13 @@ mod tests {
         (lm, store)
     }
 
-    /// High-recall Archived memory is revived (G2) + promoted to hot.
+    /// 高召回的 Archived 记忆会被复活（G2）并提升到热层。
     #[tokio::test]
     async fn dreaming_revives_and_promotes_high_recall_archived() {
         let (lm, store) = make_manager();
-        // High-confidence UserPreference, Archived, recall_count=10. Insert via
-        // put_raw to bypass `write_memory`'s auto-promote-to-hot (which would
-        // move the entry to hot before we can mark it Archived in warm).
+        /* 高置信度 UserPreference，Archived，recall_count=10。通过 put_raw 插入，
+        以绕过 `write_memory` 的自动提升到热层（否则条目会在我们于温层将其
+        标记为 Archived 之前就被移到热层）。 */
         let mut meta = MemoryMeta::new(
             MemoryType::UserPreference,
             MemorySource::ExplicitSave,
@@ -281,7 +305,7 @@ mod tests {
             "hot-eligible revived memory promoted to hot"
         );
         assert_eq!(report.decisions.len(), 2);
-        // Promoted memory is removed from the warm layer (now in MEMORY.md).
+        // 被提升的记忆已从温层移除（现位于 MEMORY.md）。
         let warm = lm
             .list_warm_memories(&MemoryFilter::new())
             .await
@@ -293,12 +317,14 @@ mod tests {
         );
     }
 
-    /// Stale low-recall Active memory is demoted to Archived (staleness decay,
-    /// not deletion). Uses `put_raw` to backdate `created_at`.
+    /**
+    陈旧的低召回 Active 记忆会被降级为 Archived（陈旧衰减，而非删除）。
+    使用 `put_raw` 回拨 `created_at`。
+    */
     #[tokio::test]
     async fn dreaming_demotes_stale_low_recall_active() {
         let (lm, store) = make_manager();
-        // Low-confidence ProjectFact, recall_count=0, Active. Backdate created_at.
+        // 低置信度 ProjectFact，recall_count=0，Active。回拨 created_at。
         let meta = MemoryMeta::new(
             MemoryType::ProjectFact,
             MemorySource::AutoExtracted,
@@ -313,7 +339,7 @@ mod tests {
             "k_stale".to_string(),
             value,
         );
-        item.created_at = now_secs().saturating_sub(40 * 86400); // 40 days old
+        item.created_at = now_secs().saturating_sub(40 * 86400); // 40 天前
         store.put_raw(item).await;
 
         let dreaming = Dreaming::new(lm.clone(), DreamingConfig::default());
@@ -321,7 +347,7 @@ mod tests {
 
         assert_eq!(report.scanned, 1);
         assert_eq!(report.demoted, 1, "stale low-recall Active memory demoted");
-        // Demoted memory stays in warm (in place) but is now Archived.
+        // 被降级的记忆原地保留在温层，但状态已变为 Archived。
         let warm = lm
             .list_warm_memories(&MemoryFilter::new())
             .await
@@ -337,7 +363,7 @@ mod tests {
         );
     }
 
-    /// Fresh low-recall Active memory (not stale) is left alone.
+    /// 新鲜（不陈旧）的低召回 Active 记忆保持不变。
     #[tokio::test]
     async fn dreaming_leaves_fresh_low_recall_active_alone() {
         let (lm, _store) = make_manager();
@@ -355,6 +381,7 @@ mod tests {
         assert_eq!(report.demoted, 0, "fresh memory not demoted (not stale)");
     }
 
+    /// 累计召回次数高但长期未使用的记忆不会被复活或提升。
     #[tokio::test]
     async fn dreaming_does_not_promote_old_lifetime_recall_count() -> crate::error::Result<()> {
         let (lm, store) = make_manager();

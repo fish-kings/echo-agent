@@ -113,8 +113,9 @@ pub struct SubagentDefinition {
     pub description: String,
     /// 该 Agent 的来源方式。
     pub kind: SubagentKind,
-    /// 类型化的变更边界。标签（tags）仅是发现用的元数据，绝不能被
-    /// 反解码回这个权限本身。
+    /** 类型化的变更边界。标签（tags）仅是发现用的元数据，绝不能被
+     * 反解码回这个权限本身。
+     */
     pub access_mode: SubagentAccessMode,
     /// 派发时使用的默认执行模式。
     pub execution_mode: ExecutionMode,
@@ -131,13 +132,15 @@ pub struct SubagentDefinition {
     pub system_prompt: Option<String>,
     /// 按名称限制可用工具（`None` = 继承父级全部工具）。
     pub tool_filter: Option<Vec<String>>,
-    /// 最大 Agent 迭代次数。`None` 会保留具体工厂自身的有界默认值；
-    /// `ReactAgentBuilder` 会拒绝显式传入的零值。
+    /** 最大 Agent 迭代次数。`None` 会保留具体工厂自身的有界默认值；
+     * `ReactAgentBuilder` 会拒绝显式传入的零值。
+     */
     pub max_iterations: Option<usize>,
     /// 该子 Agent 的 token 限制（`None` = 使用默认值）。
     pub token_limit: Option<usize>,
-    /// 从父级继承多少条最近消息。
-    /// `None` = 不继承，`Some(0)` = 继承全部，`Some(n)` = 最近 n 条消息。
+    /** 从父级继承多少条最近消息。
+     * `None` = 不继承，`Some(0)` = 继承全部，`Some(n)` = 最近 n 条消息。
+     */
     pub inherit_history: Option<usize>,
     /// 是否继承父级的记忆存储。
     pub inherit_memory: bool,
@@ -157,8 +160,9 @@ pub struct SubagentDefinition {
     pub isolation: Option<String>,
     /// 由权威任务运行时编译的声明式 Team 意图。
     pub team: Option<super::team::TeamSpec>,
-    /// 为 `true` 时，该角色偏好后台派发（第二阶段会进行异步调度）。
-    /// 第一阶段仅存储来自 frontmatter 的该标志位。
+    /** 为 `true` 时，该角色偏好后台派发（第二阶段会进行异步调度）。
+     * 第一阶段仅存储来自 frontmatter 的该标志位。
+     */
     pub is_background: bool,
 }
 
@@ -525,9 +529,10 @@ fn project_tool_file_access(evidence: &SubagentEvidence) -> Option<(bool, String
         .map(|path| (write, path.to_string()))
 }
 
-/// 渲染供 [`parse_subagent_outcome`] 解析的、面向模型的权威结果契约。
-/// 产品层可以在此区块之前追加可选章节，但最终的 `## Result` 信封部分
-/// 始终由框架自身负责。
+/** 渲染供 [`parse_subagent_outcome`] 解析的、面向模型的权威结果契约。
+ * 产品层可以在此区块之前追加可选章节，但最终的 `## Result` 信封部分
+ * 始终由框架自身负责。
+ */
 pub fn render_result_contract() -> String {
     format!(
         "## Result\nEnd the response with exactly one fenced JSON object using this shape:\n\
@@ -542,9 +547,10 @@ Runtime owns terminal status and observed evidence. Report only real artifacts a
     )
 }
 
-/// 解析嵌入在子 Agent 响应中的、围栏包裹或独立存在的 JSON 对象。
-/// 产品层可以检查其中命名的可选字段，而终态的 `## Result` 对象仍由
-/// [`parse_subagent_outcome`] 负责解析。
+/** 解析嵌入在子 Agent 响应中的、围栏包裹或独立存在的 JSON 对象。
+ * 产品层可以检查其中命名的可选字段，而终态的 `## Result` 对象仍由
+ * [`parse_subagent_outcome`] 负责解析。
+ */
 pub fn parse_json_objects(raw: &str) -> Vec<serde_json::Value> {
     let mut objects = Vec::new();
     for block in raw.split("```json").skip(1) {

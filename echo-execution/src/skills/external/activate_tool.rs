@@ -1,12 +1,14 @@
-//! ActivateSkillTool —— 由模型驱动的技能激活（第二层）。
-//!
-//! 当 LLM 判断某个任务匹配某个技能的描述时，会调用此工具
-//! 将该技能的完整指令加载到对话上下文中。
-//! 该工具返回一个带 XML 标签的结构化文本块，其中包含：
-//!
-//! 1. 技能的 Markdown 指令内容（SKILL.md 正文）
-//! 2. 随附资源文件（脚本、参考资料、素材）的清单
-//! 3. 用于解析相对引用的技能目录路径
+/*!
+ActivateSkillTool —— 由模型驱动的技能激活（第二层）。
+
+当 LLM 判断某个任务匹配某个技能的描述时，会调用此工具
+将该技能的完整指令加载到对话上下文中。
+该工具返回一个带 XML 标签的结构化文本块，其中包含：
+
+1. 技能的 Markdown 指令内容（SKILL.md 正文）
+2. 随附资源文件（脚本、参考资料、素材）的清单
+3. 用于解析相对引用的技能目录路径
+*/
 
 use std::sync::Arc;
 
@@ -18,8 +20,10 @@ use crate::skills::registry::SkillRegistry;
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolContext, ToolParameters, ToolResult, ToolResultKind};
 
-/// 根据技能声明的 `allowed_tools` 匹配规则，在工具可见性状态中放开对应工具的可见性，
-/// 返回被实际激活（放开可见）的工具名称列表。若上下文中没有工具可见性状态，则返回空列表。
+/**
+根据技能声明的 `allowed_tools` 匹配规则，在工具可见性状态中放开对应工具的可见性，
+返回被实际激活（放开可见）的工具名称列表。若上下文中没有工具可见性状态，则返回空列表。
+*/
 fn activate_allowed_tools(ctx: &ToolContext, allowed_tools: &[String]) -> Vec<String> {
     let Some(visibility) = ctx.tool_visibility.as_ref() else {
         return Vec::new();
@@ -36,10 +40,12 @@ fn activate_allowed_tools(ctx: &ToolContext, allowed_tools: &[String]) -> Vec<St
     visibility.extend_eligibility_and_activate(matches)
 }
 
-/// 用于模型驱动技能激活的工具。
-///
-/// 在发现基于文件的技能时会自动注册。
-/// 当某个任务匹配技能目录中的描述时，LLM 会调用此工具。
+/**
+用于模型驱动技能激活的工具。
+
+在发现基于文件的技能时会自动注册。
+当某个任务匹配技能目录中的描述时，LLM 会调用此工具。
+*/
 pub struct ActivateSkillTool {
     /// 技能注册表，用于查找技能描述符并执行激活逻辑。
     registry: Arc<RwLock<SkillRegistry>>,
@@ -100,8 +106,10 @@ impl Tool for ActivateSkillTool {
         })
     }
 
-    /// 执行技能激活：校验 `context_path` 是否满足技能声明的路径约束，
-    /// 激活技能并将其内容渲染为提示词文本块，同时放开该技能允许使用的工具的可见性。
+    /**
+    执行技能激活：校验 `context_path` 是否满足技能声明的路径约束，
+    激活技能并将其内容渲染为提示词文本块，同时放开该技能允许使用的工具的可见性。
+    */
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,

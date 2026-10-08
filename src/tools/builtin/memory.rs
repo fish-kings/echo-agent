@@ -1002,12 +1002,15 @@ mod tests {
     use futures::future::BoxFuture;
     use std::sync::Mutex;
 
+    /// 测试用演化观察者：记录所有记忆层变更通知。
     #[derive(Default)]
     struct RecordingObserver {
+        /// 已记录的变更列表，元素为 (key, 原层级, 目标层级)。
         changes: Mutex<Vec<(String, String, String)>>,
     }
 
     impl EvolutionObserver for RecordingObserver {
+        /// 把一次记忆层变更追加到记录列表中。
         fn on_memory_layer_change<'a>(
             &'a self,
             key: &'a str,
@@ -1026,6 +1029,7 @@ mod tests {
         }
     }
 
+    /// 验证 LayeredForgetTool 删除热层记忆时会发出 hot -> deleted 的变更通知。
     #[tokio::test]
     async fn layered_forget_tool_emits_hot_delete_notification()
     -> std::result::Result<(), Box<dyn std::error::Error>> {

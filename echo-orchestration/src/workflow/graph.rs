@@ -1,50 +1,52 @@
-//! Graph workflow engine
-//!
-//! Models Agent execution as a **directed graph**:
-//!
-//! - **Node**: execution unit (Agent / function / router)
-//! - **Edge**: transition logic between nodes (fixed / conditional / parallel fan-out + fan-in)
-//! - **State (SharedState)**: shared KV store + message history across nodes
-//!
-//! ## Comparison with LangGraph
-//!
-//! | LangGraph | echo-agent workflow |
-//! |-----------|---------------------|
-//! | `StateGraph` | [`Graph`] |
-//! | `add_node()` | [`GraphBuilder::add_node()`] |
-//! | `add_edge()` | [`GraphBuilder::add_edge()`] |
-//! | `add_conditional_edges()` | [`GraphBuilder::add_conditional_edge()`] |
-//! | `END` | [`Graph::END`] |
-//! | `compile()` | [`GraphBuilder::build()`] |
-//! | `invoke()` | [`Graph::run()`] |
-//!
-//! ## Example
-//!
-//! ```rust,no_run
-//! use echo_core::error::Result;
-//! use echo_orchestration::workflow::{GraphBuilder, SharedState};
-//!
-//! # async fn example() -> Result<()> {
-//! let graph = GraphBuilder::new("my_workflow")
-//!     .add_function_node("start", |state| Box::pin(async move {
-//!         let _ = state.set("greeting", "Hello, World!");
-//!         Ok(())
-//!     }))
-//!     .add_function_node("end", |state| Box::pin(async move {
-//!         let msg: String = state.get("greeting").unwrap_or_default();
-//!         println!("{msg}");
-//!         Ok(())
-//!     }))
-//!     .set_entry("start")
-//!     .add_edge("start", "end")
-//!     .set_finish("end")
-//!     .build()?;
-//!
-//! let state = SharedState::new();
-//! let result = graph.run(state).await?;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+图工作流引擎
+
+将 Agent 的执行建模为一张**有向图**：
+
+- **Node（节点）**：执行单元（Agent / 函数 / 路由）
+- **Edge（边）**：节点间的转移逻辑（固定 / 条件 / 并行扇出 + 扇入）
+- **State（SharedState，共享状态）**：跨节点共享的 KV 存储 + 消息历史
+
+## 与 LangGraph 的对照
+
+| LangGraph | echo-agent workflow |
+|-----------|---------------------|
+| `StateGraph` | [`Graph`] |
+| `add_node()` | [`GraphBuilder::add_node()`] |
+| `add_edge()` | [`GraphBuilder::add_edge()`] |
+| `add_conditional_edges()` | [`GraphBuilder::add_conditional_edge()`] |
+| `END` | [`Graph::END`] |
+| `compile()` | [`GraphBuilder::build()`] |
+| `invoke()` | [`Graph::run()`] |
+
+## 示例
+
+```rust,no_run
+use echo_core::error::Result;
+use echo_orchestration::workflow::{GraphBuilder, SharedState};
+
+# async fn example() -> Result<()> {
+let graph = GraphBuilder::new("my_workflow")
+    .add_function_node("start", |state| Box::pin(async move {
+        let _ = state.set("greeting", "Hello, World!");
+        Ok(())
+    }))
+    .add_function_node("end", |state| Box::pin(async move {
+        let msg: String = state.get("greeting").unwrap_or_default();
+        println!("{msg}");
+        Ok(())
+    }))
+    .set_entry("start")
+    .add_edge("start", "end")
+    .set_finish("end")
+    .build()?;
+
+let state = SharedState::new();
+let result = graph.run(state).await?;
+# Ok(())
+# }
+```
+*/
 
 use super::WorkflowEvent;
 use super::checkpoint_store::{
@@ -69,21 +71,28 @@ use tracing::{debug, info, warn};
 
 // ── Edge ────────────────────────────────────────────────────────────────────
 
-/// Edge routing logic
+/// 边的路由逻辑
 pub(crate) enum EdgeKind {
-    /// Fixed transition: A -> B
+    /// 固定转移：A -> B
     Fixed(String),
-    /// Conditional transition: returns next node name based on state
+    /// 条件转移：根据状态返回下一个节点名
     Conditional(Box<dyn ConditionFn>),
-    /// Parallel fan-out: enter multiple nodes simultaneously; merge back to then node when all complete
-    Parallel { targets: Vec<String>, then: String },
+    /// 并行扇出：同时进入多个节点；全部完成后汇合到 then 节点
+    Parallel {
+        /// 并行执行的目标节点列表
+        targets: Vec<String>,
+        /// 所有目标完成后进入的汇合节点
+        then: String,
+    },
 }
 
-/// Condition function trait (object-safe)
+/// 条件函数 trait（对象安全）
 pub(crate) trait ConditionFn: Send + Sync {
+    /// 基于共享状态求值，返回下一个节点名
     fn evaluate<'a>(&'a self, state: &'a SharedState) -> BoxFuture<'a, String>;
 }
 
+/// 将闭包包装为 [`ConditionFn`] 的适配器
 struct CondWrapper<F>(F);
 
 impl<F> ConditionFn for CondWrapper<F>
@@ -95,61 +104,64 @@ where
     }
 }
 
-/// All edges originating from a node
+/// 从某个节点出发的边
 pub(crate) struct Edge {
+    /// 起始节点名
     pub from: String,
+    /// 边的路由类型
     pub kind: EdgeKind,
 }
 
-// ── Interrupt Configuration ────────────────────────────────────────────────────
+// ── 中断配置 ────────────────────────────────────────────────────
 
-/// Interrupt configuration
+/// 中断配置
 #[derive(Debug, Clone, Default)]
 pub struct InterruptConfig {
-    /// Pause before entering these nodes
+    /// 在进入这些节点之前暂停
     pub before: Vec<String>,
-    /// Pause after these nodes execute
+    /// 在这些节点执行之后暂停
     pub after: Vec<String>,
 }
 
 impl InterruptConfig {
+    /// 创建空的中断配置
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Check if the node needs to pause before entering
+    /// 检查进入该节点前是否需要暂停
     pub fn should_interrupt_before(&self, node_name: &str) -> bool {
         self.before.iter().any(|n| n == node_name || n == "*")
     }
 
-    /// Check if the node needs to pause after execution
+    /// 检查该节点执行后是否需要暂停
     pub fn should_interrupt_after(&self, node_name: &str) -> bool {
         self.after.iter().any(|n| n == node_name || n == "*")
     }
 
-    /// Check if any interrupt is configured
+    /// 检查是否配置了任何中断
     pub fn has_interrupts(&self) -> bool {
         !self.before.is_empty() || !self.after.is_empty()
     }
 }
 
-// ── Interrupt State ────────────────────────────────────────────────────────────
+// ── 中断状态 ────────────────────────────────────────────────────────────
 
-/// Interrupt state - state when execution is paused
+/// 中断状态——执行暂停时的状态
 #[derive(Debug)]
 pub struct InterruptState {
-    /// Checkpoint (used for recovery)
+    /// 检查点（用于恢复）
     pub checkpoint: Checkpoint,
-    /// Interrupt type
+    /// 中断类型
     pub interrupt_type: InterruptType,
-    /// Name of the paused node
+    /// 被暂停的节点名
     pub pending_node: String,
-    /// Prompt for the user
+    /// 给用户的提示信息
     pub prompt: String,
 }
 
 impl InterruptState {
-    /// Create a BeforeNode interrupt
+    /// 创建 BeforeNode（节点前）中断
     pub fn before_node(checkpoint: Checkpoint, node_name: String) -> Self {
         let prompt = format!(
             "Node '{}' requires confirmation before execution",
@@ -163,7 +175,7 @@ impl InterruptState {
         }
     }
 
-    /// Create an AfterNode interrupt
+    /// 创建 AfterNode（节点后）中断
     pub fn after_node(checkpoint: Checkpoint, node_name: String) -> Self {
         let prompt = format!("Node '{}' requires confirmation after execution", node_name);
         Self {
@@ -175,46 +187,60 @@ impl InterruptState {
     }
 }
 
-/// Return type of run_until_interrupt
+/// run_until_interrupt 的返回类型
 #[derive(Debug)]
-// Keep the public result variants unboxed to preserve the workflow API.
+// 公共结果变体保持不装箱，以维持工作流 API 不变。
 #[allow(clippy::large_enum_variant)]
 pub enum RunUntilInterruptResult {
-    /// Execution completed
+    /// 执行完成
     Completed(GraphResult),
-    /// Paused at an interrupt point
+    /// 在中断点暂停
     Interrupted(InterruptState),
-    /// Approval was deferred; the checkpoint remains claimable.
+    /// 审批被延后；检查点仍可被认领。
     Deferred(InterruptState),
-    /// Approval was rejected and the checkpoint was consumed.
+    /// 审批被拒绝，检查点已被消费。
     Rejected {
+        /// 拒绝时的共享状态
         state: SharedState,
+        /// 已执行的节点路径
         path: Vec<String>,
+        /// 已执行的步数
         steps: usize,
+        /// 拒绝原因（可选）
         reason: Option<String>,
     },
 }
 
 // ── GraphBuilder ────────────────────────────────────────────────────────────
 
-/// Graph workflow builder
-///
-/// Add nodes and edges through chained calls; finally `build()` produces an immutable [`Graph`].
+/**
+图工作流构建器
+
+通过链式调用添加节点和边；最后由 `build()` 生成不可变的 [`Graph`]。
+*/
 pub struct GraphBuilder {
+    /// 图名称
     name: String,
+    /// 已注册的节点（节点名 -> 节点）
     nodes: HashMap<String, Node>,
+    /// 已添加的边
     edges: Vec<Edge>,
+    /// 入口节点名
     entry_node: Option<String>,
+    /// 结束节点名列表
     finish_nodes: Vec<String>,
-    /// Interrupt configuration
+    /// 中断配置
     interrupt_config: InterruptConfig,
+    /// 重复注册的节点名（build 时报错）
     duplicate_nodes: HashSet<String>,
+    /// 显式指定的图版本号
     explicit_revision: Option<String>,
+    /// 单节点执行超时时间
     node_timeout: Option<Duration>,
 }
 
 impl GraphBuilder {
-    /// Create an empty graph builder
+    /// 创建空的图构建器
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -229,14 +255,16 @@ impl GraphBuilder {
         }
     }
 
-    // ── Add Nodes ─────────────────────────────────────────────────────────
+    // ── 添加节点 ─────────────────────────────────────────────────────────
 
-    /// Add an Agent node
-    ///
-    /// `input_key`: key for reading the prompt from state
-    /// `output_key`: key for writing the execution result to state
-    ///
-    /// Defaults to `execute` mode (multi-turn with tools).
+    /**
+    添加一个 Agent 节点
+
+    `input_key`：从状态中读取提示词的键
+    `output_key`：将执行结果写入状态的键
+
+    默认使用 `execute` 模式（多轮、可调用工具）。
+    */
     pub fn add_agent_node(
         mut self,
         name: impl Into<String>,
@@ -255,10 +283,12 @@ impl GraphBuilder {
         self
     }
 
-    /// Add an Agent node (configurable execute/chat mode)
-    ///
-    /// `use_execute`: true uses execute (multi-turn with tools),
-    /// false uses chat (single turn).
+    /**
+    添加一个 Agent 节点（可配置 execute/chat 模式）
+
+    `use_execute`：true 使用 execute（多轮、可调用工具），
+    false 使用 chat（单轮）。
+    */
     pub fn add_agent_node_with_mode(
         mut self,
         name: impl Into<String>,
@@ -278,7 +308,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a shared Agent node (`Arc<dyn Agent>`).
+    /// 添加一个共享 Agent 节点（`Arc<dyn Agent>`）。
     pub fn add_shared_agent_node(
         mut self,
         name: impl Into<String>,
@@ -297,7 +327,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a shared Agent node (configurable execute/chat mode)
+    /// 添加一个共享 Agent 节点（可配置 execute/chat 模式）
     pub fn add_shared_agent_node_with_mode(
         mut self,
         name: impl Into<String>,
@@ -317,7 +347,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a function node
+    /// 添加一个函数节点
     pub fn add_function_node<F>(mut self, name: impl Into<String>, f: F) -> Self
     where
         F: for<'a> Fn(&'a SharedState) -> BoxFuture<'a, Result<()>> + Send + Sync + 'static,
@@ -330,7 +360,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a router node (no execution logic, only used as a convergence point for conditional branches)
+    /// 添加一个路由节点（无执行逻辑，仅用作条件分支的汇合点）
     pub fn add_router_node(mut self, name: impl Into<String>) -> Self {
         let name = name.into();
         if self.nodes.contains_key(&name) {
@@ -340,10 +370,11 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a subgraph node — embeds a pre-built `Graph` as a node in this graph.
-    ///
-    /// The subgraph shares the parent's `SharedState`. Its execution is counted
-    /// toward the parent's step limit.
+    /**
+    添加一个子图节点——将预先构建好的 `Graph` 作为本图中的一个节点嵌入。
+
+    子图与父图共享 `SharedState`，其执行步数计入父图的步数上限。
+    */
     pub fn add_subgraph_node(mut self, name: impl Into<String>, subgraph: Graph) -> Self {
         let name = name.into();
         if self.nodes.contains_key(&name) {
@@ -354,9 +385,9 @@ impl GraphBuilder {
         self
     }
 
-    // ── Add Edges ─────────────────────────────────────────────────────────
+    // ── 添加边 ─────────────────────────────────────────────────────────
 
-    /// Add a fixed edge: from -> to
+    /// 添加一条固定边：from -> to
     pub fn add_edge(mut self, from: impl Into<String>, to: impl Into<String>) -> Self {
         self.edges.push(Edge {
             from: from.into(),
@@ -365,9 +396,11 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a conditional edge: from -> f(state) returns the target node name
-    ///
-    /// The string returned by the condition function must be a registered node name or `"__end__"`.
+    /**
+    添加一条条件边：from -> f(state) 返回目标节点名
+
+    条件函数返回的字符串必须是已注册的节点名或 `"__end__"`。
+    */
     pub fn add_conditional_edge<F>(mut self, from: impl Into<String>, f: F) -> Self
     where
         F: for<'a> Fn(&'a SharedState) -> BoxFuture<'a, String> + Send + Sync + 'static,
@@ -379,17 +412,17 @@ impl GraphBuilder {
         self
     }
 
-    /// Add a parallel edge: from -> [targets...] -> then
-    ///
-    /// After `from` completes, all nodes in `targets` execute **in parallel**; when all complete, execution enters `then`.
-    /// State modifications from parallel nodes are merged before the then node.
-    ///
-    /// **Note:** Currently, parallel branches execute **sequentially** within the
-    /// same async task (not via `tokio::spawn`), because `dyn Agent` nodes are
-    /// not `Send + 'static`. Each branch receives an isolated fork of the state
-    /// via `SharedState::fork()`, and results are merged back via `deep_merge()`.
-    /// True concurrent execution will be enabled once the `Node` type supports
-    /// `Send + 'static` bounds.
+    /**
+    添加一条并行边：from -> [targets...] -> then
+
+    `from` 完成后，`targets` 中的所有节点**并行**执行；全部完成后进入 `then`。
+    并行节点对状态的修改会在进入 then 节点之前合并。
+
+    **注意：** 目前并行分支在同一个异步任务内**顺序**执行（而非通过 `tokio::spawn`），
+    因为 `dyn Agent` 节点不满足 `Send + 'static`。每个分支通过 `SharedState::fork()`
+    获得隔离的状态副本，结果再通过 `deep_merge()` 合并回来。
+    待 `Node` 类型支持 `Send + 'static` 约束后，将启用真正的并发执行。
+    */
     pub fn add_parallel_edge(
         mut self,
         from: impl Into<String>,
@@ -406,66 +439,70 @@ impl GraphBuilder {
         self
     }
 
-    // ── Entry and Finish ──────────────────────────────────────────────────
+    // ── 入口与结束 ──────────────────────────────────────────────────
 
-    /// Set the entry node
+    /// 设置入口节点
     pub fn set_entry(mut self, name: impl Into<String>) -> Self {
         self.entry_node = Some(name.into());
         self
     }
 
-    /// Set a finish node (graph execution ends upon reaching this node; multiple can be set)
+    /// 设置结束节点（到达该节点时图执行结束；可设置多个）
     pub fn set_finish(mut self, name: impl Into<String>) -> Self {
         self.finish_nodes.push(name.into());
         self
     }
 
-    // ── Interrupt Configuration ──────────────────────────────────────────────────
+    // ── 中断配置 ──────────────────────────────────────────────────
 
-    /// Set interrupt_before (pause before entering nodes)
-    ///
-    /// Supports "*" wildcard to represent all nodes.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use echo_orchestration::workflow::GraphBuilder;
-    ///
-    /// let graph = GraphBuilder::new("my_flow")
-    ///     .add_function_node("step1", |_| Box::pin(async { Ok(()) }))
-    ///     .add_function_node("step2", |_| Box::pin(async { Ok(()) }))
-    ///     .set_entry("step1")
-    ///     .add_edge("step1", "step2")
-    ///     .interrupt_before(vec!["step2"])  // Pause before entering step2
-    ///     .build()
-    ///     .unwrap();
-    /// ```
+    /**
+    设置 interrupt_before（进入节点前暂停）
+
+    支持 "*" 通配符表示所有节点。
+
+    # 示例
+
+    ```rust
+    use echo_orchestration::workflow::GraphBuilder;
+
+    let graph = GraphBuilder::new("my_flow")
+        .add_function_node("step1", |_| Box::pin(async { Ok(()) }))
+        .add_function_node("step2", |_| Box::pin(async { Ok(()) }))
+        .set_entry("step1")
+        .add_edge("step1", "step2")
+        .interrupt_before(vec!["step2"])  // Pause before entering step2
+        .build()
+        .unwrap();
+    ```
+    */
     pub fn interrupt_before(mut self, nodes: Vec<&str>) -> Self {
         self.interrupt_config.before = nodes.into_iter().map(String::from).collect();
         self
     }
 
-    /// Set interrupt_after (pause after nodes execute)
-    ///
-    /// Supports "*" wildcard to represent all nodes.
+    /**
+    设置 interrupt_after（节点执行后暂停）
+
+    支持 "*" 通配符表示所有节点。
+    */
     pub fn interrupt_after(mut self, nodes: Vec<&str>) -> Self {
         self.interrupt_config.after = nodes.into_iter().map(String::from).collect();
         self
     }
 
-    /// Set an explicit revision when node behavior changes without a topology change.
+    /// 当节点行为变化但拓扑未变时，显式设置版本号。
     pub fn revision(mut self, revision: impl Into<String>) -> Self {
         self.explicit_revision = Some(revision.into());
         self
     }
 
-    /// Apply a deadline to every node execution, including fan-out branches.
+    /// 为每次节点执行（包括扇出分支）设置超时期限。
     pub fn node_timeout(mut self, timeout: Duration) -> Self {
         self.node_timeout = Some(timeout);
         self
     }
 
-    /// Build an immutable Graph
+    /// 构建不可变的 Graph
     pub fn build(self) -> Result<Graph> {
         if !self.duplicate_nodes.is_empty() {
             let mut duplicates = self.duplicate_nodes.into_iter().collect::<Vec<_>>();
@@ -516,7 +553,7 @@ impl GraphBuilder {
             }
         }
 
-        // Verify all nodes referenced by edges exist
+        // 校验边引用的所有节点均存在
         for edge in &self.edges {
             if !self.nodes.contains_key(&edge.from) {
                 return Err(ReactError::Agent(Box::new(
@@ -571,13 +608,13 @@ impl GraphBuilder {
             }
         }
 
-        // Build adjacency list and validate multiple outgoing edges
+        // 构建邻接表并校验多出边情况
         let mut edge_map: HashMap<String, Vec<Edge>> = HashMap::new();
         for edge in self.edges {
             let from = edge.from.clone();
             let entry = edge_map.entry(from.clone()).or_default();
-            // Disallow multiple ordinary outgoing edges (Fixed / Conditional) from the same node,
-            // because resolve_next() only takes the first edge; the rest would be silently discarded.
+            /* 禁止同一节点有多条普通出边（Fixed / Conditional），
+            因为 resolve_next() 只取第一条边，其余边会被静默丢弃。 */
             if !entry.is_empty() {
                 return Err(ReactError::Agent(Box::new(
                     AgentError::InitializationFailed(format!(
@@ -628,9 +665,9 @@ impl GraphBuilder {
         })
     }
 
-    // ── Convenience Methods ───────────────────────────────────────────────
+    // ── 便捷方法 ───────────────────────────────────────────────
 
-    /// Convenience method to add a ReactAgent node (default input="task", output="result")
+    /// 添加 ReactAgent 节点的便捷方法（默认 input="task"，output="result"）
     pub fn add_react_node(self, name: impl Into<String>, agent: impl Agent + 'static) -> Self {
         self.add_agent_node(name, agent, "task", "result")
     }
@@ -638,56 +675,67 @@ impl GraphBuilder {
 
 // ── Graph ───────────────────────────────────────────────────────────────────
 
-/// Compiled graph workflow (immutable)
-///
-/// Built via [`GraphBuilder`], executed by calling [`run()`](Graph::run).
+/**
+编译后的图工作流（不可变）
+
+通过 [`GraphBuilder`] 构建，调用 [`run()`](Graph::run) 执行。
+*/
 pub struct Graph {
-    /// Graph name
+    /// 图名称
     pub name: String,
-    /// Node registry
+    /// 节点注册表
     nodes: HashMap<String, Node>,
-    /// Adjacency list: from -> [Edge]
+    /// 邻接表：from -> [Edge]
     edges: HashMap<String, Vec<Edge>>,
-    /// Entry node
+    /// 入口节点
     entry: String,
-    /// List of finish nodes
+    /// 结束节点列表
     finish_nodes: Vec<String>,
-    /// Maximum execution steps (prevents infinite loops)
+    /// 最大执行步数（防止无限循环）
     max_steps: usize,
-    /// Interrupt configuration
+    /// 中断配置
     interrupt_config: InterruptConfig,
-    /// Checkpoint store
+    /// 检查点存储
     checkpoint_store: Arc<dyn CheckpointStore>,
-    /// Optional cancellation token for cooperative cancellation between nodes.
+    /// 可选的取消令牌，用于在节点之间进行协作式取消。
     cancel_token: Option<CancellationToken>,
-    /// Stable hash or caller-supplied revision of this graph definition.
+    /// 本图定义的稳定哈希或调用方提供的版本号。
     graph_revision: String,
-    /// Optional per-node execution deadline.
+    /// 可选的单节点执行期限。
     node_timeout: Option<Duration>,
 }
 
-/// Graph execution result
+/// 图执行结果
 #[derive(Debug)]
 pub struct GraphResult {
-    /// Final state
+    /// 最终状态
     pub state: SharedState,
-    /// Execution path (sequence of node names)
+    /// 执行路径（节点名序列）
     pub path: Vec<String>,
-    /// Total steps
+    /// 总步数
     pub steps: usize,
 }
 
+/// 一次图执行过程中的可变执行上下文
 struct GraphExecution {
+    /// 共享状态
     state: SharedState,
+    /// 当前待执行的节点名
     current: String,
+    /// 已执行的节点路径
     path: Vec<String>,
+    /// 已执行的步数
     step_count: usize,
+    /// 下一步的续接方式（普通节点 / 扇出 / 结束）
     continuation: WorkflowContinuation,
+    /// 恢复执行时所基于的父检查点
     parent_checkpoint: Option<Checkpoint>,
+    /// 是否跳过一次 interrupt_before 检查（恢复时使用）
     skip_interrupt_before_once: bool,
 }
 
 impl Graph {
+    /// 向事件通道发送工作流事件；未提供通道时直接忽略
     fn emit_event(
         events: Option<&UnboundedSender<WorkflowEvent>>,
         event: WorkflowEvent,
@@ -700,6 +748,7 @@ impl Graph {
             .map_err(|_| ReactError::Other("Workflow event stream closed".to_string()))
     }
 
+    /// 执行单个节点，转发其流式 token 事件，并应用超时与取消控制
     async fn execute_node(
         &self,
         node_name: &str,
@@ -749,6 +798,7 @@ impl Graph {
         }
     }
 
+    /// 校验检查点是否属于本图（名称、版本、运行标识、节点与扇出续接均合法）
     fn validate_checkpoint(&self, checkpoint: &Checkpoint) -> Result<()> {
         if checkpoint.graph_name != self.name {
             return Err(ReactError::Other(format!(
@@ -789,6 +839,7 @@ impl Graph {
         Ok(())
     }
 
+    /// 根据检查点的中断类型构造对应的中断状态
     fn interrupt_state(checkpoint: Checkpoint) -> InterruptState {
         let node = checkpoint.current_node.clone();
         match checkpoint.interrupt_type {
@@ -797,6 +848,7 @@ impl Graph {
         }
     }
 
+    /// 创建绑定本图版本与续接信息的检查点
     fn checkpoint(
         &self,
         current_node: String,
@@ -817,6 +869,7 @@ impl Graph {
         .map(|checkpoint| checkpoint.bind_execution(self.graph_revision.clone(), continuation))
     }
 
+    /// 执行并行扇出：各分支在隔离的状态副本上运行，任一失败则取消其余分支，全部成功后合并状态
     async fn execute_parallel_route(
         &self,
         state: &SharedState,
@@ -924,25 +977,26 @@ impl Graph {
         Ok(())
     }
 
-    /// Terminal marker node name
+    /// 终止标记节点名
     pub const END: &'static str = "__end__";
 
-    /// Set the maximum number of execution steps
+    /// 设置最大执行步数
     pub fn set_max_steps(&mut self, max: usize) {
         self.max_steps = max;
     }
 
-    /// Attach a cancellation token for cooperative cancellation between nodes.
-    ///
-    /// When the token is cancelled, the graph will stop at the next node boundary
-    /// and return an `AgentError::Cancelled` error. This allows long-running
-    /// workflows to be cancelled gracefully between node executions.
+    /**
+    附加一个取消令牌，用于在节点之间进行协作式取消。
+
+    令牌被取消后，图会在下一个节点边界停止并返回 `AgentError::Cancelled` 错误，
+    从而使长时间运行的工作流能够在节点执行之间被优雅地取消。
+    */
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.cancel_token = Some(token);
         self
     }
 
-    /// Check if the cancellation token has been triggered.
+    /// 检查取消令牌是否已被触发。
     fn is_cancelled(&self) -> bool {
         self.cancel_token
             .as_ref()
@@ -950,6 +1004,7 @@ impl Graph {
             .unwrap_or(false)
     }
 
+    /// 从入口节点开始创建一个全新的执行上下文
     fn fresh_execution(&self, state: SharedState) -> GraphExecution {
         GraphExecution {
             state,
@@ -962,6 +1017,7 @@ impl Graph {
         }
     }
 
+    /// 完成执行：记录日志、发送 Completed 事件并返回最终结果
     async fn complete_execution(
         &self,
         execution: GraphExecution,
@@ -994,7 +1050,7 @@ impl Graph {
         }))
     }
 
-    /// Canonical Graph execution authority used by run, interrupt, resume, and stream entry points.
+    /// 图执行的唯一权威实现，供 run、中断、恢复与流式等入口共用。
     async fn execute_loop(
         &self,
         mut execution: GraphExecution,
@@ -1171,9 +1227,11 @@ impl Graph {
         }
     }
 
-    /// Execute the graph workflow.
-    ///
-    /// Starting from the entry node, execute nodes in sequence following edge routing logic, until reaching a finish node or `__end__`.
+    /**
+    执行图工作流。
+
+    从入口节点开始，按边的路由逻辑依次执行节点，直到到达结束节点或 `__end__`。
+    */
     pub async fn run(&self, state: SharedState) -> Result<GraphResult> {
         match self
             .execute_loop(self.fresh_execution(state), false, None)
@@ -1186,27 +1244,31 @@ impl Graph {
         }
     }
 
-    // ── Interrupt + Checkpoint Methods ──────────────────────────────────────────
+    // ── 中断 + 检查点方法 ──────────────────────────────────────────
 
-    /// Execute until an interrupt point, then pause
-    ///
-    /// If `interrupt_before` or `interrupt_after` is configured, execution pauses when reaching the corresponding node
-    /// and returns `InterruptState`. Execution can be continued via the `resume()` method.
-    ///
-    /// # Returns
-    ///
-    /// - `RunUntilInterruptResult::Completed(GraphResult)` - Execution completed
-    /// - `RunUntilInterruptResult::Interrupted(InterruptState)` - Paused at an interrupt point
+    /**
+    执行直到遇到中断点，然后暂停
+
+    若配置了 `interrupt_before` 或 `interrupt_after`，执行到对应节点时暂停并返回
+    `InterruptState`。可通过 `resume()` 方法继续执行。
+
+    # 返回值
+
+    - `RunUntilInterruptResult::Completed(GraphResult)` - 执行完成
+    - `RunUntilInterruptResult::Interrupted(InterruptState)` - 在中断点暂停
+    */
     pub async fn run_until_interrupt(&self, state: SharedState) -> Result<RunUntilInterruptResult> {
         self.execute_loop(self.fresh_execution(state), true, None)
             .await
     }
 
-    /// Resume execution from a Checkpoint
-    ///
-    /// When the user approves to continue, resume execution from the saved checkpoint.
-    ///
-    /// Fix: returns `RunUntilInterruptResult::Interrupted` instead of `Err` when encountering an interrupt point.
+    /**
+    从检查点恢复执行
+
+    用户批准继续后，从已保存的检查点恢复执行。
+
+    修复：遇到中断点时返回 `RunUntilInterruptResult::Interrupted`，而不是 `Err`。
+    */
     pub async fn resume(
         &self,
         checkpoint: Checkpoint,
@@ -1215,6 +1277,7 @@ impl Graph {
         self.resume_with_updates(checkpoint, decision, None).await
     }
 
+    /// 恢复执行的内部实现：处理延后决策，认领检查点，执行后确认或重新入队
     async fn resume_with_updates(
         &self,
         checkpoint_reference: Checkpoint,
@@ -1298,6 +1361,7 @@ impl Graph {
         }
     }
 
+    /// 在执行已认领检查点的同时，按存储要求的间隔续期认领（心跳）
     async fn resume_claimed_with_heartbeat(
         &self,
         checkpoint: Checkpoint,
@@ -1344,6 +1408,7 @@ impl Graph {
         }
     }
 
+    /// 从已认领的检查点继续执行；若决策为拒绝则直接返回 Rejected
     async fn resume_claimed(
         &self,
         checkpoint: Checkpoint,
@@ -1391,10 +1456,12 @@ impl Graph {
         self.execute_loop(execution, true, None).await
     }
 
-    /// Resume execution from a checkpoint while injecting state modifications.
-    ///
-    /// Merge `state_updates` into the checkpoint's state before resuming,
-    /// suitable for scenarios where the workflow state needs to be modified externally before continuing execution.
+    /**
+    从检查点恢复执行，同时注入状态修改。
+
+    在恢复前将 `state_updates` 合并进检查点的状态，
+    适用于需要在继续执行前从外部修改工作流状态的场景。
+    */
     pub async fn resume_with_state(
         &self,
         checkpoint: Checkpoint,
@@ -1404,10 +1471,11 @@ impl Graph {
             .await
     }
 
-    /// Restore a previous checkpoint's state WITHOUT executing further.
-    ///
-    /// Returns the restored state and the checkpoint metadata. Useful for
-    /// inspecting historical states or preparing to branch.
+    /**
+    恢复之前某个检查点的状态，但**不**继续执行。
+
+    返回恢复后的状态与检查点元数据，可用于查看历史状态或准备分支。
+    */
     pub async fn restore_to_checkpoint(
         &self,
         checkpoint_id: &str,
@@ -1426,11 +1494,13 @@ impl Graph {
         Ok((state, checkpoint))
     }
 
-    /// Fork a new execution from an existing checkpoint.
-    ///
-    /// Creates a new branch checkpoint with `state_updates` merged into the forked
-    /// state, preserving lineage via `parent_checkpoint_id`. The new branch is
-    /// stored and execution continues from the checkpointed node.
+    /**
+    从已有检查点分叉出一次新的执行。
+
+    创建一个新的分支检查点，并将 `state_updates` 合并进分叉后的状态，
+    通过 `parent_checkpoint_id` 保留血缘关系。新分支会被保存，
+    并从检查点所在节点继续执行。
+    */
     pub async fn branch_from(
         &self,
         checkpoint_id: &str,
@@ -1439,12 +1509,12 @@ impl Graph {
     ) -> Result<RunUntilInterruptResult> {
         let (state, parent_cp) = self.restore_to_checkpoint(checkpoint_id).await?;
 
-        // Apply state updates
+        // 应用状态更新
         for (key, value) in &state_updates {
             let _ = state.set(key, value.clone());
         }
 
-        // Create a branch checkpoint
+        // 创建分支检查点
         let branch_name = branch_name.unwrap_or_else(|| format!("branch-{}", uuid::Uuid::new_v4()));
         let fork_cp = Checkpoint::branch(
             &parent_cp.id,
@@ -1458,14 +1528,14 @@ impl Graph {
         )
         .bind_execution(self.graph_revision.clone(), parent_cp.continuation.clone());
 
-        // Save fork checkpoint
+        // 保存分叉检查点
         self.checkpoint_store.save(&fork_cp).await?;
 
-        // Resume from the fork
+        // 从分叉处恢复执行
         self.resume(fork_cp, ApprovalDecision::Approved).await
     }
 
-    /// Attach a human-readable label and/or tags to an existing checkpoint.
+    /// 为已有检查点附加人类可读的标签（label）和/或标记（tags）。
     pub async fn tag_checkpoint(
         &self,
         checkpoint_id: &str,
@@ -1506,32 +1576,34 @@ impl Graph {
         }
     }
 
-    /// Load a Checkpoint
+    /// 加载检查点
     pub async fn load_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>> {
         self.checkpoint_store.load(id).await
     }
 
-    /// List all Checkpoints
+    /// 列出所有检查点
     pub async fn list_checkpoints(&self) -> Result<Vec<super::checkpoint_store::CheckpointInfo>> {
         self.checkpoint_store.list().await
     }
 
-    /// List checkpoints filtered by graph name (this graph).
+    /// 列出按图名称（即本图）过滤后的检查点。
     pub async fn list_checkpoints_by_graph(
         &self,
     ) -> Result<Vec<super::checkpoint_store::CheckpointInfo>> {
         self.checkpoint_store.list_by_graph(&self.name).await
     }
 
-    /// Set a custom Checkpoint store
+    /// 设置自定义检查点存储
     pub fn with_checkpoint_store(mut self, store: Arc<dyn CheckpointStore>) -> Self {
         self.checkpoint_store = store;
         self
     }
 
-    /// Execute the graph workflow in streaming mode, emitting [`WorkflowEvent`] events node by node.
-    ///
-    /// Each node's Start/End events are emitted, and finally a `Completed` event is emitted.
+    /**
+    以流式模式执行图工作流，逐节点发出 [`WorkflowEvent`] 事件。
+
+    每个节点都会发出 Start/End 事件，最后发出 `Completed` 事件。
+    */
     pub async fn run_stream(
         &self,
         state: SharedState,
@@ -1539,8 +1611,11 @@ impl Graph {
         let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let execution = self.execute_loop(self.fresh_execution(state), false, Some(events));
         let stream = async_stream::try_stream! {
+            /// 单次轮询的结果：收到事件或执行结束
             enum StreamPoll {
+                /// 从事件通道收到的事件（None 表示通道已关闭）
                 Event(Option<WorkflowEvent>),
+                /// 执行循环的最终结果
                 Outcome(Box<Result<RunUntilInterruptResult>>),
             }
 
@@ -1582,12 +1657,12 @@ impl Graph {
         Ok(Box::pin(stream))
     }
 
-    /// Resolve the next node
+    /// 解析下一个节点
     async fn resolve_next(&self, current: &str, state: &SharedState) -> Result<NextStep> {
         let edges = match self.edges.get(current) {
             Some(e) => e,
             None => {
-                // No outgoing edges -> if it is a finish node then end, otherwise report an error
+                // 没有出边 -> 若为结束节点则结束，否则报错
                 if self.finish_nodes.contains(&current.to_string()) {
                     return Ok(NextStep::End);
                 }
@@ -1600,7 +1675,7 @@ impl Graph {
             }
         };
 
-        // Take the first matching edge
+        // 取第一条匹配的边
         if let Some(edge) = edges.iter().next() {
             match &edge.kind {
                 EdgeKind::Fixed(to) => {
@@ -1625,19 +1700,27 @@ impl Graph {
             }
         }
 
-        // Should not be reached
+        // 不应到达此处
         Ok(NextStep::End)
     }
 }
 
-/// Internal routing result
+/// 内部路由结果
 enum NextStep {
+    /// 转移到单个节点
     Single(String),
-    Parallel { targets: Vec<String>, then: String },
+    /// 并行扇出到多个节点，完成后进入 then 节点
+    Parallel {
+        /// 并行执行的目标节点
+        targets: Vec<String>,
+        /// 汇合节点
+        then: String,
+    },
+    /// 执行结束
     End,
 }
 
-// ── Unit Tests ───────────────────────────────────────────────────────────────
+// ── 单元测试 ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -1647,6 +1730,7 @@ mod tests {
     use futures::stream;
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    /// 以流式方式输出 token 的测试 Agent
     struct StreamingAgent;
 
     impl Agent for StreamingAgent {
@@ -1680,13 +1764,17 @@ mod tests {
         }
     }
 
+    /// 用于探测取消信号是否传递到 Agent 生产者的测试 Agent
     #[derive(Clone, Default)]
     struct CancellationProbeAgent {
+        /// 是否已开始执行
         started: Arc<AtomicBool>,
+        /// 是否已收到取消信号
         cancelled: Arc<AtomicBool>,
     }
 
     impl CancellationProbeAgent {
+        /// 等待指定标志位被置为 true（最多 1 秒）
         async fn wait_for(&self, flag: &AtomicBool) -> Result<()> {
             tokio::time::timeout(Duration::from_secs(1), async {
                 while !flag.load(Ordering::SeqCst) {
@@ -1697,10 +1785,12 @@ mod tests {
             .map_err(|_| ReactError::Other("cancellation probe timed out".to_string()))
         }
 
+        /// 等待 Agent 开始执行
         async fn wait_started(&self) -> Result<()> {
             self.wait_for(&self.started).await
         }
 
+        /// 等待 Agent 收到取消信号
         async fn wait_cancelled(&self) -> Result<()> {
             self.wait_for(&self.cancelled).await
         }
@@ -1756,6 +1846,7 @@ mod tests {
         }
     }
 
+    /// 测试线性图按顺序执行并累积状态
     #[tokio::test]
     async fn test_linear_graph() {
         let graph = GraphBuilder::new("linear")
@@ -1794,12 +1885,13 @@ mod tests {
         assert_eq!(result.steps, 3);
     }
 
+    /// 测试条件边根据状态选择通过/失败分支
     #[tokio::test]
     async fn test_conditional_graph() {
         let graph = GraphBuilder::new("conditional")
             .add_function_node("check", |_state: &SharedState| {
                 Box::pin(async move {
-                    // score is set externally
+                    // score 由外部设置
                     Ok(())
                 })
             })
@@ -1831,7 +1923,7 @@ mod tests {
             .build()
             .unwrap();
 
-        // Test the pass path
+        // 测试通过路径
         let state = SharedState::new();
         let _ = state.set("score", 80i64);
         let result = graph.run(state).await.unwrap();
@@ -1841,7 +1933,7 @@ mod tests {
         );
         assert_eq!(result.path, vec!["check", "pass"]);
 
-        // Test the fail path
+        // 测试失败路径
         let state = SharedState::new();
         let _ = state.set("score", 40i64);
         let result = graph.run(state).await.unwrap();
@@ -1852,9 +1944,10 @@ mod tests {
         assert_eq!(result.path, vec!["check", "fail"]);
     }
 
+    /// 测试条件边构成的循环能正确终止
     #[tokio::test]
     async fn test_loop_graph() {
-        // Simulate a loop: counter increments from 0 to 5
+        // 模拟循环：counter 从 0 递增到 5
         let graph = GraphBuilder::new("loop")
             .add_function_node("init", |state: &SharedState| {
                 Box::pin(async move {
@@ -1891,10 +1984,11 @@ mod tests {
         let state = SharedState::new();
         let result = graph.run(state).await.unwrap();
         assert_eq!(result.state.get::<i64>("counter"), Some(5));
-        // init + 5*increment + done = 7 steps
+        // init + 5*increment + done = 7 步
         assert_eq!(result.steps, 7);
     }
 
+    /// 测试并行扇出后在汇合节点合并结果
     #[tokio::test]
     async fn test_parallel_graph() {
         let graph = GraphBuilder::new("parallel")
@@ -1944,6 +2038,7 @@ mod tests {
         );
     }
 
+    /// 测试并行分支失败时取消并清理兄弟分支
     #[tokio::test]
     async fn parallel_failure_cancels_and_drains_siblings() {
         let graph = GraphBuilder::new("parallel-failure")
@@ -1970,6 +2065,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 测试在并行源节点后中断，恢复时执行并合并所有分支
     #[tokio::test]
     async fn resume_after_parallel_source_executes_and_merges_all_branches() -> Result<()> {
         let graph = GraphBuilder::new("parallel-resume")
@@ -2055,6 +2151,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试指向 __end__ 的边能结束执行
     #[tokio::test]
     async fn test_end_edge() {
         let graph = GraphBuilder::new("end_test")
@@ -2075,6 +2172,7 @@ mod tests {
         assert_eq!(result.path, vec!["only"]);
     }
 
+    /// 测试超出最大步数时返回错误
     #[tokio::test]
     async fn test_max_steps_exceeded() {
         let mut graph = GraphBuilder::new("infinite")
@@ -2082,7 +2180,7 @@ mod tests {
                 Box::pin(async move { Ok(()) })
             })
             .set_entry("loop_node")
-            .add_edge("loop_node", "loop_node") // infinite loop
+            .add_edge("loop_node", "loop_node") // 无限循环
             .build()
             .unwrap();
 
@@ -2093,6 +2191,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 测试缺少入口节点时构建失败
     #[test]
     fn test_build_validation_missing_entry() {
         let result = GraphBuilder::new("bad")
@@ -2101,6 +2200,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 测试入口节点不存在时构建失败
     #[test]
     fn test_build_validation_unknown_entry() {
         let result = GraphBuilder::new("bad")
@@ -2110,6 +2210,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 测试边指向未知节点时构建失败
     #[test]
     fn test_build_validation_unknown_edge_target() {
         let result = GraphBuilder::new("bad")
@@ -2120,16 +2221,17 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 测试同一节点存在多条出边时构建被拒绝
     #[test]
     fn test_build_rejects_multiple_outgoing_edges() {
-        // Same node has two outgoing edges -> build phase should error
+        // 同一节点有两条出边 -> 构建阶段应报错
         let result = GraphBuilder::new("multi_edge")
             .add_function_node("a", |_: &SharedState| Box::pin(async { Ok(()) }))
             .add_function_node("b", |_: &SharedState| Box::pin(async { Ok(()) }))
             .add_function_node("c", |_: &SharedState| Box::pin(async { Ok(()) }))
             .set_entry("a")
             .add_edge("a", "b")
-            .add_edge("a", "c") // second outgoing edge
+            .add_edge("a", "c") // 第二条出边
             .build();
         assert!(
             result.is_err(),
@@ -2145,8 +2247,9 @@ mod tests {
         );
     }
 
-    // ── Feature 4: Workflow streaming output (run_stream) ──────────────────────
+    // ── 功能 4：工作流流式输出（run_stream）──────────────────────
 
+    /// 测试线性图的流式执行事件序列
     #[tokio::test]
     async fn test_run_stream_linear() {
         use super::WorkflowEvent;
@@ -2203,6 +2306,7 @@ mod tests {
         assert!(completed, "Should receive Completed event");
     }
 
+    /// 测试流式执行转发 Agent token 并写入最终答案
     #[tokio::test]
     async fn run_stream_forwards_agent_tokens_and_commits_final_answer() -> Result<()> {
         let graph = GraphBuilder::new("stream-agent-token")
@@ -2235,6 +2339,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试丢弃工作流流时取消 Agent 生产者
     #[tokio::test]
     async fn dropping_workflow_stream_cancels_agent_producer() -> Result<()> {
         let probe = CancellationProbeAgent::default();
@@ -2259,6 +2364,7 @@ mod tests {
         probe.wait_cancelled().await
     }
 
+    /// 测试图取消令牌会取消非流式执行中的 Agent 生产者
     #[tokio::test]
     async fn graph_cancel_cancels_non_streaming_agent_producer() -> Result<()> {
         let probe = CancellationProbeAgent::default();
@@ -2282,6 +2388,7 @@ mod tests {
         probe.wait_cancelled().await
     }
 
+    /// 测试节点超时会取消 Agent 生产者
     #[tokio::test]
     async fn node_timeout_cancels_non_streaming_agent_producer() -> Result<()> {
         let probe = CancellationProbeAgent::default();
@@ -2297,6 +2404,7 @@ mod tests {
         probe.wait_cancelled().await
     }
 
+    /// 测试并行分支失败时取消兄弟分支中的 Agent 生产者
     #[tokio::test]
     async fn parallel_failure_cancels_agent_producer() -> Result<()> {
         let probe = CancellationProbeAgent::default();
@@ -2320,6 +2428,7 @@ mod tests {
         probe.wait_cancelled().await
     }
 
+    /// 测试结束节点后中断再恢复，路径与直接 run 一致
     #[tokio::test]
     async fn finish_interrupt_resumes_to_the_same_completed_path_as_run() -> Result<()> {
         let build_graph = || {
@@ -2369,6 +2478,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试流式执行在失败终止项之前发出并行节点的错误事件
     #[tokio::test]
     async fn run_stream_emits_parallel_node_error_before_failed_terminal_item() -> Result<()> {
         let graph = GraphBuilder::new("parallel-stream-error")
@@ -2407,6 +2517,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试并行图的流式执行事件
     #[tokio::test]
     async fn test_run_stream_parallel() {
         use super::WorkflowEvent;
@@ -2470,6 +2581,7 @@ mod tests {
         assert_eq!(completed_result, Some("b1=true,b2=true".to_string()));
     }
 
+    /// 测试条件图的流式执行只访问被选中的分支
     #[tokio::test]
     async fn test_run_stream_conditional() {
         use super::WorkflowEvent;
@@ -2521,6 +2633,7 @@ mod tests {
         assert_eq!(visited, vec!["check", "yes"]);
     }
 
+    /// 测试流式执行在失败终止项之前发出节点错误事件
     #[tokio::test]
     async fn run_stream_emits_node_error_before_failed_terminal_item() {
         use super::WorkflowEvent;
@@ -2558,6 +2671,7 @@ mod tests {
         );
     }
 
+    /// 测试 resume_with_state 注入状态并复用检查点身份
     #[tokio::test]
     async fn test_resume_with_state_reuses_checkpoint_identity() {
         use std::collections::HashMap;
@@ -2611,6 +2725,7 @@ mod tests {
         );
     }
 
+    /// 构建一个在 start 节点前中断、使用指定存储与版本号的测试图
     fn interrupting_graph(name: &str, revision: &str, store: Arc<MemoryCheckpointStore>) -> Graph {
         GraphBuilder::new(name)
             .add_function_node("start", |state: &SharedState| {
@@ -2635,6 +2750,7 @@ mod tests {
             .with_checkpoint_store(store)
     }
 
+    /// 测试检查点只能被认领一次
     #[tokio::test]
     async fn checkpoint_is_claimed_once() {
         let store = Arc::new(MemoryCheckpointStore::new());
@@ -2656,6 +2772,7 @@ mod tests {
         );
     }
 
+    /// 测试跨图或版本不匹配时不会消费检查点
     #[tokio::test]
     async fn cross_graph_and_revision_drift_do_not_consume_checkpoint() {
         let store = Arc::new(MemoryCheckpointStore::new());
@@ -2684,6 +2801,7 @@ mod tests {
         ));
     }
 
+    /// 测试延后决策保留检查点、拒绝决策消费检查点
     #[tokio::test]
     async fn deferred_preserves_and_rejected_consumes_checkpoint() {
         let store = Arc::new(MemoryCheckpointStore::new());
@@ -2717,6 +2835,7 @@ mod tests {
         );
     }
 
+    /// 测试恢复失败时将已认领的检查点重新入队
     #[tokio::test]
     async fn failed_resume_requeues_the_claimed_checkpoint() {
         let store = Arc::new(MemoryCheckpointStore::new());
@@ -2748,6 +2867,7 @@ mod tests {
         assert!(store.load(&pending[0].id).await.unwrap().is_some());
     }
 
+    /// 测试长时间恢复会续期文件认领，并阻止打标签导致检查点复活
     #[tokio::test]
     async fn long_resume_renews_file_claim_and_blocks_tag_resurrection() -> Result<()> {
         let temp_path =
@@ -2813,6 +2933,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试为已认领的检查点打标签会失败且不会使其复活
     #[tokio::test]
     async fn tagging_claimed_checkpoint_fails_without_resurrection() {
         let store = Arc::new(MemoryCheckpointStore::new());

@@ -1,65 +1,71 @@
-//! # echo_channels
-//!
-//! IM 渠道插件系统 —— 统一的 ChannelPlugin 接口 + 具体平台实现。
-//!
-//! ## 快速开始
-//!
-//! ```rust,no_run
-//! use echo_integration::channels::prelude::*;
-//! use async_trait::async_trait;
-//! use echo_core::error::Result;
-//! use std::sync::Arc;
-//!
-//! struct DummyHandler;
-//!
-//! #[async_trait]
-//! impl MessageHandler for DummyHandler {
-//!     async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
-//!         Ok(OutboundMessage::new(
-//!             msg.channel_id,
-//!             msg.chat_id,
-//!             msg.chat_type,
-//!             "ok",
-//!         ))
-//!     }
-//!
-//!     async fn reply(&self, _msg: OutboundMessage) -> Result<()> {
-//!         Ok(())
-//!     }
-//! }
-//!
-//! # async fn example() -> Result<()> {
-//! let mut manager = ChannelManager::new();
-//!
-//! // 注册 QQ 机器人
-//! let qq_config = QqConfig {
-//!     app_id: "your-app-id".into(),
-//!     client_secret: "your-secret".into(),
-//! };
-//! manager.register(Box::new(QqChannel::new(qq_config)?))?;
-//!
-//! // 注册飞书（长轮询模式，无需公网 IP）
-//! let feishu_config = FeishuConfig::new_long_poll(
-//!     "your-feishu-app-id".into(),
-//!     "your-feishu-secret".into(),
-//! );
-//! manager.register(Box::new(FeishuChannel::new(feishu_config)?))?;
-//!
-//! // 启动所有渠道
-//! let handler_factory = |_channel_id: &str| -> Arc<dyn MessageHandler> {
-//!     Arc::new(DummyHandler)
-//! };
-//! for result in manager.start_all(handler_factory).await {
-//!     result.result?;
-//! }
-//! # Ok(())
-//! # }
-//! ```
+/*!
+# echo_channels
 
+IM 渠道插件系统 —— 统一的 ChannelPlugin 接口 + 具体平台实现。
+
+## 快速开始
+
+```rust,no_run
+use echo_integration::channels::prelude::*;
+use async_trait::async_trait;
+use echo_core::error::Result;
+use std::sync::Arc;
+
+struct DummyHandler;
+
+#[async_trait]
+impl MessageHandler for DummyHandler {
+    async fn handle(&self, msg: InboundMessage) -> Result<OutboundMessage> {
+        Ok(OutboundMessage::new(
+            msg.channel_id,
+            msg.chat_id,
+            msg.chat_type,
+            "ok",
+        ))
+    }
+
+    async fn reply(&self, _msg: OutboundMessage) -> Result<()> {
+        Ok(())
+    }
+}
+
+# async fn example() -> Result<()> {
+let mut manager = ChannelManager::new();
+
+// 注册 QQ 机器人
+let qq_config = QqConfig {
+    app_id: "your-app-id".into(),
+    client_secret: "your-secret".into(),
+};
+manager.register(Box::new(QqChannel::new(qq_config)?))?;
+
+// 注册飞书（长轮询模式，无需公网 IP）
+let feishu_config = FeishuConfig::new_long_poll(
+    "your-feishu-app-id".into(),
+    "your-feishu-secret".into(),
+);
+manager.register(Box::new(FeishuChannel::new(feishu_config)?))?;
+
+// 启动所有渠道
+let handler_factory = |_channel_id: &str| -> Arc<dyn MessageHandler> {
+    Arc::new(DummyHandler)
+};
+for result in manager.start_all(handler_factory).await {
+    result.result?;
+}
+# Ok(())
+# }
+```
+*/
+
+/// 各具体 IM 平台渠道实现（飞书、QQ 等）。
 #[allow(clippy::module_inception)]
 pub mod channels;
+/// 渠道管理器：统一注册、启动与停止渠道插件。
 pub mod manager;
+/// 渠道会话管理：会话创建、轮换与结束。
 pub mod session;
+/// 渠道通用类型：消息结构、插件接口等。
 pub mod types;
 
 pub use channels::feishu::channel::{FeishuChannel, FeishuConfig};
@@ -71,6 +77,7 @@ pub use session::{
 };
 pub use types::*;
 
+/// 常用渠道类型的统一导入入口。
 pub mod prelude {
     pub use super::ChannelPlugin;
     pub use super::channels::feishu::channel::{FeishuChannel, FeishuConfig};

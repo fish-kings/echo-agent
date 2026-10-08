@@ -1,16 +1,20 @@
-//! demo66_context_selector.rs - ContextSelector 文件选择示例
-//!
-//! 本示例演示如何使用 ContextSelector 基于任务描述评分和选择相关文件，
-//! 包括符号匹配、最近修改和 Git 变更的加权评分。
-//!
-//! 契约测试入口: `contract_demo66_context_selector`
+/*!
+demo66_context_selector.rs - ContextSelector 文件选择示例
+
+本示例演示如何使用 ContextSelector 基于任务描述评分和选择相关文件，
+包括符号匹配、最近修改和 Git 变更的加权评分。
+
+契约测试入口: `contract_demo66_context_selector`
+*/
 
 use echo_agent::context::ContextSelector;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// demo66 契约测试：依次运行基本用法、自定义权重、多任务场景、实际项目场景
-/// 四个示例，演示 `ContextSelector` 如何基于符号匹配、最近修改、Git 变更对文件评分与筛选。
+/**
+demo66 契约测试：依次运行基本用法、自定义权重、多任务场景、实际项目场景
+四个示例，演示 `ContextSelector` 如何基于符号匹配、最近修改、Git 变更对文件评分与筛选。
+*/
 #[test]
 fn contract_demo66_context_selector() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== demo66: Context Selector ===\n");

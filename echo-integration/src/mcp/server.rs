@@ -1,59 +1,61 @@
-//! MCP Server —— 将 echo-agent 的 Tool 暴露为 MCP 服务端
-//!
-//! 支持将任意 [`Tool`] 实现暴露给 MCP 客户端（如 Claude Desktop、
-//! Cursor、其他 MCP 客户端），实现双向 MCP 互操作。
-//!
-//! # 支持的传输方式
-//!
-//! | 传输 | 方法 | 场景 |
-//! |------|------|------|
-//! | Stdio | [`serve_stdio`](McpServer::serve_stdio) | CLI 工具、子进程、npx 集成 |
-//!
-//! # 快速开始
-//!
-//! ```rust,no_run
-//! use echo_integration::mcp::server::McpServer;
-//! use std::sync::Arc;
-//! # use echo_core::tools::{Tool, ToolResult, ToolParameters};
-//! # use futures::future::BoxFuture;
-//! # use echo_core::error::Result;
-//!
-//! # struct MyTool;
-//! # impl Tool for MyTool {
-//! #     fn name(&self) -> &str { "my_tool" }
-//! #     fn description(&self) -> &str { "A tool" }
-//! #     fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
-//! #     fn execute(&self, _: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
-//! #         Box::pin(async { Ok(ToolResult::success("ok")) })
-//! #     }
-//! # }
-//!
-//! # #[tokio::main]
-//! # async fn main() -> echo_core::error::Result<()> {
-//! let server = McpServer::builder()
-//!     .name("my-agent-server")
-//!     .version("0.1.0")
-//!     .tool(Arc::new(MyTool))
-//!     .build();
-//!
-//! server.serve_stdio().await?;
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! # 从已有工具列表快速构建
-//!
-//! ```rust,no_run
-//! use echo_integration::mcp::server::McpServer;
-//! use std::sync::Arc;
-//! # use echo_core::tools::Tool;
-//!
-//! # fn get_tools() -> Vec<Arc<dyn Tool>> { vec![] }
-//! let server = McpServer::from_tools(get_tools())
-//!     .name("echo-agent")
-//!     .version("0.1.0")
-//!     .build();
-//! ```
+/*!
+MCP Server —— 将 echo-agent 的 Tool 暴露为 MCP 服务端
+
+支持将任意 [`Tool`] 实现暴露给 MCP 客户端（如 Claude Desktop、
+Cursor、其他 MCP 客户端），实现双向 MCP 互操作。
+
+# 支持的传输方式
+
+| 传输 | 方法 | 场景 |
+|------|------|------|
+| Stdio | [`serve_stdio`](McpServer::serve_stdio) | CLI 工具、子进程、npx 集成 |
+
+# 快速开始
+
+```rust,no_run
+use echo_integration::mcp::server::McpServer;
+use std::sync::Arc;
+# use echo_core::tools::{Tool, ToolResult, ToolParameters};
+# use futures::future::BoxFuture;
+# use echo_core::error::Result;
+
+# struct MyTool;
+# impl Tool for MyTool {
+#     fn name(&self) -> &str { "my_tool" }
+#     fn description(&self) -> &str { "A tool" }
+#     fn parameters(&self) -> serde_json::Value { serde_json::json!({}) }
+#     fn execute(&self, _: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
+#         Box::pin(async { Ok(ToolResult::success("ok")) })
+#     }
+# }
+
+# #[tokio::main]
+# async fn main() -> echo_core::error::Result<()> {
+let server = McpServer::builder()
+    .name("my-agent-server")
+    .version("0.1.0")
+    .tool(Arc::new(MyTool))
+    .build();
+
+server.serve_stdio().await?;
+# Ok(())
+# }
+```
+
+# 从已有工具列表快速构建
+
+```rust,no_run
+use echo_integration::mcp::server::McpServer;
+use std::sync::Arc;
+# use echo_core::tools::Tool;
+
+# fn get_tools() -> Vec<Arc<dyn Tool>> { vec![] }
+let server = McpServer::from_tools(get_tools())
+    .name("echo-agent")
+    .version("0.1.0")
+    .build();
+```
+*/
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -74,28 +76,40 @@ use echo_core::tools::Tool;
 
 // ── JSON-RPC 标准错误码 ──────────────────────────────────────────────────────
 
+/// JSON 解析错误
 const ERR_PARSE: i32 = -32700;
+/// 无效的 JSON-RPC 请求
 const ERR_INVALID_REQUEST: i32 = -32600;
+/// 方法不存在
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
+/// 无效的方法参数
 const ERR_INVALID_PARAMS: i32 = -32602;
+/// 服务端内部错误
 const ERR_INTERNAL: i32 = -32603;
 
 // ── McpServer ────────────────────────────────────────────────────────────────
 
-/// MCP 服务端：将 echo-agent 的 Tool 暴露为标准 MCP 服务
-///
-/// 支持 MCP 2025-11-25（最新）及向下兼容 2025-06-18 / 2025-03-26 / 2024-11-05，处理：
-/// - `initialize` 握手与**版本协商**
-/// - `tools/list` 工具发现
-/// - `tools/call` 工具执行
-/// - `ping` 健康检查
+/** MCP 服务端：将 echo-agent 的 Tool 暴露为标准 MCP 服务
+
+支持 MCP 2025-11-25（最新）及向下兼容 2025-06-18 / 2025-03-26 / 2024-11-05，处理：
+- `initialize` 握手与**版本协商**
+- `tools/list` 工具发现
+- `tools/call` 工具执行
+- `ping` 健康检查 */
 pub struct McpServer {
+    /// 服务端名称。
     name: String,
+    /// 服务端版本号。
     version: String,
+    /// 工具名到工具实现的映射，用于 `tools/call` 查找。
     tools: HashMap<String, Arc<dyn Tool>>,
+    /// 预先生成的 MCP 工具描述列表，用于 `tools/list`。
     tool_list: Vec<McpTool>,
+    /// 在 initialize 响应中返回的服务端指令说明。
     instructions: Option<String>,
+    /// 已注册的资源列表。
     resources: Vec<McpResource>,
+    /// 已注册的提示词列表。
     prompts: Vec<McpPrompt>,
 }
 
@@ -105,9 +119,9 @@ impl McpServer {
         McpServerBuilder::new()
     }
 
-    /// 从工具列表快速创建构建器
-    ///
-    /// 返回的 `McpServerBuilder` 可继续链式调用 `.name()` / `.version()` 等方法。
+    /** 从工具列表快速创建构建器
+
+    返回的 `McpServerBuilder` 可继续链式调用 `.name()` / `.version()` 等方法。 */
     pub fn from_tools(tools: Vec<Arc<dyn Tool>>) -> McpServerBuilder {
         let mut builder = McpServerBuilder::new();
         for tool in tools {
@@ -116,10 +130,10 @@ impl McpServer {
         builder
     }
 
-    /// 处理单个 JSON-RPC 请求字符串，返回 JSON 响应字符串
-    ///
-    /// 适用于自定义传输层集成（HTTP、WebSocket 等）或测试场景。
-    /// 对于 stdio 传输，直接使用 [`serve_stdio`](McpServer::serve_stdio)。
+    /** 处理单个 JSON-RPC 请求字符串，返回 JSON 响应字符串
+
+    适用于自定义传输层集成（HTTP、WebSocket 等）或测试场景。
+    对于 stdio 传输，直接使用 [`serve_stdio`](McpServer::serve_stdio)。 */
     pub async fn handle_json_rpc(&self, request_json: &str) -> String {
         let json: Value = match serde_json::from_str(request_json) {
             Ok(v) => v,
@@ -167,16 +181,16 @@ impl McpServer {
 
     // ── Stdio 传输 ───────────────────────────────────────────────────────────
 
-    /// 以 Stdio 模式运行 MCP 服务端
-    ///
-    /// 从 stdin 读取 JSON-RPC 请求（每行一个 JSON），
-    /// 将响应写入 stdout（每行一个 JSON）。
-    /// 直到 stdin 关闭（EOF）时退出。
-    ///
-    /// 这是最常用的 MCP 服务端模式，适用于：
-    /// - Claude Desktop 集成
-    /// - Cursor / VS Code 集成
-    /// - `npx` / CLI 工具
+    /** 以 Stdio 模式运行 MCP 服务端
+
+    从 stdin 读取 JSON-RPC 请求（每行一个 JSON），
+    将响应写入 stdout（每行一个 JSON）。
+    直到 stdin 关闭（EOF）时退出。
+
+    这是最常用的 MCP 服务端模式，适用于：
+    - Claude Desktop 集成
+    - Cursor / VS Code 集成
+    - `npx` / CLI 工具 */
     pub async fn serve_stdio(&self) -> Result<()> {
         let stdin = tokio::io::stdin();
         let stdout = Arc::new(Mutex::new(tokio::io::stdout()));
@@ -260,6 +274,7 @@ impl McpServer {
 
     // ── 请求分发 ─────────────────────────────────────────────────────────────
 
+    /// 按方法名分发 JSON-RPC 请求并构造响应
     async fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let id = request.id.clone();
 
@@ -298,6 +313,7 @@ impl McpServer {
         }
     }
 
+    /// 处理客户端通知消息（仅记录日志）
     fn handle_notification(&self, notification: &JsonRpcNotification) {
         match notification.method.as_str() {
             "notifications/initialized" => {
@@ -314,6 +330,7 @@ impl McpServer {
 
     // ── 协议方法实现 ─────────────────────────────────────────────────────────
 
+    /// 处理 `initialize` 握手并进行协议版本协商
     fn handle_initialize(&self, params: Option<Value>) -> std::result::Result<Value, JsonRpcError> {
         let negotiated_version = if let Some(params) = params {
             match serde_json::from_value::<InitializeParams>(params) {
@@ -393,6 +410,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `tools/list`，返回已注册的工具列表
     fn handle_tools_list(&self) -> std::result::Result<Value, JsonRpcError> {
         let result = McpToolsListResult {
             tools: self.tool_list.clone(),
@@ -406,6 +424,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `tools/call`，执行指定工具并返回结果
     async fn handle_tools_call(
         &self,
         params: Option<Value>,
@@ -474,6 +493,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `resources/list`，返回已注册的资源列表
     fn handle_resources_list(&self) -> std::result::Result<Value, JsonRpcError> {
         use super::types::McpResourcesListResult;
         let result = McpResourcesListResult {
@@ -487,6 +507,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `resources/read`，读取指定 URI 的资源
     fn handle_resources_read(
         &self,
         params: Option<Value>,
@@ -524,6 +545,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `prompts/list`，返回已注册的提示词列表
     fn handle_prompts_list(&self) -> std::result::Result<Value, JsonRpcError> {
         use super::types::McpPromptsListResult;
         let result = McpPromptsListResult {
@@ -537,6 +559,7 @@ impl McpServer {
         })
     }
 
+    /// 处理 `prompts/get`，获取指定名称的提示词
     fn handle_prompts_get(
         &self,
         params: Option<Value>,
@@ -575,15 +598,22 @@ impl McpServer {
 
 /// MCP 服务端构建器
 pub struct McpServerBuilder {
+    /// 服务端名称。
     name: String,
+    /// 服务端版本号。
     version: String,
+    /// 待注册的工具列表。
     tools: Vec<Arc<dyn Tool>>,
+    /// 服务端指令说明。
     instructions: Option<String>,
+    /// 待注册的资源列表。
     resources: Vec<McpResource>,
+    /// 待注册的提示词列表。
     prompts: Vec<McpPrompt>,
 }
 
 impl McpServerBuilder {
+    /// 创建带默认名称与版本的构建器
     fn new() -> Self {
         Self {
             name: "echo-agent".to_string(),
@@ -691,6 +721,7 @@ impl McpServerBuilder {
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
+/// 将 JSON-RPC 响应序列化为单行 JSON 写入 stdout 并刷新
 async fn write_response(
     stdout: &Arc<Mutex<tokio::io::Stdout>>,
     response: &JsonRpcResponse,
@@ -722,6 +753,7 @@ mod tests {
     use echo_core::tools::{ToolParameters, ToolResult};
     use futures::future::BoxFuture;
 
+    /// 测试用加法工具
     struct AddTool;
 
     impl Tool for AddTool {
@@ -750,6 +782,7 @@ mod tests {
         }
     }
 
+    /// 验证构建器基本配置生效
     #[test]
     fn test_builder_basic() -> std::result::Result<(), String> {
         let server = McpServer::builder()
@@ -769,6 +802,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证从工具列表构建服务端
     #[test]
     fn test_from_tools() {
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(AddTool)];
@@ -778,6 +812,7 @@ mod tests {
         assert_eq!(server.tools.len(), 1);
     }
 
+    /// 构造指定协议版本的 initialize 参数
     fn make_init_params(version: &str) -> std::result::Result<Value, String> {
         serde_json::to_value(InitializeParams {
             protocol_version: version.to_string(),
@@ -794,6 +829,7 @@ mod tests {
         .map_err(|error| error.to_string())
     }
 
+    /// 验证 initialize 握手返回正确的服务端信息
     #[test]
     fn test_handle_initialize() -> std::result::Result<(), String> {
         let server = McpServer::builder()
@@ -820,6 +856,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证受支持的协议版本会被原样回复
     #[test]
     fn test_version_negotiation_echo_supported() -> std::result::Result<(), String> {
         let server = McpServer::builder().build();
@@ -853,6 +890,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证不支持的协议版本会被拒绝
     #[test]
     fn test_version_negotiation_unsupported_rejects() -> std::result::Result<(), String> {
         let server = McpServer::builder().build();
@@ -868,6 +906,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证最新协议版本协商
     #[test]
     fn test_version_negotiation_latest() -> std::result::Result<(), String> {
         let server = McpServer::builder().build();
@@ -883,6 +922,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证缺少新字段的旧客户端仍可初始化
     #[test]
     fn test_old_client_without_new_fields() -> std::result::Result<(), String> {
         let server = McpServer::builder().build();
@@ -902,6 +942,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 tools/list 返回已注册工具
     #[test]
     fn test_handle_tools_list() -> std::result::Result<(), String> {
         let server = McpServer::builder().tool(Arc::new(AddTool)).build();
@@ -924,6 +965,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 tools/call 正确执行工具
     #[tokio::test]
     async fn test_handle_tools_call() -> std::result::Result<(), String> {
         let server = McpServer::builder().tool(Arc::new(AddTool)).build();
@@ -950,6 +992,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证调用不存在的工具时返回参数错误
     #[tokio::test]
     async fn test_handle_tools_call_not_found() -> std::result::Result<(), String> {
         let server = McpServer::builder().build();
@@ -969,6 +1012,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证请求分发：ping 成功、未知方法报错
     #[tokio::test]
     async fn test_request_dispatch() {
         let server = McpServer::builder().tool(Arc::new(AddTool)).build();
@@ -983,7 +1027,7 @@ mod tests {
         let resp = server.handle_request(req).await;
         assert!(resp.error.is_none());
 
-        // unknown method
+        // 未知方法
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
             id: Some(Value::Number(2.into())),

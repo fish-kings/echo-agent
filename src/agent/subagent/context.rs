@@ -1,7 +1,8 @@
-//! Subagent context isolation and inheritance
-//!
-//! Defines what gets shared from a parent agent to its subagent,
-//! and provides utilities for creating isolated execution contexts.
+/*!
+子 Agent 上下文的隔离与继承。
+
+定义父 Agent 向子 Agent 共享哪些内容，并提供创建隔离执行上下文的工具函数。
+*/
 
 use echo_core::llm::ToolDefinition;
 use echo_core::llm::types::{Message, Role};
@@ -12,42 +13,42 @@ use crate::memory::store::Store;
 
 use super::types::ExecutionMode;
 
-// ── Context Inheritance ───────────────────────────────────────────────────────
+// ── 上下文继承 ───────────────────────────────────────────────────────
 
-/// Declares what the subagent inherits from its parent.
-///
-/// ## Fresh vs Fork inheritance (Claude/Cursor-aligned)
-///
-/// - **Fresh** ([`Self::fresh_default`]): no parent history / memory.
-///   The current user-authored request is still carried as a scoped goal so
-///   the isolated subagent can preserve user intent without inheriting the
-///   conversation transcript. This is the product default for TaskRuntime and
-///   `agent_tool` (omit mode).
-/// - **Fork inheritance** ([`Self::fork_default`]): inherit filtered recent
-///   history + memory. Parent system prompts are never transferred as user text.
-///
-/// `ExecutionMode::Fork` is orthogonal: it selects the concurrent dispatch path
-/// (semaphore + worktree/workspace). A Fork *execution* can still use Fresh
-/// *inheritance*.
-///
-/// Historical mode presets:
-/// - **Sync**: no inheritance ([`Self::sync_default`] == fresh).
-/// - **Fork mode preset**: inherits tools + recent history.
-/// - **Teammate/Team**: bounded structured history, never parent system text.
+/**
+声明子 Agent 从父 Agent 继承哪些内容。
+
+## Fresh 与 Fork 继承（与 Claude/Cursor 对齐）
+
+- **Fresh**（[`Self::fresh_default`]）：不继承父级历史 / 记忆。
+  当前由用户撰写的请求仍会作为限定范围的目标携带，使隔离的子 Agent
+  在不继承对话记录的情况下也能保留用户意图。这是 TaskRuntime 与
+  `agent_tool`（省略 mode 时）的产品默认值。
+- **Fork 继承**（[`Self::fork_default`]）：继承过滤后的近期历史 + 记忆。
+  父级系统提示词永远不会以用户文本的形式传递。
+
+`ExecutionMode::Fork` 与此正交：它选择的是并发派发路径
+（信号量 + worktree/workspace）。一次 Fork *执行* 仍可使用 Fresh *继承*。
+
+历史模式预设：
+- **Sync**：不继承（[`Self::sync_default`] == fresh）。
+- **Fork 模式预设**：继承工具 + 近期历史。
+- **Teammate/Team**：有界的结构化历史，绝不包含父级系统文本。
+*/
 #[derive(Debug, Clone)]
 pub struct ContextInheritance {
-    /// Inherit specific tools by name. `None` = inherit all.
+    /// 按名称继承指定工具。`None` 表示继承全部。
     pub inherit_tools: Option<Vec<String>>,
-    /// Inherit recent N messages from conversation history. `None` = don't inherit.
+    /// 从对话历史中继承最近 N 条消息。`None` 表示不继承。
     pub inherit_history: Option<usize>,
-    /// Inherit the parent's memory store reference.
+    /// 是否继承父级记忆存储的引用。
     pub inherit_memory: bool,
-    /// Inject custom key-value metadata into the subagent context.
+    /// 向子 Agent 上下文注入自定义键值元数据。
     pub inject_metadata: HashMap<String, String>,
 }
 
 impl ContextInheritance {
-    /// Sync mode default: nothing inherited (shared state via mutex).
+    /// Sync 模式默认值：不继承任何内容（通过互斥锁共享状态）。
     pub fn sync_default() -> Self {
         Self {
             inherit_tools: None,
@@ -57,20 +58,24 @@ impl ContextInheritance {
         }
     }
 
-    /// Claude/Cursor-aligned default: no parent conversation inheritance.
-    ///
-    /// Prefer this name in new call sites; [`Self::sync_default`] remains as
-    /// the historical alias with identical fields.
+    /**
+    与 Claude/Cursor 对齐的默认值：不继承父级对话。
+
+    新调用点应优先使用该名称；[`Self::sync_default`] 作为字段完全相同的
+    历史别名保留。
+    */
     pub fn fresh_default() -> Self {
         Self::sync_default()
     }
 
-    /// Fork mode default: inherit tools + recent 2 messages.
-    ///
-    /// Sprint 6b: lowered 10 → 2 (was over-inheriting, bloating Fork subagent
-    /// context with stale turns). `SubagentDefinition.inherit_history` (e.g.
-    /// from a `.md` frontmatter or `.inherit_history(n)`) is now honored at
-    /// dispatch time by the configured prompt compiler and overrides this default.
+    /**
+    Fork 模式默认值：继承工具 + 最近 2 条消息。
+
+    Sprint 6b：由 10 降为 2（此前继承过多，陈旧轮次撑大了 Fork 子 Agent 的
+    上下文）。`SubagentDefinition.inherit_history`（例如来自 `.md` frontmatter
+    或 `.inherit_history(n)`）现在会在派发时由所配置的提示词编译器采纳，
+    并覆盖此默认值。
+    */
     pub fn fork_default() -> Self {
         Self {
             inherit_tools: None,
@@ -80,7 +85,7 @@ impl ContextInheritance {
         }
     }
 
-    /// Teammate/Team default: bounded history without tools or memory.
+    /// Teammate/Team 默认值：有界历史，不继承工具与记忆。
     pub fn teammate_default() -> Self {
         Self {
             inherit_tools: Some(Vec::new()),
@@ -90,7 +95,7 @@ impl ContextInheritance {
         }
     }
 
-    /// Select the default inheritance for a given execution mode.
+    /// 为给定的执行模式选择默认继承配置。
     pub fn for_mode(mode: &ExecutionMode) -> Self {
         match mode {
             ExecutionMode::Sync => Self::sync_default(),
@@ -101,32 +106,35 @@ impl ContextInheritance {
     }
 }
 
+/// 默认等同于 [`ContextInheritance::sync_default`]。
 impl Default for ContextInheritance {
     fn default() -> Self {
         Self::sync_default()
     }
 }
 
-/// Snapshot of a parent agent's context for inheritance.
-///
-/// Extracted from the parent before spawning a subagent.
-/// This is a read-only snapshot — the subagent gets its own copy.
+/**
+用于继承的父 Agent 上下文快照。
+
+在派生子 Agent 之前从父级提取。这是只读快照 —— 子 Agent 获得的是自己的副本。
+*/
 #[derive(Clone)]
 pub struct SubagentContext {
-    /// Parent's tool definitions (filtered by `ContextInheritance::inherit_tools`).
+    /// 父级的工具定义（经 `ContextInheritance::inherit_tools` 过滤）。
     pub tool_definitions: Vec<ToolDefinition>,
-    /// Parent's recent conversation messages (limited by `inherit_history`).
+    /// 父级的近期对话消息（受 `inherit_history` 限制）。
     pub messages: Vec<Message>,
-    /// Parent's memory store (if shared).
+    /// 父级的记忆存储（若共享）。
     pub store: Option<Arc<dyn Store>>,
 
-    // ── Scoped Context Fields (Step 6) ──────────────────────────────────────
-    /// Parent's overall goal (for context)
+    // ── 限定范围的上下文字段（Step 6） ──────────────────────────────────────
+    /// 父级的总体目标（作为上下文）。
     pub parent_goal: Option<String>,
-    /// Allowed tools for this subagent (overrides inheritance)
+    /// 该子 Agent 允许使用的工具（覆盖继承配置）。
     pub allowed_tools: Option<Vec<String>>,
 }
 
+/// 自定义 Debug 输出：记忆存储仅显示占位符。
 impl std::fmt::Debug for SubagentContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubagentContext")
@@ -140,19 +148,19 @@ impl std::fmt::Debug for SubagentContext {
 }
 
 impl SubagentContext {
-    /// Create an empty context (no inheritance).
+    /// 创建空上下文（不继承任何内容）。
     pub fn empty() -> Self {
         Self {
             tool_definitions: Vec::new(),
             messages: Vec::new(),
             store: None,
-            // Scoped context fields
+            // 限定范围的上下文字段
             parent_goal: None,
             allowed_tools: None,
         }
     }
 
-    /// Build a context by applying an inheritance spec to a parent's full context.
+    /// 将继承规格应用于父级完整上下文，构建子 Agent 上下文。
     pub fn from_parent(
         all_tools: &[ToolDefinition],
         all_messages: &[Message],
@@ -161,7 +169,7 @@ impl SubagentContext {
     ) -> Self {
         let parent_goal = latest_user_request(all_messages);
         let filtered_tools = if let Some(allowed) = &inheritance.inherit_tools {
-            // Specific tool list: only inherit named tools
+            // 指定了工具列表：仅继承列出的工具
             all_tools
                 .iter()
                 .filter(|t| allowed.iter().any(|a| a == &t.function.name))
@@ -171,10 +179,10 @@ impl SubagentContext {
             && inheritance.inherit_history.is_none()
             && !inheritance.inherit_memory
         {
-            // No explicit tool list, but no other inheritance requested: don't inherit tools
+            // 未指定工具列表，且未请求其它继承：不继承工具
             Vec::new()
         } else {
-            // No explicit tool list + some inheritance context requested: inherit all tools
+            // 未指定工具列表，但请求了其它继承内容：继承全部工具
             all_tools.to_vec()
         };
 
@@ -195,14 +203,14 @@ impl SubagentContext {
             } else {
                 None
             },
-            // The active user request is scoped delegation context rather than
-            // inherited conversation history, so Fresh subagents receive it.
+            /* 当前活跃的用户请求属于限定范围的委派上下文，而非继承的对话历史，
+            因此 Fresh 子 Agent 也会收到它。 */
             parent_goal,
             allowed_tools: None,
         }
     }
 
-    /// Check if this context has any inheritable content.
+    /// 检查该上下文是否包含任何可继承内容。
     pub fn has_content(&self) -> bool {
         !self.tool_definitions.is_empty()
             || !self.messages.is_empty()
@@ -212,6 +220,7 @@ impl SubagentContext {
     }
 }
 
+/// 查找最近一条真实的用户请求（跳过上下文投影消息与运行时上下文消息）。
 fn latest_user_request(messages: &[Message]) -> Option<String> {
     messages.iter().rev().find_map(|message| {
         if message.role != Role::User || crate::compression::is_context_projection_message(message)
@@ -232,6 +241,7 @@ fn latest_user_request(messages: &[Message]) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Sync 默认值不继承历史与记忆。
     #[test]
     fn test_sync_default_no_inheritance() {
         let inh = ContextInheritance::sync_default();
@@ -239,6 +249,7 @@ mod tests {
         assert!(!inh.inherit_memory);
     }
 
+    /// fresh_default 与 sync_default 字段一致。
     #[test]
     fn fresh_default_is_alias_of_sync_default() {
         let a = ContextInheritance::fresh_default();
@@ -247,6 +258,7 @@ mod tests {
         assert_eq!(a.inherit_memory, b.inherit_memory);
     }
 
+    /// Fresh 继承只保留当前用户请求作为父级目标。
     #[test]
     fn from_parent_fresh_keeps_only_current_user_request() {
         let tools = vec![ToolDefinition {
@@ -267,6 +279,7 @@ mod tests {
         assert!(ctx.has_content());
     }
 
+    /// 提取父级目标时忽略运行时上下文与投影消息。
     #[test]
     fn from_parent_ignores_runtime_context_and_projection_messages() {
         let mut projected = crate::compression::ContextManager::builder(4096).build();
@@ -294,6 +307,7 @@ mod tests {
         assert!(ctx.store.is_none());
     }
 
+    /// 父级目标取最近一条真实用户请求。
     #[test]
     fn from_parent_uses_latest_real_user_request() {
         let messages = vec![
@@ -312,14 +326,16 @@ mod tests {
         assert_eq!(ctx.parent_goal.as_deref(), Some("最后一个真实请求"));
     }
 
+    /// Fork 默认值继承 2 条历史与记忆。
     #[test]
     fn test_fork_default_inherits() {
         let inh = ContextInheritance::fork_default();
-        // Sprint 6b: fork default inherit_history lowered 10 → 2.
+        // Sprint 6b：fork 默认 inherit_history 由 10 降为 2。
         assert_eq!(inh.inherit_history, Some(2));
         assert!(inh.inherit_memory);
     }
 
+    /// Teammate 默认值使用有界历史且不继承工具与记忆。
     #[test]
     fn test_teammate_default_uses_bounded_history() {
         let inh = ContextInheritance::teammate_default();
@@ -328,6 +344,7 @@ mod tests {
         assert!(!inh.inherit_memory);
     }
 
+    /// 各执行模式映射到对应的默认继承配置。
     #[test]
     fn test_for_mode() {
         assert!(
@@ -345,12 +362,14 @@ mod tests {
         );
     }
 
+    /// 空上下文不含任何可继承内容。
     #[test]
     fn test_empty_context() {
         let ctx = SubagentContext::empty();
         assert!(!ctx.has_content());
     }
 
+    /// 指定工具列表时仅继承列出的工具。
     #[test]
     fn test_from_parent_filters_tools() {
         let tools = vec![

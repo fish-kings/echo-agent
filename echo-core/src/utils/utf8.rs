@@ -3,12 +3,14 @@
 /// 默认的流式分片字节数上限。
 const DEFAULT_STREAM_CHUNK_BYTES: usize = 16 * 1024;
 
-/// 有状态解码器，在多次读取之间保留不完整的 UTF-8 后缀。
-///
-/// 非法字节序列会被替换为 U+FFFD，而不完整的后缀会一直缓冲，直到下一次
-/// `push` 或 `finish` 调用。返回的分片除非单个标量值本身超过限制
-/// （对于正数限制下的合法 UTF-8 不会发生这种情况），否则不会超过配置的
-/// 字节数上限。
+/**
+有状态解码器，在多次读取之间保留不完整的 UTF-8 后缀。
+
+非法字节序列会被替换为 U+FFFD，而不完整的后缀会一直缓冲，直到下一次
+`push` 或 `finish` 调用。返回的分片除非单个标量值本身超过限制
+（对于正数限制下的合法 UTF-8 不会发生这种情况），否则不会超过配置的
+字节数上限。
+*/
 #[derive(Debug)]
 pub struct IncrementalUtf8Decoder {
     /// 尚未成功解码、缓冲等待下一次输入的字节。
@@ -33,8 +35,10 @@ impl IncrementalUtf8Decoder {
         }
     }
 
-    /// 输入一段新的字节数据，返回可以解码出的完整字符串分片；
-    /// 不完整的多字节序列会被缓冲，留待后续调用继续解码。
+    /**
+    输入一段新的字节数据，返回可以解码出的完整字符串分片；
+    不完整的多字节序列会被缓冲，留待后续调用继续解码。
+    */
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.pending.extend_from_slice(bytes);
         let mut output = String::new();
@@ -69,8 +73,10 @@ impl IncrementalUtf8Decoder {
         split_utf8_chunks(output, self.max_chunk_bytes)
     }
 
-    /// 结束解码，将缓冲区中剩余的字节以“有损”方式（无效序列替换为
-    /// U+FFFD）转换为字符串并清空缓冲区；若缓冲区为空则返回 `None`。
+    /**
+    结束解码，将缓冲区中剩余的字节以“有损”方式（无效序列替换为
+    U+FFFD）转换为字符串并清空缓冲区；若缓冲区为空则返回 `None`。
+    */
     pub fn finish(&mut self) -> Option<String> {
         if self.pending.is_empty() {
             return None;

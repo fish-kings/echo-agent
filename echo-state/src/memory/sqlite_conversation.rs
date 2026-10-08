@@ -1,6 +1,8 @@
-//! SQLite conversation persistence implementation
-//!
-//! Production-grade conversation storage backed by SQLite, with cascading deletes and efficient queries.
+/*!
+ * SQLite 会话持久化实现
+ *
+ * 基于 SQLite 的生产级会话存储，支持级联删除与高效查询。
+ */
 
 use crate::util::{expand_tilde, memory_io_error};
 use echo_core::error::{MemoryError, Result};
@@ -21,18 +23,26 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
+/// 投影 epoch 的最大允许值（受 SQLite INTEGER 有符号 64 位范围限制）。
 const MAX_PROJECTION_EPOCH: u64 = i64::MAX as u64;
+/// 每个会话保留的托管删除回执数量上限，超出部分会被裁剪并抬高保留下限 epoch。
 const DELETE_RECEIPT_RETENTION: i64 = 32;
 
+/// 从 `conversation_projection` 表读取的会话投影状态快照。
 #[derive(Debug, Clone)]
 struct SqliteProjectionState {
+    /// 当前投影 epoch（每次删除后重建会递增）。
     epoch: u64,
+    /// 当前投影修订号，每次成功变更递增，用于 CAS 校验。
     revision: u64,
+    /// 投影生命周期（存活或已删除墓碑）。
     lifecycle: ConversationProjectionLifecycle,
+    /// 删除回执保留下限 epoch，低于该值的删除回执已被裁剪、不可重放。
     retention_floor_epoch: u64,
 }
 
 impl SqliteProjectionState {
+    /// 将内部状态转换为对外暴露的会话投影权威信息。
     fn authority(&self, conversation_id: &str) -> ConversationProjectionAuthority {
         ConversationProjectionAuthority {
             conversation_id: conversation_id.to_string(),
@@ -43,6 +53,7 @@ impl SqliteProjectionState {
         }
     }
 
+    /// 计算下一个修订号；修订号溢出时返回错误。
     fn next_revision(&self, conversation_id: &str) -> Result<u64> {
         self.revision.checked_add(1).ok_or_else(|| {
             MemoryError::Unsupported(format!(
@@ -55,14 +66,16 @@ impl SqliteProjectionState {
 
 // ── SqliteConversationStore ─────────────────────────────────────────────────
 
-/// SQLite conversation persistence Store
+/// 基于 SQLite 的会话持久化存储。
 pub struct SqliteConversationStore {
+    /// 共享的 SQLite 连接（互斥保护，在阻塞线程池中使用）。
     conn: Arc<Mutex<Connection>>,
+    /// 可选的持久化调用上下文，用于在执行数据库操作前检查截止时间。
     persistence_call_context: Option<PersistenceCallContext>,
 }
 
 impl SqliteConversationStore {
-    /// Open or create the SQLite database, auto-creating tables
+    /// 打开或创建 SQLite 数据库，并自动建表。
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = expand_tilde(path.as_ref());
         if let Some(parent) = path.parent() {
@@ -101,6 +114,7 @@ impl SqliteConversationStore {
         })
     }
 
+    /// 基于同一连接创建一个携带持久化调用上下文的存储副本。
     fn with_persistence_call_context(&self, context: PersistenceCallContext) -> Self {
         Self {
             conn: Arc::clone(&self.conn),
@@ -108,6 +122,11 @@ impl SqliteConversationStore {
         }
     }
 
+    /**
+     * 在阻塞线程池中执行数据库操作。
+     *
+     * 获取连接锁后，若存在持久化调用上下文则先检查是否已超过截止时间，再执行操作。
+     */
     async fn run_db<T, F>(&self, operation: F) -> Result<T>
     where
         T: Send + 'static,
@@ -134,6 +153,11 @@ impl SqliteConversationStore {
         })?
     }
 
+    /**
+     * 读取指定会话的投影状态。
+     *
+     * 会话未被托管时返回 `None`；若存储的数据非法（生命周期未知、数值为负或超出有效范围）则失败关闭并返回错误。
+     */
     fn projection_state(
         conn: &Connection,
         conversation_id: &str,
@@ -200,6 +224,7 @@ impl SqliteConversationStore {
         Ok(Some(state))
     }
 
+    /// 将 `u64` 转换为 SQLite 可存储的 `i64`，超出范围时返回错误。
     fn sqlite_u64(value: u64, field: &str) -> Result<i64> {
         i64::try_from(value).map_err(|_| {
             MemoryError::Unsupported(format!(
@@ -209,10 +234,12 @@ impl SqliteConversationStore {
         })
     }
 
+    /// 构造“托管会话必须通过投影接口修改”的错误。
     fn managed_conversation_error(conversation_id: &str) -> echo_core::error::ReactError {
         MemoryError::ManagedConversationRequiresProjection(conversation_id.to_string()).into()
     }
 
+    /// 在事务内用给定消息整体替换会话的全部消息；带显式 id 的消息会保留其 id。
     fn replace_messages(
         tx: &Transaction<'_>,
         conversation_id: &str,
@@ -264,6 +291,7 @@ impl SqliteConversationStore {
         Ok(())
     }
 
+    /// 初始化会话、消息、投影状态及各类投影回执所需的表与索引（幂等）。
     fn init_tables(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS conversation (
@@ -330,17 +358,20 @@ impl SqliteConversationStore {
     }
 }
 
-// ── Trait implementation ───────────────────────────────────────────────────
+// ── Trait 实现 ─────────────────────────────────────────────────────────
 
 impl ConversationStore for SqliteConversationStore {
+    /// 声明本存储支持原子投影能力（`AtomicV1`）。
     fn projection_capability(&self) -> ConversationProjectionCapability {
         ConversationProjectionCapability::AtomicV1
     }
 
+    /// 声明本存储支持绝对截止时间的持久化调用上下文（`AbsoluteDeadlineV1`）。
     fn persistence_call_capability(&self) -> PersistenceCallCapability {
         PersistenceCallCapability::AbsoluteDeadlineV1
     }
 
+    /// 在给定调用上下文（截止时间）下确保会话投影 epoch 存在。
     fn ensure_projection_epoch_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -353,6 +384,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 在给定调用上下文（截止时间）下查询会话投影权威信息。
     fn get_projection_authority_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -365,6 +397,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 在给定调用上下文（截止时间）下应用转录投影批次。
     fn apply_transcript_projection_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -377,6 +410,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 在给定调用上下文（截止时间）下导入托管会话消息。
     fn import_managed_messages_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -389,6 +423,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 在给定调用上下文（截止时间）下更新托管会话元数据。
     fn update_managed_conversation_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -401,6 +436,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 在给定调用上下文（截止时间）下删除托管会话。
     fn delete_managed_conversation_with_context<'a>(
         &'a self,
         context: PersistenceCallContext,
@@ -413,6 +449,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 创建新会话；若会话已存在则返回错误。
     fn create_conversation<'a>(
         &'a self,
         conv: NewConversation,
@@ -469,6 +506,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 按会话 id 获取会话详情，不存在时返回 `None`。
     fn get_conversation<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -508,6 +546,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 按过滤条件分页列出会话元数据。
     fn list_conversations<'a>(
         &'a self,
         filter: ConversationFilter,
@@ -587,6 +626,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 更新非托管会话的标题、摘要或压缩边界；托管会话会被拒绝。
     fn update_conversation<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -607,7 +647,7 @@ impl ConversationStore for SqliteConversationStore {
                 if Self::projection_state(&tx, &conversation_id)?.is_some() {
                     return Err(Self::managed_conversation_error(&conversation_id));
                 }
-                // Build dynamic UPDATE — only update fields that are Some
+                // 构建动态 UPDATE 语句——仅更新值为 Some 的字段
                 let mut sets = Vec::new();
                 let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -650,6 +690,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 删除非托管会话及其级联数据；托管会话会被拒绝。
     fn delete_conversation<'a>(&'a self, conversation_id: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             let conversation_id = conversation_id.to_string();
@@ -676,6 +717,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 向非托管会话追加保存消息；托管会话会被拒绝。
     fn save_messages<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -756,6 +798,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 获取会话消息，可限制返回条数。
     fn get_messages<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -805,6 +848,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 统计会话的消息数量。
     fn count_messages<'a>(&'a self, conversation_id: &'a str) -> BoxFuture<'a, Result<usize>> {
         Box::pin(async move {
             let conversation_id = conversation_id.to_string();
@@ -835,6 +879,11 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /**
+     * 确保会话处于托管投影状态并返回 epoch 回执。
+     *
+     * 首次创建时建立 epoch；若会话已被删除为墓碑，则需提供匹配的墓碑 epoch 才能以新 epoch 重建。
+     */
     fn ensure_projection_epoch<'a>(
         &'a self,
         request: EnsureConversationProjectionRequest,
@@ -1014,6 +1063,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 只读查询会话投影权威信息（epoch、修订号、生命周期等）。
     fn get_projection_authority<'a>(
         &'a self,
         conversation_id: &'a str,
@@ -1034,6 +1084,11 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /**
+     * 原子地应用一个转录投影批次。
+     *
+     * 校验 epoch 与生成序号连续性，通过回执保证幂等，并合并不同生成（generation）的消息。
+     */
     fn apply_transcript_projection<'a>(
         &'a self,
         batch: TranscriptProjectionBatch,
@@ -1284,6 +1339,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 以修订号 CAS 方式整体导入托管会话消息。
     fn import_managed_messages<'a>(
         &'a self,
         request: ManagedConversationImport,
@@ -1434,6 +1490,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 以 epoch/修订号围栏方式幂等更新托管会话元数据。
     fn update_managed_conversation<'a>(
         &'a self,
         request: ManagedConversationMetadataUpdate,
@@ -1589,6 +1646,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 删除托管会话并写入删除回执，使后续迟到的写入被围栏拒绝。
     fn delete_managed_conversation<'a>(
         &'a self,
         request: ManagedConversationDelete,
@@ -1788,6 +1846,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 按标题或摘要模糊搜索会话。
     fn search_conversations<'a>(
         &'a self,
         query: &'a str,
@@ -1841,6 +1900,7 @@ impl ConversationStore for SqliteConversationStore {
         })
     }
 
+    /// 确保非托管会话存在：已存在则返回，否则创建。
     fn ensure_conversation<'a>(
         &'a self,
         conv: NewConversation,
@@ -1928,6 +1988,7 @@ impl ConversationStore for SqliteConversationStore {
     }
 }
 
+/// 单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1939,6 +2000,7 @@ mod tests {
         TranscriptProjectionConflictKind,
     };
 
+    /// 构造测试用的用户消息。
     fn stored_message(conversation_id: &str, id: Option<i64>, content: &str) -> StoredMessage {
         StoredMessage {
             id,
@@ -1952,6 +2014,7 @@ mod tests {
         }
     }
 
+    /// 构造测试用的新会话参数。
     fn new_conversation(conversation_id: &str) -> NewConversation {
         NewConversation {
             conversation_id: conversation_id.to_string(),
@@ -1961,6 +2024,7 @@ mod tests {
         }
     }
 
+    /// 构造测试用的转录投影批次。
     fn projection_batch(
         conversation_id: &str,
         epoch: u64,
@@ -1980,6 +2044,7 @@ mod tests {
         )
     }
 
+    /// 构造测试用的投影 epoch 确保请求。
     fn ensure_projection_request(
         conversation_id: &str,
         expected_tombstone_epoch: Option<u64>,
@@ -1990,6 +2055,7 @@ mod tests {
         }
     }
 
+    /// 构造测试用的托管消息导入请求。
     fn managed_import(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2007,6 +2073,7 @@ mod tests {
         )
     }
 
+    /// 构造测试用的托管删除请求。
     fn managed_delete(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2014,6 +2081,7 @@ mod tests {
         ManagedConversationDelete::prepare(conversation_id, expected_epoch)
     }
 
+    /// 构造测试用的托管元数据更新请求。
     fn managed_metadata_update(
         conversation_id: &str,
         expected_epoch: u64,
@@ -2032,6 +2100,7 @@ mod tests {
         )
     }
 
+    /// 判断结果是否为“托管会话需要投影”错误。
     fn is_managed_projection_error<T>(result: Result<T>) -> bool {
         matches!(
             result,
@@ -2043,6 +2112,7 @@ mod tests {
         )
     }
 
+    /// 判断结果是否为截止时间已超出错误。
     fn is_deadline_exceeded<T>(result: Result<T>) -> bool {
         matches!(
             result,
@@ -2051,6 +2121,7 @@ mod tests {
         )
     }
 
+    /// 直接在测试连接上执行 SQL（用于注入故障）。
     fn execute_test_sql(store: &SqliteConversationStore, sql: &str) -> Result<()> {
         let guard = store.conn.lock().map_err(|error| {
             MemoryError::IoError(format!("lock SQLite test connection: {error}"))
@@ -2061,6 +2132,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已删除会话的投影 epoch 重建需要匹配的墓碑 epoch。
     #[tokio::test]
     async fn projection_epoch_recreation_requires_a_matching_tombstone() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2126,6 +2198,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证投影权威查询为只读，且在数据损坏时失败关闭。
     #[tokio::test]
     async fn projection_authority_query_is_read_only_and_fails_closed_on_corruption() -> Result<()>
     {
@@ -2241,6 +2314,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证转录投影拒绝生成序号不连续的批次。
     #[tokio::test]
     async fn transcript_projection_rejects_non_contiguous_generation_batches() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2344,6 +2418,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证原子投影具备幂等性并能合并多个生成。
     #[tokio::test]
     async fn atomic_projection_is_idempotent_and_merges_generations() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2413,6 +2488,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证托管投影上下文拒绝已过期的截止时间。
     #[tokio::test]
     async fn managed_projection_context_rejects_expired_deadlines() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2546,6 +2622,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证托管导入使用修订号 CAS，并围栏原始变更接口。
     #[tokio::test]
     async fn managed_import_uses_revision_cas_and_fences_raw_mutators() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2658,6 +2735,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证托管元数据更新幂等且受 epoch 围栏保护。
     #[tokio::test]
     async fn managed_metadata_update_is_idempotent_and_epoch_fenced() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2795,6 +2873,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证删除回执能围栏迟到的写入，并在重建后依然有效。
     #[tokio::test]
     async fn managed_delete_receipt_fences_late_effects_and_survives_recreate() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2874,6 +2953,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证并发生成合并时不丢失更新。
     #[tokio::test]
     async fn concurrent_generations_merge_without_lost_updates() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -2907,6 +2987,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证托管事务在发布回执前失败时会完整回滚。
     #[tokio::test]
     async fn managed_transactions_roll_back_before_receipt_publish() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -3085,6 +3166,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证删除回执保留下限可阻止已过期回执的重放。
     #[tokio::test]
     async fn delete_receipt_retention_floor_prevents_expired_replay() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -3141,6 +3223,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证最大投影 epoch 不可再被重建。
     #[tokio::test]
     async fn maximum_projection_epoch_cannot_be_recreated() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -3179,6 +3262,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证托管回执在重新打开存储后依然存在。
     #[tokio::test]
     async fn managed_receipts_survive_store_reopen() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));
@@ -3229,6 +3313,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证替换消息时保留显式 id 并清除过期的压缩边界。
     #[tokio::test]
     async fn replace_preserves_explicit_ids_and_clears_stale_boundary() -> Result<()> {
         let dir = std::env::temp_dir().join(format!("echo-test-{}", uuid::Uuid::new_v4()));

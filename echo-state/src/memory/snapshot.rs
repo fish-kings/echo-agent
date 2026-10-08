@@ -1,17 +1,19 @@
-//! Agent 状态快照与回滚
-//!
-//! 在 ReAct 循环的每轮迭代后自动（或手动）捕获对话历史快照，
-//! 异常时可回滚到上一个 known-good 状态。
-//!
-//! ## 快速上手
-//!
-//! ```rust
-//! use echo_state::memory::snapshot::SnapshotPolicy;
-//!
-//! let policy = SnapshotPolicy::EveryIteration;
-//! // 在更高层 runtime 中将该策略接入 agent，或通过 `echo_agent` façade 使用。
-//! let _ = policy;
-//! ```
+/*!
+ * Agent 状态快照与回滚
+ *
+ * 在 ReAct 循环的每轮迭代后自动（或手动）捕获对话历史快照，
+ * 异常时可回滚到上一个 known-good 状态。
+ *
+ * ## 快速上手
+ *
+ * ```rust
+ * use echo_state::memory::snapshot::SnapshotPolicy;
+ *
+ * let policy = SnapshotPolicy::EveryIteration;
+ * // 在更高层 runtime 中将该策略接入 agent，或通过 `echo_agent` façade 使用。
+ * let _ = policy;
+ * ```
+ */
 
 use echo_core::llm::types::Message;
 use echo_core::utils::time::now_secs;
@@ -51,9 +53,11 @@ pub enum SnapshotPolicy {
 
 // ── SnapshotManager ───────────────────────────────────────────────────────────
 
-/// 管理状态快照的环形缓冲区
-///
-/// 超过 `max_snapshots` 时自动淘汰最早的快照。
+/**
+ * 管理状态快照的环形缓冲区
+ *
+ * 超过 `max_snapshots` 时自动淘汰最早的快照。
+ */
 pub struct SnapshotManager {
     /// 按时间正序存放的快照列表。
     snapshots: Vec<StateSnapshot>,
@@ -64,10 +68,12 @@ pub struct SnapshotManager {
 }
 
 impl SnapshotManager {
-    /// 创建快照管理器
-    ///
-    /// - `policy`：自动快照策略
-    /// - `max_snapshots`：最多保留的快照数量
+    /**
+     * 创建快照管理器
+     *
+     * - `policy`：自动快照策略
+     * - `max_snapshots`：最多保留的快照数量
+     */
     pub fn new(policy: SnapshotPolicy, max_snapshots: usize) -> Self {
         Self {
             snapshots: Vec::new(),
@@ -121,10 +127,12 @@ impl SnapshotManager {
         id
     }
 
-    /// 回滚到 N 步之前的快照，返回该快照的消息历史
-    ///
-    /// `steps_back = 1` 表示回到最近一次快照，`2` 表示回到倒数第二次，依此类推。
-    /// 回滚后，该快照之后的所有快照都会被丢弃。
+    /**
+     * 回滚到 N 步之前的快照，返回该快照的消息历史
+     *
+     * `steps_back = 1` 表示回到最近一次快照，`2` 表示回到倒数第二次，依此类推。
+     * 回滚后，该快照之后的所有快照都会被丢弃。
+     */
     pub fn rollback(&mut self, steps_back: usize) -> Option<StateSnapshot> {
         if steps_back == 0 || steps_back > self.snapshots.len() {
             return None;
@@ -180,6 +188,7 @@ mod tests {
         (0..n).map(|i| Message::user(format!("msg-{i}"))).collect()
     }
 
+    /// 捕获快照后应能按时间顺序列出。
     #[test]
     fn test_capture_and_list() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -194,6 +203,7 @@ mod tests {
         assert_eq!(mgr.latest().unwrap().messages.len(), 3);
     }
 
+    /// 超过上限时应淘汰最早的快照。
     #[test]
     fn test_max_snapshots_eviction() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 3);
@@ -207,6 +217,7 @@ mod tests {
         assert_eq!(mgr.list()[2].iteration, 4);
     }
 
+    /// 按步数回滚应返回对应快照并丢弃其后的快照。
     #[test]
     fn test_rollback_steps() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -220,6 +231,7 @@ mod tests {
         assert_eq!(mgr.len(), 2);
     }
 
+    /// 回滚步数越界时应返回 None。
     #[test]
     fn test_rollback_out_of_range() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -229,6 +241,7 @@ mod tests {
         assert!(mgr.rollback(5).is_none());
     }
 
+    /// 按 ID 回滚应返回对应快照。
     #[test]
     fn test_rollback_to_id() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -241,6 +254,7 @@ mod tests {
         assert_eq!(mgr.len(), 2);
     }
 
+    /// 回滚到未知 ID 应返回 None。
     #[test]
     fn test_rollback_to_unknown_id() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -249,6 +263,7 @@ mod tests {
         assert!(mgr.rollback_to("nonexistent").is_none());
     }
 
+    /// EveryIteration 策略每轮都应快照。
     #[test]
     fn test_should_capture_every_iteration() {
         let mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -257,6 +272,7 @@ mod tests {
         assert!(mgr.should_capture(99));
     }
 
+    /// EveryN 策略每 N 轮快照一次。
     #[test]
     fn test_should_capture_every_n() {
         let mgr = SnapshotManager::new(SnapshotPolicy::EveryN(3), 10);
@@ -268,6 +284,7 @@ mod tests {
         assert!(mgr.should_capture(5));
     }
 
+    /// Manual 策略从不自动快照。
     #[test]
     fn test_should_capture_manual() {
         let mgr = SnapshotManager::new(SnapshotPolicy::Manual, 10);
@@ -275,6 +292,7 @@ mod tests {
         assert!(!mgr.should_capture(99));
     }
 
+    /// 清空后快照列表应为空。
     #[test]
     fn test_clear() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);
@@ -286,6 +304,7 @@ mod tests {
         assert!(mgr.is_empty());
     }
 
+    /// 带元数据捕获的快照应保留元数据。
     #[test]
     fn test_capture_with_metadata() {
         let mut mgr = SnapshotManager::new(SnapshotPolicy::EveryIteration, 10);

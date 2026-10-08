@@ -11,9 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::warn;
 
-/// Type alias for summary prompt builder closures
+/// 摘要提示词构建闭包的类型别名。
 pub type SummaryPromptFn = Box<dyn Fn(&[Message]) -> String + Send + Sync>;
 
+/// 默认摘要提示词的核心要求：生成可供后续 Agent 继续工作的语义检查点。
 const COMPRESSION_PROMPT: &str =
     "你的任务是生成一个可供后续 Agent 继续工作的语义检查点，而不是转述整段对话。
 摘要会与近期原始消息、系统/项目规则和外部文件一起重新注入模型。
@@ -28,28 +29,31 @@ const COMPRESSION_PROMPT: &str =
 
 必须自包含、准确、紧凑。不要依赖被压缩掉的原文，不要编造进度或结果。";
 
-/// 使用内置中文模板生成默认摘要提示词。
-///
-/// 公共自由函数，供实现自定义 [`ContextCompressor`] 的用户复用内置模板。
-/// 如果你只是想用默认摘要策略，直接构造 [`SummaryCompressor::new`] 即可，无需调用此函数。
-///
-/// # 示例
-///
-/// ```rust
-/// use echo_core::llm::types::Message;
-/// use echo_state::compression::compressor::default_summary_prompt;
-///
-/// let messages = vec![Message::user("你好".to_string()), Message::assistant("你好！".to_string())];
-/// let prompt = default_summary_prompt(&messages);
-/// ```
+/**
+ * 使用内置中文模板生成默认摘要提示词。
+ *
+ * 公共自由函数，供实现自定义 [`ContextCompressor`] 的用户复用内置模板。
+ * 如果你只是想用默认摘要策略，直接构造 [`SummaryCompressor::new`] 即可，无需调用此函数。
+ *
+ * # 示例
+ *
+ * ```rust
+ * use echo_core::llm::types::Message;
+ * use echo_state::compression::compressor::default_summary_prompt;
+ *
+ * let messages = vec![Message::user("你好".to_string()), Message::assistant("你好！".to_string())];
+ * let prompt = default_summary_prompt(&messages);
+ * ```
+ */
 pub fn default_summary_prompt(messages: &[Message]) -> String {
     default_summary_prompt_with_focus(messages, None)
 }
 
-/// Build a summary prompt with optional user-provided focus instructions.
-///
-/// When `focus` is provided, it is injected as a high-priority instruction
-/// asking the LLM to pay special attention to the specified topics.
+/**
+ * 构建摘要提示词，可附带用户提供的关注点指令。
+ *
+ * 提供 `focus` 时，会将其作为高优先级指令注入，要求 LLM 特别关注指定主题。
+ */
 pub fn default_summary_prompt_with_focus(messages: &[Message], focus: Option<&str>) -> String {
     let history = messages
         .iter()
@@ -75,7 +79,7 @@ pub fn default_summary_prompt_with_focus(messages: &[Message], focus: Option<&st
     )
 }
 
-/// Structured summary prompt — asks the LLM to return JSON.
+/// 结构化摘要提示词——要求 LLM 返回 JSON。
 const STRUCTURED_SUMMARY_PROMPT: &str = r#"你的任务是创建对话历史的**结构化摘要**。你必须返回一个有效的 JSON 对象，包含以下字段：
 
 {
@@ -101,7 +105,7 @@ const STRUCTURED_SUMMARY_PROMPT: &str = r#"你的任务是创建对话历史的*
 5. 文件路径、标识符、数值、版本和命令必须保留精确形式
 6. 不复制可从仓库或 transcript 按需取回的大段工具输出"#;
 
-/// Build a structured-summary prompt, optionally with focus instructions.
+/// 构建结构化摘要提示词，可选附带关注点指令。
 pub fn structured_summary_prompt(messages: &[Message], focus: Option<&str>) -> String {
     let history = messages
         .iter()
@@ -119,6 +123,7 @@ pub fn structured_summary_prompt(messages: &[Message], focus: Option<&str>) -> S
     )
 }
 
+/// 将单条消息渲染为摘要输入文本，附件以哈希占位符表示。
 fn message_for_summary(message: &Message) -> String {
     let content = match &message.content {
         MessageContent::Text(text) => text.clone(),
@@ -155,37 +160,41 @@ fn message_for_summary(message: &Message) -> String {
     format!("[{}]: {content}", message.role.as_str())
 }
 
-/// LLM 摘要压缩策略。
-///
-/// 将较早的对话历史发送给 LLM 生成摘要，摘要作为一条 `[对话历史摘要]` system 消息插入，
-/// 最近 `keep_recent` 条消息保持原样不动。
-///
-/// 压缩后的消息结构：
-/// ```text
-/// [原有 system 消息]
-/// [system] [对话历史摘要] <-- 新插入
-/// [最近 keep_recent 条对话消息]
-/// ```
-///
-/// **失败回退**：当 LLM 调用失败（超时、API 错误等），自动回退到
-/// [`SlidingWindowCompressor`]（保留最近 `keep_recent` 条）。
-///
-/// # 构造方式
-///
-/// - [`SummaryCompressor::new`] — 使用内置中文摘要模板
-/// - [`SummaryCompressor::with_prompt`] — 使用自定义 prompt 闭包
-///
-/// # 完全自定义
-///
-/// 如果你想修改压缩逻辑本身（增量摘要、不同的回退策略、摘要不放入 system 消息等），
-/// 请直接实现 [`ContextCompressor`]。你可以在自己的实现中调用
-/// [`default_summary_prompt()`] 复用内置模板。
-///
-/// 适用场景：
-/// - 长线任务规划（将已完成步骤压缩为状态摘要）
-/// - 需要记住角色设定和重大事件，但不需要保留全部细节
+/**
+ * LLM 摘要压缩策略。
+ *
+ * 将较早的对话历史发送给 LLM 生成摘要，摘要作为一条 `[对话历史摘要]` system 消息插入，
+ * 最近 `keep_recent` 条消息保持原样不动。
+ *
+ * 压缩后的消息结构：
+ * ```text
+ * [原有 system 消息]
+ * [system] [对话历史摘要] <-- 新插入
+ * [最近 keep_recent 条对话消息]
+ * ```
+ *
+ * **失败回退**：当 LLM 调用失败（超时、API 错误等），自动回退到
+ * [`SlidingWindowCompressor`]（保留最近 `keep_recent` 条）。
+ *
+ * # 构造方式
+ *
+ * - [`SummaryCompressor::new`] — 使用内置中文摘要模板
+ * - [`SummaryCompressor::with_prompt`] — 使用自定义 prompt 闭包
+ *
+ * # 完全自定义
+ *
+ * 如果你想修改压缩逻辑本身（增量摘要、不同的回退策略、摘要不放入 system 消息等），
+ * 请直接实现 [`ContextCompressor`]。你可以在自己的实现中调用
+ * [`default_summary_prompt()`] 复用内置模板。
+ *
+ * 适用场景：
+ * - 长线任务规划（将已完成步骤压缩为状态摘要）
+ * - 需要记住角色设定和重大事件，但不需要保留全部细节
+ */
 pub struct SummaryCompressor {
+    /// 用于生成摘要的 LLM 客户端
     llm: Arc<dyn LlmClient>,
+    /// 根据待摘要消息构建提示词的闭包
     prompt_fn: SummaryPromptFn,
     /// 最近多少条对话消息保持原样（不参与摘要）
     keep_recent: usize,
@@ -201,25 +210,27 @@ impl SummaryCompressor {
         }
     }
 
-    /// 使用自定义 prompt 闭包构造。
-    ///
-    /// 闭包接收待摘要的消息切片，返回发给 LLM 的 prompt 字符串。
-    ///
-    /// # 示例
-    ///
-    /// ```rust,no_run
-    /// use echo_state::compression::compressor::SummaryCompressor;
-    /// use echo_core::llm::LlmClient;
-    /// use std::sync::Arc;
-    ///
-    /// # async fn example(llm: Arc<dyn LlmClient>) {
-    /// let compressor = SummaryCompressor::with_prompt(
-    ///     llm,
-    ///     6,
-    ///     |messages| format!("用英文总结以下 {} 条对话的核心结论", messages.len()),
-    /// );
-    /// # }
-    /// ```
+    /**
+     * 使用自定义 prompt 闭包构造。
+     *
+     * 闭包接收待摘要的消息切片，返回发给 LLM 的 prompt 字符串。
+     *
+     * # 示例
+     *
+     * ```rust,no_run
+     * use echo_state::compression::compressor::SummaryCompressor;
+     * use echo_core::llm::LlmClient;
+     * use std::sync::Arc;
+     *
+     * # async fn example(llm: Arc<dyn LlmClient>) {
+     * let compressor = SummaryCompressor::with_prompt(
+     *     llm,
+     *     6,
+     *     |messages| format!("用英文总结以下 {} 条对话的核心结论", messages.len()),
+     * );
+     * # }
+     * ```
+     */
     pub fn with_prompt(
         llm: Arc<dyn LlmClient>,
         keep_recent: usize,
@@ -234,23 +245,25 @@ impl SummaryCompressor {
 }
 
 impl SummaryCompressor {
-    /// Try structured JSON summary; fall back to natural language on failure.
-    ///
-    /// Returns `(summary_text, optional_structured)`.
-    /// - If structured output succeeded: `(Some(json_text), Some(structured_summary))`
-    /// - If natural language fallback: `(Some(text), None)`
-    /// - If both failed: `(None, None)` → caller should fall back to SlidingWindow
+    /**
+     * 尝试生成结构化 JSON 摘要；失败时回退到自然语言摘要。
+     *
+     * 返回 `(summary_text, optional_structured)`：
+     * - 结构化输出成功：`(Some(json_text), Some(structured_summary))`
+     * - 回退到自然语言：`(Some(text), None)`
+     * - 两者均失败：`(None, None)` → 调用方应回退到 SlidingWindow
+     */
     async fn try_structured_summary(
         &self,
         messages: &[Message],
         focus: Option<&str>,
         cancel_token: Option<echo_core::compression::CancellationToken>,
     ) -> (Option<String>, Option<StructuredSummary>) {
-        // Check if provider supports structured output
+        // 检查 provider 是否支持结构化输出
         let supports_structured = self.llm.capabilities().structured_output;
 
         if supports_structured {
-            // Path A: Use ResponseFormat::JsonSchema for reliable JSON output
+            // 路径 A：使用 ResponseFormat::JsonSchema 获取可靠的 JSON 输出
             let prompt = structured_summary_prompt(messages, focus);
             match self
                 .llm
@@ -282,12 +295,12 @@ impl SummaryCompressor {
                 }
                 Err(e) => {
                     warn!(error = %e, "Structured summary LLM call failed, falling back to natural language");
-                    // Fall through to natural language below
+                    // 继续执行下方的自然语言路径
                 }
             }
         }
 
-        // Path B: Natural language (no structured output support or structured failed)
+        // 路径 B：自然语言（不支持结构化输出或结构化失败）
         let base_prompt = (self.prompt_fn)(messages);
         let prompt = if let Some(f) = focus {
             format!("{}\n\n【重要】用户特别要求重点关注：{}", base_prompt, f)
@@ -323,10 +336,12 @@ impl SummaryCompressor {
 }
 
 impl ContextCompressor for SummaryCompressor {
+    /// 返回压缩器名称。
     fn name(&self) -> &str {
         "Summary"
     }
 
+    /// 执行摘要压缩：摘要较早消息，保留最近消息，并受 token 上限约束。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {
         Box::pin(async move {
             let start = Instant::now();
@@ -385,22 +400,22 @@ impl ContextCompressor for SummaryCompressor {
             let to_summarize = &conv_msgs[..split_at];
             let to_keep = conv_msgs[split_at..].to_vec();
 
-            // Try structured output first; fall back to natural language
+            // 优先尝试结构化输出；失败则回退到自然语言
             let (summary_text, structured) = self
                 .try_structured_summary(to_summarize, focus.as_deref(), input.cancel_token.clone())
                 .await;
 
             let (final_summary, summary_for_checkpoint) = match (summary_text, structured) {
                 (Some(_text), Some(ref s)) => {
-                    // Structured summary succeeded — store as JSON system message
+                    // 结构化摘要成功——作为 JSON system 消息存储
                     (s.to_system_message(), Some(s.to_json()))
                 }
                 (Some(text), None) => {
-                    // Natural language fallback
+                    // 自然语言回退
                     (format!("[对话历史摘要]\n{}", text), Some(text))
                 }
                 (None, _) => {
-                    // LLM call itself failed — fall back to sliding window
+                    // LLM 调用本身失败——回退到滑动窗口
                     warn!("⚠️ LLM 摘要生成失败，回退到滑动窗口压缩");
                     return SlidingWindowCompressor::new(self.keep_recent)
                         .compress(input)
@@ -451,6 +466,7 @@ impl ContextCompressor for SummaryCompressor {
     }
 }
 
+/// 判断消息是否为本压缩器生成的对话历史摘要。
 fn is_generated_summary(message: &Message) -> bool {
     message
         .content
@@ -458,8 +474,9 @@ fn is_generated_summary(message: &Message) -> bool {
         .is_some_and(|text| text.starts_with("[对话历史摘要]"))
 }
 
-// ── Incremental Summary ───────────────────────────────────────────────────────
+// ── 增量摘要 ───────────────────────────────────────────────────────
 
+/// 增量摘要提示词：基于上一次摘要与新消息生成更新后的摘要。
 const INCREMENTAL_SUMMARY_PROMPT: &str = "You are maintaining a running summary of a conversation. Below you will find:\n\
      1. The PREVIOUS SUMMARY generated from earlier messages.\n\
      2. NEW MESSAGES that arrived since the last summary.\n\n\
@@ -469,40 +486,43 @@ const INCREMENTAL_SUMMARY_PROMPT: &str = "You are maintaining a running summary 
      without any other context.\n\n\
      Keep the same structure and level of detail as the previous summary.";
 
-/// Incremental LLM summary compressor.
-///
-/// Unlike [`SummaryCompressor`] which re-summarizes ALL old messages every time,
-/// `IncrementalSummaryCompressor` maintains the previous summary and only sends
-/// the previous summary + new messages to the LLM. This reduces LLM cost and
-/// latency for long conversations where compression triggers multiple times.
-///
-/// **How it works:**
-/// 1. First compression: behaves like `SummaryCompressor` (summarizes all old messages)
-/// 2. Subsequent compressions: sends `[previous summary] + [new messages since last summary]`
-///    to the LLM, asking it to produce an updated summary
-///
-/// **Failure fallback**: Same as `SummaryCompressor` — falls back to `SlidingWindowCompressor`
-/// on LLM errors.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_state::compression::compressor::IncrementalSummaryCompressor;
-/// use echo_core::llm::LlmClient;
-/// use std::sync::Arc;
-///
-/// # async fn example(llm: Arc<dyn LlmClient>) {
-/// let compressor = IncrementalSummaryCompressor::new(llm, 6);
-/// # }
-/// ```
+/**
+ * 增量 LLM 摘要压缩器。
+ *
+ * 与每次都重新摘要全部旧消息的 [`SummaryCompressor`] 不同，
+ * `IncrementalSummaryCompressor` 会保存上一次的摘要，只把「上次摘要 + 新消息」发给 LLM。
+ * 对于会多次触发压缩的长对话，这能降低 LLM 成本和延迟。
+ *
+ * **工作方式：**
+ * 1. 首次压缩：行为与 `SummaryCompressor` 相同（摘要全部旧消息）
+ * 2. 后续压缩：将 `[上次摘要] + [上次摘要之后的新消息]` 发给 LLM，
+ *    要求其生成更新后的摘要
+ *
+ * **失败回退**：与 `SummaryCompressor` 相同——LLM 出错时回退到 `SlidingWindowCompressor`。
+ *
+ * # 示例
+ *
+ * ```rust,no_run
+ * use echo_state::compression::compressor::IncrementalSummaryCompressor;
+ * use echo_core::llm::LlmClient;
+ * use std::sync::Arc;
+ *
+ * # async fn example(llm: Arc<dyn LlmClient>) {
+ * let compressor = IncrementalSummaryCompressor::new(llm, 6);
+ * # }
+ * ```
+ */
 pub struct IncrementalSummaryCompressor {
+    /// 用于生成摘要的 LLM 客户端
     llm: Arc<dyn LlmClient>,
+    /// 最近多少条对话消息保持原样（不参与摘要）
     keep_recent: usize,
-    /// The previous structured summary, updated after each successful compression.
+    /// 上一次的结构化摘要，每次压缩成功后更新。
     previous_summary: Mutex<Option<StructuredSummary>>,
 }
 
 impl IncrementalSummaryCompressor {
+    /// 创建增量摘要压缩器，`keep_recent` 为保持原样的最近消息条数。
     pub fn new(llm: Arc<dyn LlmClient>, keep_recent: usize) -> Self {
         Self {
             llm,
@@ -511,7 +531,7 @@ impl IncrementalSummaryCompressor {
         }
     }
 
-    /// Get the current stored summary as a JSON string (for backward compat).
+    /// 以 JSON 字符串形式获取当前存储的摘要（用于向后兼容）。
     pub fn current_summary(&self) -> Option<String> {
         self.previous_summary
             .lock()
@@ -519,12 +539,12 @@ impl IncrementalSummaryCompressor {
             .and_then(|g| g.as_ref().map(|s| s.to_json()))
     }
 
-    /// Get the current structured summary.
+    /// 获取当前的结构化摘要。
     pub fn current_structured_summary(&self) -> Option<StructuredSummary> {
         self.previous_summary.lock().ok().and_then(|g| g.clone())
     }
 
-    /// Reset the stored summary.
+    /// 重置已存储的摘要。
     pub fn reset(&self) {
         if let Ok(mut guard) = self.previous_summary.lock() {
             *guard = None;
@@ -533,7 +553,7 @@ impl IncrementalSummaryCompressor {
 }
 
 impl IncrementalSummaryCompressor {
-    /// First compression: try structured output, fall back to natural language.
+    /// 首次压缩：尝试结构化输出，失败则回退到自然语言。
     async fn try_first_structured_summary(
         &self,
         messages: &[Message],
@@ -575,7 +595,7 @@ impl IncrementalSummaryCompressor {
             }
         }
 
-        // Natural language fallback
+        // 自然语言回退
         let prompt = default_summary_prompt_with_focus(messages, focus);
         match self.llm.chat_simple(vec![Message::user(prompt)]).await {
             Ok(text) => (Some(text), None),
@@ -583,7 +603,7 @@ impl IncrementalSummaryCompressor {
         }
     }
 
-    /// Incremental: summarize new messages, then merge with previous summary field-by-field.
+    /// 增量压缩：摘要新消息，然后与上一次摘要逐字段合并。
     async fn incremental_structured_summary(
         &self,
         new_messages: &[Message],
@@ -635,7 +655,7 @@ impl IncrementalSummaryCompressor {
                 Ok(response) => {
                     let text = response.content().unwrap_or_default().to_string();
                     if let Some(parsed) = StructuredSummary::from_llm_response(&text) {
-                        // Merge: previous + new (field-level)
+                        // 合并：上次摘要 + 新摘要（字段级）
                         let mut merged = previous.clone();
                         merged.merge_with(&parsed);
                         return (Some(text), Some(merged));
@@ -649,7 +669,7 @@ impl IncrementalSummaryCompressor {
             }
         }
 
-        // Natural language fallback for incremental
+        // 增量场景下的自然语言回退
         let prev_json = previous.to_json();
         let new_history = new_messages
             .iter()
@@ -678,10 +698,12 @@ impl IncrementalSummaryCompressor {
 }
 
 impl ContextCompressor for IncrementalSummaryCompressor {
+    /// 返回压缩器名称。
     fn name(&self) -> &str {
         "IncrementalSummary"
     }
 
+    /// 执行摘要压缩：摘要较早消息，保留最近消息，并受 token 上限约束。
     fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {
         Box::pin(async move {
             let start = Instant::now();
@@ -742,9 +764,9 @@ impl ContextCompressor for IncrementalSummaryCompressor {
 
             let prev_structured = self.current_structured_summary();
 
-            // Decide: first compression or incremental?
+            // 判断：首次压缩还是增量压缩？
             let (summary_text, structured) = if let Some(ref prev) = prev_structured {
-                // Incremental path: summarize new messages, then merge field-by-field
+                // 增量路径：摘要新消息，然后逐字段合并
                 self.incremental_structured_summary(
                     to_summarize,
                     prev,
@@ -753,7 +775,7 @@ impl ContextCompressor for IncrementalSummaryCompressor {
                 )
                 .await
             } else {
-                // First compression: full structured summary (with natural language fallback)
+                // 首次压缩：完整结构化摘要（带自然语言回退）
                 self.try_first_structured_summary(
                     to_summarize,
                     focus.as_deref(),
@@ -765,7 +787,7 @@ impl ContextCompressor for IncrementalSummaryCompressor {
             let (final_text, _final_structured, summary_for_checkpoint) =
                 match (summary_text, structured) {
                     (Some(_text), Some(ref s)) => {
-                        // Structured summary succeeded — merge with previous and store
+                        // 结构化摘要成功——与上次摘要合并并存储
                         let merged = if let Some(prev) = prev_structured {
                             let mut m = prev;
                             m.merge_with(s);
@@ -773,7 +795,7 @@ impl ContextCompressor for IncrementalSummaryCompressor {
                         } else {
                             s.clone()
                         };
-                        // Store for next incremental pass
+                        // 存储以供下一次增量压缩使用
                         if let Ok(mut guard) = self.previous_summary.lock() {
                             *guard = Some(merged.clone());
                         }
@@ -781,16 +803,16 @@ impl ContextCompressor for IncrementalSummaryCompressor {
                         (merged.to_system_message(), Some(merged), checkpoint_json)
                     }
                     (Some(text), None) => {
-                        // Natural language fallback
+                        // 自然语言回退
                         let content = format!("[对话历史摘要]\n{}", text);
-                        // Also store as text for backward compat
+                        // 回退时清空结构化状态（向后兼容）
                         if let Ok(mut guard) = self.previous_summary.lock() {
-                            *guard = None; // Reset structured state on fallback
+                            *guard = None; // 回退时重置结构化状态
                         }
                         (content, None, text)
                     }
                     (None, _) => {
-                        // LLM failed entirely
+                        // LLM 完全失败
                         warn!("Incremental summary LLM failed, falling back to sliding window");
                         return SlidingWindowCompressor::new(self.keep_recent)
                             .compress(input)
@@ -849,9 +871,11 @@ mod tests {
     use echo_core::tokenizer::HeuristicTokenizer;
     use futures::stream::BoxStream;
 
+    /// 始终返回固定摘要文本的测试用 LLM。
     struct StaticSummaryLlm;
 
     impl LlmClient for StaticSummaryLlm {
+        /// 返回固定的摘要文本。
         fn chat(&self, _request: ChatRequest) -> BoxFuture<'_, Result<ChatResponse>> {
             Box::pin(async {
                 Ok(ChatResponse {
@@ -866,6 +890,7 @@ mod tests {
             })
         }
 
+        /// 返回空流。
         fn chat_stream(
             &self,
             _request: ChatRequest,
@@ -877,15 +902,18 @@ mod tests {
             })
         }
 
+        /// 返回测试模型名称。
         fn model_name(&self) -> &str {
             "static-summary"
         }
 
+        /// 返回支持结构化输出的能力配置。
         fn capabilities(&self) -> ProviderCapabilities {
             ProviderCapabilities::anthropic()
         }
     }
 
+    /// 摘要结果应在 token 上限内同时保留检查点和最新请求。
     #[tokio::test]
     async fn summary_keeps_checkpoint_and_latest_request_within_token_limit() -> Result<()> {
         let compressor = SummaryCompressor::new(Arc::new(StaticSummaryLlm), 4);
@@ -931,29 +959,30 @@ mod tests {
         Ok(())
     }
 
+    /// 验证增量摘要的状态存取与重置。
     #[test]
     fn test_incremental_summary_state_management() {
-        // Test the Mutex-based state management without needing an LLM
+        // 无需 LLM，测试基于 Mutex 的状态管理
         let previous_summary: Mutex<Option<String>> = Mutex::new(None);
 
-        // Initially empty
+        // 初始为空
         assert!(previous_summary.lock().unwrap().is_none());
 
-        // Store a summary
+        // 存储一个摘要
         *previous_summary.lock().unwrap() = Some("first summary".to_string());
         assert_eq!(
             *previous_summary.lock().unwrap(),
             Some("first summary".to_string())
         );
 
-        // Update the summary
+        // 更新摘要
         *previous_summary.lock().unwrap() = Some("updated summary".to_string());
         assert_eq!(
             *previous_summary.lock().unwrap(),
             Some("updated summary".to_string())
         );
 
-        // Reset
+        // 重置
         *previous_summary.lock().unwrap() = None;
         assert!(previous_summary.lock().unwrap().is_none());
     }

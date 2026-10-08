@@ -25,22 +25,39 @@
 来自不可信来源的内容永远不会被自动晋升。
 */
 
+/// 演化变更审计日志。
 pub mod audit;
+/// 后台复盘审查。
 pub mod background_review;
+/// 演化候选项。
 pub mod candidate;
+/// 演化内容整理（curator）。
 pub mod curator;
+/// 演化草稿。
 pub mod draft;
+/// 离线“做梦”式经验整合。
 pub mod dreaming;
+/// 演化健康度检查。
 pub mod health;
+/// 演化分层。
 pub mod layer;
+/// 演化结果合并。
 pub mod merge;
+/// 演化变更（mutation）内部实现。
 mod mutation;
+/// 演化补丁。
 pub mod patch;
+/// 演化经验召回。
 pub mod recall;
+/// 演化结果审查。
 pub mod review;
+/// 演化与运行时的集成。
 pub mod runtime_integration;
+/// 演化内容安全检查。
 pub mod security;
+/// 技能变更。
 pub mod skill_mutation;
+/// 演化触发条件。
 pub mod triggers;
 
 pub use audit::{

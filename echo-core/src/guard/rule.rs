@@ -1,43 +1,52 @@
-//! Rule-based guard
-//!
-//! Supports regex matching, keyword blacklisting, and content length limiting.
+/*!
+基于规则的护栏
+
+支持正则匹配、关键词黑名单以及内容长度限制。
+*/
 
 use super::{Guard, GuardDirection, GuardResult};
 use crate::error::Result;
 use futures::future::BoxFuture;
 use regex::Regex;
 
-/// Rule guard
-///
-/// Synchronously filters content using regex patterns, keyword blacklists,
-/// and length limits.
-///
-/// # Example
-///
-/// ```rust
-/// use echo_core::guard::rule::RuleGuardBuilder;
-///
-/// let guard = RuleGuardBuilder::new("content-filter")
-///     .blocked_keyword("password")
-///     .blocked_keyword("token")
-///     .blocked_pattern(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b") // bank card number
-///     .max_length(10000)
-///     .build();
-/// ```
+/**
+规则护栏
+
+使用正则模式、关键词黑名单和长度限制同步过滤内容。
+
+# 示例
+
+```rust
+use echo_core::guard::rule::RuleGuardBuilder;
+
+let guard = RuleGuardBuilder::new("content-filter")
+    .blocked_keyword("password")
+    .blocked_keyword("token")
+    .blocked_pattern(r"\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b") // 银行卡号
+    .max_length(10000)
+    .build();
+```
+*/
 pub struct RuleGuard {
+    /// 护栏名称
     guard_name: String,
+    /// 命中即拦截的正则模式列表
     blocked_patterns: Vec<Regex>,
+    /// 命中即拦截的关键词黑名单（大小写不敏感）
     blocked_keywords: Vec<String>,
+    /// 内容最大字符数（`None` 表示不限制）
     max_length: Option<usize>,
-    /// Directions to check (when empty, checks all directions)
+    /// 需要检查的方向（为空时检查所有方向）
     directions: Vec<GuardDirection>,
 }
 
 impl Guard for RuleGuard {
+    /// 护栏名称
     fn name(&self) -> &str {
         &self.guard_name
     }
 
+    /// 依次按长度、关键词、正则检查内容，任一命中即拦截
     fn check<'a>(
         &'a self,
         content: &'a str,
@@ -82,17 +91,22 @@ impl Guard for RuleGuard {
     }
 }
 
-/// RuleGuard builder
+/// RuleGuard 构建器
 pub struct RuleGuardBuilder {
+    /// 护栏名称
     name: String,
+    /// 已添加的拦截正则
     blocked_patterns: Vec<Regex>,
+    /// 已添加的拦截关键词
     blocked_keywords: Vec<String>,
+    /// 内容最大字符数
     max_length: Option<usize>,
+    /// 限定的检查方向
     directions: Vec<GuardDirection>,
 }
 
 impl RuleGuardBuilder {
-    /// Create a new rule guard builder
+    /// 创建新的规则护栏构建器
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -103,7 +117,7 @@ impl RuleGuardBuilder {
         }
     }
 
-    /// Add a regex match rule (block on match)
+    /// 添加正则匹配规则（命中即拦截；非法正则会被忽略并告警）
     pub fn blocked_pattern(mut self, pattern: &str) -> Self {
         if let Ok(regex) = Regex::new(pattern) {
             self.blocked_patterns.push(regex);
@@ -113,31 +127,31 @@ impl RuleGuardBuilder {
         self
     }
 
-    /// Add a keyword to the blacklist (case-insensitive, block on match)
+    /// 向黑名单添加关键词（大小写不敏感，命中即拦截）
     pub fn blocked_keyword(mut self, keyword: impl Into<String>) -> Self {
         self.blocked_keywords.push(keyword.into());
         self
     }
 
-    /// Batch-add keywords to the blacklist
+    /// 批量向黑名单添加关键词
     pub fn blocked_keywords(mut self, keywords: Vec<String>) -> Self {
         self.blocked_keywords.extend(keywords);
         self
     }
 
-    /// Set maximum content length
+    /// 设置内容最大长度（按字符数计）
     pub fn max_length(mut self, max: usize) -> Self {
         self.max_length = Some(max);
         self
     }
 
-    /// Restrict check direction (checks all directions if not set)
+    /// 限定检查方向（未设置时检查所有方向）
     pub fn direction(mut self, direction: GuardDirection) -> Self {
         self.directions.push(direction);
         self
     }
 
-    /// Build the rule guard
+    /// 构建规则护栏
     pub fn build(self) -> RuleGuard {
         RuleGuard {
             guard_name: self.name,
@@ -149,10 +163,12 @@ impl RuleGuardBuilder {
     }
 }
 
+/// 规则守卫的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证关键词拦截。
     #[tokio::test]
     async fn test_keyword_block() {
         let guard = RuleGuardBuilder::new("test")
@@ -166,6 +182,7 @@ mod tests {
         assert!(result.is_blocked());
     }
 
+    /// 验证正则模式拦截。
     #[tokio::test]
     async fn test_pattern_block() {
         let guard = RuleGuardBuilder::new("test")
@@ -179,6 +196,7 @@ mod tests {
         assert!(result.is_blocked());
     }
 
+    /// 验证最大长度限制。
     #[tokio::test]
     async fn test_max_length() {
         let guard = RuleGuardBuilder::new("test").max_length(10).build();
@@ -197,6 +215,7 @@ mod tests {
         assert!(!result.is_blocked());
     }
 
+    /// 验证正常内容通过。
     #[tokio::test]
     async fn test_pass() {
         let guard = RuleGuardBuilder::new("test")
@@ -211,6 +230,7 @@ mod tests {
         assert!(!result.is_blocked());
     }
 
+    /// 验证方向过滤仅对指定方向生效。
     #[tokio::test]
     async fn test_direction_filter() {
         let guard = RuleGuardBuilder::new("test")

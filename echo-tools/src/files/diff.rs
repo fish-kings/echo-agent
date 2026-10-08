@@ -1,8 +1,10 @@
-//! DiffTool —— 对比两个文件或字符串并展示差异
-//!
-//! 使用 `similar` crate 生成统一格式（unified diff）的差异结果。支持：
-//! - 对比两个文件（`path_a` + `path_b`）
-//! - 对比一个文件与一段字符串内容（`path_a` + `content_b`）
+/*!
+ * DiffTool —— 对比两个文件或字符串并展示差异
+ *
+ * 使用 `similar` crate 生成统一格式（unified diff）的差异结果。支持：
+ * - 对比两个文件（`path_a` + `path_b`）
+ * - 对比一个文件与一段字符串内容（`path_a` + `content_b`）
+ */
 
 use super::resolve_path;
 use echo_core::error::{Result, ToolError};

@@ -1,11 +1,11 @@
-//! File-backed journal and checkpoint implementations.
-//!
-//! [`FileEventJournal`] persists one JSON line per atomic batch frame. On open
-//! it scans the file, validates 1-based contiguous sequences, tolerates one
-//! torn trailing frame by truncating the entire batch, and rejects gaps or
-//! mid-file corruption loudly. [`FileCheckpointStore`] writes one atomic
-//! snapshot file that pairs the reducer state and applied sequence with the
-//! exact Journal generation identity.
+/*!
+基于文件的 Journal 与 Checkpoint 实现。
+
+[`FileEventJournal`] 为每个原子批次帧持久化一行 JSON。打开时会扫描整个文件，
+校验从 1 开始的连续序号；对末尾一个撕裂帧的容忍方式是截断整个批次，
+而对序号缺口或文件中部的损坏则显式报错。[`FileCheckpointStore`] 原子地写入
+单个快照文件，将 reducer 状态、已应用序号与精确的 Journal 代次标识配对保存。
+*/
 
 use super::{
     BatchIdentity, CheckpointFrame, CheckpointStore, EventJournal, JournalBatchAppendError,
@@ -32,20 +32,24 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// 将 IO 错误附加上下文后转换为 [`ReactError`]。
 fn io_error(context: &str, error: std::io::Error) -> ReactError {
     ReactError::Other(format!("{context}: {error}"))
 }
 
+/// 对目录执行 fsync，使目录项变更持久化（Unix 平台）。
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> std::io::Result<()> {
     std::fs::File::open(directory)?.sync_all()
 }
 
+/// 非 Unix 平台不支持目录 fsync，直接返回成功。
 #[cfg(not(unix))]
 fn sync_directory(_directory: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// 完成新建 Journal 文件的持久化：先同步文件数据，再同步父目录。
 fn finish_new_journal_creation(
     file: &std::fs::File,
     parent: &Path,
@@ -55,30 +59,35 @@ fn finish_new_journal_creation(
     sync_parent(parent)
 }
 
-/// Scanned state of a journal file on open.
+/// 打开时扫描 Journal 文件得到的状态。
 struct ScannedJournal {
-    /// Byte length of the valid prefix (batch frames plus their newlines).
+    /// 有效前缀的字节长度（批次帧及其换行符）。
     valid_len: u64,
-    /// Next sequence a fresh append should assign.
+    /// 下一次新追加应分配的序号。
     next_sequence: u64,
-    /// Byte offset of every record's batch frame, indexed by `sequence - 1`.
+    /// 每条记录所在批次帧的字节偏移，以 `sequence - 1` 为索引。
     record_offsets: Vec<u64>,
+    /// 按批次 ID 索引的已提交批次信息。
     batches: HashMap<String, FileBatchIndex>,
+    /// 文件中记录的 Journal 代次标识；空文件时为 `None`。
     journal_identity: Option<JournalIdentity>,
 }
 
+/// 单个已提交批次在文件中的索引信息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileBatchIndex {
+    /// 批次的身份信息（首序号、记录数、载荷摘要等）。
     identity: BatchIdentity,
+    /// 批次帧在文件中的起始字节偏移。
     frame_offset: u64,
 }
 
-/// Parse the journal batch frames and validate sequencing.
-///
-/// Returns the valid prefix length, the next sequence, and whether the file
-/// ended with a torn frame that should be truncated. A missing trailing newline
-/// invalidates the complete final batch; corruption in a complete frame fails
-/// closed.
+/**
+解析 Journal 批次帧并校验序号。
+
+返回有效前缀长度、下一个序号，以及文件是否以需要截断的撕裂帧结尾。
+缺少末尾换行符会使整个最后一个批次失效；完整帧内的损坏则直接失败（fail closed）。
+*/
 fn scan_journal<E: JournalEvent>(context: &str, bytes: &[u8]) -> Result<ScannedJournal> {
     let mut valid_len: u64 = 0;
     let mut next_sequence: u64 = 1;
@@ -91,7 +100,7 @@ fn scan_journal<E: JournalEvent>(context: &str, bytes: &[u8]) -> Result<ScannedJ
             .get(offset..)
             .ok_or_else(|| ReactError::Other(format!("{context}: invalid journal byte offset")))?;
         let Some(newline) = suffix.iter().position(|byte| *byte == b'\n') else {
-            // A partial physical frame makes none of its records visible.
+            // 不完整的物理帧中的任何记录都不可见。
             break;
         };
         let line_end = offset
@@ -151,30 +160,45 @@ fn scan_journal<E: JournalEvent>(context: &str, bytes: &[u8]) -> Result<ScannedJ
     })
 }
 
+/// 文件 Journal 的可变运行时状态，由共享锁保护。
 #[derive(Debug)]
 struct FileJournalState {
+    /// 当前 Journal 的代次标识。
     journal_identity: JournalIdentity,
+    /// 下一次追加应分配的序号。
     next_sequence: u64,
+    /// 已验证有效前缀的字节长度。
     valid_len: u64,
+    /// 每条记录所在批次帧的字节偏移，以 `sequence - 1` 为索引。
     record_offsets: Vec<u64>,
+    /// 按批次 ID 索引的已提交批次信息。
     batches: HashMap<String, FileBatchIndex>,
+    /// 中毒原因；存在时拒绝后续写入，需重新打开以修复。
     poison: Option<String>,
 }
 
+/// 进程内同一 Journal 路径的规范权威状态，被所有句柄共享。
 #[derive(Debug)]
 struct SharedFileJournalState {
+    /// 打开时使用的事件类型，用于拒绝以不同类型重复打开。
     event_type: TypeId,
+    /// 打开时使用的持久化策略，用于拒绝以不同配置重复打开。
     durability: FileDurability,
+    /// 受互斥锁保护的序号与索引状态。
     state: Mutex<FileJournalState>,
+    /// 绑定到已打开常规文件的守卫，用于检测文件被替换。
     file_guard: ExistingRegularFileGuard,
+    /// 进程生命周期内持有的排他文件租约，阻止竞争写入者。
     _lease: ExclusiveFileLease,
 }
 
+/// 返回进程级的文件 Journal 弱引用注册表（按规范路径索引）。
 fn file_journal_registry() -> &'static Mutex<WeakRegistry<SharedFileJournalState>> {
     static REGISTRY: OnceLock<Mutex<WeakRegistry<SharedFileJournalState>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(WeakRegistry::new()))
 }
 
+/// 读取并扫描 Journal 文件，截断末尾撕裂帧，并确认扫描期间文件长度未被改变。
 fn scan_and_repair_journal<E: JournalEvent>(
     path: &Path,
     file_guard: &ExistingRegularFileGuard,
@@ -200,6 +224,7 @@ fn scan_and_repair_journal<E: JournalEvent>(
     Ok(scanned)
 }
 
+/// 确保 Journal 文件存在：不存在则持久化创建；已存在的空文件会补做一次持久化屏障。
 fn ensure_journal_file(path: &Path, parent: &Path, context: &str) -> Result<()> {
     match std::fs::OpenOptions::new()
         .write(true)
@@ -222,32 +247,42 @@ fn ensure_journal_file(path: &Path, parent: &Path, context: &str) -> Result<()> 
     }
 }
 
-/// JSONL-backed atomic-batch [`EventJournal`].
-///
-/// Appends serialize one digest-protected batch frame per line with the
-/// caller-selected durability policy; `Flush` survives process crashes, `SyncData` additionally
-/// survives power loss. Open validates the complete file once and records byte
-/// offsets; replay then seeks directly to the requested sequence suffix. A
-/// canonical in-process authority shares sequencing across handles and holds a
-/// process-lifetime exclusive lease against competing writers.
+/**
+基于 JSONL 的原子批次 [`EventJournal`]。
+
+追加时按调用方选择的持久化策略，每行序列化一个受摘要保护的批次帧；
+`Flush` 可在进程崩溃后保留，`SyncData` 还能在掉电后保留。打开时对整个文件
+校验一次并记录字节偏移；重放时直接定位到所请求的序号后缀。进程内的规范权威
+在各句柄间共享序号分配，并持有进程生命周期的排他租约以阻止竞争写入者。
+*/
 #[derive(Debug)]
 pub struct FileEventJournal<E> {
+    /// 规范化后的 Journal 文件路径。
     path: PathBuf,
+    /// 本句柄绑定的 Journal 代次标识。
     journal_identity: JournalIdentity,
+    /// 追加时使用的持久化策略。
     durability: FileDurability,
+    /// 共享的规范权威状态；句柄关闭（Drop）时被取走。
     shared: Option<Arc<SharedFileJournalState>>,
+    /// 测试用：下一次追加注入的故障。
     #[cfg(test)]
     append_fault: Mutex<Option<AppendFault>>,
+    /// 测试用：下一次 sync_data 是否注入失败。
     #[cfg(test)]
     sync_fault: Mutex<bool>,
+    /// 测试用：下一次截断持久化屏障是否注入失败。
     #[cfg(test)]
     truncate_barrier_fault: Mutex<bool>,
+    /// 测试用：下一次追加失败后的对账读取是否注入失败。
     #[cfg(test)]
     reconcile_read_fault: Mutex<bool>,
+    /// 事件类型标记。
     _event: PhantomData<fn() -> E>,
 }
 
 impl<E> Drop for FileEventJournal<E> {
+    /// 在注册表锁内释放句柄，保证最后一个租约持有者的释放不会与新的打开并发。
     fn drop(&mut self) {
         let Some(shared) = self.shared.take() else {
             return;
@@ -256,43 +291,61 @@ impl<E> Drop for FileEventJournal<E> {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         registry.release_handle(&self.path, &shared);
-        // Drop every handle Arc, including the last lease owner, while opens
-        // are excluded by the registry lock.
+        /* 在注册表锁排斥其它打开操作期间，释放所有句柄 Arc，
+        包括最后一个租约持有者。 */
         drop(shared);
         drop(registry);
     }
 }
 
+/// 测试用的追加故障注入类型：先写入指定字节再返回指定类型的错误。
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum AppendFault {
+    /// 不写入任何字节，返回 InvalidData 错误。
     ZeroWriteInvalidData,
+    /// 写入完整行，返回 Other 错误。
     FullWrite,
+    /// 写入完整行，返回 InvalidData 错误。
     FullWriteInvalidData,
-    PartialWrite { bytes: usize },
-    PartialWriteInvalidData { bytes: usize },
+    /// 只写入前 `bytes` 个字节，返回 Other 错误。
+    PartialWrite {
+        /// 实际写入的字节数。
+        bytes: usize,
+    },
+    /// 只写入前 `bytes` 个字节，返回 InvalidData 错误。
+    PartialWriteInvalidData {
+        /// 实际写入的字节数。
+        bytes: usize,
+    },
+    /// 写入除最后一个字节外的全部内容，返回 InvalidData 错误。
     MissingLastByteInvalidData,
+    /// 写入一个无法识别的后缀，返回 Other 错误。
     UnrecognizedSuffix,
+    /// 写入一个无法识别的后缀，返回 InvalidData 错误。
     UnrecognizedSuffixInvalidData,
 }
 
 impl<E: JournalEvent> FileEventJournal<E> {
+    /// 获取共享权威状态；句柄正在关闭时返回错误。
     fn shared(&self) -> Result<&Arc<SharedFileJournalState>> {
         self.shared
             .as_ref()
             .ok_or_else(|| ReactError::Other("file journal handle is already closing".to_string()))
     }
 
+    /// 与 [`Self::shared`] 相同，但返回 IO 错误类型。
     fn shared_io(&self) -> std::io::Result<&Arc<SharedFileJournalState>> {
         self.shared
             .as_ref()
             .ok_or_else(|| std::io::Error::other("file journal handle is already closing"))
     }
 
-    /// Open (or create) the journal at `path`.
-    ///
-    /// A torn trailing batch frame from an interrupted append is truncated as
-    /// one unit; gaps and complete-frame corruption are errors.
+    /**
+    打开（或创建）位于 `path` 的 Journal。
+
+    由中断追加产生的末尾撕裂批次帧会作为一个整体被截断；序号缺口和完整帧损坏则视为错误。
+    */
     pub fn open(path: impl Into<PathBuf>, durability: FileDurability) -> Result<Self> {
         let path = path.into();
         let context = format!("journal open {}", path.display());
@@ -323,9 +376,8 @@ impl<E: JournalEvent> FileEventJournal<E> {
                     "{context}: journal is already open with a different durability configuration"
                 )));
             }
-            // Reopening is also an integrity boundary. Scan while holding the
-            // shared append lock so a second handle cannot miss or race a torn
-            // write, including one caused outside this process.
+            /* 重新打开同样是完整性边界。在持有共享追加锁时扫描，
+            使第二个句柄不会遗漏或竞争撕裂写入，包括由本进程之外造成的撕裂写入。 */
             let mut state = shared
                 .state
                 .lock()
@@ -378,8 +430,8 @@ impl<E: JournalEvent> FileEventJournal<E> {
             });
         }
         let lease = try_exclusive_file_lease(&path).map_err(|error| io_error(&context, error))?;
-        // Only a lease-owning new authority may create the data file. A live
-        // in-process authority was resolved above without touching the path.
+        /* 只有持有租约的新权威才可以创建数据文件。
+        存活的进程内权威已在上面解析完毕，未触碰该路径。 */
         ensure_journal_file(&path, &canonical_parent, &context)?;
         let file_guard =
             open_existing_regular_guard(&path).map_err(|error| io_error(&context, error))?;
@@ -420,19 +472,18 @@ impl<E: JournalEvent> FileEventJournal<E> {
         })
     }
 
-    /// Journal file path.
+    /// Journal 文件路径。
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    /// Force an idempotent data durability barrier on the current journal.
-    ///
-    /// Use this after an append returns
-    /// [`JournalDurabilityStatus::Degraded`]. The record in that receipt
-    /// already owns all of its sequences and must not be appended again; retry this
-    /// barrier instead. The operation is serialized with append and replay,
-    /// does not write an event or advance the sequence, and refuses a poisoned
-    /// authority until it is reopened and repaired.
+    /**
+    对当前 Journal 强制执行一次幂等的数据持久化屏障。
+
+    在追加返回 [`JournalDurabilityStatus::Degraded`] 后使用。该回执中的记录
+    已占有其全部序号，不得再次追加，而应重试此屏障。此操作与追加和重放串行执行，
+    不写入事件也不推进序号；在权威中毒时会拒绝执行，直到重新打开并修复。
+    */
     pub fn sync_data(&self) -> Result<()> {
         let shared = self.shared()?;
         let state = shared
@@ -451,6 +502,7 @@ impl<E: JournalEvent> FileEventJournal<E> {
             .map_err(|error| io_error(&context, error))
     }
 
+    /// 校验磁盘文件仍是同一文件且长度与已验证的有效长度一致。
     fn verify_current_file(&self, state: &FileJournalState, context: &str) -> Result<()> {
         let observed_len = matching_existing_regular_len(&self.path, &self.shared()?.file_guard)
             .map_err(|error| io_error(context, error))?;
@@ -463,6 +515,7 @@ impl<E: JournalEvent> FileEventJournal<E> {
         Ok(())
     }
 
+    /// 通过追加空字节并使用 `SyncData` 策略，对长度为 `expected_len` 的文件执行数据同步。
     fn sync_journal_data(&self, expected_len: u64) -> std::io::Result<()> {
         let shared = self.shared_io()?;
         #[cfg(test)]
@@ -484,6 +537,7 @@ impl<E: JournalEvent> FileEventJournal<E> {
         )
     }
 
+    /// 在文件长度等于 `expected_len` 的前提下追加一行批次帧（测试构建下可注入故障）。
     fn append_line(&self, expected_len: u64, line: &[u8]) -> std::io::Result<()> {
         let shared = self.shared_io()?;
         #[cfg(test)]
@@ -538,9 +592,10 @@ impl<E: JournalEvent> FileEventJournal<E> {
         )
     }
 
-    /// Reconcile the suffix after an append error. `Some` means the complete
-    /// batch committed despite the durability error; `None` means no record
-    /// committed and the entire partial frame was removed durably.
+    /**
+    追加出错后对文件后缀进行对账。返回 `Some` 表示尽管有持久化错误，
+    完整批次仍已提交；返回 `None` 表示没有任何记录提交，且整个不完整帧已被持久地移除。
+    */
     fn reconcile_failed_append(
         &self,
         state: &mut FileJournalState,
@@ -596,6 +651,7 @@ impl<E: JournalEvent> FileEventJournal<E> {
         )))
     }
 
+    /// 将文件从 `current_len` 截断回 `valid_len`，移除不完整后缀（测试构建下可注入屏障故障）。
     fn truncate_partial_suffix(
         &self,
         file_guard: &ExistingRegularFileGuard,
@@ -626,6 +682,10 @@ impl<E: JournalEvent> FileEventJournal<E> {
         truncate_existing_matching(&self.path, file_guard, current_len, valid_len, durability)
     }
 
+    /**
+    按索引读取一个已提交批次并校验其序号与身份，构造 `AlreadyCommitted` 回执。
+    `confirm_durability` 为 true 时会额外执行一次数据同步以确认持久化状态。
+    */
     fn read_indexed_batch(
         &self,
         state: &FileJournalState,
@@ -676,10 +736,12 @@ impl<E: JournalEvent> FileEventJournal<E> {
 }
 
 impl<E: JournalEvent> EventJournal<E> for FileEventJournal<E> {
+    /// 返回本句柄绑定的 Journal 代次标识。
     fn journal_identity(&self) -> &JournalIdentity {
         &self.journal_identity
     }
 
+    /// 原子地追加一个批次；已提交的相同批次按幂等方式返回，冲突的批次会使权威中毒。
     fn append_batch(&self, batch: PreparedJournalBatch<E>) -> JournalBatchAppendResult<E> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Err(JournalBatchAppendError::prepared_mutation(
@@ -816,6 +878,7 @@ impl<E: JournalEvent> EventJournal<E> for FileEventJournal<E> {
         })
     }
 
+    /// 查询批次是否已提交、不存在或与已提交载荷冲突。
     fn lookup_batch(&self, batch: &PreparedJournalBatch<E>) -> Result<JournalBatchLookup<E>> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Ok(JournalBatchLookup::Conflict {
@@ -856,6 +919,7 @@ impl<E: JournalEvent> EventJournal<E> for FileEventJournal<E> {
         }
     }
 
+    /// 返回下一次追加将分配的序号；句柄关闭中时返回 1。
     fn next_sequence(&self) -> u64 {
         self.shared
             .as_ref()
@@ -869,17 +933,19 @@ impl<E: JournalEvent> EventJournal<E> for FileEventJournal<E> {
             .unwrap_or(1)
     }
 
+    /// 返回最后一条已提交记录的序号；空 Journal 返回 0。
     fn last_sequence(&self) -> u64 {
         self.next_sequence().saturating_sub(1)
     }
 
+    /// 重放序号大于 `after_sequence` 的记录，最多返回 `limit` 条。
     fn replay_after(&self, after_sequence: u64, limit: usize) -> Result<Vec<JournalRecord<E>>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
         let context = format!("journal replay {}", self.path.display());
-        // The state lock serializes replay with append and gives O(1) access to
-        // the batch frame containing the first requested record.
+        /* 状态锁使重放与追加串行执行，并以 O(1) 访问
+        包含首条请求记录的批次帧。 */
         let shared = self.shared()?;
         let state = shared
             .state
@@ -961,35 +1027,54 @@ impl<E: JournalEvent> EventJournal<E> for FileEventJournal<E> {
     }
 }
 
+/// Checkpoint 磁盘帧的当前 schema 版本。
 const CHECKPOINT_SCHEMA_VERSION: u16 = 2;
 
+/// 参与 Checkpoint 完整性摘要计算的规范化输入。
 #[derive(Debug, Serialize)]
 struct CheckpointIntegrity<'a> {
+    /// schema 版本。
     schema_version: u16,
+    /// 所属 Journal 代次标识。
     journal_identity: &'a JournalIdentity,
+    /// 快照覆盖到的序号。
     sequence: u64,
+    /// 序列化后的 reducer 状态。
     state: &'a serde_json::Value,
 }
 
+/// 写盘用的 Checkpoint 帧（借用形式）。
 #[derive(Debug, Serialize)]
 struct StoredCheckpointRef<'a> {
+    /// schema 版本。
     schema_version: u16,
+    /// 所属 Journal 代次标识。
     journal_identity: &'a JournalIdentity,
+    /// 快照覆盖到的序号。
     sequence: u64,
+    /// 序列化后的 reducer 状态。
     state: &'a serde_json::Value,
+    /// SHA-256 完整性摘要（小写十六进制）。
     digest: &'a str,
 }
 
+/// 从磁盘读取的 Checkpoint 帧（拥有所有权），拒绝未知字段。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredCheckpoint {
+    /// schema 版本。
     schema_version: u16,
+    /// 所属 Journal 代次标识。
     journal_identity: JournalIdentity,
+    /// 快照覆盖到的序号。
     sequence: u64,
+    /// 序列化后的 reducer 状态。
     state: serde_json::Value,
+    /// SHA-256 完整性摘要（小写十六进制）。
     digest: String,
 }
 
+/// 计算 Checkpoint 规范化 JSON 的 SHA-256 摘要，返回小写十六进制字符串。
 fn checkpoint_digest(
     schema_version: u16,
     journal_identity: &JournalIdentity,
@@ -1016,6 +1101,7 @@ fn checkpoint_digest(
     Ok(encoded)
 }
 
+/// 将 4 位半字节转换为小写十六进制字符。
 fn lower_hex_digit(nibble: u8) -> char {
     match nibble {
         0..=9 => char::from(b'0'.saturating_add(nibble)),
@@ -1023,6 +1109,7 @@ fn lower_hex_digit(nibble: u8) -> char {
     }
 }
 
+/// 编码 Checkpoint 帧并通过注入的目录创建与写入函数保存（便于测试注入故障）。
 fn save_checkpoint_with<S: Serialize>(
     path: &Path,
     journal_identity: &JournalIdentity,
@@ -1058,22 +1145,24 @@ fn save_checkpoint_with<S: Serialize>(
     write(path, &bytes).map_err(|error| io_error(&context, error))
 }
 
-/// Single-file [`CheckpointStore`] written with atomic replace.
-///
-/// The snapshot is written to a temporary sibling and renamed, so readers
-/// observe either the previous or the new checkpoint, never a partial file. A
-/// missing file loads as `None`; a corrupt file is an error. The private disk
-/// frame is schema-versioned and protects Journal identity, sequence, and state
-/// with a SHA-256 checksum so valid JSON mutations cannot be mistaken for a
-/// trustworthy replay prefix. Sequence `0` is valid and represents a snapshot
-/// taken before the first journal event.
+/**
+以原子替换方式写入的单文件 [`CheckpointStore`]。
+
+快照先写入临时同级文件再重命名，因此读取方只会看到旧的或新的 Checkpoint，
+不会看到不完整文件。文件缺失时加载结果为 `None`；文件损坏则报错。私有磁盘帧
+带 schema 版本，并用 SHA-256 校验和保护 Journal 标识、序号与状态，使合法的
+JSON 篡改不会被误认为可信的重放前缀。序号 `0` 合法，表示在第一个 Journal 事件之前的快照。
+*/
 #[derive(Debug)]
 pub struct FileCheckpointStore<S> {
+    /// Checkpoint 文件路径。
     path: PathBuf,
+    /// 状态类型标记。
     _state: PhantomData<S>,
 }
 
 impl<S> FileCheckpointStore<S> {
+    /// 创建指向 `path` 的 Checkpoint 存储；不会立即访问文件系统。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         Self {
             path: path.into(),
@@ -1081,6 +1170,7 @@ impl<S> FileCheckpointStore<S> {
         }
     }
 
+    /// Checkpoint 文件路径。
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -1089,6 +1179,7 @@ impl<S> FileCheckpointStore<S> {
 impl<S: Serialize + DeserializeOwned + Send + Sync + 'static> CheckpointStore<S>
     for FileCheckpointStore<S>
 {
+    /// 持久地原子保存覆盖到 `through_sequence` 的状态快照。
     fn save(
         &self,
         journal_identity: &JournalIdentity,
@@ -1105,6 +1196,7 @@ impl<S: Serialize + DeserializeOwned + Send + Sync + 'static> CheckpointStore<S>
         )
     }
 
+    /// 加载并校验 Checkpoint；文件不存在时返回 `None`，版本或摘要不符时报错。
     fn load(&self) -> Result<Option<CheckpointFrame<S>>> {
         let context = format!("checkpoint load {}", self.path.display());
         let bytes = match read_existing(&self.path) {
@@ -1152,32 +1244,43 @@ mod tests {
     use super::*;
     use serde::{Deserialize, Serialize};
 
+    /// 测试辅助：获取存活句柄的共享权威状态。
     fn shared<E>(journal: &FileEventJournal<E>) -> &Arc<SharedFileJournalState> {
         journal.shared.as_ref().expect("live file journal handle")
     }
 
+    /// 测试辅助：由事件列表构造预处理批次。
     fn batch<E: JournalEvent>(events: Vec<E>) -> TestResult<PreparedJournalBatch<E>> {
         PreparedJournalBatch::new(events).test_context("prepare test batch")
     }
 
+    /// 测试用 reducer：统计已应用的事件数。
     #[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
     struct LensReducer {
+        /// 已应用的事件数量。
         applied: u64,
     }
 
+    /// 测试用状态：包含超出 JSON 安全范围的宽整数。
     #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
     struct WideIntegerState {
+        /// 最小值（i128）。
         min: i128,
+        /// 最大值（u128）。
         max: u128,
     }
 
+    /// 测试用事件：不实现 Clone。
     #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct NonCloneBatchEvent {
+        /// 事件值。
         value: String,
     }
 
+    /// 测试用事件：序列化结果可通过内部可变性改变，用于检测载荷篡改。
     #[derive(Debug)]
     struct MutableBatchEvent {
+        /// 可变的事件值。
         value: std::sync::atomic::AtomicUsize,
     }
 
@@ -1205,6 +1308,7 @@ mod tests {
         }
     }
 
+    /// 测试用：批次帧的篡改方式。
     #[derive(Clone, Copy)]
     enum FrameTamper {
         Schema,
@@ -1217,6 +1321,7 @@ mod tests {
         Digest,
     }
 
+    /// 测试辅助：生成按指定方式篡改后的批次帧字节（含换行）。
     fn tampered_frame(tamper: FrameTamper) -> TestResult<Vec<u8>> {
         let prepared = prepare_journal_frame(
             &batch(vec!["original".to_string()])?,
@@ -1288,13 +1393,19 @@ mod tests {
         Ok(bytes)
     }
 
+    /// 测试用 Checkpoint 存储：首次保存在文件已可见后仍返回失败。
     struct VisibleFailureCheckpointStore {
+        /// 实际的文件 Checkpoint 存储。
         inner: FileCheckpointStore<LensReducer>,
+        /// 是否仍需注入一次失败。
         fail_once: std::sync::atomic::AtomicBool,
     }
 
+    /// 测试用 Checkpoint 存储：统计保存次数。
     struct CountingCheckpointStore {
+        /// 保存调用次数。
         saves: std::sync::atomic::AtomicUsize,
+        /// 实际的内存 Checkpoint 存储。
         inner: super::super::MemoryCheckpointStore<LensReducer>,
     }
 
@@ -1374,6 +1485,7 @@ mod tests {
         }
     }
 
+    /// 测试辅助：创建唯一的临时目录。
     fn temp_root() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "echo-journal-test-{}-{}",
@@ -1384,6 +1496,7 @@ mod tests {
         dir
     }
 
+    /// 测试辅助：读取 Checkpoint 文件，按回调修改其 JSON 对象后写回。
     fn mutate_checkpoint(
         path: &Path,
         mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
@@ -2384,7 +2497,7 @@ mod tests {
         let journal =
             FileEventJournal::<String>::open(&path, FileDurability::Flush).expect("open journal");
         journal.append("one".to_string()).expect("append");
-        // Simulate a torn append: a partial line without the newline.
+        // 模拟撕裂的追加：写入一段没有换行符的不完整行。
         let good = read_existing(&path).expect("read");
         let journal_identity = journal.journal_identity().clone();
         drop(journal);

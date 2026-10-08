@@ -43,12 +43,14 @@ async fn deliver(send_tx: &DeliverySender, message: OutboundMessage) -> Result<(
     })?
 }
 
-/// 消费 inner handler 的流式分段(`handle_stream`),逐 chunk 经 `send_tx` 投递到 IM。
-///
-/// 返回**空 text 占位** `OutboundMessage`:gateway 在 `handle` 返回后会再调 `reply`,
-/// `reply_with_empty_guard` 对空 text no-op,防止最后一段 chunk 重复发送(spec D2-5)。
-///
-/// QQ 和飞书 wrapper 共用此函数。
+/**
+消费 inner handler 的流式分段(`handle_stream`),逐 chunk 经 `send_tx` 投递到 IM。
+
+返回**空 text 占位** `OutboundMessage`:gateway 在 `handle` 返回后会再调 `reply`,
+`reply_with_empty_guard` 对空 text no-op,防止最后一段 chunk 重复发送(spec D2-5)。
+
+QQ 和飞书 wrapper 共用此函数。
+*/
 pub(crate) async fn dispatch_stream_to_send_tx(
     inner: &Arc<dyn MessageHandler>,
     send_tx: &DeliverySender,
@@ -66,8 +68,10 @@ pub(crate) async fn dispatch_stream_to_send_tx(
     Ok(placeholder)
 }
 
-/// `reply` 的双发防护:空 text 视为流式占位 no-op(防 gateway 再 reply 导致最后一段双发);
-/// 非空 text(向后兼容:直接 reply 一段完整文本)正常 `send_tx`。
+/**
+`reply` 的双发防护:空 text 视为流式占位 no-op(防 gateway 再 reply 导致最后一段双发);
+非空 text(向后兼容:直接 reply 一段完整文本)正常 `send_tx`。
+*/
 pub(crate) async fn reply_with_empty_guard(
     send_tx: &DeliverySender,
     msg: OutboundMessage,

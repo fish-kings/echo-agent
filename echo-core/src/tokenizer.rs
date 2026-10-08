@@ -1,53 +1,57 @@
-//! Token estimation trait and usage tracking.
-//!
-//! Provides a pluggable token counting capability for a context manager, replacing the
-//! fixed `chars / 4` heuristic.
-//!
-//! # Built-in Implementations
-//!
-//! | Type | Algorithm | Accuracy |
-//! |------|----------|----------|
-//! | [`HeuristicTokenizer`] | ASCII weight 1, CJK weight 2, total / 4 | Medium (recommended for mixed Chinese/English) |
-//! | [`SimpleTokenizer`] | `byte_count / 4 + 1` | Low (backward compatible) |
-//!
-//! # Usage Tracking
-//!
-//! [`TokenUsageTracker`] provides cross-request token accumulation statistics,
-//! comparable to the token usage display capabilities of Claude Code / ChatGPT.
-//!
-//! # Extension
-//!
-//! Implement the [`Tokenizer`] trait to integrate an exact tokenizer (e.g. tiktoken-rs).
+/*!
+Token 估算 trait 与用量统计。
 
-/// Token counter abstraction
+为上下文管理器提供可插拔的 token 计数能力，替代固定的 `chars / 4` 启发式估算。
+
+# 内置实现
+
+| 类型 | 算法 | 精度 |
+|------|----------|----------|
+| [`HeuristicTokenizer`] | ASCII 权重 1，CJK 权重 2，总权重 / 4 | 中（推荐用于中英文混合场景） |
+| [`SimpleTokenizer`] | `byte_count / 4 + 1` | 低（向后兼容） |
+
+# 用量统计
+
+[`TokenUsageTracker`] 提供跨请求的 token 累计统计，
+类似 Claude Code / ChatGPT 的 token 用量展示能力。
+
+# 扩展
+
+实现 [`Tokenizer`] trait 即可接入精确的分词器（例如 tiktoken-rs）。
+*/
+
+/// Token 计数器抽象
 pub trait Tokenizer: Send + Sync {
-    /// Estimate how many model tokens the input text will consume.
+    /// 估算输入文本将消耗多少模型 token。
     fn count_tokens(&self, text: &str) -> usize;
 }
 
 impl Tokenizer for Box<dyn Tokenizer> {
+    /// 委托给被装箱的内部分词器进行计数。
     fn count_tokens(&self, text: &str) -> usize {
         (**self).count_tokens(text)
     }
 }
 
-/// Heuristic Tokenizer that estimates token count using character weights.
-///
-/// **Note: This is a rough estimator, not an exact token counter.**
-///
-/// Estimation rules:
-/// - ASCII characters weight 1 (~4 chars = 1 token)
-/// - CJK and other non-ASCII characters weight 2 (~1-2 chars = 1 token)
-/// - Total weight / 4 yields the estimated token count
-/// - Empty string returns 0
-///
-/// Compared to `byte_count / 4`, accuracy for CJK content improves by ~40-60%,
-/// but it should still not be used for scenarios requiring exact token counting
-/// (e.g., quota management, billing, etc.).
-/// For exact counting, use tiktoken or a model-native tokenizer.
+/**
+基于字符权重估算 token 数的启发式分词器。
+
+**注意：这只是一个粗略的估算器，而不是精确的 token 计数器。**
+
+估算规则：
+- ASCII 字符权重为 1（约 4 个字符 = 1 个 token）
+- CJK 及其他非 ASCII 字符权重为 2（约 1-2 个字符 = 1 个 token）
+- 总权重 / 4 即为估算的 token 数
+- 空字符串返回 0
+
+与 `byte_count / 4` 相比，对 CJK 内容的估算精度提升约 40-60%，
+但仍不应用于需要精确 token 计数的场景（例如配额管理、计费等）。
+如需精确计数，请使用 tiktoken 或模型原生的分词器。
+*/
 pub struct HeuristicTokenizer;
 
 impl Tokenizer for HeuristicTokenizer {
+    /// 按字符权重估算 token 数，非空文本至少返回 1。
     fn count_tokens(&self, text: &str) -> usize {
         if text.is_empty() {
             return 0;
@@ -57,10 +61,11 @@ impl Tokenizer for HeuristicTokenizer {
     }
 }
 
-/// Simple Tokenizer: `byte_count / 4 + 1` (backward compatible with old behavior)
+/// 简单分词器：`byte_count / 4 + 1`（与旧行为向后兼容）
 pub struct SimpleTokenizer;
 
 impl Tokenizer for SimpleTokenizer {
+    /// 按字节数估算 token 数，空文本返回 0。
     fn count_tokens(&self, text: &str) -> usize {
         if text.is_empty() {
             0
@@ -70,53 +75,60 @@ impl Tokenizer for SimpleTokenizer {
     }
 }
 
-/// Self-calibrating tokenizer wrapper that improves estimation accuracy using
-/// actual API response data.
-///
-/// Wraps any [`Tokenizer`] implementation and adjusts its estimates by a
-/// calibration factor derived from the ratio of actual token counts (reported
-/// by the LLM API) to estimated counts.
-///
-/// # How it works
-///
-/// 1. `count_tokens()` returns `inner.estimate × calibration_factor`
-/// 2. After each LLM call, feed back the actual token count via `calibrate()`
-/// 3. The factor is an exponential moving average (EMA) that converges over time
-///
-/// # Example
-///
-/// ```rust
-/// use echo_core::tokenizer::{CalibratedTokenizer, HeuristicTokenizer, Tokenizer};
-/// use std::sync::Arc;
-///
-/// let base = Arc::new(HeuristicTokenizer);
-/// let calibrated = CalibratedTokenizer::new(base);
-///
-/// // Initial estimate (factor = 1.0)
-/// let est = calibrated.count_tokens("hello world");
-///
-/// // After API returns actual count:
-/// calibrated.calibrate(est, 15); // actual was 15 tokens
-///
-/// // Subsequent estimates are now adjusted
-/// let adjusted = calibrated.count_tokens("another text");
-/// ```
+/**
+自校准分词器包装器，利用实际 API 响应数据提升估算精度。
+
+包装任意 [`Tokenizer`] 实现，并用一个校准系数调整其估算值；该系数由
+（LLM API 报告的）实际 token 数与估算 token 数之比推导而来。
+
+# 工作原理
+
+1. `count_tokens()` 返回 `inner.estimate × calibration_factor`
+2. 每次 LLM 调用后，通过 `calibrate()` 回馈实际 token 数
+3. 该系数是一个指数移动平均（EMA），会随时间逐渐收敛
+
+# 示例
+
+```rust
+use echo_core::tokenizer::{CalibratedTokenizer, HeuristicTokenizer, Tokenizer};
+use std::sync::Arc;
+
+let base = Arc::new(HeuristicTokenizer);
+let calibrated = CalibratedTokenizer::new(base);
+
+// 初始估算（系数 = 1.0）
+let est = calibrated.count_tokens("hello world");
+
+// API 返回实际数量后：
+calibrated.calibrate(est, 15); // 实际为 15 个 token
+
+// 后续的估算值已被调整
+let adjusted = calibrated.count_tokens("another text");
+```
+*/
 pub struct CalibratedTokenizer {
+    /// 被包装的基础分词器。
     inner: std::sync::Arc<dyn Tokenizer>,
-    /// Calibration factor stored as f64 bits in AtomicU64 for lock-free access.
-    /// Factor = actual_tokens / estimated_tokens (EMA smoothed).
+    /**
+    校准系数，以 f64 位模式存储在 AtomicU64 中，以实现无锁访问。
+    系数 = actual_tokens / estimated_tokens（经 EMA 平滑）。
+    */
     factor_bits: std::sync::atomic::AtomicU64,
-    /// Number of calibration samples received.
+    /// 已接收的校准样本数量。
     sample_count: std::sync::atomic::AtomicU64,
-    /// EMA smoothing factor (0.0 = no update, 1.0 = replace entirely).
-    /// Default 0.3 provides good convergence.
+    /**
+    EMA 平滑系数（0.0 = 不更新，1.0 = 完全替换）。
+    默认值 0.3 能提供良好的收敛性。
+    */
     ema_alpha: f64,
 }
 
 impl CalibratedTokenizer {
-    /// Create a new calibrated tokenizer wrapping the given base tokenizer.
-    ///
-    /// Initial calibration factor is 1.0 (no adjustment).
+    /**
+    创建一个包装给定基础分词器的校准分词器。
+
+    初始校准系数为 1.0（不做调整）。
+    */
     pub fn new(inner: std::sync::Arc<dyn Tokenizer>) -> Self {
         Self {
             inner,
@@ -126,11 +138,13 @@ impl CalibratedTokenizer {
         }
     }
 
-    /// Create with a custom EMA alpha (smoothing factor).
-    ///
-    /// - `alpha = 0.1`: slow convergence, more stable
-    /// - `alpha = 0.3`: balanced (default)
-    /// - `alpha = 0.5`: fast convergence, more reactive
+    /**
+    使用自定义的 EMA alpha（平滑系数）创建。
+
+    - `alpha = 0.1`：收敛慢，更稳定
+    - `alpha = 0.3`：均衡（默认）
+    - `alpha = 0.5`：收敛快，响应更灵敏
+    */
     pub fn with_alpha(inner: std::sync::Arc<dyn Tokenizer>, alpha: f64) -> Self {
         Self {
             inner,
@@ -140,23 +154,25 @@ impl CalibratedTokenizer {
         }
     }
 
-    /// Feed back actual token count from an API response to improve future estimates.
-    ///
-    /// - `estimated`: the value returned by `count_tokens()` before the API call
-    /// - `actual`: the actual token count from the API response (`usage.prompt_tokens`)
+    /**
+    回馈 API 响应中的实际 token 数，以改进后续估算。
+
+    - `estimated`：API 调用前 `count_tokens()` 返回的值
+    - `actual`：API 响应中的实际 token 数（`usage.prompt_tokens`）
+    */
     pub fn calibrate(&self, estimated: usize, actual: u32) {
         if estimated == 0 || actual == 0 {
             return;
         }
 
         let observed_ratio = actual as f64 / estimated as f64;
-        // Clamp ratio to reasonable range to avoid wild swings
+        // 将比率限制在合理范围内，避免剧烈波动
         let observed_ratio = observed_ratio.clamp(0.2, 5.0);
 
         let current_bits = self.factor_bits.load(std::sync::atomic::Ordering::Relaxed);
         let current_factor = f64::from_bits(current_bits);
 
-        // EMA: new_factor = alpha * observed + (1 - alpha) * current
+        // EMA：new_factor = alpha * observed + (1 - alpha) * current
         let new_factor = self.ema_alpha * observed_ratio + (1.0 - self.ema_alpha) * current_factor;
 
         self.factor_bits
@@ -165,18 +181,18 @@ impl CalibratedTokenizer {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Get the current calibration factor.
+    /// 获取当前的校准系数。
     pub fn calibration_factor(&self) -> f64 {
         let bits = self.factor_bits.load(std::sync::atomic::Ordering::Relaxed);
         f64::from_bits(bits)
     }
 
-    /// Get the number of calibration samples received.
+    /// 获取已接收的校准样本数量。
     pub fn sample_count(&self) -> u64 {
         self.sample_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Reset the calibration factor to 1.0.
+    /// 将校准系数重置为 1.0。
     pub fn reset_calibration(&self) {
         self.factor_bits
             .store(1.0_f64.to_bits(), std::sync::atomic::Ordering::Relaxed);
@@ -186,6 +202,7 @@ impl CalibratedTokenizer {
 }
 
 impl Tokenizer for CalibratedTokenizer {
+    /// 返回基础估算值乘以校准系数后四舍五入的结果。
     fn count_tokens(&self, text: &str) -> usize {
         let base = self.inner.count_tokens(text);
         let factor = self.calibration_factor();
@@ -194,6 +211,7 @@ impl Tokenizer for CalibratedTokenizer {
 }
 
 impl std::fmt::Debug for CalibratedTokenizer {
+    /// 输出当前校准系数与样本数。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CalibratedTokenizer")
             .field("factor", &self.calibration_factor())
@@ -202,34 +220,44 @@ impl std::fmt::Debug for CalibratedTokenizer {
     }
 }
 
-// ── Token Usage Tracking ─────────────────────────────────────────────────────────
+// ── Token 用量统计 ─────────────────────────────────────────────────────────
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Thread-safe token usage tracker.
-///
-/// Comparable to the token usage display of Claude Code / ChatGPT.
-///
-/// ```rust
-/// use echo_core::tokenizer::TokenUsageTracker;
-///
-/// let tracker = TokenUsageTracker::new("gpt-5.5");
-/// tracker.record(1500, 800, Some(2300));
-///
-/// let stats = tracker.summary();
-/// assert_eq!(stats.total_prompt_tokens, 1500);
-/// ```
+/**
+线程安全的 token 用量统计器。
+
+类似 Claude Code / ChatGPT 的 token 用量展示。
+
+```rust
+use echo_core::tokenizer::TokenUsageTracker;
+
+let tracker = TokenUsageTracker::new("gpt-5.5");
+tracker.record(1500, 800, Some(2300));
+
+let stats = tracker.summary();
+assert_eq!(stats.total_prompt_tokens, 1500);
+```
+*/
 pub struct TokenUsageTracker {
+    /// 统计所针对的模型名称。
     model_name: String,
+    /// 累计输入（prompt）token 数。
     total_prompt_tokens: AtomicU64,
+    /// 累计输出（completion）token 数。
     total_completion_tokens: AtomicU64,
+    /// 累计总 token 数。
     total_tokens: AtomicU64,
+    /// 累计命中 prompt 缓存的输入 token 数。
     total_cached_prompt_tokens: AtomicU64,
+    /// 累计写入 prompt 缓存的输入 token 数。
     total_cache_creation_prompt_tokens: AtomicU64,
+    /// 已记录的请求数。
     request_count: AtomicU64,
 }
 
 impl TokenUsageTracker {
+    /// 为指定模型创建一个计数全部为 0 的统计器。
     pub fn new(model_name: impl Into<String>) -> Self {
         Self {
             model_name: model_name.into(),
@@ -242,12 +270,12 @@ impl TokenUsageTracker {
         }
     }
 
-    /// Number of requests recorded so far.
+    /// 目前已记录的请求数。
     pub fn request_count(&self) -> u64 {
         self.request_count.load(Ordering::Relaxed)
     }
 
-    /// Record token usage for a single request.
+    /// 记录单次请求的 token 用量。
     pub fn record(&self, prompt: u32, completion: u32, total: Option<u32>) {
         self.total_prompt_tokens
             .fetch_add(prompt as u64, Ordering::Relaxed);
@@ -258,7 +286,7 @@ impl TokenUsageTracker {
         self.request_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record usage from an API response.
+    /// 从 API 响应中记录用量。
     pub fn record_usage(&self, usage: &crate::llm::types::Usage) {
         let prompt = usage.effective_prompt_tokens();
         let completion = usage.completion_tokens.unwrap_or(0);
@@ -271,7 +299,7 @@ impl TokenUsageTracker {
         );
     }
 
-    /// Get usage summary.
+    /// 获取用量摘要。
     pub fn summary(&self) -> UsageSummary {
         let total_prompt = self.total_prompt_tokens.load(Ordering::Relaxed);
         let total_completion = self.total_completion_tokens.load(Ordering::Relaxed);
@@ -293,11 +321,13 @@ impl TokenUsageTracker {
         }
     }
 
-    /// Cumulative prompt cache hit rate (0.0–1.0).
-    ///
-    /// Computed as `cached_prompt / prompt` across all requests. Recorded prompt
-    /// tokens are provider-normalized to include cache reads.
-    /// Returns `None` if no requests with prompt tokens have been recorded.
+    /**
+    累计 prompt 缓存命中率（0.0–1.0）。
+
+    按所有请求的 `cached_prompt / prompt` 计算。记录的 prompt token 已按
+    provider 归一化，包含缓存读取部分。
+    若尚未记录任何带 prompt token 的请求，返回 `None`。
+    */
     pub fn cumulative_cache_hit_rate(&self) -> Option<f64> {
         let prompt = self.total_prompt_tokens.load(Ordering::Relaxed);
         let cached = self.total_cached_prompt_tokens.load(Ordering::Relaxed);
@@ -308,7 +338,7 @@ impl TokenUsageTracker {
         }
     }
 
-    /// Reset all counters.
+    /// 重置所有计数器。
     pub fn reset(&self) {
         self.total_prompt_tokens.store(0, Ordering::Relaxed);
         self.total_completion_tokens.store(0, Ordering::Relaxed);
@@ -320,19 +350,27 @@ impl TokenUsageTracker {
     }
 }
 
-/// Token usage summary snapshot
+/// Token 用量摘要快照
 #[derive(Debug, Clone, Default)]
 pub struct UsageSummary {
+    /// 模型名称。
     pub model_name: String,
+    /// 累计输入（prompt）token 数。
     pub total_prompt_tokens: u64,
+    /// 累计输出（completion）token 数。
     pub total_completion_tokens: u64,
+    /// 累计总 token 数。
     pub total_tokens: u64,
+    /// 累计命中 prompt 缓存的输入 token 数。
     pub total_cached_prompt_tokens: u64,
+    /// 累计写入 prompt 缓存的输入 token 数。
     pub total_cache_creation_prompt_tokens: u64,
+    /// 请求总数。
     pub request_count: u64,
 }
 
 impl std::fmt::Display for UsageSummary {
+    /// 以多行可读文本形式输出用量摘要。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -362,28 +400,28 @@ mod tests {
     #[test]
     fn test_heuristic_ascii() {
         let t = HeuristicTokenizer;
-        // 16 ASCII chars → weight 16 → 16/4 = 4 tokens
+        // 16 个 ASCII 字符 → 权重 16 → 16/4 = 4 个 token
         assert_eq!(t.count_tokens("hello world 1234"), 4);
     }
 
     #[test]
     fn test_heuristic_cjk() {
         let t = HeuristicTokenizer;
-        // 4 non-ASCII chars → weight 8 → 8/4 = 2 tokens
+        // 4 个非 ASCII 字符 → 权重 8 → 8/4 = 2 个 token
         assert_eq!(t.count_tokens("éñôà"), 2);
     }
 
     #[test]
     fn test_heuristic_mixed() {
         let t = HeuristicTokenizer;
-        // "hello éñ" → 6 ASCII(6) + 2 non-ASCII(4) = weight 10 → 10/4 = 2
+        // "hello éñ" → 6 个 ASCII(6) + 2 个非 ASCII(4) = 权重 10 → 10/4 = 2
         assert_eq!(t.count_tokens("hello éñ"), 2);
     }
 
     #[test]
     fn test_heuristic_empty() {
         let t = HeuristicTokenizer;
-        assert_eq!(t.count_tokens(""), 0); // empty string returns 0
+        assert_eq!(t.count_tokens(""), 0); // 空字符串返回 0
     }
 
     #[test]
@@ -397,7 +435,7 @@ mod tests {
         let base = Arc::new(HeuristicTokenizer);
         let calibrated = CalibratedTokenizer::new(base);
 
-        // Initial factor should be 1.0
+        // 初始系数应为 1.0
         assert!((calibrated.calibration_factor() - 1.0).abs() < f64::EPSILON);
         assert_eq!(calibrated.sample_count(), 0);
     }
@@ -405,19 +443,19 @@ mod tests {
     #[test]
     fn test_calibrated_tokenizer_calibration() {
         let base = Arc::new(HeuristicTokenizer);
-        let calibrated = CalibratedTokenizer::with_alpha(base.clone(), 1.0); // alpha=1.0 for instant update
+        let calibrated = CalibratedTokenizer::with_alpha(base.clone(), 1.0); // alpha=1.0 表示立即更新
 
         let text = "hello world test";
-        let estimated = base.count_tokens(text); // HeuristicTokenizer estimate
-        let actual = estimated * 2; // Simulate actual being 2x the estimate
+        let estimated = base.count_tokens(text); // HeuristicTokenizer 的估算值
+        let actual = estimated * 2; // 模拟实际值为估算值的 2 倍
 
         calibrated.calibrate(estimated, actual as u32);
 
-        // With alpha=1.0, factor should jump directly to 2.0
+        // alpha=1.0 时，系数应直接跳到 2.0
         assert!((calibrated.calibration_factor() - 2.0).abs() < f64::EPSILON);
         assert_eq!(calibrated.sample_count(), 1);
 
-        // Now count_tokens should return ~2x the base estimate
+        // 此时 count_tokens 应返回约 2 倍的基础估算值
         let adjusted = calibrated.count_tokens(text);
         assert_eq!(adjusted, estimated * 2);
     }
@@ -429,16 +467,16 @@ mod tests {
 
         let estimated = 100;
 
-        // First calibration: actual = 200 (ratio = 2.0)
+        // 第一次校准：actual = 200（比率 = 2.0）
         calibrated.calibrate(estimated, 200);
         let f1 = calibrated.calibration_factor();
-        // With alpha=0.5: 0.5 * 2.0 + 0.5 * 1.0 = 1.5
+        // alpha=0.5 时：0.5 * 2.0 + 0.5 * 1.0 = 1.5
         assert!((f1 - 1.5).abs() < 0.01);
 
-        // Second calibration: actual = 200 again (ratio = 2.0)
+        // 第二次校准：actual 仍为 200（比率 = 2.0）
         calibrated.calibrate(estimated, 200);
         let f2 = calibrated.calibration_factor();
-        // With alpha=0.5: 0.5 * 2.0 + 0.5 * 1.5 = 1.75
+        // alpha=0.5 时：0.5 * 2.0 + 0.5 * 1.5 = 1.75
         assert!((f2 - 1.75).abs() < 0.01);
     }
 
@@ -460,7 +498,7 @@ mod tests {
         let base = Arc::new(HeuristicTokenizer);
         let calibrated = CalibratedTokenizer::new(base);
 
-        // Should not update on zero values
+        // 遇到 0 值时不应更新
         calibrated.calibrate(0, 100);
         calibrated.calibrate(100, 0);
         assert!((calibrated.calibration_factor() - 1.0).abs() < f64::EPSILON);

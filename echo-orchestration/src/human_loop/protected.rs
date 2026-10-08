@@ -1,22 +1,28 @@
-//! 受保护路径检查器
-//!
-//! 防止 Agent 误操作关键系统文件和目录。
-//! 参考 Claude Code 的受保护路径设计：.git, .env, shell configs 等路径
-//! 在任何权限模式下都受保护（包括 BypassPermissions）。
+/*!
+受保护路径检查器
+
+防止 Agent 误操作关键系统文件和目录。
+参考 Claude Code 的受保护路径设计：.git, .env, shell configs 等路径
+在任何权限模式下都受保护（包括 BypassPermissions）。
+*/
 
 use regex::Regex;
 use serde_json::Value;
 use std::env;
 use std::sync::LazyLock;
 
+/// 匹配引号内字符串（双引号或单引号）的正则
 static QUOTED_PATH_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r#""([^"]*)"|'([^']*)'"#).ok());
+/// 匹配命令中直接出现的路径 token 的正则
 static DIRECT_PATH_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r#"(?:^|\s)((?:/|\./|~/|\.)[^\s"'`$(){}|;&<>]*|/[^\s"'`$(){}|;&<>]+)"#).ok()
 });
+/// 匹配环境变量引用（$VAR 或 ${VAR}）的正则
 static ENV_VAR_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
     Regex::new(r#"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)"#).ok()
 });
+/// 匹配命令替换（$(...) 或反引号）的正则
 static COMMAND_SUBSTITUTION_RE: LazyLock<Option<Regex>> =
     LazyLock::new(|| Regex::new(r#"\$\(([^)]+)\)|`([^`]+)`"#).ok());
 
@@ -38,22 +44,22 @@ const DEFAULT_PROTECTED_PATTERNS: &[&str] = &[
     "authorized_keys",
     "id_rsa",
     "id_ed25519",
-    // ── Private keys & certificates ──
+    // ── 私钥与证书 ──
     ".pem",
     ".key",
     ".pfx",
     ".p12",
     ".jks",
-    // ── Cloud credentials ──
+    // ── 云服务凭据 ──
     ".aws/credentials",
     ".aws/config",
-    // ── Git credentials ──
+    // ── Git 凭据 ──
     ".git-credentials",
-    // ── Docker auth ──
+    // ── Docker 认证 ──
     ".docker/config.json",
-    // ── GPG keys ──
+    // ── GPG 密钥 ──
     ".gnupg",
-    // ── Database passwords ──
+    // ── 数据库密码 ──
     ".pgpass",
     ".my.cnf",
 ];
@@ -109,9 +115,11 @@ impl ProtectedPathChecker {
         }
     }
 
-    /// 检查工具参数中是否包含受保护路径
-    ///
-    /// 从 tool_input 中提取路径参数并匹配保护模式。
+    /**
+    检查工具参数中是否包含受保护路径
+
+    从 tool_input 中提取路径参数并匹配保护模式。
+    */
     pub fn check(&self, tool_name: &str, input: &Value) -> ProtectedPathResult {
         if self.patterns.is_empty() {
             return ProtectedPathResult::Safe;
@@ -170,6 +178,7 @@ impl ProtectedPathChecker {
 }
 
 impl Default for ProtectedPathChecker {
+    /// 创建带默认保护路径的检查器。
     fn default() -> Self {
         Self::new()
     }
@@ -196,10 +205,11 @@ fn extract_paths(tool_name: &str, input: &Value) -> Vec<String> {
             }
         }
         _ => {
-            // Generic tools often carry natural-language fields such as
-            // `task`, `prompt`, or `description`. Scanning every string makes
-            // text like ".env.example" look like a protected path and blocks
-            // harmless delegation. Only inspect explicit path/command fields.
+            /*
+            通用工具常带有 `task`、`prompt`、`description` 等自然语言字段。
+            若扫描所有字符串，".env.example" 之类的文本会被误判为受保护路径，
+            从而阻断无害的委派。因此只检查显式的路径/命令字段。
+            */
             extract_explicit_path_fields_from_value(input, &mut paths);
         }
     }
@@ -227,9 +237,11 @@ fn extract_paths_from_bash_command(cmd: &str) -> Vec<String> {
         }
     }
 
-    // 使用正则表达式提取所有看起来像路径的字符串
-    // 匹配：以 /, ./, ~/, . 开头的字符串，或者包含 / 的字符串
-    // 排除明显的非路径 token（如命令选项）
+    /*
+    使用正则表达式提取所有看起来像路径的字符串
+    匹配：以 /, ./, ~/, . 开头的字符串，或者包含 / 的字符串
+    排除明显的非路径 token（如命令选项）
+    */
     if let Some(path_re) = DIRECT_PATH_RE.as_ref() {
         for cap in path_re.captures_iter(&expanded) {
             if let Some(matched) = cap.get(1) {
@@ -246,8 +258,10 @@ fn extract_paths_from_bash_command(cmd: &str) -> Vec<String> {
         }
     }
 
-    // 另外，专门处理命令替换中的路径：$(echo /.git) 或 `echo /.git`
-    // 使用 expanded 字符串，因为命令替换可能包含需要展开的环境变量
+    /*
+    另外，专门处理命令替换中的路径：$(echo /.git) 或 `echo /.git`
+    使用 expanded 字符串，因为命令替换可能包含需要展开的环境变量
+    */
     extract_paths_from_command_substitution(&expanded, &mut paths);
 
     paths
@@ -313,8 +327,10 @@ fn extract_paths_from_command_substitution(cmd: &str, paths: &mut Vec<String>) {
                 let sub_paths = extract_direct_paths_from_command(&expanded_subcmd);
                 paths.extend(sub_paths);
 
-                // 将命令替换内容推入栈进行进一步处理（如果有嵌套）
-                // 使用展开后的字符串以便进一步处理环境变量
+                /*
+                将命令替换内容推入栈进行进一步处理（如果有嵌套）
+                使用展开后的字符串以便进一步处理环境变量
+                */
                 stack.push((expanded_subcmd, depth + 1));
             }
         }
@@ -384,6 +400,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证普通路径被判定为安全。
     #[test]
     fn test_safe_path() {
         let checker = ProtectedPathChecker::new();
@@ -391,6 +408,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Safe));
     }
 
+    /// 验证 .git 路径受保护。
     #[test]
     fn test_git_protected() {
         let checker = ProtectedPathChecker::new();
@@ -398,6 +416,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证 .env 路径受保护。
     #[test]
     fn test_env_protected() {
         let checker = ProtectedPathChecker::new();
@@ -405,6 +424,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证 .env.production 等变体受保护。
     #[test]
     fn test_env_production_protected() {
         let checker = ProtectedPathChecker::new();
@@ -412,6 +432,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证 .ssh 路径受保护。
     #[test]
     fn test_ssh_protected() {
         let checker = ProtectedPathChecker::new();
@@ -419,6 +440,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证 Bash 命令中出现的受保护路径会被检测。
     #[test]
     fn test_bash_with_protected_path() {
         let checker = ProtectedPathChecker::new();
@@ -426,6 +448,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证未知工具不扫描自然语言字段。
     #[test]
     fn test_unknown_tool_does_not_scan_natural_language_task() {
         let checker = ProtectedPathChecker::new();
@@ -439,6 +462,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Safe));
     }
 
+    /// 验证未知工具仍检查显式路径字段。
     #[test]
     fn test_unknown_tool_still_checks_explicit_path_fields() {
         let checker = ProtectedPathChecker::new();
@@ -452,6 +476,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证未知工具仍检查显式命令字段。
     #[test]
     fn test_unknown_tool_still_checks_explicit_command_fields() {
         let checker = ProtectedPathChecker::new();
@@ -465,6 +490,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证禁用的检查器放行所有路径。
     #[test]
     fn test_disabled_checker() {
         let checker = ProtectedPathChecker::disabled();
@@ -472,6 +498,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Safe));
     }
 
+    /// 验证自定义保护模式生效。
     #[test]
     fn test_custom_pattern() {
         let checker = ProtectedPathChecker::new().with_pattern("secret/");
@@ -479,6 +506,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证路径匹配不区分大小写。
     #[test]
     fn test_case_insensitive() {
         let checker = ProtectedPathChecker::new();
@@ -490,6 +518,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证无法通过 $() 命令替换绕过检查。
     #[test]
     fn test_command_substitution_bypass() {
         let checker = ProtectedPathChecker::new();
@@ -498,6 +527,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证反引号命令替换中的路径会被检测。
     #[test]
     fn test_backtick_command_substitution() {
         let checker = ProtectedPathChecker::new();
@@ -506,6 +536,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证嵌套命令替换中的路径会被检测。
     #[test]
     fn test_nested_command_substitution() {
         let checker = ProtectedPathChecker::new();
@@ -514,6 +545,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证引号内命令替换中的路径会被检测。
     #[test]
     fn test_quoted_command_substitution() {
         let checker = ProtectedPathChecker::new();
@@ -522,6 +554,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证命令替换中的环境变量会被展开检测。
     #[test]
     fn test_env_var_in_command_substitution() {
         // 在测试中设置环境变量需要 unsafe 块
@@ -534,6 +567,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证波浪号家目录展开后的路径会被检测。
     #[test]
     fn test_home_dir_expansion() {
         let checker = ProtectedPathChecker::new();
@@ -542,6 +576,7 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证环境变量展开后的路径会被检测。
     #[test]
     fn test_env_var_expansion() {
         // 在测试中设置环境变量需要 unsafe 块
@@ -554,10 +589,11 @@ mod tests {
         assert!(matches!(result, ProtectedPathResult::Protected { .. }));
     }
 
+    /// 验证私钥与证书文件受保护。
     #[test]
     fn test_private_key_files() {
         let checker = ProtectedPathChecker::new();
-        // .pem, .key, .pfx, .p12 files should be protected
+        // .pem、.key、.pfx、.p12 文件应受保护
         for path in &[
             "/etc/ssl/cert.pem",
             "/home/user/private.key",
@@ -574,10 +610,11 @@ mod tests {
         }
     }
 
+    /// 验证云服务凭据文件受保护。
     #[test]
     fn test_cloud_credentials() {
         let checker = ProtectedPathChecker::new();
-        // AWS credentials and config
+        // AWS 凭据与配置
         for path in &[
             "/home/user/.aws/credentials",
             "/home/user/.aws/config",
@@ -592,6 +629,7 @@ mod tests {
         }
     }
 
+    /// 验证 Docker 认证与 GPG 密钥受保护。
     #[test]
     fn test_docker_and_gpg() {
         let checker = ProtectedPathChecker::new();
@@ -609,6 +647,7 @@ mod tests {
         }
     }
 
+    /// 验证数据库密码文件受保护。
     #[test]
     fn test_database_passwords() {
         let checker = ProtectedPathChecker::new();

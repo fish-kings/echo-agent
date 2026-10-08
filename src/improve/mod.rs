@@ -39,14 +39,19 @@
   evolution 记忆分层
 */
 
+/// 执行轨迹记录子模块。
 pub mod trajectory;
 
+/// 轨迹分析子模块。
 #[cfg(feature = "eval")]
 pub mod analyzer;
+/// 基于评测的改进子模块。
 #[cfg(feature = "eval")]
 pub mod eval_improvement;
+/// 改进候选生成子模块。
 #[cfg(feature = "eval")]
 pub mod generator;
+/// 改进循环子模块。
 #[cfg(feature = "eval")]
 pub mod r#loop;
 
@@ -245,4 +250,3 @@ impl RunCritique {
         lines.join("\n")
     }
 }
-</content>

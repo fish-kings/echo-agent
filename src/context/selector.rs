@@ -1,7 +1,9 @@
-//! 上下文选择器 —— 根据文件与当前任务的相关性打分。
-//!
-//! 通过符号匹配、最近修改时间以及 git 变更检测，
-//! 找出对上下文组装最相关的文件。
+/*!
+上下文选择器 —— 根据文件与当前任务的相关性打分。
+
+通过符号匹配、最近修改时间以及 git 变更检测，
+找出对上下文组装最相关的文件。
+*/
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,6 +21,7 @@ pub struct ContextSelector {
 }
 
 impl Default for ContextSelector {
+    /// 使用默认权重创建上下文选择器。
     fn default() -> Self {
         Self {
             symbol_weight: 1.0,
@@ -115,6 +118,7 @@ impl ContextSelector {
 mod tests {
     use super::*;
 
+    /// 验证符号匹配会提升文件得分。
     #[test]
     fn test_score_symbol_match() {
         let selector = ContextSelector::new();
@@ -134,6 +138,7 @@ mod tests {
         assert_eq!(scored[0].0, PathBuf::from("src/auth.rs"));
     }
 
+    /// 验证最近修改与 Git 变更信号会计入得分。
     #[test]
     fn test_score_recency_and_git() {
         let selector = ContextSelector::new();
@@ -145,6 +150,7 @@ mod tests {
         assert_eq!(scored.len(), 2);
     }
 
+    /// 验证得分相同时按路径排序以保证确定性。
     #[test]
     fn equal_scores_are_ordered_by_path() {
         let selector = ContextSelector::new();

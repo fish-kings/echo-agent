@@ -1,9 +1,12 @@
-//! Guard system core trait and types
+//! 护栏（Guard）系统核心 trait 与类型
 
+/// 内容安全护栏（PII 检测与脱敏）
 #[cfg(feature = "guard")]
 pub mod content;
+/// 基于 LLM 的语义护栏
 #[cfg(feature = "guard")]
 pub mod llm;
+/// 基于规则（关键词/正则）的护栏
 #[cfg(feature = "guard")]
 pub mod rule;
 
@@ -12,20 +15,21 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Guard check direction
+/// 护栏检查方向
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardDirection {
-    /// User input direction check
+    /// 用户输入方向检查
     Input,
-    /// Model output direction check
+    /// 模型输出方向检查
     Output,
-    /// Tool input parameter check
+    /// 工具输入参数检查
     ToolInput,
-    /// Tool output result check
+    /// 工具输出结果检查
     ToolOutput,
 }
 
 impl std::fmt::Display for GuardDirection {
+    /// 输出方向的 snake_case 标识
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             GuardDirection::Input => write!(f, "input"),
@@ -36,44 +40,49 @@ impl std::fmt::Display for GuardDirection {
     }
 }
 
-/// Guard check result
+/// 护栏检查结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GuardResult {
+    /// 检查通过
     Pass,
+    /// 内容被拦截
     Block {
-        /// Block reason
+        /// 拦截原因
         reason: String,
     },
-    /// Multiple warnings collected from all guards.
+    /// 从所有护栏收集到的多条警告。
     Warn {
-        /// Warning reason list
+        /// 警告原因列表
         reasons: Vec<String>,
     },
-    /// Content was safely transformed and must replace the original payload.
+    /// 内容已被安全转换，必须替换原始负载。
     Transform {
-        /// Replacement content to pass to subsequent guards and consumers.
+        /// 传递给后续护栏和消费方的替换内容。
         content: String,
-        /// Reasons describing the transformation.
+        /// 描述本次转换的原因。
         reasons: Vec<String>,
     },
 }
 
 impl GuardResult {
+    /// 判断结果是否为拦截
     pub fn is_blocked(&self) -> bool {
         matches!(self, GuardResult::Block { .. })
     }
 }
 
-/// Guard trait
+/// 护栏 trait
 pub trait Guard: Send + Sync {
-    /// Get the guard name
+    /// 获取护栏名称
     fn name(&self) -> &str;
 
-    /// Check content
-    ///
-    /// # Parameters
-    /// * `content` - Content to check
-    /// * `direction` - Check direction
+    /**
+    检查内容
+
+    # 参数
+    * `content` - 待检查的内容
+    * `direction` - 检查方向
+    */
     fn check<'a>(
         &'a self,
         content: &'a str,
@@ -81,18 +90,21 @@ pub trait Guard: Send + Sync {
     ) -> BoxFuture<'a, Result<GuardResult>>;
 }
 
-/// Guard manager
+/// 护栏管理器
 pub struct GuardManager {
+    /// 按注册顺序排列的护栏链
     guards: Vec<Arc<dyn Guard>>,
 }
 
 impl Default for GuardManager {
+    /// 创建空的护栏管理器
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Clone for GuardManager {
+    /// 克隆护栏管理器（共享底层护栏实例）
     fn clone(&self) -> Self {
         Self {
             guards: self.guards.clone(),
@@ -101,30 +113,31 @@ impl Clone for GuardManager {
 }
 
 impl GuardManager {
-    /// Create an empty guard manager
+    /// 创建空的护栏管理器
     pub fn new() -> Self {
         Self { guards: Vec::new() }
     }
 
-    /// Add a guard
+    /// 添加一个护栏
     pub fn add(&mut self, guard: Arc<dyn Guard>) {
         self.guards.push(guard);
     }
 
-    /// Create a manager from a list of guards
+    /// 从护栏列表创建管理器
     pub fn from_guards(guards: Vec<Arc<dyn Guard>>) -> Self {
         Self { guards }
     }
 
-    /// Check if empty (no guards added)
+    /// 判断是否为空（未添加任何护栏）
     pub fn is_empty(&self) -> bool {
         self.guards.is_empty()
     }
 
-    /// Run the guard chain and return its decision, including transformed content.
-    ///
-    /// Guards run in registration order because a transforming guard changes the
-    /// content that every subsequent guard must inspect.
+    /**
+    运行护栏链并返回最终决策（包括转换后的内容）。
+
+    护栏按注册顺序执行，因为执行转换的护栏会改变后续每个护栏需要检查的内容。
+    */
     pub async fn check_all(&self, content: &str, direction: GuardDirection) -> Result<GuardResult> {
         if self.guards.is_empty() {
             return Ok(GuardResult::Pass);
@@ -179,6 +192,7 @@ impl GuardManager {
 mod tests {
     use super::*;
 
+    /// 将 "secret" 替换为 "[redacted]" 的测试护栏
     struct ReplaceGuard;
 
     impl Guard for ReplaceGuard {
@@ -200,6 +214,7 @@ mod tests {
         }
     }
 
+    /// 内容中仍含 "secret" 时拦截的测试护栏
     struct RejectUnredactedGuard;
 
     impl Guard for RejectUnredactedGuard {

@@ -1,31 +1,44 @@
-//! Contracts for the learning package's docs, examples, and public facade.
+//! 学习包的文档、示例与公共门面（facade）契约测试。
 
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `cargo metadata` 输出中本测试关心的工作区元数据子集。
 #[derive(serde::Deserialize)]
 struct WorkspaceMetadata {
+    /// 所有已解析的包（`--no-deps` 下仅含工作区包）。
     packages: Vec<WorkspacePackage>,
+    /// 工作区成员包的 ID 列表。
     workspace_members: Vec<String>,
 }
 
+/// `cargo metadata` 中单个包的描述。
 #[derive(serde::Deserialize)]
 struct WorkspacePackage {
+    /// 包的唯一 ID。
     id: String,
+    /// 包名。
     name: String,
+    /// 包 `Cargo.toml` 的绝对路径。
     manifest_path: PathBuf,
+    /// 包声明的 feature 及其依赖的 feature 列表。
     features: BTreeMap<String, Vec<String>>,
+    /// 包内的构建目标（lib、example、test 等）。
     targets: Vec<WorkspaceTarget>,
 }
 
+/// 包内的单个构建目标。
 #[derive(serde::Deserialize)]
 struct WorkspaceTarget {
+    /// 目标名称。
     name: String,
+    /// 目标类型列表（如 `example`、`test`）。
     kind: Vec<String>,
 }
 
+/// 递归收集目录下的所有 Markdown 文件，跳过 `.git`、`.worktrees` 与 `target` 目录。
 fn collect_markdown_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
@@ -45,6 +58,7 @@ fn collect_markdown_files(directory: &Path, files: &mut Vec<PathBuf>) -> std::io
     Ok(())
 }
 
+/// 从 Markdown 链接的原始目标中提取本地相对路径；外部链接、锚点或绝对路径返回 `None`。
 fn local_link_target(raw: &str) -> Option<&str> {
     let raw = raw.trim();
     if raw.starts_with('#')
@@ -62,6 +76,7 @@ fn local_link_target(raw: &str) -> Option<&str> {
     (!target.is_empty() && !Path::new(target).is_absolute()).then_some(target)
 }
 
+/// 检查给定 Markdown 文件中的本地链接，返回所有指向不存在路径的链接描述。
 fn unresolved_local_links(
     root: &Path,
     files: &[PathBuf],
@@ -96,6 +111,7 @@ fn unresolved_local_links(
     Ok(broken)
 }
 
+/// 按出现顺序返回 Markdown 中（代码围栏之外）各标题的级别序列。
 fn markdown_heading_profile(content: &str) -> Vec<usize> {
     let mut in_fence = false;
     let mut profile = Vec::new();
@@ -119,6 +135,7 @@ fn markdown_heading_profile(content: &str) -> Vec<usize> {
     profile
 }
 
+/// 统计 Markdown 的表格行数与代码围栏标记数，返回 `(表格行数, 围栏数)`。
 fn markdown_structure(content: &str) -> (usize, usize) {
     let mut table_rows = 0_usize;
     let mut fences = 0_usize;
@@ -135,6 +152,7 @@ fn markdown_structure(content: &str) -> (usize, usize) {
     (table_rows, fences)
 }
 
+/// 判断 Markdown 的标题层级序列与表格/围栏结构是否与期望完全一致。
 fn has_expected_markdown_structure(
     content: &str,
     heading_profile: &[usize],
@@ -143,6 +161,7 @@ fn has_expected_markdown_structure(
     markdown_heading_profile(content) == heading_profile && markdown_structure(content) == structure
 }
 
+/// 判断每个目标在内容中恰好出现一次，且按给定顺序排列。
 fn contains_targets_once_in_order(content: &str, targets: &[&str]) -> bool {
     let mut previous = None;
     for target in targets {
@@ -160,6 +179,7 @@ fn contains_targets_once_in_order(content: &str, targets: &[&str]) -> bool {
     true
 }
 
+/// 收集 `examples` 与 `tests/example_contracts` 下所有 demo 源文件，文件名重复时返回错误。
 fn demo_sources() -> Result<BTreeMap<String, PathBuf>, Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut sources = BTreeMap::new();
@@ -184,6 +204,7 @@ fn demo_sources() -> Result<BTreeMap<String, PathBuf>, Box<dyn std::error::Error
     Ok(sources)
 }
 
+/// 运行 `cargo metadata` 并返回工作区根目录及全部工作区成员包。
 fn workspace_packages() -> Result<(PathBuf, Vec<WorkspacePackage>), Box<dyn std::error::Error>> {
     let learning_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = learning_root.parent().ok_or_else(|| {
@@ -222,6 +243,7 @@ fn workspace_packages() -> Result<(PathBuf, Vec<WorkspacePackage>), Box<dyn std:
     Ok((workspace_root.to_path_buf(), packages))
 }
 
+/// 提取指定二级标题下的 Markdown 段落内容，直到下一个二级标题为止。
 fn markdown_section(content: &str, heading: &str) -> Result<String, std::io::Error> {
     let mut found = false;
     let mut section = String::new();
@@ -245,6 +267,7 @@ fn markdown_section(content: &str, heading: &str) -> Result<String, std::io::Err
     }
 }
 
+/// 从 feature 表格段落中解析出所有 feature 名称，表格为空时返回错误。
 fn feature_table_entries(section: &str) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let feature_row = Regex::new(r"^\|\s*`([^`]+)`\s*\|")?;
     let entries = section
@@ -263,6 +286,7 @@ fn feature_table_entries(section: &str) -> Result<Vec<String>, Box<dyn std::erro
     }
 }
 
+/// 在命令行参数中查找指定选项（如 `-p`）后紧跟的取值。
 fn command_option<'a>(tokens: &'a [String], flag: &str) -> Option<&'a str> {
     tokens.windows(2).find_map(|pair| {
         pair.first()
@@ -272,6 +296,7 @@ fn command_option<'a>(tokens: &'a [String], flag: &str) -> Option<&'a str> {
     })
 }
 
+/// 判断 `tests/example_contracts` 下是否定义了名为 `filter` 的契约函数。
 fn contract_filter_defined(learning_root: &Path, filter: &str) -> Result<bool, std::io::Error> {
     let marker = format!("fn {filter}(");
     for entry in std::fs::read_dir(learning_root.join("tests/example_contracts"))? {
@@ -285,6 +310,7 @@ fn contract_filter_defined(learning_root: &Path, filter: &str) -> Result<bool, s
     Ok(false)
 }
 
+/// 校验根 README 描述的包拓扑与工作区实际成员一致。
 #[test]
 fn root_readmes_match_workspace_package_topology() -> Result<(), Box<dyn std::error::Error>> {
     let (workspace_root, packages) = workspace_packages()?;
@@ -382,6 +408,7 @@ fn root_readmes_match_workspace_package_topology() -> Result<(), Box<dyn std::er
     }
 }
 
+/// 校验根 README 中的 feature 表格与 Cargo 元数据中的 feature 列表一致。
 #[test]
 fn root_readme_feature_tables_match_cargo_metadata() -> Result<(), Box<dyn std::error::Error>> {
     let (workspace_root, packages) = workspace_packages()?;
@@ -436,6 +463,7 @@ fn root_readme_feature_tables_match_cargo_metadata() -> Result<(), Box<dyn std::
     }
 }
 
+/// 校验公开文档不再宣称检查点可恢复计划（plan）状态。
 #[test]
 fn public_checkpoint_docs_do_not_claim_plan_recovery() -> Result<(), Box<dyn std::error::Error>> {
     let learning_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -455,12 +483,12 @@ fn public_checkpoint_docs_do_not_claim_plan_recovery() -> Result<(), Box<dyn std
         ),
         (
             "src/memory.rs",
-            "legacy Store round trips",
+            "`current_plan` 字段仅用于兼容旧版 Store",
             ["messages + plan", "messages + current plan"].as_slice(),
         ),
         (
             "src/agent/snapshot.rs",
-            "Legacy `current_plan` values remain raw Store data",
+            "旧版 `current_plan` 数据仍以原始 Store 数据形式保留",
             ["messages + plan", "messages + current plan"].as_slice(),
         ),
         (
@@ -497,6 +525,7 @@ fn public_checkpoint_docs_do_not_claim_plan_recovery() -> Result<(), Box<dyn std
     }
 }
 
+/// 校验根 README 中的学习包 cargo 命令引用的 example/test 目标与契约过滤器真实存在。
 #[test]
 fn root_readme_learning_commands_reference_cargo_targets() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -608,6 +637,7 @@ fn root_readme_learning_commands_reference_cargo_targets() -> Result<(), Box<dyn
     }
 }
 
+/// 校验基础框架文档已被导航收录，且中英文版本结构成对一致。
 #[test]
 fn foundational_framework_docs_are_routed_and_structurally_paired()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -778,6 +808,7 @@ fn foundational_framework_docs_are_routed_and_structurally_paired()
     }
 }
 
+/// 用构造的 Markdown 验证结构契约能识别对称删除与导航重排。
 #[test]
 fn foundational_structure_contract_rejects_symmetric_deletion_and_navigation_reorder()
 -> Result<(), std::io::Error> {
@@ -801,6 +832,7 @@ fn foundational_structure_contract_rejects_symmetric_deletion_and_navigation_reo
     Ok(())
 }
 
+/// 校验任务与工作流的权威入口在文档中与公开代码入口相互对应。
 #[test]
 fn task_and_workflow_authorities_are_documented_against_public_entries()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -878,6 +910,7 @@ fn task_and_workflow_authorities_are_documented_against_public_entries()
     }
 }
 
+/// 校验学习包内 Markdown 的所有本地链接均可解析。
 #[test]
 fn learning_markdown_has_resolvable_local_links() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -896,6 +929,7 @@ fn learning_markdown_has_resolvable_local_links() -> Result<(), Box<dyn std::err
     }
 }
 
+/// 校验示例 README 恰好列出每个 demo 一次。
 #[test]
 fn example_manifest_lists_every_demo_once() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -915,6 +949,7 @@ fn example_manifest_lists_every_demo_once() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+/// 校验契约测试入口文件包含每个确定性 demo。
 #[test]
 fn contract_harness_lists_every_deterministic_demo() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -934,6 +969,7 @@ fn contract_harness_lists_every_deterministic_demo() -> Result<(), Box<dyn std::
     Ok(())
 }
 
+/// 校验 demo 仅通过公共门面访问框架，并遵守安全的字符串与 JSON 访问约定。
 #[test]
 fn demos_use_only_the_public_facade_and_safe_string_access()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1003,6 +1039,7 @@ fn demos_use_only_the_public_facade_and_safe_string_access()
     Ok(())
 }
 
+/// 校验插件发布相关文档与 demo 共享同一套协调器回执契约。
 #[test]
 fn plugin_publication_docs_and_demo_share_the_coordinator_receipt_contract()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1038,6 +1075,7 @@ fn plugin_publication_docs_and_demo_share_the_coordinator_receipt_contract()
     Ok(())
 }
 
+/// 校验公开生命周期代码片段保留了需 await 的关闭所有者调用。
 #[test]
 fn public_lifecycle_snippets_retain_awaited_close_owners() -> Result<(), Box<dyn std::error::Error>>
 {
@@ -1073,6 +1111,7 @@ fn public_lifecycle_snippets_retain_awaited_close_owners() -> Result<(), Box<dyn
     Ok(())
 }
 
+/// 校验学习包名称已统一为 `echo-agent-learning`。
 #[test]
 fn package_identity_is_consolidated() -> Result<(), Box<dyn std::error::Error>> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

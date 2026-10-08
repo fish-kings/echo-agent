@@ -1,16 +1,18 @@
-//! 会话级审批缓存
-//!
-//! 缓存用户的审批决策，避免同一工具 + 参数组合重复请求审批。
-//! 支持三种缓存粒度：
-//! - `Once`: 不缓存，每次都重新请求
-//! - `Session`: 缓存到会话结束，按 tool_name + args_hash 匹配
-//! - `SessionTool`: 缓存到会话结束，按 tool_name 匹配（忽略参数）
-//!
-//! ## TTL 支持
-//!
-//! 缓存条目支持可配置的 TTL（Time-To-Live）。
-//! 参考 Claude Code 的设计：Max 用户 1 小时 TTL，Pro/API 用户 5 分钟 TTL。
-//! 默认 `new()` 不过期（向后兼容），通过 `with_ttl()` 启用。
+/*!
+会话级审批缓存
+
+缓存用户的审批决策，避免同一工具 + 参数组合重复请求审批。
+支持三种缓存粒度：
+- `Once`: 不缓存，每次都重新请求
+- `Session`: 缓存到会话结束，按 tool_name + args_hash 匹配
+- `SessionTool`: 缓存到会话结束，按 tool_name 匹配（忽略参数）
+
+## TTL 支持
+
+缓存条目支持可配置的 TTL（Time-To-Live）。
+参考 Claude Code 的设计：Max 用户 1 小时 TTL，Pro/API 用户 5 分钟 TTL。
+默认 `new()` 不过期（向后兼容），通过 `with_ttl()` 启用。
+*/
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -23,14 +25,16 @@ use super::policy::ApprovalScope;
 /// 默认缓存容量上限（per-tool 条目总数）
 const DEFAULT_MAX_ENTRIES: usize = 10_000;
 
-/// 会话级审批缓存
-///
-/// 线程安全，使用 `std::sync::RwLock` 保护内部数据。
-/// Key 的生成方式：
-/// - `Session` scope: `tool_name + args_key`（默认完整 JSON；启用 hash 模式时使用 SHA256）
-/// - `SessionTool` scope: `tool_name`（该工具的所有参数均匹配）
-///
-/// 支持可选 TTL：缓存条目超过 TTL 后自动失效。
+/**
+会话级审批缓存
+
+线程安全，使用 `std::sync::RwLock` 保护内部数据。
+Key 的生成方式：
+- `Session` scope: `tool_name + args_key`（默认完整 JSON；启用 hash 模式时使用 SHA256）
+- `SessionTool` scope: `tool_name`（该工具的所有参数均匹配）
+
+支持可选 TTL：缓存条目超过 TTL 后自动失效。
+*/
 #[derive(Debug)]
 pub struct SessionApprovalCache {
     /// tool_name -> (canonical_args_json -> 记录时间)
@@ -57,10 +61,12 @@ impl SessionApprovalCache {
         }
     }
 
-    /// 创建带 TTL 的审批缓存
-    ///
-    /// 缓存条目超过 `ttl` 后自动失效。
-    /// 参考：Claude Code 使用 1h（Max）/ 5min（Pro）TTL。
+    /**
+    创建带 TTL 的审批缓存
+
+    缓存条目超过 `ttl` 后自动失效。
+    参考：Claude Code 使用 1h（Max）/ 5min（Pro）TTL。
+    */
     pub fn with_ttl(ttl: Duration) -> Self {
         Self {
             approvals: Arc::new(RwLock::new(HashMap::new())),
@@ -71,10 +77,12 @@ impl SessionApprovalCache {
         }
     }
 
-    /// 创建使用 SHA256 哈希模式缓存参数 key 的实例
-    ///
-    /// 当工具参数很大时，使用 SHA256 哈希值作为缓存 key
-    /// 而非完整 JSON 字符串，显著减少内存占用。
+    /**
+    创建使用 SHA256 哈希模式缓存参数 key 的实例
+
+    当工具参数很大时，使用 SHA256 哈希值作为缓存 key
+    而非完整 JSON 字符串，显著减少内存占用。
+    */
     pub fn with_hash_args() -> Self {
         Self {
             approvals: Arc::new(RwLock::new(HashMap::new())),
@@ -204,12 +212,14 @@ impl SessionApprovalCache {
             .clear();
     }
 
-    /// 清理过期条目
-    ///
-    /// 扫描并移除所有超过 TTL 的缓存条目。
-    /// 如果未设置 TTL，此方法无操作。
-    ///
-    /// 返回清理的条目数。
+    /**
+    清理过期条目
+
+    扫描并移除所有超过 TTL 的缓存条目。
+    如果未设置 TTL，此方法无操作。
+
+    返回清理的条目数。
+    */
     pub fn cleanup_expired(&self) -> usize {
         let ttl = match self.cache_ttl {
             Some(ttl) => ttl,
@@ -272,10 +282,12 @@ impl SessionApprovalCache {
         }
     }
 
-    /// 将参数序列化为规范化 JSON 字符串作为缓存 key
-    ///
-    /// 如果启用了 hash_args 模式，则计算 SHA256 十六进制摘要，
-    /// 避免存储大参数的完整 JSON 字符串。
+    /**
+    将参数序列化为规范化 JSON 字符串作为缓存 key
+
+    如果启用了 hash_args 模式，则计算 SHA256 十六进制摘要，
+    避免存储大参数的完整 JSON 字符串。
+    */
     fn args_key(&self, args: &Value) -> String {
         let json = serde_json::to_string(args).unwrap_or_else(|_| format!("{args}"));
         if self.hash_args {
@@ -285,6 +297,7 @@ impl SessionApprovalCache {
         }
     }
 
+    /// 生成带作用域前缀的工具 key（以长度前缀避免不同作用域拼接冲突）。
     fn tool_key(scope_id: &str, tool_name: &str) -> String {
         format!("{}:{}:{}", scope_id.chars().count(), scope_id, tool_name)
     }
@@ -294,8 +307,10 @@ impl SessionApprovalCache {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
 
-        // 使用 DefaultHasher + 十六进制格式作为轻量级哈希方案
-        // 避免引入额外依赖；DefaultHasher 在本进程内是确定的
+        /*
+        使用 DefaultHasher + 十六进制格式作为轻量级哈希方案
+        避免引入额外依赖；DefaultHasher 在本进程内是确定的
+        */
         let mut hasher = DefaultHasher::new();
         input.hash(&mut hasher);
         let hash = hasher.finish();
@@ -304,12 +319,14 @@ impl SessionApprovalCache {
 }
 
 impl Default for SessionApprovalCache {
+    /// 创建默认（永不过期）的审批缓存。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Clone for SessionApprovalCache {
+    /// 深拷贝缓存内容，克隆后与原实例相互独立。
     fn clone(&self) -> Self {
         Self {
             approvals: Arc::new(RwLock::new(
@@ -349,12 +366,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 验证空缓存不命中任何审批。
     #[test]
     fn test_empty_cache_not_approved() {
         let cache = SessionApprovalCache::new();
         assert!(!cache.is_approved("test-scope", "tool", &json!({"a": 1})));
     }
 
+    /// 验证 Session 粒度按精确参数缓存。
     #[test]
     fn test_session_scope_caches_exact_args() {
         let cache = SessionApprovalCache::new();
@@ -362,12 +381,13 @@ mod tests {
         let args = json!({"path": "/tmp/test"});
         cache.record_approval("test-scope", "Read", &args, ApprovalScope::Session);
 
-        // Same args → cached
+        // 相同参数 → 命中缓存
         assert!(cache.is_approved("test-scope", "Read", &json!({"path": "/tmp/test"})));
-        // Different args → not cached
+        // 不同参数 → 未命中缓存
         assert!(!cache.is_approved("test-scope", "Read", &json!({"path": "/tmp/other"})));
     }
 
+    /// 验证 Session 粒度的缓存不会跨越逻辑作用域边界。
     #[test]
     fn session_scope_does_not_cross_logical_boundaries() {
         let cache = SessionApprovalCache::new();
@@ -384,19 +404,21 @@ mod tests {
         assert!(!cache.is_approved("agent-b:conversation-a", "Read", &args));
     }
 
+    /// 验证 SessionTool 粒度对该工具任意参数生效。
     #[test]
     fn test_session_tool_scope() {
         let cache = SessionApprovalCache::new();
 
         cache.record_approval("test-scope", "Bash", &json!({}), ApprovalScope::SessionTool);
 
-        // Any args → cached
+        // 任意参数 → 命中缓存
         assert!(cache.is_approved("test-scope", "Bash", &json!({"cmd": "ls"})));
         assert!(cache.is_approved("test-scope", "Bash", &json!({"cmd": "rm -rf /"})));
-        // Different tool → not cached
+        // 不同工具 → 未命中缓存
         assert!(!cache.is_approved("test-scope", "Read", &json!({})));
     }
 
+    /// 验证 Once 粒度不写入缓存。
     #[test]
     fn test_once_scope_no_cache() {
         let cache = SessionApprovalCache::new();
@@ -406,6 +428,7 @@ mod tests {
         assert!(!cache.is_approved("test-scope", "tool", &json!({"a": 1})));
     }
 
+    /// 验证撤销指定工具的缓存审批。
     #[test]
     fn test_revoke() {
         let cache = SessionApprovalCache::new();
@@ -428,6 +451,7 @@ mod tests {
         assert!(cache.is_approved("test-scope", "tool2", &json!({"x": 1})));
     }
 
+    /// 验证清空全部缓存。
     #[test]
     fn test_clear() {
         let cache = SessionApprovalCache::new();
@@ -445,6 +469,7 @@ mod tests {
         assert!(!cache.is_approved("test-scope", "tool2", &json!({})));
     }
 
+    /// 验证克隆后的缓存与原缓存相互独立。
     #[test]
     fn test_clone_independent() {
         let cache = SessionApprovalCache::new();
@@ -459,6 +484,7 @@ mod tests {
 
     // ── TTL 测试 ────────────────────────────────────────────────────────────────
 
+    /// 验证参数级条目在过期前有效。
     #[test]
     fn test_ttl_entry_valid_before_expiry() {
         let cache = SessionApprovalCache::with_ttl(Duration::from_secs(3600));
@@ -473,6 +499,7 @@ mod tests {
         assert!(cache.is_approved("test-scope", "Read", &json!({"path": "/tmp/test"})));
     }
 
+    /// 验证全局条目在过期前有效。
     #[test]
     fn test_ttl_global_entry_valid_before_expiry() {
         let cache = SessionApprovalCache::with_ttl(Duration::from_secs(3600));
@@ -481,6 +508,7 @@ mod tests {
         assert!(cache.is_approved("test-scope", "Bash", &json!({"cmd": "ls"})));
     }
 
+    /// 验证默认未设置 TTL 时条目不过期。
     #[test]
     fn test_ttl_default_no_expiry() {
         let cache = SessionApprovalCache::new();
@@ -496,6 +524,7 @@ mod tests {
         assert_eq!(cache.stats().ttl, None);
     }
 
+    /// 验证参数级条目过期后不再命中。
     #[test]
     fn test_ttl_expired_entry_not_approved() {
         // 使用极短 TTL 测试过期
@@ -514,6 +543,7 @@ mod tests {
         assert!(!cache.is_approved("test-scope", "tool", &json!({"a": 1})));
     }
 
+    /// 验证全局条目过期后不再命中。
     #[test]
     fn test_ttl_expired_global_entry_not_approved() {
         let cache = SessionApprovalCache::with_ttl(Duration::from_millis(1));
@@ -524,6 +554,7 @@ mod tests {
         assert!(!cache.is_approved("test-scope", "Bash", &json!({"cmd": "ls"})));
     }
 
+    /// 验证清理过期条目并返回清理数量。
     #[test]
     fn test_cleanup_expired() {
         let cache = SessionApprovalCache::with_ttl(Duration::from_millis(1));
@@ -544,11 +575,12 @@ mod tests {
         std::thread::sleep(Duration::from_millis(5));
 
         let removed = cache.cleanup_expired();
-        assert_eq!(removed, 2); // 1 per-tool + 1 global
+        assert_eq!(removed, 2); // 1 条参数级 + 1 条全局
         assert_eq!(cache.stats().per_tool_entries, 0);
         assert_eq!(cache.stats().global_entries, 0);
     }
 
+    /// 验证未设置 TTL 时清理为空操作。
     #[test]
     fn test_cleanup_no_ttl_is_noop() {
         let cache = SessionApprovalCache::new();
@@ -564,6 +596,7 @@ mod tests {
         assert!(cache.is_approved("test-scope", "tool", &json!({"a": 1})));
     }
 
+    /// 验证缓存统计信息。
     #[test]
     fn test_stats() {
         let cache = SessionApprovalCache::with_ttl(Duration::from_secs(300));
@@ -589,7 +622,7 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.per_tool_entries, 2);
         assert_eq!(stats.global_entries, 1);
-        assert_eq!(stats.tools_cached, 1); // only tool1 has per-tool entries
+        assert_eq!(stats.tools_cached, 1); // 只有 tool1 有参数级条目
         assert_eq!(stats.ttl, Some(Duration::from_secs(300)));
     }
 }

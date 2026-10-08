@@ -7,15 +7,19 @@ use echo_core::tokenizer::Tokenizer;
 use futures::future::BoxFuture;
 use std::time::Instant;
 
-/// 滑动窗口压缩：在 token 限额内保留最近至多 `window_size` 条非 system 消息。
-///
-/// - system 消息始终保留在列表最前面，不计入窗口计数
-/// - 适用于高频、上下文独立的场景，或需要严格控制 token 成本的场景
+/**
+滑动窗口压缩：在 token 限额内保留最近至多 `window_size` 条非 system 消息。
+
+- system 消息始终保留在列表最前面，不计入窗口计数
+- 适用于高频、上下文独立的场景，或需要严格控制 token 成本的场景
+*/
 pub struct SlidingWindowCompressor {
+    /// 保留的非 system 消息条数上限。
     window_size: usize,
 }
 
 impl SlidingWindowCompressor {
+    /// 创建窗口大小为 `window_size` 的滑动窗口压缩器。
     pub fn new(window_size: usize) -> Self {
         Self { window_size }
     }

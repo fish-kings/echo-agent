@@ -1,8 +1,10 @@
-//! 飞书（Lark）渠道模块
-//!
-//! 支持两种接收模式：
-//! - WebSocket 长连接（长轮询）：无需公网 IP，纯 Rust 实现
-//! - Webhook：需要公网 IP，通过 HTTP 事件推送
+/*!
+飞书（Lark）渠道模块
+
+支持两种接收模式：
+- WebSocket 长连接（长轮询）：无需公网 IP，纯 Rust 实现
+- Webhook：需要公网 IP，通过 HTTP 事件推送
+*/
 
 use super::super::types::require_sender_id;
 use echo_core::error::ChannelError;
@@ -20,8 +22,10 @@ fn sender_scope_for_kind(kind: &str, value: &str) -> Result<String, ChannelError
     require_sender_id(Some(value)).map(|value| format!("{kind}:{value}"))
 }
 
-/// 根据 `open_id`/`user_id` 计算发送者的命名空间标识，优先使用 `open_id`；
-/// 两者都缺失时返回错误，避免不同身份类型的原始值互相冲突。
+/**
+根据 `open_id`/`user_id` 计算发送者的命名空间标识，优先使用 `open_id`；
+两者都缺失时返回错误，避免不同身份类型的原始值互相冲突。
+*/
 pub(super) fn sender_scope(
     open_id: Option<&str>,
     user_id: Option<&str>,

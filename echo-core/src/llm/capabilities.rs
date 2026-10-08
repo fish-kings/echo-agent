@@ -1,78 +1,79 @@
-//! Provider capabilities and model profile abstractions.
-//!
-//! These types allow runtime querying of what features a given LLM provider/model
-//! supports, replacing hardcoded provider-specific behavior with capability checks.
-//!
-//! ## ProviderCapabilities
-//!
-//! Low-level protocol features that differ across providers (OpenAI-compatible,
-//! Anthropic, Ollama). Each provider returns its static capabilities set.
-//!
-//! ## ModelProfile
-//!
-//! Higher-level model information resolved from a model name and provider config.
-//! Combines provider capabilities with model-specific knowledge (context window,
-//! reasoning support, multimodal support, etc.).
+/*!
+提供商能力与模型画像（profile）抽象。
+
+这些类型允许在运行时查询某个 LLM 提供商/模型支持哪些特性，用能力检查取代硬编码的
+提供商特定行为。
+
+## ProviderCapabilities
+
+不同提供商（OpenAI 兼容、Anthropic、Ollama）之间存在差异的底层协议特性。
+每个提供商返回其静态能力集合。
+
+## ModelProfile
+
+根据模型名称与提供商配置解析出的更高层模型信息。将提供商能力与模型特定知识
+（上下文窗口、推理支持、多模态支持等）结合在一起。
+*/
 
 use crate::llm::{LlmApiProtocol, ThinkingLevel, ThinkingProtocol};
 use std::collections::{HashMap, HashSet};
 
-// ── ProviderCapabilities ─────────────────────────────────────────────
+// ── ProviderCapabilities（提供商能力） ─────────────────────────────────────────────
 
-/// Protocol-level features that differ across LLM providers.
+/// 不同 LLM 提供商之间存在差异的协议层特性。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
-    /// Supports incremental streaming tool call deltas (OpenAI `delta.tool_calls`).
-    /// When false, tool calls are only available in final message (Anthropic block events).
+    /**
+    是否支持增量流式工具调用片段（OpenAI `delta.tool_calls`）。
+    为 false 时，工具调用仅在最终消息中可用（Anthropic 块事件）。
+    */
     pub streaming_tool_calls: bool,
 
-    /// Uses named SSE event types (Anthropic `event: content_block_start` etc.)
-    /// vs bare `data:` lines (OpenAI-compatible).
+    /// 使用具名 SSE 事件类型（Anthropic `event: content_block_start` 等），而非裸 `data:` 行（OpenAI 兼容）。
     pub named_sse_events: bool,
 
-    /// Supports `reasoning_content` / thinking output in streaming responses
-    /// (Qwen3, DeepSeek, OpenAI o-series).
+    /// 流式响应中是否支持 `reasoning_content` / 思考输出（Qwen3、DeepSeek、OpenAI o 系列）。
     pub reasoning_content: bool,
 
-    /// Supports image inputs (multimodal content parts).
+    /// 是否支持图像输入（多模态内容片段）。
     pub image_input: bool,
 
-    /// System prompt sent as a top-level request field (Anthropic `system`)
-    /// vs as a message in the `messages` array with `role: "system"`.
+    /// 系统提示词作为顶层请求字段发送（Anthropic `system`），而非作为 `messages` 数组中 `role: "system"` 的消息。
     pub system_as_top_level: bool,
 
-    /// Uses NDJSON (one JSON object per line, `\n` delimited) for streaming
-    /// instead of standard SSE `data:` lines (Ollama).
+    /// 流式传输使用 NDJSON（每行一个 JSON 对象，以 `\n` 分隔），而非标准 SSE `data:` 行（Ollama）。
     pub ndjson_streaming: bool,
 
-    /// Supports function/tool definitions in requests.
+    /// 请求中是否支持函数/工具定义。
     pub tool_support: bool,
 
-    /// Supports structured output (`response_format` with JSON Schema).
+    /// 是否支持结构化输出（带 JSON Schema 的 `response_format`）。
     pub structured_output: bool,
 
-    /// Requires a provider-specific version header (Anthropic `anthropic-version`).
+    /// 是否需要提供商特定的版本请求头（Anthropic `anthropic-version`）。
     pub requires_version_header: bool,
 
-    /// Supports parallel tool calls (multiple tools requested in a single
-    /// response). OpenAI, Anthropic, and most cloud providers support this;
-    /// Ollama and local models typically do not.
+    /**
+    是否支持并行工具调用（单个响应中请求多个工具）。
+    OpenAI、Anthropic 及大多数云提供商支持；Ollama 与本地模型通常不支持。
+    */
     pub supports_parallel_tool_calls: bool,
 
-    /// Supports an explicit `tool_choice=none` request control. Providers
-    /// without it can still implement final-only mode by exposing no tools.
+    /**
+    是否支持显式的 `tool_choice=none` 请求控制。
+    不支持的提供商仍可通过不暴露任何工具来实现仅最终回答模式。
+    */
     pub supports_tool_choice_none: bool,
 
-    /// Tokenizer name or identifier for accurate token counting (e.g.
-    /// `"cl100k_base"` for GPT-4, `"o200k_base"` for GPT-4o).
-    /// `None` means the tokenizer is unknown; callers should fall back to
-    /// heuristic counting.
+    /**
+    用于精确计数 token 的分词器名称或标识（例如 GPT-4 为 `"cl100k_base"`，GPT-4o 为 `"o200k_base"`）。
+    `None` 表示分词器未知，调用方应回退到启发式计数。
+    */
     pub tokenizer_name: Option<&'static str>,
 }
 
 impl ProviderCapabilities {
-    /// Default capabilities for OpenAI and OpenAI-compatible providers
-    /// (DashScope, DeepSeek, Moonshot, Zhipu, etc.).
+    /// OpenAI 及 OpenAI 兼容提供商（DashScope、DeepSeek、Moonshot、智谱等）的默认能力。
     pub const fn openai_compatible() -> Self {
         Self {
             streaming_tool_calls: true,
@@ -90,17 +91,17 @@ impl ProviderCapabilities {
         }
     }
 
-    /// Capabilities for Anthropic Messages API.
+    /// Anthropic Messages API 的能力。
     pub const fn anthropic() -> Self {
         Self {
-            streaming_tool_calls: false, // uses content_block_start/stop events
+            streaming_tool_calls: false, // 使用 content_block_start/stop 事件
             named_sse_events: true,
-            reasoning_content: false, // not mapped in this implementation
+            reasoning_content: false, // 本实现中未做映射
             image_input: true,
             system_as_top_level: true,
             ndjson_streaming: false,
             tool_support: true,
-            structured_output: false, // no JSON mode in Messages API
+            structured_output: false, // Messages API 无 JSON 模式
             requires_version_header: true,
             supports_parallel_tool_calls: true,
             supports_tool_choice_none: false,
@@ -108,7 +109,7 @@ impl ProviderCapabilities {
         }
     }
 
-    /// Capabilities for local Ollama.
+    /// 本地 Ollama 的能力。
     pub const fn ollama() -> Self {
         Self {
             streaming_tool_calls: false,
@@ -126,7 +127,7 @@ impl ProviderCapabilities {
         }
     }
 
-    /// Resolve capabilities from a provider name string.
+    /// 根据提供商名称字符串解析能力集合。
     pub fn from_provider_name(name: &str) -> Self {
         match name.to_ascii_lowercase().as_str() {
             "anthropic" => Self::anthropic(),
@@ -136,8 +137,9 @@ impl ProviderCapabilities {
     }
 }
 
-// ── ThinkingProfile ──────────────────────────────────────────────────
+// ── ThinkingProfile（思考能力画像） ──────────────────────────────────────────────────
 
+/// GPT-5.6 支持的思考档位。
 const GPT_56_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::None,
     ThinkingLevel::Low,
@@ -146,6 +148,7 @@ const GPT_56_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::Xhigh,
     ThinkingLevel::Max,
 ];
+/// Claude 4.6 支持的思考档位。
 const CLAUDE_46_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::Low,
     ThinkingLevel::Medium,
@@ -153,125 +156,134 @@ const CLAUDE_46_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::Xhigh,
     ThinkingLevel::Max,
 ];
+/// DeepSeek V4 支持的思考档位。
 const DEEPSEEK_V4_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::None,
     ThinkingLevel::Low,
     ThinkingLevel::High,
     ThinkingLevel::Max,
 ];
+/// GLM 5.2 支持的思考档位。
 const GLM_52_LEVELS: &[ThinkingLevel] =
     &[ThinkingLevel::None, ThinkingLevel::High, ThinkingLevel::Max];
+/// Kimi K3 支持的思考档位。
 const KIMI_K3_LEVELS: &[ThinkingLevel] =
     &[ThinkingLevel::Low, ThinkingLevel::High, ThinkingLevel::Max];
+/// Gemini 3 支持的思考档位。
 const GEMINI_3_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::Minimal,
     ThinkingLevel::Low,
     ThinkingLevel::Medium,
     ThinkingLevel::High,
 ];
+/// Gemini 2.5 支持的思考档位。
 const GEMINI_25_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::None,
     ThinkingLevel::Low,
     ThinkingLevel::Medium,
     ThinkingLevel::High,
 ];
+/// 仅开/关两档的思考开关档位。
 const TOGGLE_LEVELS: &[ThinkingLevel] = &[ThinkingLevel::None, ThinkingLevel::High];
+/// Ollama 上 gpt-oss 支持的思考档位。
 const OLLAMA_GPT_OSS_LEVELS: &[ThinkingLevel] = &[
     ThinkingLevel::Low,
     ThinkingLevel::Medium,
     ThinkingLevel::High,
 ];
 
-/// Centrally resolved request-side thinking capabilities for one concrete
-/// provider endpoint, API protocol, and model id.
+/// 针对某个具体提供商端点、API 协议与模型 ID 集中解析出的请求侧思考能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThinkingProfile {
+    /// 该模型使用的思考线路协议。
     pub protocol: ThinkingProtocol,
-    /// Effective choices only. The application adds `auto` separately; an
-    /// empty slice means the model decides or no verified control is known.
+    /**
+    仅包含有效档位。应用层会单独添加 `auto`；
+    空切片表示由模型自行决定，或尚无已验证的控制方式。
+    */
     pub levels: &'static [ThinkingLevel],
 }
 
 impl ThinkingProfile {
+    /// 以协议与档位列表构造思考画像。
     pub const fn new(protocol: ThinkingProtocol, levels: &'static [ThinkingLevel]) -> Self {
         Self { protocol, levels }
     }
 
+    /// 未知模型的思考画像：无协议、无档位。
     pub const fn unknown() -> Self {
         Self::new(ThinkingProtocol::None, &[])
     }
 
+    /// 是否支持手动控制思考档位（协议会发出请求字段且档位非空）。
     pub fn supports_manual_control(self) -> bool {
         self.protocol.emits_field() && !self.levels.is_empty()
     }
 }
 
-// ── ModelProfile ─────────────────────────────────────────────────────
+// ── ModelProfile（模型画像） ─────────────────────────────────────────────────────
 
-/// Higher-level model information combining provider capabilities with
-/// model-specific knowledge.
+/// 结合提供商能力与模型特定知识的更高层模型信息。
 #[derive(Debug, Clone)]
 pub struct ModelProfile {
-    /// Provider name.
+    /// 提供商名称。
     pub provider: String,
 
-    /// The resolved model name.
+    /// 解析后的模型名称。
     pub model_name: String,
 
-    /// Low-level protocol capabilities from the provider.
+    /// 来自提供商的底层协议能力。
     pub capabilities: ProviderCapabilities,
 
-    /// Whether this model is known to support `reasoning_content` / thinking.
+    /// 该模型是否已知支持 `reasoning_content` / 思考输出。
     pub supports_reasoning: bool,
 
-    /// Which thinking wire-protocol this model speaks, if any. Drives the
-    /// translation of `ChatRequest::thinking` in each provider implementation,
-    /// and prevents sending a thinking field to a model that would reject it
-    /// with a 400 (e.g. GPT-5-nano, Claude Opus 4.7+).
+    /**
+    该模型使用的思考线路协议（如有）。它决定各提供商实现如何转换 `ChatRequest::thinking`，
+    并避免向会以 400 拒绝该字段的模型（例如 GPT-5-nano、Claude Opus 4.7+）发送思考字段。
+    */
     pub thinking_protocol: crate::llm::thinking::ThinkingProtocol,
 
-    /// Verified effective levels for the resolved thinking protocol.
+    /// 所解析思考协议下已验证的有效档位。
     pub thinking_levels: &'static [ThinkingLevel],
 
-    /// Whether this model is multimodal-capable (accepts images).
+    /// 该模型是否具备多模态能力（接受图像）。
     pub supports_images: bool,
 
-    /// Whether this model can define and call tools.
+    /// 该模型是否能定义并调用工具。
     pub supports_tools: bool,
 
-    /// Known maximum output tokens (None if unknown).
+    /// 已知的最大输出 token 数（未知时为 None）。
     pub max_output_tokens: Option<u32>,
 
-    /// Whether this model supports streaming.
+    /// 该模型是否支持流式输出。
     pub supports_streaming: bool,
 
-    /// Whether this model supports parallel tool calls (derived from provider
-    /// capabilities; may be overridden for specific models).
+    /// 该模型是否支持并行工具调用（源自提供商能力，特定模型可覆盖）。
     pub supports_parallel_tool_calls: bool,
 
-    /// Whether the provider/model accepts explicit `tool_choice=none`.
+    /// 提供商/模型是否接受显式的 `tool_choice=none`。
     pub supports_tool_choice_none: bool,
 
-    /// Known context window in tokens.
+    /// 已知的上下文窗口大小（token 数）。
     pub context_window: Option<u32>,
 
-    /// Harness-level tool exclusions for this model.
+    /// 针对该模型在框架层面排除的工具集合。
     pub excluded_tools: HashSet<String>,
 
-    /// Stable model-specific system prompt suffix.
+    /// 稳定的模型特定系统提示词后缀。
     pub prompt_suffix: Option<String>,
 
-    /// Tokenizer name for accurate token counting (None if unknown).
+    /// 用于精确计数 token 的分词器名称（未知时为 None）。
     pub tokenizer_name: Option<&'static str>,
 }
 
-/// 根据厂商和模型名称推断上下文窗口大小。
-/// 未匹配到已知模式时返回 None。
+/// 根据厂商和模型名称推断上下文窗口大小；未匹配到已知模式时返回 None。
 pub fn infer_context_window(provider: &str, model_name: &str) -> Option<u32> {
     let provider = provider.trim().to_ascii_lowercase();
     let lower = model_name.to_ascii_lowercase();
     if matches!(provider.as_str(), "openai" | "azure-openai") && lower.starts_with("gpt-5.6") {
-        // GPT-5.6 Sol/Terra/Luna expose a 1.05M context window.
+        // GPT-5.6 Sol/Terra/Luna 提供 1.05M 的上下文窗口。
         Some(1_050_000)
     } else if provider == "anthropic"
         && (lower.starts_with("claude-fable-5")
@@ -295,28 +307,28 @@ pub fn infer_context_window(provider: &str, model_name: &str) -> Option<u32> {
 }
 
 impl ModelProfile {
-    /// Build a profile from provider capabilities and a model name.
-    /// Model-specific overrides are applied based on known model name patterns.
+    /// 根据提供商能力与模型名称构建画像，并按已知模型名称模式应用模型特定覆盖。
     pub fn new(model_name: &str, provider: &str, capabilities: ProviderCapabilities) -> Self {
         let lower = model_name.to_ascii_lowercase();
         let thinking_profile =
             resolve_thinking_profile(provider, model_name, LlmApiProtocol::ChatCompletions, None);
         let thinking_protocol = thinking_profile.protocol;
 
-        // Model-specific reasoning detection: a model "supports reasoning" if it
-        // both speaks a thinking protocol AND its provider emits reasoning_content
-        // in responses. (Adaptive-thinking Claude models still report reasoning
-        // content; they just don't accept a request field.)
+        /*
+        模型特定的推理检测：只有当模型既使用某种思考协议、其提供商又会在响应中输出
+        reasoning_content 时，才认为它"支持推理"。（自适应思考的 Claude 模型仍会上报
+        推理内容，只是不接受请求字段。）
+        */
         let supports_reasoning =
             !matches!(thinking_protocol, ThinkingProtocol::None) && capabilities.reasoning_content;
 
-        // Model-specific image detection
+        // 模型特定的图像支持检测
         let supports_images = capabilities.image_input
-            && !lower.starts_with("o3-mini") // o3-mini doesn't support images
+            && !lower.starts_with("o3-mini") // o3-mini 不支持图像
             && !lower.starts_with("o1-mini")
             && !lower.starts_with("o1-preview");
 
-        // Known max output tokens
+        // 已知的最大输出 token 数
         let max_output_tokens = if lower.contains("qwen3-235b") {
             Some(131_072)
         } else if lower.starts_with("gpt-5") || lower.starts_with("o3") || lower.starts_with("o4") {
@@ -327,7 +339,7 @@ impl ModelProfile {
             None
         };
 
-        // Tokenizer name mapping
+        // 分词器名称映射
         let tokenizer_name = if lower.starts_with("gpt-5") || lower.starts_with("gpt-4.5") {
             Some("o200k_base")
         } else if lower.starts_with("gpt-4") || lower.starts_with("gpt-3") {
@@ -346,7 +358,7 @@ impl ModelProfile {
             supports_images,
             supports_tools: capabilities.tool_support,
             max_output_tokens,
-            supports_streaming: true, // All supported providers stream
+            supports_streaming: true, // 所有已支持的提供商都支持流式
             supports_parallel_tool_calls: capabilities.supports_parallel_tool_calls,
             supports_tool_choice_none: capabilities.supports_tool_choice_none,
             context_window: infer_context_window(provider, model_name),
@@ -356,25 +368,32 @@ impl ModelProfile {
         }
     }
 
-    /// Build a profile from a provider name and model name.
+    /// 根据提供商名称与模型名称构建画像。
     pub fn from_provider_name(model_name: &str, provider: &str) -> Self {
         let capabilities = ProviderCapabilities::from_provider_name(provider);
         Self::new(model_name, provider, capabilities)
     }
 }
 
-/// Consumer-provided harness overrides for a provider or exact model.
+/// 由使用方提供、作用于某提供商或某精确模型的框架层覆盖配置。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModelProfileOverride {
+    /// 覆盖是否支持并行工具调用。
     pub supports_parallel_tool_calls: Option<bool>,
+    /// 覆盖是否支持显式 `tool_choice=none`。
     pub supports_tool_choice_none: Option<bool>,
+    /// 覆盖是否支持结构化输出。
     pub supports_structured_output: Option<bool>,
+    /// 覆盖上下文窗口大小（token 数）。
     pub context_window: Option<u32>,
+    /// 追加排除的工具名称集合。
     pub excluded_tools: HashSet<String>,
+    /// 覆盖系统提示词后缀。
     pub prompt_suffix: Option<String>,
 }
 
 impl ModelProfileOverride {
+    /// 将本覆盖配置中已设置的项应用到给定画像上。
     fn apply_to(&self, profile: &mut ModelProfile) {
         if let Some(value) = self.supports_parallel_tool_calls {
             profile.supports_parallel_tool_calls = value;
@@ -397,21 +416,26 @@ impl ModelProfileOverride {
     }
 }
 
-/// Resolves a base [`ModelProfile`] plus consumer-registered overrides.
-///
-/// Provider defaults are applied first. An exact normalized `provider:model`
-/// entry is then applied and therefore has higher precedence.
+/**
+解析基础 [`ModelProfile`] 并叠加使用方注册的覆盖配置。
+
+先应用提供商默认覆盖，再应用精确匹配的规范化 `provider:model` 条目，因此后者优先级更高。
+*/
 #[derive(Debug, Clone, Default)]
 pub struct ModelProfileResolver {
+    /// 以规范化提供商名为键的默认覆盖。
     provider_defaults: HashMap<String, ModelProfileOverride>,
+    /// 以规范化 `provider:model` 为键的精确模型覆盖。
     exact_models: HashMap<String, ModelProfileOverride>,
 }
 
 impl ModelProfileResolver {
+    /// 创建不含任何覆盖的解析器。
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// 注册某提供商的默认覆盖配置。
     pub fn register_provider_default(
         mut self,
         provider: impl AsRef<str>,
@@ -422,6 +446,7 @@ impl ModelProfileResolver {
         self
     }
 
+    /// 注册某提供商下精确模型的覆盖配置（优先级高于提供商默认）。
     pub fn register_exact(
         mut self,
         provider: impl AsRef<str>,
@@ -433,6 +458,7 @@ impl ModelProfileResolver {
         self
     }
 
+    /// 构建基础画像后依次应用提供商默认覆盖与精确模型覆盖。
     pub fn resolve(
         &self,
         provider: &str,
@@ -453,10 +479,12 @@ impl ModelProfileResolver {
     }
 }
 
+/// 规范化选择器片段：去除首尾空白并转为小写。
 fn normalize_selector_part(value: &str) -> String {
     value.trim().to_ascii_lowercase()
 }
 
+/// 生成规范化的 `provider:model` 选择器键。
 fn selector_key(provider: &str, model: &str) -> String {
     format!(
         "{}:{}",
@@ -465,11 +493,12 @@ fn selector_key(provider: &str, model: &str) -> String {
     )
 }
 
-/// Resolve the single authoritative thinking profile for a runtime model.
-///
-/// The endpoint/provider dialect is evaluated before the model family because
-/// gateways can expose the same model through different wire fields. Unknown
-/// models remain fully usable and simply receive no manual thinking control.
+/**
+为运行时模型解析唯一权威的思考画像。
+
+先判断端点/提供商方言，再判断模型家族，因为网关可能通过不同的线路字段暴露同一模型。
+未知模型仍可完全正常使用，只是不提供手动思考控制。
+*/
 pub fn resolve_thinking_profile(
     provider: &str,
     model: &str,
@@ -569,6 +598,7 @@ pub fn resolve_thinking_profile(
     ThinkingProfile::unknown()
 }
 
+/// 从带指定前缀的模型名中提取 (主版本, 次版本)，主版本限定在 3..=9。
 fn model_family_version(model: &str, prefix: &str) -> Option<(u32, u32)> {
     let rest = model.strip_prefix(prefix)?;
     let mut segments = rest.split('-').peekable();
@@ -593,33 +623,32 @@ fn model_family_version(model: &str, prefix: &str) -> Option<(u32, u32)> {
     None
 }
 
-// ── Cache Policy ──────────────────────────────────────────────────────
+// ── Cache Policy（缓存策略） ──────────────────────────────────────────────────────
 
-/// Provider-specific cache behaviour that affects how we structure prompts.
-///
-/// Different providers key their prompt cache on different parts of the
-/// request. This policy tells the prompt assembler what to stabilize.
+/**
+影响提示词组织方式的提供商特定缓存行为。
+
+不同提供商以请求的不同部分作为提示词缓存键。此策略告诉提示词组装器需要保持哪些部分稳定。
+*/
 #[derive(Debug, Clone)]
 pub struct CachePolicy {
-    /// Whether sending a stable `user_id` enables KVCache partition reuse.
-    /// True for DeepSeek, false for providers that don't support it.
+    /// 发送稳定的 `user_id` 是否能启用 KVCache 分区复用；DeepSeek 为 true，不支持的提供商为 false。
     pub stable_user_id_enables_cache: bool,
-    /// Whether the provider reports cache hit tokens in usage metadata.
-    /// False means we can't measure cache effectiveness.
+    /// 提供商是否在用量元数据中上报缓存命中 token；为 false 表示无法衡量缓存效果。
     pub reports_cache_metrics: bool,
-    /// Whether tool definitions are part of the cache key. When true,
-    /// tool list order and content must be deterministic across requests.
+    /// 工具定义是否属于缓存键；为 true 时，工具列表的顺序与内容在各请求间必须确定。
     pub cache_key_includes_tools: bool,
-    /// Whether the system message is part of the cache key prefix.
-    /// When true, any change to the system message invalidates cache.
+    /// 系统消息是否属于缓存键前缀；为 true 时，系统消息的任何变化都会使缓存失效。
     pub cache_key_includes_system_prompt: bool,
-    /// Recommended minimum stable prefix length in tokens. Content after
-    /// this point in the system prompt can vary without breaking cache.
-    /// 0 = entire system prompt must be stable.
+    /**
+    推荐的最小稳定前缀长度（token 数）。系统提示词中此位置之后的内容可以变化而不破坏缓存。
+    0 表示整个系统提示词都必须保持稳定。
+    */
     pub recommended_stable_prefix_tokens: usize,
 }
 
 impl Default for CachePolicy {
+    /// 通用默认缓存策略：不依赖 user_id，工具与系统提示词均计入缓存键。
     fn default() -> Self {
         Self {
             stable_user_id_enables_cache: false,
@@ -632,7 +661,7 @@ impl Default for CachePolicy {
 }
 
 impl CachePolicy {
-    /// Cache policy for DeepSeek (KVCache, user_id-based isolation).
+    /// DeepSeek 的缓存策略（KVCache，基于 user_id 隔离）。
     pub fn deepseek() -> Self {
         Self {
             stable_user_id_enables_cache: true,
@@ -643,7 +672,7 @@ impl CachePolicy {
         }
     }
 
-    /// Cache policy for Anthropic (prompt caching, explicit cache breakpoints).
+    /// Anthropic 的缓存策略（提示词缓存，显式缓存断点）。
     pub fn anthropic() -> Self {
         Self {
             stable_user_id_enables_cache: false,
@@ -654,7 +683,7 @@ impl CachePolicy {
         }
     }
 
-    /// Cache policy for OpenAI (prefix caching, automatic).
+    /// OpenAI 的缓存策略（自动前缀缓存）。
     pub fn openai() -> Self {
         Self {
             stable_user_id_enables_cache: false,
@@ -665,7 +694,7 @@ impl CachePolicy {
         }
     }
 
-    /// Resolve cache policy from the provider name.
+    /// 根据提供商名称解析缓存策略。
     pub fn from_provider(provider: &str) -> Self {
         match provider.to_ascii_lowercase().as_str() {
             "deepseek" => Self::deepseek(),
@@ -676,15 +705,18 @@ impl CachePolicy {
     }
 }
 
+/// Provider 能力与模型档案的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use ThinkingProtocol as T;
 
+    /// 以 ChatCompletions 协议、无端点解析思考画像的测试辅助函数。
     fn chat_profile(provider: &str, model: &str) -> ThinkingProfile {
         resolve_thinking_profile(provider, model, LlmApiProtocol::ChatCompletions, None)
     }
 
+    /// 验证 GPT-5.6 拥有六个不同的思考档位。
     #[test]
     fn gpt_56_has_six_distinct_levels() {
         let profile = chat_profile("openai", "gpt-5.6-sol");
@@ -694,6 +726,7 @@ mod tests {
         assert!(!profile.levels.contains(&ThinkingLevel::Minimal));
     }
 
+    /// 验证当前前沿模型的上下文窗口推断结果。
     #[test]
     fn infers_current_frontier_context_windows() {
         assert_eq!(
@@ -734,6 +767,7 @@ mod tests {
         assert_eq!(infer_context_window("custom", "unknown-model"), None);
     }
 
+    /// 验证 Claude 的思考控制从 4.6 版本开始支持。
     #[test]
     fn claude_support_starts_at_46() {
         assert_eq!(
@@ -764,6 +798,7 @@ mod tests {
         );
     }
 
+    /// 验证 GLM 的思考控制从 5.2 版本开始支持。
     #[test]
     fn glm_support_starts_at_52() {
         assert_eq!(chat_profile("zhipu", "glm-5.1").protocol, T::None);
@@ -773,6 +808,7 @@ mod tests {
         assert_eq!(profile.levels, GLM_52_LEVELS);
     }
 
+    /// 验证常见模型的思考画像均被显式定义。
     #[test]
     fn common_model_profiles_are_explicit() {
         assert_eq!(
@@ -808,6 +844,7 @@ mod tests {
         assert_eq!(chat_profile("ollama", "llama3.1").protocol, T::None);
     }
 
+    /// 验证提供商方言优先于模型家族判断。
     #[test]
     fn provider_dialect_precedes_model_family() {
         assert_eq!(
@@ -826,6 +863,7 @@ mod tests {
         );
     }
 
+    /// 验证未知模型不提供手动思考控制。
     #[test]
     fn unknown_models_remain_uncontrolled() {
         let profile = chat_profile("custom", "future-model");
@@ -833,6 +871,7 @@ mod tests {
         assert!(!profile.supports_manual_control());
     }
 
+    /// 验证精确模型覆盖优先于提供商默认覆盖。
     #[test]
     fn exact_model_override_wins_over_provider_default() {
         let resolver = ModelProfileResolver::new()
@@ -874,6 +913,7 @@ mod tests {
         );
     }
 
+    /// 验证提供商默认覆盖无需模糊匹配模型即可生效。
     #[test]
     fn provider_default_applies_without_fuzzy_model_matching() {
         let resolver = ModelProfileResolver::new().register_provider_default(

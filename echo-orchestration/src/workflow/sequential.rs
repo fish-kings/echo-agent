@@ -18,60 +18,62 @@ pub struct WorkflowStep {
     transform: Option<TransformFn>,
 }
 
-/// 顺序工作流：每个 agent 按注册顺序运行；前一个的输出流入后一个的输入。
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_core::agent::{Agent, AgentEvent};
-/// use echo_core::error::Result;
-/// use echo_orchestration::workflow::{SequentialWorkflow, Workflow};
-/// use futures::future::BoxFuture;
-/// use futures::stream::{self, BoxStream};
-///
-/// # struct DummyAgent {
-/// #     name: String,
-/// # }
-/// #
-/// # impl DummyAgent {
-/// #     fn new(name: impl Into<String>) -> Self {
-/// #         Self { name: name.into() }
-/// #     }
-/// # }
-/// #
-/// # impl Agent for DummyAgent {
-/// #     fn name(&self) -> &str { &self.name }
-/// #     fn model_name(&self) -> &str { "mock-model" }
-/// #     fn system_prompt(&self) -> &str { "You are a mock agent" }
-/// #     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
-/// #         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
-/// #     }
-/// #     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
-/// #         Box::pin(async move {
-/// #             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
-/// #             Ok(s)
-/// #         })
-/// #     }
-/// # }
-///
-/// # async fn example() -> Result<()> {
-/// let agent_a = DummyAgent::new("translator");
-/// let agent_b = DummyAgent::new("reviewer");
-///
-/// let mut wf = SequentialWorkflow::builder()
-///     .step(agent_a)
-///     .step(agent_b)
-///     .build();
-///
-/// let output = wf.run("Hello world").await?;
-/// println!("Final result: {}", output.result);
-/// for s in &output.steps {
-///     let preview: String = s.output.chars().take(80).collect();
-///     println!("  {} ({:?}): {}", s.agent_name, s.elapsed, preview);
-/// }
-/// # Ok(())
-/// # }
-/// ```
+/**
+顺序工作流：每个 agent 按注册顺序运行；前一个的输出流入后一个的输入。
+
+# 示例
+
+```rust,no_run
+use echo_core::agent::{Agent, AgentEvent};
+use echo_core::error::Result;
+use echo_orchestration::workflow::{SequentialWorkflow, Workflow};
+use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream};
+
+# struct DummyAgent {
+#     name: String,
+# }
+#
+# impl DummyAgent {
+#     fn new(name: impl Into<String>) -> Self {
+#         Self { name: name.into() }
+#     }
+# }
+#
+# impl Agent for DummyAgent {
+#     fn name(&self) -> &str { &self.name }
+#     fn model_name(&self) -> &str { "mock-model" }
+#     fn system_prompt(&self) -> &str { "You are a mock agent" }
+#     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
+#         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
+#     }
+#     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
+#         Box::pin(async move {
+#             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
+#             Ok(s)
+#         })
+#     }
+# }
+
+# async fn example() -> Result<()> {
+let agent_a = DummyAgent::new("translator");
+let agent_b = DummyAgent::new("reviewer");
+
+let mut wf = SequentialWorkflow::builder()
+    .step(agent_a)
+    .step(agent_b)
+    .build();
+
+let output = wf.run("Hello world").await?;
+println!("Final result: {}", output.result);
+for s in &output.steps {
+    let preview: String = s.output.chars().take(80).collect();
+    println!("  {} ({:?}): {}", s.agent_name, s.elapsed, preview);
+}
+# Ok(())
+# }
+```
+*/
 pub struct SequentialWorkflow {
     /// 按顺序执行的步骤列表
     steps: Vec<WorkflowStep>,
@@ -85,6 +87,7 @@ impl SequentialWorkflow {
 }
 
 impl Workflow for SequentialWorkflow {
+    /// 依次执行各步骤，最后一步的输出作为工作流结果。
     fn run<'a>(&'a mut self, input: &'a str) -> BoxFuture<'a, Result<WorkflowOutput>> {
         Box::pin(async move {
             let total_start = Instant::now();

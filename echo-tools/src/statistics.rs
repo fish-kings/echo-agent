@@ -1,10 +1,11 @@
-//! Exploratory statistical summaries.
-//!
-//! Formal inference is intentionally not implemented here. Agents should write
-//! reviewable Python/R scripts that use mature libraries such as SciPy,
-//! statsmodels, or established R packages, then execute those scripts through
-//! the sandboxed `run_code` path. This module only provides descriptive values
-//! that are useful before choosing a model or test.
+/*!
+ * 探索性统计摘要。
+ *
+ * 此处刻意不实现正式的统计推断。Agent 应编写可审查的 Python/R 脚本，
+ * 使用 SciPy、statsmodels 或成熟的 R 包等库，再通过沙箱化的
+ * `run_code` 路径执行这些脚本。本模块只提供在选择模型或检验方法之前
+ * 有用的描述性统计值。
+ */
 
 use std::cmp::Ordering;
 
@@ -15,20 +16,23 @@ use crate::security::SecurityConfig;
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{ToolResult, ToolRunner};
 
+/// 工具名称
 const TOOL_NAME: &str = "exploratory_statistics";
 
-/// Descriptive statistics that deliberately make no inferential claim.
+/// 描述性统计工具，刻意不做任何推断性结论。
 #[derive(Default, echo_macros::Tool)]
 #[tool(
     name = "exploratory_statistics",
     description = "Compute exploratory descriptive statistics for numeric columns: valid/missing counts, mean, sample standard deviation, min, quartiles, max, skewness, and excess kurtosis. This tool never returns p-values, confidence intervals, or significance conclusions. For formal inference, write a reviewable Python/R script using SciPy, statsmodels, or established R packages and execute it with run_code."
 )]
-// The derive macro uses these fields to generate parameter and schema types;
-// the zero-sized Tool value does not read them directly.
+/** 派生宏使用这些字段生成参数类型和 Schema 类型；
+零大小的 Tool 值本身并不直接读取它们。 */
 #[allow(dead_code)]
 pub struct ExploratoryStatisticsTool {
+    /// 数据文件的绝对路径
     #[tool_param(description = "Absolute path to the data file (CSV, JSON, or Parquet)")]
     data_path: String,
+    /// 要分析的列名（逗号分隔），缺省为全部数值列
     #[tool_param(
         description = "Column names to analyze, comma-separated (default: all numeric columns)"
     )]
@@ -36,6 +40,7 @@ pub struct ExploratoryStatisticsTool {
 }
 
 impl ToolRunner<ExploratoryStatisticsToolParams> for ExploratoryStatisticsTool {
+    /// 加载数据并计算所选数值列的描述性统计量。
     async fn run(&self, params: ExploratoryStatisticsToolParams) -> Result<ToolResult> {
         let security = SecurityConfig::global();
         let path = security.validate_file(&params.data_path)?;
@@ -132,6 +137,7 @@ impl ToolRunner<ExploratoryStatisticsToolParams> for ExploratoryStatisticsTool {
     }
 }
 
+/// 返回要分析的列：显式指定的列，或数据框中的全部数值列。
 fn selected_numeric_columns(frame: &DataFrame, requested: Option<&str>) -> Vec<String> {
     match requested {
         Some(columns) => columns
@@ -154,6 +160,7 @@ fn selected_numeric_columns(frame: &DataFrame, requested: Option<&str>) -> Vec<S
     }
 }
 
+/// 计算样本标准差（n - 1 为分母），少于两个值时返回 None。
 fn sample_standard_deviation(values: &[f64], mean: f64) -> Option<f64> {
     if values.len() < 2 {
         return None;
@@ -165,6 +172,7 @@ fn sample_standard_deviation(values: &[f64], mean: f64) -> Option<f64> {
     Some((sum_of_squares / values.len().saturating_sub(1) as f64).sqrt())
 }
 
+/// 计算偏度与超额峰度，少于三个值时返回 (None, None)。
 fn standardized_moments(values: &[f64], mean: f64) -> (Option<f64>, Option<f64>) {
     if values.len() < 3 {
         return (None, None);
@@ -194,6 +202,7 @@ fn standardized_moments(values: &[f64], mean: f64) -> (Option<f64>, Option<f64>)
     )
 }
 
+/// 对已排序的数据按线性插值计算分位数，空输入返回 None。
 pub(crate) fn quantile(values: &[f64], probability: f64) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -219,6 +228,7 @@ mod tests {
 
     use super::*;
 
+    /// 探索性统计结果从不包含推断性结论。
     #[tokio::test]
     async fn exploratory_statistics_never_claims_inference() -> Result<()> {
         let timestamp = SystemTime::now()
@@ -255,6 +265,7 @@ mod tests {
         Ok(())
     }
 
+    /// 分位数使用线性插值且不会发生索引越界。
     #[test]
     fn quantiles_use_linear_interpolation_without_index_panics() {
         let values = [1.0, 2.0, 3.0, 4.0];

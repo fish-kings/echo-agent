@@ -13,10 +13,12 @@ use super::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::redaction::{json_with_secrets, text_with_secrets};
 use echo_core::error::{McpError, ReactError, Result};
 
-/// MCP 传输层抽象
-///
-/// 负责在 Client 和 Server 之间传递 JSON-RPC 消息，
-/// 屏蔽底层通信细节（进程 stdin/stdout 或 HTTP）。
+/**
+MCP 传输层抽象
+
+负责在 Client 和 Server 之间传递 JSON-RPC 消息，
+屏蔽底层通信细节（进程 stdin/stdout 或 HTTP）。
+*/
 pub trait McpTransport: Send + Sync {
     /// 发送请求并等待响应（传输层自动管理请求 ID）
     fn send(&self, request: JsonRpcRequest) -> BoxFuture<'_, Result<JsonRpcResponse>>;
@@ -24,25 +26,31 @@ pub trait McpTransport: Send + Sync {
     /// 发送通知（无需等待响应）
     fn notify(&self, notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>>;
 
-    /// 等待传输层拥有的清理工作全部完成后关闭连接。
-    ///
-    /// 成功返回意味着到达了一个安全的生命周期检查点：传输层的挂起请求
-    /// 注册表中不再有任何请求残留，且其拥有的 I/O 任务或子进程都已经
-    /// 到达各自受限的关闭终态。
+    /**
+    等待传输层拥有的清理工作全部完成后关闭连接。
+
+    成功返回意味着到达了一个安全的生命周期检查点：传输层的挂起请求
+    注册表中不再有任何请求残留，且其拥有的 I/O 任务或子进程都已经
+    到达各自受限的关闭终态。
+    */
     fn close(&self) -> BoxFuture<'_, Result<()>>;
 
-    /// 获取通知接收通道（用于接收服务端推送的通知）
-    /// 返回 None 表示该传输层不支持通知接收
+    /**
+    获取通知接收通道（用于接收服务端推送的通知）
+    返回 None 表示该传输层不支持通知接收
+    */
     fn notification_rx(&self) -> Option<Arc<dyn super::types::JsonRpcNotificationReceiver>>;
 }
 
 type PendingSender = oneshot::Sender<Result<JsonRpcResponse>>;
 
-/// 请求/响应类传输层共用的、支持取消安全的挂起请求注册表。
-///
-/// 这里刻意使用同步 Mutex：注册操作从不跨越 await 点持有锁，
-/// 这样注册守卫（guard）就能在 `Drop` 中直接移除被放弃的请求，
-/// 而无需再启动一个额外的清理任务。
+/**
+请求/响应类传输层共用的、支持取消安全的挂起请求注册表。
+
+这里刻意使用同步 Mutex：注册操作从不跨越 await 点持有锁，
+这样注册守卫（guard）就能在 `Drop` 中直接移除被放弃的请求，
+而无需再启动一个额外的清理任务。
+*/
 pub(super) struct PendingRequests {
     /// 标记该注册表是否已关闭；关闭后拒绝新的注册。
     closed: AtomicBool,
@@ -96,9 +104,11 @@ impl CloseCoordinator {
         })
     }
 
-    /// 尝试开始一次关闭流程：若已有关闭在进行或已完成，则复用其回执并返回
-    /// `false`（表示调用方无需再发起清理）；否则将状态置为 `Closing` 并返回
-    /// `true`（表示调用方应负责执行清理并调用 `complete`）。
+    /**
+    尝试开始一次关闭流程：若已有关闭在进行或已完成，则复用其回执并返回
+    `false`（表示调用方无需再发起清理）；否则将状态置为 `Closing` 并返回
+    `true`（表示调用方应负责执行清理并调用 `complete`）。
+    */
     pub(super) fn begin(&self) -> (bool, Arc<CloseReceipt>) {
         let mut current = self
             .current
@@ -183,8 +193,10 @@ impl PendingRequests {
             .unwrap_or_else(|error| error.into_inner())
     }
 
-    /// 注册一个新的挂起请求，返回用于接收响应的 receiver 以及注册守卫；
-    /// 若注册表已关闭则返回错误。
+    /**
+    注册一个新的挂起请求，返回用于接收响应的 receiver 以及注册守卫；
+    若注册表已关闭则返回错误。
+    */
     pub(super) fn register(
         self: &Arc<Self>,
         id: u64,

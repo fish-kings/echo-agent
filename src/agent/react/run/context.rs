@@ -767,8 +767,10 @@ pub(crate) fn format_memory_context(items: &[crate::memory::store::StoreItem]) -
     lines.join("\n")
 }
 
-// (stage4 D1) 召回相关的辅助函数（composite_score / age_days_from_storeitem /
-// incr_recall_count）已迁移到 `evolution::recall::MemoryRecaller`。
+/*
+(stage4 D1) 召回相关的辅助函数（composite_score / age_days_from_storeitem /
+incr_recall_count）已迁移到 `evolution::recall::MemoryRecaller`。
+*/
 
 impl crate::agent::snapshot::AgentRunSnapshot {
     /** (stage4 E1) 压缩前刷写（Pre-compaction flush）—— 通过一次有超时限制的

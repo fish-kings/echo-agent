@@ -1,45 +1,43 @@
-//! Background task handle and spawner for long-running task support.
-//!
-//! This module provides a non-blocking, process-local abstraction for
-//! fire-and-forget, pollable, cancellable background futures.
-//!
-//! # Core Types
-//!
-//! - [`BackgroundTask<T>`] — A handle to a spawned async task. Provides
-//!   non-blocking status polling, blocking wait with timeout, and cancellation.
-//!
-//! - [`BackgroundTaskStatus`] — Lifecycle states: Pending → Running → Completed/Failed/Cancelled.
-//!
-//! - [`AnyBackgroundTask`] — Type-erased trait for storing heterogeneous task handles
-//!   in a single collection (e.g., a status dashboard).
-//!
-//! - [`TaskSpawner`] — Process-local spawner that manages concurrency (via
-//!   Semaphore) and tracks spawned futures. Durable task graphs are owned by
-//!   [`crate::tasks::TaskRevisionService`].
-//!
-//! # Example
-//!
-//! ```rust,ignore
-//! use echo_orchestration::tasks::{TaskSpawner, TaskSpawnerConfig};
-//! use std::sync::Arc;
-//!
-//! async fn example() {
-//!     let spawner = Arc::new(TaskSpawner::new(TaskSpawnerConfig::default()));
-//!
-//!     // Spawn a background task
-//!     let handle = spawner.spawn("fetch-data", async {
-//!         // Long-running work...
-//!         Ok("result data".to_string())
-//!     });
-//!
-//!     // Non-blocking status check
-//!     println!("Status: {:?}", handle.status());
-//!
-//!     // Block until done (with optional timeout)
-//!     let result = handle.wait(Some(std::time::Duration::from_secs(30))).await;
-//!     println!("Result: {:?}", result);
-//! }
-//! ```
+/*!
+后台任务句柄与派生器，用于支持长时间运行的任务。
+
+本模块为"发射后不管"、可轮询、可取消的后台 future 提供一个非阻塞、进程内的抽象。
+
+# 核心类型
+
+- [`BackgroundTask<T>`] —— 已派生异步任务的句柄。提供非阻塞状态轮询、带超时的阻塞等待以及取消能力。
+
+- [`BackgroundTaskStatus`] —— 生命周期状态：Pending → Running → Completed/Failed/Cancelled。
+
+- [`AnyBackgroundTask`] —— 类型擦除的 trait，用于在同一集合中存放异构任务句柄（例如状态看板）。
+
+- [`TaskSpawner`] —— 进程内派生器，通过信号量（Semaphore）控制并发并跟踪已派生的 future。
+  持久化任务图由 [`crate::tasks::TaskRevisionService`] 负责。
+
+# 示例
+
+```rust,ignore
+use echo_orchestration::tasks::{TaskSpawner, TaskSpawnerConfig};
+use std::sync::Arc;
+
+async fn example() {
+    let spawner = Arc::new(TaskSpawner::new(TaskSpawnerConfig::default()));
+
+    // Spawn a background task
+    let handle = spawner.spawn("fetch-data", async {
+        // Long-running work...
+        Ok("result data".to_string())
+    });
+
+    // Non-blocking status check
+    println!("Status: {:?}", handle.status());
+
+    // Block until done (with optional timeout)
+    let result = handle.wait(Some(std::time::Duration::from_secs(30))).await;
+    println!("Result: {:?}", result);
+}
+```
+*/
 
 use dashmap::DashMap;
 use echo_core::error::{ReactError, Result};
@@ -55,34 +53,34 @@ use tracing::{debug, info};
 
 // ── BackgroundTaskStatus ──────────────────────────────────────────
 
-/// Lifecycle status of a background task.
+/// 后台任务的生命周期状态。
 #[derive(Debug, Clone)]
 pub enum BackgroundTaskStatus {
-    /// The background future is queued but not yet started.
+    /// 后台 future 已排队，尚未开始执行。
     Pending,
-    /// The background future is currently executing.
+    /// 后台 future 正在执行。
     Running {
-        /// When the task started executing.
+        /// 任务开始执行的时刻。
         started_at: Instant,
     },
-    /// The background future completed successfully.
+    /// 后台 future 已成功完成。
     Completed {
-        /// When the task finished.
+        /// 任务结束的时刻。
         finished_at: Instant,
     },
-    /// The background future failed with an error.
+    /// 后台 future 因错误而失败。
     Failed {
-        /// Human-readable error description.
+        /// 人类可读的错误描述。
         error: String,
-        /// When the failure occurred.
+        /// 失败发生的时刻。
         at: Instant,
     },
-    /// The background future was cancelled via its cancellation token.
+    /// 后台 future 已通过其取消令牌被取消。
     Cancelled,
 }
 
 impl BackgroundTaskStatus {
-    /// Whether this status represents a terminal state.
+    /// 该状态是否为终态。
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -92,7 +90,7 @@ impl BackgroundTaskStatus {
         )
     }
 
-    /// Short text description for display purposes.
+    /// 用于展示的简短文本描述。
     pub fn as_str(&self) -> &'static str {
         match self {
             BackgroundTaskStatus::Pending => "pending",
@@ -106,13 +104,19 @@ impl BackgroundTaskStatus {
 
 // ── BackgroundTask<T> ─────────────────────────────────────────────
 
+/// 句柄共享的内部状态：生命周期状态与单消费者结果。
 struct BackgroundTaskHandleState<T> {
+    /// 当前生命周期状态。
     status: BackgroundTaskStatus,
+    /// 任务结果，仅能被第一个到达终态的等待者取走。
     result: Option<Result<T>>,
+    /// 执行子任务是否发生 panic。
     panicked: bool,
 }
 
+/// 类型擦除的状态来源，用于在不知道 `T` 的情况下读取状态快照。
 trait BackgroundTaskStatusSource: Send + Sync {
+    /// 返回当前状态的快照。
     fn snapshot(&self) -> BackgroundTaskStatus;
 }
 
@@ -125,20 +129,22 @@ impl<T: Send + 'static> BackgroundTaskStatusSource for Mutex<BackgroundTaskHandl
     }
 }
 
-/// A handle to a background task that can be polled, awaited, or cancelled.
-///
-/// The task runs asynchronously on the tokio runtime. The handle is cheap to
-/// clone (internally uses `Arc`), and multiple handles can exist for the same task.
+/**
+可被轮询、等待或取消的后台任务句柄。
+
+任务在 tokio 运行时上异步执行。句柄克隆开销很低（内部使用 `Arc`），
+同一任务可以同时存在多个句柄。
+*/
 pub struct BackgroundTask<T: Send + 'static> {
-    /// Unique process-local task ID.
+    /// 进程内唯一的任务 ID。
     pub id: String,
-    /// Human-readable name/description.
+    /// 人类可读的名称/描述。
     pub name: String,
-    /// Single authority for lifecycle status and the single-consumer result.
+    /// 生命周期状态与单消费者结果的唯一权威来源。
     state: Arc<Mutex<BackgroundTaskHandleState<T>>>,
-    /// Notifier fired after a terminal state is atomically published.
+    /// 终态被原子发布后触发的通知器。
     result_notify: Arc<Notify>,
-    /// Token to request cancellation of the running task.
+    /// 用于请求取消运行中任务的令牌。
     cancel: CancellationToken,
 }
 
@@ -155,7 +161,7 @@ impl<T: Send + 'static> Clone for BackgroundTask<T> {
 }
 
 impl<T: Send + 'static> BackgroundTask<T> {
-    /// Non-blocking snapshot of the current status.
+    /// 当前状态的非阻塞快照。
     pub async fn status(&self) -> BackgroundTaskStatus {
         self.state
             .lock()
@@ -164,35 +170,37 @@ impl<T: Send + 'static> BackgroundTask<T> {
             .clone()
     }
 
-    /// Convenience: check if the task is still running (non-blocking).
+    /// 便捷方法：检查任务是否仍在运行（非阻塞）。
     pub async fn is_running(&self) -> bool {
         matches!(self.status().await, BackgroundTaskStatus::Running { .. })
     }
 
-    /// Convenience: check if the task has reached a terminal state.
+    /// 便捷方法：检查任务是否已到达终态。
     pub async fn is_completed(&self) -> bool {
         self.status().await.is_terminal()
     }
 
-    /// Request cancellation of the running task.
-    ///
-    /// This signals the cancellation token but does not guarantee immediate
-    /// termination. The supervisor observes it during admission or execution;
-    /// during execution it aborts and awaits the child before publishing the
-    /// terminal state.
+    /**
+    请求取消运行中的任务。
+
+    该方法只触发取消令牌，并不保证立即终止。监督者会在准入或执行阶段观察到取消；
+    若处于执行阶段，会先中止并等待子任务结束，然后再发布终态。
+    */
     pub fn cancel(&self) {
         self.cancel.cancel();
     }
 
-    /// Whether cancellation has been requested.
+    /// 是否已请求取消。
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
 
-    /// Check if the task has panicked.
-    ///
-    /// Returns `Some(true)` for a caught child execution-task panic,
-    /// `Some(false)` for another terminal, or `None` while nonterminal.
+    /**
+    检查任务是否发生了 panic。
+
+    捕获到执行子任务 panic 时返回 `Some(true)`，其他终态返回 `Some(false)`，
+    尚未到达终态时返回 `None`。
+    */
     pub async fn is_panicked(&self) -> Option<bool> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         match state.status {
@@ -203,13 +211,14 @@ impl<T: Send + 'static> BackgroundTask<T> {
         }
     }
 
-    /// Wait for the task to complete and return the result.
-    ///
-    /// If `timeout` is `Some`, returns an error if the task doesn't complete
-    /// within the given duration. If `None`, waits indefinitely.
-    ///
-    /// A timeout does not consume the result. The first terminal waiter owns
-    /// `T`; later waiters return immediately from the persistent status.
+    /**
+    等待任务完成并返回结果。
+
+    若 `timeout` 为 `Some`，任务未在给定时长内完成时返回错误；若为 `None`，则无限等待。
+
+    超时不会消耗结果。第一个到达终态的等待者取得 `T`；
+    之后的等待者根据持久化的状态立即返回。
+    */
     pub async fn wait(&self, timeout: Option<Duration>) -> Result<T> {
         let deadline = match timeout {
             Some(duration) => Some(
@@ -277,37 +286,43 @@ impl<T: Send + 'static> BackgroundTask<T> {
 
 // ── AnyBackgroundTask ─────────────────────────────────────────────
 
-/// Type-erased trait for storing heterogeneous background task handles.
-///
-/// Useful for status dashboards, task listing, and cancellation management
-/// where the concrete result type `T` is not needed.
+/**
+用于存放异构后台任务句柄的类型擦除 trait。
+
+适用于状态看板、任务列表和取消管理等不需要具体结果类型 `T` 的场景。
+*/
 pub trait AnyBackgroundTask: Send + Sync {
-    /// Unique task ID.
+    /// 唯一任务 ID。
     fn id(&self) -> &str;
-    /// Human-readable task name.
+    /// 人类可读的任务名称。
     fn name(&self) -> &str;
-    /// Current status as text.
+    /// 当前状态的文本形式。
     fn status_text(&self) -> &'static str;
-    /// Non-blocking snapshot of the current status.
-    ///
-    /// Returns the actual [`BackgroundTaskStatus`] variant from the same shared
-    /// state used by the typed handle.
+    /**
+    当前状态的非阻塞快照。
+
+    返回与带类型句柄共享的同一状态中的实际 [`BackgroundTaskStatus`] 变体。
+    */
     fn status_snapshot(&self) -> BackgroundTaskStatus;
-    /// Request cancellation.
+    /// 请求取消。
     fn cancel(&self);
-    /// Whether the task has reached a terminal state (synchronous check).
+    /// 任务是否已到达终态（同步检查）。
     fn is_terminal_sync(&self) -> bool;
-    /// Monotonic registration order used for bounded history retention.
+    /// 单调递增的注册序号，用于有界历史保留。
     fn sequence(&self) -> u64;
 }
 
-/// A type-erased live view of the typed handle's shared lifecycle state.
+/// 带类型句柄共享生命周期状态的类型擦除实时视图。
 struct TypeErasedTask {
+    /// 任务 ID。
     id: String,
+    /// 任务名称。
     name: String,
-    /// Type-erased view of the same generic state held by BackgroundTask<T>.
+    /// 与 BackgroundTask<T> 持有的同一泛型状态的类型擦除视图。
     state: Arc<dyn BackgroundTaskStatusSource>,
+    /// 取消令牌。
     cancel: CancellationToken,
+    /// 注册序号。
     sequence: u64,
 }
 
@@ -337,25 +352,30 @@ impl AnyBackgroundTask for TypeErasedTask {
 
 // ── TaskSummary ───────────────────────────────────────────────────
 
-/// Lightweight summary of a background task for listing/dashboards.
+/// 用于列表/看板的后台任务轻量摘要。
 #[derive(Debug, Clone)]
 pub struct TaskSummary {
+    /// 任务 ID。
     pub id: String,
+    /// 任务名称。
     pub name: String,
+    /// 当前状态快照。
     pub status: BackgroundTaskStatus,
 }
 
 // ── TaskSpawnerConfig ─────────────────────────────────────────────
 
-/// Configuration for the [`TaskSpawner`].
+/// [`TaskSpawner`] 的配置。
 #[derive(Debug, Clone)]
 pub struct TaskSpawnerConfig {
-    /// Maximum number of concurrently running background tasks.
+    /// 同时运行的后台任务数上限。
     pub max_concurrent: usize,
-    /// Default timeout for spawned tasks (0 = no timeout).
+    /// 派生任务的默认超时秒数（0 表示不超时）。
     pub default_timeout_secs: u64,
-    /// Maximum terminal task summaries retained for status/list queries.
-    /// Running and pending tasks are never removed by retention.
+    /**
+    为状态/列表查询保留的终态任务摘要数量上限。
+    运行中与等待中的任务永远不会因保留策略被移除。
+    */
     pub max_terminal_history: usize,
 }
 
@@ -363,7 +383,7 @@ impl Default for TaskSpawnerConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 16,
-            default_timeout_secs: 300, // 5 minutes
+            default_timeout_secs: 300, // 5 分钟
             max_terminal_history: 256,
         }
     }
@@ -371,22 +391,24 @@ impl Default for TaskSpawnerConfig {
 
 // ── TaskSpawner ───────────────────────────────────────────────────
 
-/// System-level spawner that manages background tasks with concurrency control.
-///
-/// All spawned futures are tracked in a concurrent map and can be listed,
-/// cancelled, or inspected. This process-local handle registry does not own
-/// durable task relationships or restart recovery.
+/**
+带并发控制的系统级后台任务派生器。
+
+所有派生的 future 都记录在并发映射中，可被列出、取消或检查。
+这个进程内句柄注册表不负责持久化任务关系，也不负责重启恢复。
+*/
 pub struct TaskSpawner {
-    /// All tracked tasks (type-erased).
+    /// 所有被跟踪的任务（类型擦除）。
     tasks: Arc<DashMap<String, Arc<dyn AnyBackgroundTask>>>,
-    /// Concurrency limiter.
+    /// 并发限制器。
     semaphore: Arc<tokio::sync::Semaphore>,
-    /// Configuration.
+    /// 配置。
     config: TaskSpawnerConfig,
-    /// Monotonic registration sequence used for deterministic terminal retention.
+    /// 单调递增的注册序号，用于确定性地保留终态任务。
     next_sequence: AtomicU64,
 }
 
+/// 原子发布终态结果并唤醒所有等待者；若已处于终态则忽略。
 fn publish_terminal<T: Send + 'static>(
     state: &Arc<Mutex<BackgroundTaskHandleState<T>>>,
     notify: &Arc<Notify>,
@@ -406,6 +428,7 @@ fn publish_terminal<T: Send + 'static>(
     notify.notify_waiters();
 }
 
+/// 将状态从 Pending 切换为 Running。
 fn publish_running<T: Send + 'static>(state: &Arc<Mutex<BackgroundTaskHandleState<T>>>) {
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     if matches!(state.status, BackgroundTaskStatus::Pending) {
@@ -415,6 +438,7 @@ fn publish_running<T: Send + 'static>(state: &Arc<Mutex<BackgroundTaskHandleStat
     }
 }
 
+/// 将执行子任务的 join 结果转换为 (结果, 终态, 是否 panic)。
 fn completion_from_join<T: Send + 'static>(
     joined: std::result::Result<Result<T>, tokio::task::JoinError>,
 ) -> (Result<T>, BackgroundTaskStatus, bool) {
@@ -450,11 +474,13 @@ fn completion_from_join<T: Send + 'static>(
     }
 }
 
+/// 中止执行子任务并等待其真正结束。
 async fn abort_execution_task<T: Send + 'static>(task: &mut JoinHandle<Result<T>>) {
     task.abort();
     let _ = task.await;
 }
 
+/// 监督执行子任务，处理取消与超时，返回 (结果, 终态, 是否 panic)。
 async fn supervise_execution<T: Send + 'static>(
     mut execution_task: JoinHandle<Result<T>>,
     cancel: CancellationToken,
@@ -504,7 +530,7 @@ async fn supervise_execution<T: Send + 'static>(
 }
 
 impl TaskSpawner {
-    /// Create a new task spawner with the given configuration.
+    /// 使用给定配置创建新的任务派生器。
     pub fn new(config: TaskSpawnerConfig) -> Self {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(config.max_concurrent));
         Self {
@@ -515,14 +541,15 @@ impl TaskSpawner {
         }
     }
 
-    /// Spawn a future as a background task, returning a handle immediately.
-    ///
-    /// The task acquires a semaphore permit before starting. If all permits
-    /// are exhausted, the task queues until one becomes available.
-    ///
-    /// # Arguments
-    /// * `name` — Human-readable task name (used for logging and listing)
-    /// * `fut` — The async work to execute
+    /**
+    将一个 future 作为后台任务派生，并立即返回句柄。
+
+    任务在开始前需获取信号量许可；若许可已耗尽，任务会排队直到有可用许可。
+
+    # 参数
+    * `name` —— 人类可读的任务名称（用于日志和列表）
+    * `fut` —— 要执行的异步工作
+    */
     pub fn spawn<F, T>(&self, name: &str, fut: F) -> BackgroundTask<T>
     where
         F: Future<Output = Result<T>> + Send + 'static,
@@ -694,7 +721,7 @@ impl TaskSpawner {
         });
         std::mem::drop(supervisor);
 
-        // Register in the type-erased task map
+        // 注册到类型擦除的任务映射中
         let erased_state: Arc<dyn BackgroundTaskStatusSource> = state.clone();
         let erased: Arc<dyn AnyBackgroundTask> = Arc::new(TypeErasedTask {
             id: id.clone(),
@@ -714,7 +741,7 @@ impl TaskSpawner {
         }
     }
 
-    /// List all tracked tasks with their current status.
+    /// 列出所有被跟踪的任务及其当前状态。
     pub async fn list(&self) -> Vec<TaskSummary> {
         let mut summaries = Vec::new();
         for entry in self.tasks.iter() {
@@ -729,7 +756,7 @@ impl TaskSpawner {
         summaries
     }
 
-    /// Cancel a specific task by ID.
+    /// 按 ID 取消指定任务。
     pub fn cancel(&self, id: &str) -> bool {
         if let Some(entry) = self.tasks.get(id) {
             entry.value().cancel();
@@ -739,25 +766,26 @@ impl TaskSpawner {
         }
     }
 
-    /// Cancel all running tasks.
+    /// 取消所有运行中的任务。
     pub fn cancel_all(&self) {
         for entry in self.tasks.iter() {
             entry.value().cancel();
         }
     }
 
-    /// Remove completed/failed tasks from the tracking map.
+    /// 从跟踪映射中移除已完成/失败的任务。
     pub fn prune_completed(&self) -> usize {
         let before = self.tasks.len();
         self.tasks.retain(|_, v| !v.is_terminal_sync());
         before - self.tasks.len()
     }
 
-    /// Retain at most the configured number of terminal task summaries.
-    ///
-    /// This runs before registration so a newly spawned task is always tracked.
-    /// Pending/running tasks are never selected, even if the map is above the
-    /// terminal-history limit.
+    /**
+    最多保留配置数量的终态任务摘要。
+
+    该方法在注册前执行，因此新派生的任务总会被跟踪。
+    等待中/运行中的任务永远不会被选中移除，即使映射总量超过终态历史上限。
+    */
     fn prune_terminal_history(&self) -> usize {
         let max_terminal_history = self.config.max_terminal_history;
         let mut terminal = self
@@ -777,7 +805,7 @@ impl TaskSpawner {
         remove_count
     }
 
-    /// Number of currently tracked tasks.
+    /// 当前被跟踪的任务数量。
     pub fn task_count(&self) -> usize {
         self.tasks.len()
     }
@@ -789,8 +817,10 @@ impl TaskSpawner {
 mod tests {
     use super::*;
 
+    /// 不可克隆的结果类型，用于验证单消费者语义。
     struct NonCloneResult(u32);
 
+    /// Drop 探针：被析构时置位标志。
     struct DropProbe(Arc<std::sync::atomic::AtomicBool>);
 
     impl Drop for DropProbe {
@@ -799,6 +829,7 @@ mod tests {
         }
     }
 
+    /// 成功完成的任务可通过 wait 取得结果。
     #[tokio::test]
     async fn test_background_task_completes() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -813,6 +844,7 @@ mod tests {
         Ok(())
     }
 
+    /// 失败任务的 wait 返回错误且状态为终态。
     #[tokio::test]
     async fn test_background_task_failure() {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -825,6 +857,7 @@ mod tests {
         assert!(handle.is_completed().await);
     }
 
+    /// 普通失败即使错误信息带 panic 前缀，也不能被误判为 panic。
     #[tokio::test]
     async fn ordinary_failure_cannot_spoof_panic_provenance() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -846,16 +879,17 @@ mod tests {
         Ok(())
     }
 
+    /// 运行中的任务被取消后 wait 返回错误。
     #[tokio::test]
     async fn test_background_task_cancel() {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
         let handle = spawner.spawn("cancellable-task", async {
-            // Simulate long work
+            // 模拟耗时工作
             tokio::time::sleep(Duration::from_secs(60)).await;
             Ok(())
         });
 
-        // Give the task a moment to start
+        // 给任务一点时间启动
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(handle.is_running().await);
 
@@ -865,10 +899,11 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// wait 超时返回错误。
     #[tokio::test]
     async fn test_background_task_timeout() {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
-            default_timeout_secs: 0, // no default timeout
+            default_timeout_secs: 0, // 无默认超时
             ..Default::default()
         });
         let handle = spawner.spawn("slow-task", async {
@@ -876,18 +911,18 @@ mod tests {
             Ok("done")
         });
 
-        // Wait with a short timeout — should fail
+        // 以较短超时等待——应当失败
         let result = handle.wait(Some(Duration::from_millis(100))).await;
         assert!(result.is_err());
 
-        // Cancel to clean up
+        // 取消以便清理
         handle.cancel();
     }
 
-    /// Regression for N-P2-5: a timeout must NOT consume the result. After a
-    /// timeout, calling `wait()` again with a longer timeout must still return
-    /// the real result once the task completes. The old oneshot impl lost the
-    /// result permanently on timeout.
+    /**
+    N-P2-5 回归测试：超时不得消耗结果。超时后再次以更长超时调用 `wait()`，
+    在任务完成后仍须返回真实结果。旧的 oneshot 实现在超时后会永久丢失结果。
+    */
     #[tokio::test]
     async fn test_background_task_timeout_then_retry_recovers_result() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -899,16 +934,17 @@ mod tests {
             Ok("recovered")
         });
 
-        // First wait: timeout too short → error, but result NOT lost.
+        // 第一次等待：超时过短 → 报错，但结果不会丢失。
         let r1 = handle.wait(Some(Duration::from_millis(50))).await;
         assert!(r1.is_err(), "first wait should time out");
 
-        // Second wait: long enough → must get the real result (not "already consumed").
+        // 第二次等待：时长足够 → 必须拿到真实结果（而非 "already consumed"）。
         let r2 = handle.wait(Some(Duration::from_secs(5))).await;
         assert_eq!(r2?, "recovered");
         Ok(())
     }
 
+    /// 并发等待者都能观察到终态，且仅一个取得结果。
     #[tokio::test]
     async fn concurrent_waiters_both_reach_a_terminal_observation() -> Result<()> {
         use std::task::Poll;
@@ -955,6 +991,7 @@ mod tests {
         Ok(())
     }
 
+    /// 排队中的任务被取消后直接结束，不会启动 future。
     #[tokio::test]
     async fn queued_cancellation_settles_without_starting_the_future() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -997,6 +1034,7 @@ mod tests {
         Ok(())
     }
 
+    /// 并发上限为 0 时发布配置失败。
     #[tokio::test]
     async fn zero_concurrency_settles_as_configuration_failure() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -1025,6 +1063,7 @@ mod tests {
         Ok(())
     }
 
+    /// 排队期间到达截止时间则失败结束，不会启动 future。
     #[tokio::test]
     async fn queued_deadline_settles_without_starting_the_future() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -1058,6 +1097,7 @@ mod tests {
         Ok(())
     }
 
+    /// 执行阶段取消会等待子任务析构后再发布终态。
     #[tokio::test]
     async fn execution_cancel_waits_for_child_task_drop() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -1089,6 +1129,7 @@ mod tests {
         Ok(())
     }
 
+    /// 执行阶段超时会等待子任务析构后再发布终态。
     #[tokio::test]
     async fn execution_timeout_waits_for_child_task_drop() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -1119,6 +1160,7 @@ mod tests {
         Ok(())
     }
 
+    /// 类型擦除注册表保留失败与取消的终态含义。
     #[tokio::test]
     async fn type_erased_registry_preserves_failure_and_cancellation() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -1160,6 +1202,7 @@ mod tests {
         Ok(())
     }
 
+    /// list 返回所有被跟踪的任务。
     #[tokio::test]
     async fn test_task_spawner_list() {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -1176,6 +1219,7 @@ mod tests {
         assert_eq!(list.len(), 2);
     }
 
+    /// 终态历史有上限，且不会移除运行中的任务。
     #[tokio::test]
     async fn terminal_history_is_bounded_without_removing_running_tasks() -> Result<()> {
         let spawner = TaskSpawner::new(TaskSpawnerConfig {
@@ -1210,6 +1254,7 @@ mod tests {
         Ok(())
     }
 
+    /// cancel_all 取消全部任务，任务在清理前仍被跟踪。
     #[tokio::test]
     async fn test_task_spawner_cancel_all() {
         let spawner = TaskSpawner::new(TaskSpawnerConfig::default());
@@ -1225,11 +1270,12 @@ mod tests {
 
         spawner.cancel_all();
 
-        // Both should eventually terminate
+        // 两个任务最终都应终止
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(spawner.task_count(), 2); // still tracked until pruned
+        assert_eq!(spawner.task_count(), 2); // 在清理前仍被跟踪
     }
 
+    /// is_terminal 对各状态的判定。
     #[test]
     fn test_status_is_terminal() {
         assert!(!BackgroundTaskStatus::Pending.is_terminal());
@@ -1255,6 +1301,7 @@ mod tests {
         assert!(BackgroundTaskStatus::Cancelled.is_terminal());
     }
 
+    /// as_str 返回的状态文本。
     #[test]
     fn test_status_as_str() {
         assert_eq!(BackgroundTaskStatus::Pending.as_str(), "pending");

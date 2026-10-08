@@ -1,15 +1,17 @@
-//! Durable-content redaction and bounded-retention policy.
+//! 持久化内容的脱敏与有界保留策略。
 
 use regex::Regex;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
+/// 对象条目被截断时插入的合成标记值。
 const TRUNCATED_OBJECT_MARKER: &str = "[TRUNCATED OBJECT]";
 
+/// 已知密钥形态的具名正则列表（编译失败的模式会被忽略）。
 static SECRET_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     [
-        // Match the complete body before shorter token patterns can overlap it.
+        // 先匹配完整的私钥主体，避免较短的 token 模式与之重叠。
         ("Private Key", r"(?s)-----BEGIN (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----.*?(?:-----END (?:(?:RSA|EC|DSA|OPENSSH|ENCRYPTED) )?PRIVATE KEY-----|\z)"),
         ("AWS Access Key", r"AKIA[0-9A-Z]{16}"),
         ("AWS Secret Key", r"(?i)aws.?secret.?key[\s:=]+[A-Za-z0-9/+=]{40}"),
@@ -38,13 +40,18 @@ static SECRET_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| 
     .collect()
 });
 
+/// 在文本中检测到的一处密钥匹配。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecretMatch {
+    /// 密钥类型名称（例如 "GitHub Token"）。
     pub secret_type: &'static str,
+    /// 匹配到的原始文本。
     pub matched: String,
+    /// 匹配在原文中的起始字节偏移。
     pub position: usize,
 }
 
+/// 扫描文本中的所有密钥，重叠的匹配只保留先命中的那一个。
 pub fn scan_secrets(text: &str) -> Vec<SecretMatch> {
     let mut matches = Vec::new();
     for (secret_type, regex) in SECRET_PATTERNS.iter() {
@@ -66,12 +73,14 @@ pub fn scan_secrets(text: &str) -> Vec<SecretMatch> {
     matches
 }
 
+/// 文本中是否包含任意已知形态的密钥。
 pub fn contains_secrets(text: &str) -> bool {
     SECRET_PATTERNS
         .iter()
         .any(|(_, regex)| regex.is_match(text))
 }
 
+/// 将文本中的密钥替换为 `[REDACTED: <类型>]` 占位符。
 pub fn redact_secrets(text: &str) -> String {
     let mut result = text.to_string();
     let mut matches = scan_secrets(text);
@@ -91,14 +100,17 @@ pub fn redact_secrets(text: &str) -> String {
     result
 }
 
-/// Controls what durable diagnostic stores retain.
+/// 控制持久化诊断存储所保留的内容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContentRetentionPolicy {
+    /// 单个字符串保留的最大字符数，超出部分被截断。
     pub max_string_chars: usize,
+    /// 数组元素（以及对象条目）保留的最大数量。
     pub max_array_items: usize,
 }
 
 impl Default for ContentRetentionPolicy {
+    /// 默认保留 16384 个字符、4096 个数组元素。
     fn default() -> Self {
         Self {
             max_string_chars: 16_384,
@@ -108,7 +120,7 @@ impl Default for ContentRetentionPolicy {
 }
 
 impl ContentRetentionPolicy {
-    /// Recursively redact known secret shapes and bound strings/arrays.
+    /// 递归地脱敏已知密钥形态，并限制字符串/数组的大小。
     pub fn sanitize_json(&self, value: &mut Value) {
         match value {
             Value::String(text) => *text = self.sanitize_text(text),
@@ -170,9 +182,10 @@ impl ContentRetentionPolicy {
         }
     }
 
+    /// 对单段文本脱敏并按字符上限截断；本策略产出的合成标记值原样返回。
     pub fn sanitize_text(&self, text: &str) -> String {
-        // These are bounded synthetic values emitted by this policy. Keeping
-        // them stable makes a persisted record safe to read and sanitize again.
+        /* 这些是本策略自身产出的有界合成值。保持它们不变，
+        可以让已持久化的记录被安全地再次读取和脱敏。 */
         if matches!(
             text,
             "[REDACTED]" | "[TRUNCATED ARRAY]" | TRUNCATED_OBJECT_MARKER
@@ -191,6 +204,7 @@ impl ContentRetentionPolicy {
         bounded
     }
 
+    /// 对 JSON 对象的 key 脱敏并按字符上限截断。
     fn sanitize_json_key(&self, key: &str) -> String {
         self.sanitize_text(key)
             .chars()
@@ -199,6 +213,7 @@ impl ContentRetentionPolicy {
     }
 }
 
+/// 为对象选择一个不冲突的 key：优先使用脱敏后的 key，冲突时退回到基于哈希的 key，仍冲突则返回 `None`。
 fn unique_json_key(
     values: &serde_json::Map<String, Value>,
     key: String,
@@ -215,6 +230,7 @@ fn unique_json_key(
     (!values.contains_key(&candidate)).then_some(candidate)
 }
 
+/// 由原始 key 的 SHA-256 十六进制摘要生成截断后的备用 key。
 fn collision_json_key(original_key: &str, max_chars: usize) -> String {
     format!("{:x}", Sha256::digest(original_key.as_bytes()))
         .chars()
@@ -222,6 +238,7 @@ fn collision_json_key(original_key: &str, max_chars: usize) -> String {
         .collect()
 }
 
+/// 判断对象 key 是否属于敏感字段（忽略大小写与 `-`/`_`）。
 fn is_sensitive_key(key: &str) -> bool {
     let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
     [

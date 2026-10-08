@@ -1,111 +1,103 @@
-//! Sequenced event journal with checkpoint-compounded reduction.
-//!
-//! # Purpose
-//!
-//! This module is the framework-side generic primitive for the
-//! "append-only sequenced journal + checkpointed projection" pattern that EKO
-//! currently implements twice (ordinary-chat `ChatEventLog` and the TaskRuntime
-//! `events.jsonl` + `checkpoint.json` pair). It is deliberately free of EKO
-//! product types: any consumer that needs durable, replayable, ordered facts
-//! with a bounded hot-path read can compose these pieces.
-//!
-//! # Industry basis
-//!
-//! - OpenAI Codex rollout recorder: the complete rollout is appended
-//!   independently and durably; consumers derive bounded views from stable
-//!   boundaries instead of re-deriving state from scratch.
-//! - LangGraph persistence: execution progress is saved as
-//!   checkpoint/thread-identity pairs, and resume continues from the persisted
-//!   fact rather than replaying the whole history.
-//! - EventStoreDB/KurrentDB expected-version appends: a batch is accepted as
-//!   one ordered commit or rejected without exposing a record prefix.
-//! - RocksDB `WriteBatch`: one batch is the physical atomicity boundary, not a
-//!   loop over independently visible writes.
-//! - Apache Kafka's log and commit-marker model: immutable segments divide
-//!   physical I/O while commit boundaries control visibility in one global
-//!   offset space.
-//! - Rust [`std::fs::File::sync_data`]: a completed write and its requested
-//!   durability barrier are separate outcomes, which is why receipts can be
-//!   committed but durability-degraded.
-//! - Classic event sourcing snapshots: fold events into state and periodically
-//!   persist `(state, applied_sequence)` so recovery replays only the tail.
-//!
-//! # Layering decision
-//!
-//! Journal sequencing, durable append, tolerant replay, and
-//! checkpoint compounding are generic mechanisms needed by any agent runtime,
-//! so they live in the framework (`echo-state`). The segmented implementation
-//! owns only its internal file naming and integrity contract. Data-root and
-//! stream-directory selection, retention counts, pins, and product projections
-//! stay with consumers. Migrating EKO's duplicated file algorithms onto this
-//! module is planned follow-up work and deletes the duplicated algorithms at
-//! that point; nothing here depends on it.
-//!
-//! # Invariants
-//!
-//! - Sequences are 1-based and contiguous (`1, 2, 3, ...`). A journal load
-//!   that observes a gap or a non-monotonic record fails loudly instead of
-//!   silently mis-replaying.
-//! - Journal implementations serialize their append authority. File-backed
-//!   implementations additionally hold an exclusive process-lifetime lease.
-//! - Every physical line is one digest-protected batch frame. A torn trailing
-//!   frame makes the complete batch invisible and is truncated on next open;
-//!   corruption in any complete frame fails closed.
-//! - [`EventReducer::apply`] is infallible: journal events are validated before
-//!   append, and projection code must remain total over its own event type.
-//! - One [`CheckpointedReducer`] is the single projection owner for its journal.
-//!   It serializes append, fold, checkpoint, and recovery as one transaction so
-//!   concurrent callers cannot reorder committed sequences.
-//! - Every checkpoint carries the exact [`JournalIdentity`] whose facts
-//!   produced it. A sequence is never trusted outside that Journal generation.
-//!
-//! # Example
-//!
-//! ```
-//! use echo_state::journal::{
-//!     CheckpointStore, CheckpointedReducer, EventReducer, MemoryCheckpointStore,
-//!     MemoryEventJournal, PreparedJournalBatch,
-//! };
-//! use std::sync::Arc;
-//!
-//! #[derive(Default, serde::Serialize, serde::Deserialize)]
-//! struct CountingReducer {
-//!     applied: u64,
-//! }
-//!
-//! impl EventReducer for CountingReducer {
-//!     type Event = String;
-//!     fn apply(&mut self, _event: &String) {
-//!         self.applied = self.applied.saturating_add(1);
-//!     }
-//! }
-//!
-//! # fn main() -> echo_core::error::Result<()> {
-//! let journal = Arc::new(MemoryEventJournal::<String>::new());
-//! let checkpoints: Arc<dyn CheckpointStore<CountingReducer>> =
-//!     Arc::new(MemoryCheckpointStore::new());
-//! let reducer = CheckpointedReducer::new(Arc::clone(&journal), Arc::clone(&checkpoints), 2);
-//!
-//! let batch = PreparedJournalBatch::new(vec!["one".to_string(), "two".to_string()])
-//!     .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
-//! let committed = reducer
-//!     .apply_batch(batch)
-//!     .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
-//! assert_eq!(committed.record_count, 2); // one physical commit frame
-//! reducer
-//!     .apply("three".to_string())
-//!     .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
-//! assert_eq!(reducer.last_applied_sequence(), 3);
-//!
-//! // Recovery loads the checkpoint and replays only the tail.
-//! let recovered = CheckpointedReducer::new(journal, checkpoints, 2);
-//! assert_eq!(recovered.recover()?.last_applied_sequence, 3);
-//! recovered.with_state(|state| assert_eq!(state.applied, 3));
-//! # Ok(())
-//! }
-//! ```
+/*!
+带检查点复合归约（checkpoint-compounded reduction）的有序事件日志。
 
+# 目的
+
+本模块是框架侧的通用原语，用于实现“仅追加的有序日志 + 检查点投影”模式；
+EKO 目前将该模式实现了两次（普通聊天的 `ChatEventLog`，以及 TaskRuntime 的
+`events.jsonl` + `checkpoint.json` 组合）。本模块刻意不依赖任何 EKO 产品类型：
+任何需要持久、可重放、有序事实且热路径读取有界的消费方，都可以组合这些构件。
+
+# 业界依据
+
+- OpenAI Codex rollout 记录器：完整 rollout 独立且持久地追加；消费方从稳定
+  边界派生有界视图，而不是从头重新推导状态。
+- LangGraph 持久化：执行进度以 checkpoint / 线程标识对的形式保存，恢复时从
+  已持久化的事实继续，而不是重放全部历史。
+- EventStoreDB/KurrentDB 的 expected-version 追加：一个批次要么作为一次有序
+  提交被接受，要么被拒绝，且不会暴露任何记录前缀。
+- RocksDB `WriteBatch`：一个批次就是物理原子性边界，而不是对若干各自可见的
+  写入进行循环。
+- Apache Kafka 的日志与提交标记模型：不可变分段划分物理 I/O，而提交边界在
+  同一个全局偏移空间内控制可见性。
+- Rust [`std::fs::File::sync_data`]：写入完成与其请求的持久性屏障是两个独立
+  结果，这也是回执可能“已提交但持久性降级”的原因。
+- 经典事件溯源快照：将事件折叠为状态，并周期性持久化
+  `(state, applied_sequence)`，使恢复时只需重放尾部。
+
+# 分层决策
+
+日志排序、持久追加、容错重放和检查点复合是任何 agent 运行时都需要的通用机制，
+因此它们位于框架层（`echo-state`）。分段实现只负责其内部文件命名与完整性契约。
+数据根目录与流目录的选择、保留数量、固定（pin）以及产品投影均由消费方负责。
+将 EKO 中重复的文件算法迁移到本模块是计划中的后续工作，届时会删除重复算法；
+本模块不依赖于该迁移。
+
+# 不变量
+
+- 序号从 1 开始且连续（`1, 2, 3, ...`）。日志加载若发现缺口或非单调记录，
+  会显式失败，而不是静默地错误重放。
+- 日志实现会串行化其追加权限。基于文件的实现还会额外持有一个进程生命周期内
+  独占的租约。
+- 每个物理行都是一个受摘要保护的批次帧。被撕裂的尾部帧会使整个批次不可见，
+  并在下次打开时被截断；任何完整帧中的损坏都会以失败关闭（fail closed）处理。
+- [`EventReducer::apply`] 不会失败：日志事件在追加前已校验，投影代码必须对其
+  自身事件类型保持全函数（total）。
+- 一个 [`CheckpointedReducer`] 是其日志唯一的投影所有者。它将追加、折叠、
+  检查点和恢复串行化为一个事务，使并发调用方无法打乱已提交序号的顺序。
+- 每个检查点都携带产生它的事实所属的确切 [`JournalIdentity`]。序号绝不会在该
+  日志代（generation）之外被信任。
+
+# 示例
+
+```
+use echo_state::journal::{
+    CheckpointStore, CheckpointedReducer, EventReducer, MemoryCheckpointStore,
+    MemoryEventJournal, PreparedJournalBatch,
+};
+use std::sync::Arc;
+
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct CountingReducer {
+    applied: u64,
+}
+
+impl EventReducer for CountingReducer {
+    type Event = String;
+    fn apply(&mut self, _event: &String) {
+        self.applied = self.applied.saturating_add(1);
+    }
+}
+
+# fn main() -> echo_core::error::Result<()> {
+let journal = Arc::new(MemoryEventJournal::<String>::new());
+let checkpoints: Arc<dyn CheckpointStore<CountingReducer>> =
+    Arc::new(MemoryCheckpointStore::new());
+let reducer = CheckpointedReducer::new(Arc::clone(&journal), Arc::clone(&checkpoints), 2);
+
+let batch = PreparedJournalBatch::new(vec!["one".to_string(), "two".to_string()])
+    .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
+let committed = reducer
+    .apply_batch(batch)
+    .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
+assert_eq!(committed.record_count, 2); // 一个物理提交帧
+reducer
+    .apply("three".to_string())
+    .map_err(|error| echo_core::error::ReactError::Other(error.to_string()))?;
+assert_eq!(reducer.last_applied_sequence(), 3);
+
+// 恢复时加载检查点，并只重放尾部。
+let recovered = CheckpointedReducer::new(journal, checkpoints, 2);
+assert_eq!(recovered.recover()?.last_applied_sequence, 3);
+recovered.with_state(|state| assert_eq!(state.applied, 3));
+# Ok(())
+}
+```
+*/
+
+/// 基于单文件的日志与检查点存储实现。
 pub mod file;
+/// 基于分段文件的日志实现。
 pub mod segmented;
 
 pub use file::{FileCheckpointStore, FileEventJournal};
@@ -126,24 +118,30 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 
+/// 测试专用的通用错误类型。
 #[cfg(test)]
 pub(crate) type TestError = Box<dyn std::error::Error + Send + Sync>;
 
+/// 测试专用的结果类型。
 #[cfg(test)]
 pub(crate) type TestResult<T = ()> = std::result::Result<T, TestError>;
 
+/// 以给定消息构造一个测试失败错误。
 #[cfg(test)]
 pub(crate) fn test_failure(message: impl Into<String>) -> TestError {
     Box::new(std::io::Error::other(message.into()))
 }
 
+/// 为测试中的 `Result` / `Option` 附加上下文信息的辅助 trait。
 #[cfg(test)]
 pub(crate) trait TestContext<T> {
+    /// 将值转换为 [`TestResult`]，失败时附带 `context` 描述。
     fn test_context(self, context: &str) -> TestResult<T>;
 }
 
 #[cfg(test)]
 impl<T, E: fmt::Debug> TestContext<T> for std::result::Result<T, E> {
+    /// `Err` 时附带上下文转换为测试错误。
     fn test_context(self, context: &str) -> TestResult<T> {
         match self {
             Ok(value) => Ok(value),
@@ -154,6 +152,7 @@ impl<T, E: fmt::Debug> TestContext<T> for std::result::Result<T, E> {
 
 #[cfg(test)]
 impl<T> TestContext<T> for Option<T> {
+    /// `None` 时附带上下文转换为测试错误。
     fn test_context(self, context: &str) -> TestResult<T> {
         match self {
             Some(value) => Ok(value),
@@ -162,27 +161,39 @@ impl<T> TestContext<T> for Option<T> {
     }
 }
 
+/// 日志批次帧的 schema 版本号。
 const JOURNAL_BATCH_SCHEMA_VERSION: u16 = 2;
 
-// File-backed runtime caches normally keep far fewer authorities live. The
-// soft range scans at a fixed cadence; the hard limit scans immediately to
-// bound dead paths. This is lifecycle hygiene, not an eviction policy: live
-// authorities are never removed.
+/*
+基于文件的运行时缓存通常只保留少得多的存活权限对象。软阈值区间按固定节奏扫描；
+硬上限则立即扫描，以限制失效路径的数量。这属于生命周期卫生管理，而非淘汰策略：
+存活的权限对象永远不会被移除。
+*/
+/// 触发按节奏清理失效条目的软阈值。
 pub(super) const WEAK_REGISTRY_PRUNE_THRESHOLD: usize = 128;
+/// 软阈值区间内两次清理之间的打开次数间隔。
 pub(super) const WEAK_REGISTRY_PRUNE_INTERVAL: usize = 32;
+/// 达到后立即清理失效条目的硬上限。
 pub(super) const WEAK_REGISTRY_HARD_LIMIT: usize = 256;
 
+/// 弱引用注册表中的单个条目。
 struct WeakRegistryEntry<T> {
+    /// 指向共享权限对象的弱引用。
     authority: Weak<T>,
+    /// 当前已成功返回且尚未释放的日志句柄数量。
     journal_handle_count: usize,
 }
 
+/// 按路径索引共享权限对象的弱引用注册表，用于同一路径复用同一权限对象。
 pub(super) struct WeakRegistry<T> {
+    /// 路径到注册条目的映射。
     entries: HashMap<PathBuf, WeakRegistryEntry<T>>,
+    /// 自上次清理以来的打开次数。
     opens_since_prune: usize,
 }
 
 impl<T> WeakRegistry<T> {
+    /// 创建一个空注册表。
     pub(super) fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -190,6 +201,7 @@ impl<T> WeakRegistry<T> {
         }
     }
 
+    /// 在达到软节奏或硬上限时，清理已失效（无强引用）的条目。
     pub(super) fn prune_dead_if_due(&mut self) {
         self.opens_since_prune = self.opens_since_prune.saturating_add(1);
         let len = self.entries.len();
@@ -204,12 +216,14 @@ impl<T> WeakRegistry<T> {
         self.opens_since_prune = 0;
     }
 
+    /// 尝试将路径对应的弱引用升级为强引用。
     pub(super) fn upgrade(&self, path: &Path) -> Option<Arc<T>> {
         self.entries
             .get(path)
             .and_then(|entry| entry.authority.upgrade())
     }
 
+    /// 为路径插入新的权限对象条目，初始句柄计数为 1。
     pub(super) fn insert(&mut self, path: PathBuf, authority: &Arc<T>) {
         self.entries.insert(
             path,
@@ -220,6 +234,7 @@ impl<T> WeakRegistry<T> {
         );
     }
 
+    /// 若路径条目恰好指向同一权限对象，则将其句柄计数加一；成功返回 `true`。
     pub(super) fn add_handle(&mut self, path: &Path, authority: &Arc<T>) -> bool {
         let authority = Arc::downgrade(authority);
         let Some(entry) = self.entries.get_mut(path) else {
@@ -235,8 +250,7 @@ impl<T> WeakRegistry<T> {
         true
     }
 
-    /// Release one successfully returned journal handle. `true` means the
-    /// exact registry entry reached zero and was removed.
+    /** 释放一个已成功返回的日志句柄。返回 `true` 表示该确切注册条目的计数归零并已被移除。 */
     pub(super) fn release_handle(&mut self, path: &Path, authority: &Arc<T>) -> bool {
         let authority = Arc::downgrade(authority);
         let Some(entry) = self.entries.get_mut(path) else {
@@ -253,6 +267,7 @@ impl<T> WeakRegistry<T> {
         true
     }
 
+    /// 统计位于 `root` 之下的注册路径数量（仅测试使用）。
     #[cfg(test)]
     pub(super) fn paths_beneath(&self, root: &Path) -> usize {
         self.entries
@@ -262,32 +277,34 @@ impl<T> WeakRegistry<T> {
     }
 }
 
-/// Event payload accepted by an [`EventJournal`].
-///
-/// A blanket impl covers every `serde`-capable, thread-safe type. Events do not
-/// need to be [`Clone`]: append consumes the value and records share it through
-/// an [`Arc`] for receipts and in-memory replay.
+/**
+[`EventJournal`] 接受的事件负载。
+
+一个 blanket impl 覆盖了所有支持 `serde` 且线程安全的类型。事件无需实现
+[`Clone`]：追加会消费该值，记录则通过 [`Arc`] 共享它，用于回执和内存重放。
+*/
 pub trait JournalEvent:
     Serialize + DeserializeOwned + Send + Sync + std::fmt::Debug + 'static
 {
 }
 
-/// Stable identity of one journal generation.
-///
-/// Sequences are meaningful only inside this identity. File-backed journals
-/// persist it in every physical batch frame so replacing or mixing journal
-/// generations cannot make an unrelated checkpoint look current.
+/**
+单个日志代（generation）的稳定标识。
+
+序号只在该标识内有意义。基于文件的日志会将其持久化到每个物理批次帧中，
+从而替换或混用日志代时，不会让无关的检查点看起来是最新的。
+*/
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct JournalIdentity(String);
 
 impl JournalIdentity {
-    /// Allocate a new opaque journal-generation identity.
+    /// 分配一个新的不透明日志代标识。
     pub fn new() -> Self {
         Self(uuid::Uuid::new_v4().to_string())
     }
 
-    /// Validate and normalize a persisted journal-generation identity.
+    /// 校验并规范化一个已持久化的日志代标识。
     pub fn parse(value: impl AsRef<str>) -> Result<Self> {
         let parsed = uuid::Uuid::parse_str(value.as_ref()).map_err(|error| {
             ReactError::Other(format!("journal identity is not a UUID: {error}"))
@@ -295,19 +312,21 @@ impl JournalIdentity {
         Ok(Self(parsed.to_string()))
     }
 
-    /// Canonical textual representation of this identity.
+    /// 该标识的规范文本表示。
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 impl Default for JournalIdentity {
+    /// 返回一个新生成的随机日志身份。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl<'de> Deserialize<'de> for JournalIdentity {
+    /// 反序列化日志身份并校验其格式。
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -318,6 +337,7 @@ impl<'de> Deserialize<'de> for JournalIdentity {
 }
 
 impl fmt::Display for JournalIdentity {
+    /// 以字符串形式显示日志身份。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
     }
@@ -328,19 +348,20 @@ impl<T> JournalEvent for T where
 {
 }
 
-/// One journal entry with its assigned sequence.
+/// 一条带有已分配序号的日志条目。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournalRecord<E> {
-    /// Identity of the physical batch frame containing this record.
+    /// 包含该记录的物理批次帧标识。
     batch_id: String,
-    /// 1-based contiguous sequence assigned by the journal.
+    /// 由日志分配的从 1 开始的连续序号。
     pub sequence: u64,
-    /// The persisted event payload.
+    /// 已持久化的事件负载。
     pub event: Arc<E>,
 }
 
 impl<E> Clone for JournalRecord<E> {
+    /// 克隆日志记录（不要求 `E: Clone`）。
     fn clone(&self) -> Self {
         Self {
             batch_id: self.batch_id.clone(),
@@ -351,8 +372,7 @@ impl<E> Clone for JournalRecord<E> {
 }
 
 impl<E> JournalRecord<E> {
-    /// Build a record while preserving the physical batch identity and
-    /// sequence assigned by another typed journal adapter.
+    /** 构造一条记录，同时保留由另一个类型化日志适配器分配的物理批次标识与序号。 */
     pub fn from_parts(batch_id: impl Into<String>, sequence: u64, event: E) -> Self {
         Self {
             batch_id: batch_id.into(),
@@ -361,65 +381,96 @@ impl<E> JournalRecord<E> {
         }
     }
 
-    /// Stable identity of the physical batch frame containing this record.
+    /// 包含该记录的物理批次帧的稳定标识。
     pub fn batch_id(&self) -> &str {
         &self.batch_id
     }
 }
 
+/// 参与批次摘要计算的完整性视图（不含摘要本身）。
 #[derive(Debug, Serialize)]
 struct BatchIntegrity<'a, E> {
+    /// 批次帧 schema 版本。
     schema_version: u16,
+    /// 所属日志代标识。
     journal_identity: &'a JournalIdentity,
+    /// 批次标识。
     batch_id: &'a str,
+    /// 批次中第一条记录的序号。
     first_sequence: u64,
+    /// 批次内的记录。
     records: &'a [JournalRecord<E>],
 }
 
+/// 用于序列化写出的批次帧借用视图（含摘要）。
 #[derive(Debug, Serialize)]
 struct StoredBatchFrameRef<'a, E> {
+    /// 批次帧 schema 版本。
     schema_version: u16,
+    /// 所属日志代标识。
     journal_identity: &'a JournalIdentity,
+    /// 批次标识。
     batch_id: &'a str,
+    /// 批次中第一条记录的序号。
     first_sequence: u64,
+    /// 批次内的记录。
     records: &'a [JournalRecord<E>],
+    /// 批次内容的完整性摘要。
     digest: &'a str,
 }
 
+/// 从持久化行反序列化得到的批次帧。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct StoredBatchFrame<E> {
+    /// 批次帧 schema 版本。
     schema_version: u16,
+    /// 所属日志代标识。
     journal_identity: JournalIdentity,
+    /// 批次标识。
     batch_id: String,
+    /// 批次中第一条记录的序号。
     first_sequence: u64,
+    /// 批次内的记录。
     records: Vec<JournalRecord<E>>,
+    /// 持久化的完整性摘要。
     digest: String,
+    /// 对原始负载计算得到的摘要（不参与序列化）。
     #[serde(skip)]
     payload_digest: String,
 }
 
+/// 已提交批次的身份信息，用于幂等性比对与冲突检测。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BatchIdentity {
+    /// 批次中第一条记录的序号。
     pub first_sequence: u64,
+    /// 批次包含的记录数。
     pub record_count: u64,
+    /// 预处理负载的摘要。
     pub payload_digest: String,
+    /// 物理帧的完整性摘要。
     pub frame_digest: String,
 }
 
-/// A stable, prevalidated batch that owns non-clone event payloads.
-///
-/// Prepare once, then pass the value to [`EventJournal::append_batch`]. A
-/// [`JournalBatchAppendError::NotCommitted`] returns this exact value, including
-/// its original `batch_id` and payload `Arc`s, so retry never invents a new
-/// identity or requires `E: Clone`.
+/**
+一个稳定、已预校验、持有不可克隆事件负载的批次。
+
+只需准备一次，然后将该值传给 [`EventJournal::append_batch`]。
+[`JournalBatchAppendError::NotCommitted`] 会原样返回该值（包括其原始 `batch_id`
+和负载 `Arc`），因此重试时绝不会生成新的标识，也不要求 `E: Clone`。
+*/
 pub struct PreparedJournalBatch<E> {
+    /// 跨重试与对账保持不变的批次幂等标识。
     batch_id: String,
+    /// 有序的事件负载。
     events: Arc<[Arc<E>]>,
+    /// 预校验时计算得到的负载摘要。
     payload_digest: String,
 }
 
 impl<E> Clone for PreparedJournalBatch<E> {
+    /// 克隆已准备的批次（不要求 `E: Clone`）。
     fn clone(&self) -> Self {
         Self {
             batch_id: self.batch_id.clone(),
@@ -430,6 +481,7 @@ impl<E> Clone for PreparedJournalBatch<E> {
 }
 
 impl<E: fmt::Debug> fmt::Debug for PreparedJournalBatch<E> {
+    /// 输出批次的调试信息。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreparedJournalBatch")
@@ -440,13 +492,19 @@ impl<E: fmt::Debug> fmt::Debug for PreparedJournalBatch<E> {
     }
 }
 
+/// 已编码、可直接写入的日志批次帧。
 pub(super) struct PreparedJournalFrame<E> {
+    /// 该批次提交后的下一个可用序号。
     pub next_sequence: u64,
+    /// 已分配序号的记录。
     pub records: Arc<[JournalRecord<E>]>,
+    /// 以换行结尾的序列化帧字节。
     pub line: Vec<u8>,
+    /// 该批次的身份信息。
     pub identity: BatchIdentity,
 }
 
+/// 将 0..=15 的半字节转换为小写十六进制字符。
 fn lower_hex_digit(nibble: u8) -> char {
     match nibble {
         0..=9 => char::from(b'0'.saturating_add(nibble)),
@@ -454,6 +512,7 @@ fn lower_hex_digit(nibble: u8) -> char {
     }
 }
 
+/// 计算批次帧（含日志代标识、批次标识、起始序号与记录）的 SHA-256 十六进制摘要。
 fn batch_digest<E: Serialize>(
     journal_identity: &JournalIdentity,
     batch_id: &str,
@@ -481,26 +540,29 @@ fn batch_digest<E: Serialize>(
     Ok(encoded)
 }
 
-/// Failure to form a stable batch before any journal mutation is attempted.
+/// 在尝试任何日志变更之前，未能构造出稳定批次的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalBatchPrepareError {
+    /// 预检失败批次所分配的标识。
     batch_id: String,
+    /// 可读的失败描述。
     error: String,
 }
 
 impl JournalBatchPrepareError {
-    /// Stable identity allocated to the batch whose preflight failed.
+    /// 预检失败批次所分配的稳定标识。
     pub fn batch_id(&self) -> &str {
         &self.batch_id
     }
 
-    /// Human-readable preflight failure.
+    /// 可读的预检失败描述。
     pub fn error(&self) -> &str {
         &self.error
     }
 }
 
 impl fmt::Display for JournalBatchPrepareError {
+    /// 显示批次准备错误的描述。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -512,12 +574,16 @@ impl fmt::Display for JournalBatchPrepareError {
 
 impl std::error::Error for JournalBatchPrepareError {}
 
+/// 参与负载摘要计算的视图。
 #[derive(Serialize)]
 struct PreparedPayloads<'a, E> {
+    /// 批次标识。
     batch_id: &'a str,
+    /// 有序事件负载。
     events: &'a [Arc<E>],
 }
 
+/// 计算批次标识与事件负载的 SHA-256 十六进制摘要。
 fn payload_digest<E: Serialize>(batch_id: &str, events: &[Arc<E>]) -> Result<String> {
     let bytes = canonical_json_bytes(&PreparedPayloads { batch_id, events }).map_err(|error| {
         ReactError::Other(format!("failed to encode journal batch payloads: {error}"))
@@ -532,16 +598,17 @@ fn payload_digest<E: Serialize>(batch_id: &str, events: &[Arc<E>]) -> Result<Str
 }
 
 impl<E: JournalEvent> PreparedJournalBatch<E> {
-    /// Own a non-empty ordered event set and prevalidate its serialization.
+    /// 持有一个非空的有序事件集合，并预校验其序列化。
     pub fn new(events: Vec<E>) -> std::result::Result<Self, JournalBatchPrepareError> {
         Self::with_identity(uuid::Uuid::new_v4().to_string(), events)
     }
 
-    /// Own an event set under an existing batch identity.
-    ///
-    /// Adapters use this to preserve a journal frame identity while converting
-    /// an event payload at a typed boundary. The payload digest is recomputed
-    /// for the converted event type, so lookup remains deterministic.
+    /**
+    以已有的批次标识持有一个事件集合。
+
+    适配器在类型边界转换事件负载时，用它来保留日志帧标识。负载摘要会针对转换后
+    的事件类型重新计算，因此查找仍保持确定性。
+    */
     pub fn with_identity(
         batch_id: impl Into<String>,
         events: Vec<E>,
@@ -577,38 +644,42 @@ impl<E: JournalEvent> PreparedJournalBatch<E> {
         })
     }
 
-    /// Stable idempotency identity retained across retry and reconciliation.
+    /// 跨重试与对账保持不变的稳定幂等标识。
     pub fn batch_id(&self) -> &str {
         &self.batch_id
     }
 
-    /// Number of ordered payloads in this indivisible batch.
+    /// 该不可分割批次中有序负载的数量。
     pub fn len(&self) -> usize {
         self.events.len()
     }
 
-    /// Whether this batch is empty. Successful preparation always returns false.
+    /// 该批次是否为空。成功准备的批次总是返回 false。
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
     }
 
-    /// Digest of the prevalidated payload view and batch identity.
+    /// 预校验负载视图与批次标识的摘要。
     pub fn payload_digest(&self) -> &str {
         &self.payload_digest
     }
 
-    /// Read-only ordered payload view.
-    ///
-    /// Interior mutation must not alter serialization; append and lookup
-    /// recompute the digest and reject a changed payload before idempotency.
+    /**
+    只读的有序负载视图。
+
+    内部可变性不得改变序列化结果；追加和查找会重新计算摘要，并在幂等判断之前
+    拒绝已被修改的负载。
+    */
     pub fn events(&self) -> &[Arc<E>] {
         self.events.as_ref()
     }
 
-    /// Verify that a committed receipt contains this exact prepared payload.
-    ///
-    /// Physical commit authorities may retry or reopen independently, but a
-    /// reducer must never fold a receipt for a different batch identity.
+    /**
+    校验已提交回执是否恰好包含本批次预处理的负载。
+
+    物理提交权限对象可以独立地重试或重新打开，但归约器绝不能折叠属于其他批次
+    标识的回执。
+    */
     pub fn matches_receipt(&self, receipt: &JournalBatchAppendReceipt<E>) -> Result<bool> {
         if self.batch_id != receipt.batch_id() || self.len() != receipt.records().len() {
             return Ok(false);
@@ -621,6 +692,7 @@ impl<E: JournalEvent> PreparedJournalBatch<E> {
         Ok(payload_digest(&self.batch_id, events.as_slice())? == self.payload_digest)
     }
 
+    /// 重新计算负载摘要，确认预检之后负载未被修改。
     fn validate_payload_integrity(&self) -> Result<()> {
         let current = payload_digest(&self.batch_id, self.events.as_ref())?;
         if current != self.payload_digest {
@@ -632,6 +704,7 @@ impl<E: JournalEvent> PreparedJournalBatch<E> {
         Ok(())
     }
 
+    /// 以指定批次标识构造批次（仅测试使用）。
     #[cfg(test)]
     fn with_test_identity(
         batch_id: String,
@@ -641,6 +714,7 @@ impl<E: JournalEvent> PreparedJournalBatch<E> {
     }
 }
 
+/// 为批次分配从 `first_sequence` 开始的序号，并编码为可写入的物理帧。
 pub(super) fn prepare_journal_frame<E: JournalEvent>(
     prepared: &PreparedJournalBatch<E>,
     journal_identity: &JournalIdentity,
@@ -700,6 +774,7 @@ pub(super) fn prepare_journal_frame<E: JournalEvent>(
     })
 }
 
+/// 解码一行持久化批次帧，并校验 schema、标识、序号连续性与摘要。
 pub(super) fn decode_journal_batch<E: JournalEvent>(
     context: &str,
     line: &[u8],
@@ -769,14 +844,17 @@ pub(super) fn decode_journal_batch<E: JournalEvent>(
 }
 
 impl<E> StoredBatchFrame<E> {
+    /// 帧所属的日志代标识。
     pub(super) fn journal_identity(&self) -> &JournalIdentity {
         &self.journal_identity
     }
 
+    /// 帧的批次标识。
     pub(super) fn batch_id(&self) -> &str {
         &self.batch_id
     }
 
+    /// 从帧推导出批次身份信息。
     pub(super) fn identity(&self) -> Result<BatchIdentity> {
         let record_count = u64::try_from(self.records.len()).map_err(|_| {
             ReactError::Other("journal batch count exceeds supported range".to_string())
@@ -788,15 +866,18 @@ impl<E> StoredBatchFrame<E> {
             frame_digest: self.digest.clone(),
         })
     }
+    /// 帧内记录的借用视图。
     pub(super) fn records(&self) -> &[JournalRecord<E>] {
         &self.records
     }
 
+    /// 消费帧并返回其记录。
     pub(super) fn into_records(self) -> Vec<JournalRecord<E>> {
         self.records
     }
 }
 
+/// 校验帧的起始序号是否等于期望的下一个序号。
 pub(super) fn verify_journal_batch_sequence<E>(
     context: &str,
     expected_sequence: u64,
@@ -811,44 +892,52 @@ pub(super) fn verify_journal_batch_sequence<E>(
     Ok(())
 }
 
-/// A batch append failure with an explicit retry contract.
+/// 带有明确重试契约的批次追加失败。
 #[derive(Debug)]
 pub enum JournalBatchAppendError<E> {
-    /// No record in the batch committed; retrying the whole batch is safe.
+    /// 批次中没有任何记录被提交；重试整个批次是安全的。
     NotCommitted {
+        /// 原样返回的批次。
         batch: PreparedJournalBatch<E>,
+        /// 失败描述。
         error: String,
     },
-    /// The writer cannot prove whether the batch committed. The authority is
-    /// poisoned and callers must reopen and inspect recovery before retrying.
+    /** 写入方无法证明批次是否已提交。权限对象已被毒化，调用方必须重新打开并检查恢复结果后才能重试。 */
     OutcomeUnknown {
+        /// 原样返回的批次。
         batch: PreparedJournalBatch<E>,
+        /// 失败描述。
         error: String,
     },
-    /// The identity is already bound to a different payload or shape. Reusing
-    /// it can never be retried safely, and the live authority is poisoned.
+    /** 该标识已绑定到不同的负载或形状。复用它永远无法安全重试，且存活的权限对象已被毒化。 */
     IdentityConflict {
+        /// 原样返回的批次。
         batch: PreparedJournalBatch<E>,
+        /// 已存在批次的起始序号。
         existing_first_sequence: u64,
+        /// 已存在批次的记录数。
         existing_record_count: u64,
+        /// 失败描述。
         error: String,
     },
-    /// Interior mutation changed a prepared payload after preflight. The
-    /// stable identity remains reserved for the original digest and this value
-    /// must not be retried.
+    /** 内部可变性在预检之后修改了预处理负载。该稳定标识仍为原始摘要保留，此值不得重试。 */
     PreparedMutation {
+        /// 原样返回的批次。
         batch: PreparedJournalBatch<E>,
+        /// 失败描述。
         error: String,
     },
-    /// The live authority cannot accept writes until it is closed and reopened.
+    /// 存活的权限对象在关闭并重新打开之前无法接受写入。
     AuthorityPoisoned {
+        /// 原样返回的批次。
         batch: PreparedJournalBatch<E>,
+        /// 失败描述。
         error: String,
     },
 }
 
 impl<E> JournalBatchAppendError<E> {
-    /// Construct a retryable pre-mutation failure that returns ownership.
+    /// 构造一个可重试、发生在变更之前、并归还所有权的失败。
     pub fn not_committed(batch: PreparedJournalBatch<E>, error: impl Into<String>) -> Self {
         Self::NotCommitted {
             batch,
@@ -856,7 +945,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Construct an unknown outcome that retains ownership and requires reopen.
+    /// 构造一个结果未知、保留所有权且需要重新打开的失败。
     pub fn outcome_unknown(batch: PreparedJournalBatch<E>, error: impl Into<String>) -> Self {
         Self::OutcomeUnknown {
             batch,
@@ -864,7 +953,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Construct a permanent collision with an existing committed identity.
+    /// 构造一个与已提交标识发生永久冲突的失败。
     pub fn identity_conflict(
         batch: PreparedJournalBatch<E>,
         existing_first_sequence: u64,
@@ -879,7 +968,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Construct a non-retryable payload mutation failure.
+    /// 构造一个不可重试的负载变更失败。
     pub fn prepared_mutation(batch: PreparedJournalBatch<E>, error: impl Into<String>) -> Self {
         Self::PreparedMutation {
             batch,
@@ -887,7 +976,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Construct a refusal from a live authority that must be reopened.
+    /// 构造一个来自必须重新打开的存活权限对象的拒绝。
     pub fn authority_poisoned(batch: PreparedJournalBatch<E>, error: impl Into<String>) -> Self {
         Self::AuthorityPoisoned {
             batch,
@@ -895,7 +984,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Stable identity involved in this failure.
+    /// 此次失败涉及的稳定批次标识。
     pub fn batch_id(&self) -> &str {
         match self {
             Self::NotCommitted { batch, .. } => &batch.batch_id,
@@ -906,12 +995,12 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Whether the returned prepared batch may be retried immediately.
+    /// 返回的预处理批次是否可以立即重试。
     pub fn is_retry_safe(&self) -> bool {
         matches!(self, Self::NotCommitted { .. })
     }
 
-    /// Borrow the retained prepared batch for diagnostics or lookup.
+    /// 借用保留的预处理批次，用于诊断或查找。
     pub fn prepared(&self) -> Option<&PreparedJournalBatch<E>> {
         match self {
             Self::NotCommitted { batch, .. }
@@ -922,8 +1011,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Recover ownership. Non-retryable variants still require the action
-    /// indicated by [`Self::requires_reopen`] or a new identity.
+    /** 取回所有权。不可重试的变体仍需执行 [`Self::requires_reopen`] 所指示的操作，或使用新标识。 */
     pub fn into_prepared(self) -> Option<PreparedJournalBatch<E>> {
         match self {
             Self::NotCommitted { batch, .. }
@@ -934,8 +1022,7 @@ impl<E> JournalBatchAppendError<E> {
         }
     }
 
-    /// Whether this result must be resolved with a fresh authority and
-    /// [`EventJournal::lookup_batch`] before any retry.
+    /** 该结果在任何重试之前，是否必须使用新的权限对象并通过 [`EventJournal::lookup_batch`] 解析。 */
     pub fn requires_reopen(&self) -> bool {
         matches!(
             self,
@@ -947,6 +1034,7 @@ impl<E> JournalBatchAppendError<E> {
 }
 
 impl<E> fmt::Display for JournalBatchAppendError<E> {
+    /// 显示批次追加错误的描述。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotCommitted { batch, error } => {
@@ -987,44 +1075,54 @@ impl<E> fmt::Display for JournalBatchAppendError<E> {
 
 impl<E: fmt::Debug> std::error::Error for JournalBatchAppendError<E> {}
 
+/// 批次追加的结果类型。
 pub type JournalBatchAppendResult<E> =
     std::result::Result<JournalBatchAppendReceipt<E>, JournalBatchAppendError<E>>;
 
-/// Durability result for one complete batch frame present in the journal.
+/// 日志中一个完整批次帧的持久性结果。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum JournalDurabilityStatus {
-    /// A read-only lookup proved the frame identity but intentionally did not
-    /// execute a new durability barrier.
+    /// 只读查找证明了帧标识，但有意没有执行新的持久性屏障。
     Unconfirmed,
-    /// The append and requested durability operation both completed.
+    /// 追加与请求的持久性操作均已完成。
     Confirmed,
-    /// The complete batch frame is present and owns all assigned sequences, but
-    /// the requested durability barrier reported an error. Callers must not
-    /// retry the batch.
-    Degraded { error: String },
+    /**
+    完整批次帧已存在并占有所有已分配序号，但请求的持久性屏障报告了错误。
+    调用方不得重试该批次。
+    */
+    Degraded {
+        /// 持久性屏障报告的错误描述。
+        error: String,
+    },
 }
 
-/// Whether an append created a frame or resolved an existing identity.
+/// 一次追加是新建了帧，还是解析到了已存在的标识。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JournalBatchCommitStatus {
-    /// This call committed the physical frame.
+    /// 本次调用提交了物理帧。
     Committed,
-    /// The identity was already committed; no second frame was written.
+    /// 该标识已被提交过；未写入第二个帧。
     AlreadyCommitted,
 }
 
-/// Receipt for one committed journal append.
+/// 单条日志追加提交后的回执。
 #[derive(Debug)]
 pub struct JournalAppendReceipt<E> {
+    /// 提交该记录的日志代标识。
     journal_identity: JournalIdentity,
+    /// 该单条记录回执对应的批次标识。
     batch_id: String,
+    /// 已提交的记录。
     pub record: JournalRecord<E>,
+    /// 持久性结果。
     pub durability: JournalDurabilityStatus,
+    /// 提交状态（新提交或已提交）。
     pub commit: JournalBatchCommitStatus,
 }
 
 impl<E> Clone for JournalAppendReceipt<E> {
+    /// 克隆追加回执（不要求 `E: Clone`）。
     fn clone(&self) -> Self {
         Self {
             journal_identity: self.journal_identity.clone(),
@@ -1037,33 +1135,34 @@ impl<E> Clone for JournalAppendReceipt<E> {
 }
 
 impl<E> JournalAppendReceipt<E> {
-    /// Journal generation that committed this record.
+    /// 提交该记录的日志代。
     pub fn journal_identity(&self) -> &JournalIdentity {
         &self.journal_identity
     }
 
-    /// Stable batch identity for this single-record receipt.
+    /// 该单条记录回执的稳定批次标识。
     pub fn batch_id(&self) -> &str {
         &self.batch_id
     }
 }
 
-/// Receipt for one atomically committed journal batch.
+/// 一个原子提交的日志批次的回执。
 #[derive(Debug)]
 pub struct JournalBatchAppendReceipt<E> {
-    /// Journal generation that committed this frame.
+    /// 提交该帧的日志代。
     journal_identity: JournalIdentity,
-    /// Stable identity of the physical commit frame.
+    /// 物理提交帧的稳定标识。
     batch_id: String,
-    /// Ordered records committed by the frame. Payloads remain shared through
-    /// [`Arc`] and never require `E: Clone`.
+    /** 该帧提交的有序记录。负载通过 [`Arc`] 共享，绝不要求 `E: Clone`。 */
     records: Arc<[JournalRecord<E>]>,
-    /// One durability outcome covers the complete frame.
+    /// 覆盖整个帧的单一持久性结果。
     durability: JournalDurabilityStatus,
+    /// 提交状态（新提交或已提交）。
     commit: JournalBatchCommitStatus,
 }
 
 impl<E> Clone for JournalBatchAppendReceipt<E> {
+    /// 克隆批次追加回执（不要求 `E: Clone`）。
     fn clone(&self) -> Self {
         Self {
             journal_identity: self.journal_identity.clone(),
@@ -1076,7 +1175,7 @@ impl<E> Clone for JournalBatchAppendReceipt<E> {
 }
 
 impl<E> JournalBatchAppendReceipt<E> {
-    /// Rebuild a receipt after mapping records across a typed adapter boundary.
+    /// 在跨类型化适配器边界映射记录后重建回执。
     pub fn from_parts(
         journal_identity: JournalIdentity,
         batch_id: impl Into<String>,
@@ -1096,55 +1195,57 @@ impl<E> JournalBatchAppendReceipt<E> {
         })
     }
 
-    /// Stable committed or idempotently resolved batch identity.
+    /// 已提交或经幂等解析得到的稳定批次标识。
     pub fn batch_id(&self) -> &str {
         &self.batch_id
     }
 
-    /// Journal generation that committed or resolved this frame.
+    /// 提交或解析出该帧的日志代。
     pub fn journal_identity(&self) -> &JournalIdentity {
         &self.journal_identity
     }
 
-    /// Ordered committed records as a read-only shared slice.
+    /// 以只读共享切片形式返回有序的已提交记录。
     pub fn records(&self) -> &[JournalRecord<E>] {
         self.records.as_ref()
     }
 
-    /// Durability knowledge produced by append or read-only lookup.
+    /// 由追加或只读查找得出的持久性信息。
     pub fn durability(&self) -> &JournalDurabilityStatus {
         &self.durability
     }
 
-    /// Whether this call created or idempotently resolved the frame.
+    /// 本次调用是新建了帧，还是幂等地解析到了已有帧。
     pub fn commit_status(&self) -> JournalBatchCommitStatus {
         self.commit
     }
 }
 
-/// Read-only identity reconciliation result. File-backed lookup never writes
-/// and never executes a durability barrier.
+/** 只读的标识对账结果。基于文件的查找从不写入，也从不执行持久性屏障。 */
 #[derive(Debug)]
 pub enum JournalBatchLookup<E> {
-    /// No retained frame owns this identity and digest.
+    /// 没有保留的帧占有该标识与摘要。
     Absent,
-    /// The unique retained frame matches and supplies its original sequences.
+    /// 唯一保留的帧匹配，并提供其原始序号。
     AlreadyCommitted(JournalBatchAppendReceipt<E>),
-    /// Identity, shape, digest, or current prepared serialization conflicts.
-    Conflict { error: String },
+    /// 标识、形状、摘要或当前预处理序列化存在冲突。
+    Conflict {
+        /// 冲突描述。
+        error: String,
+    },
 }
 
-/// Typed single-event failure preserving prepared ownership after mutation starts.
+/// 类型化的单事件失败，在变更开始后仍保留预处理批次的所有权。
 #[derive(Debug)]
 pub enum JournalAppendError<E> {
-    /// Preparation failed before reaching a journal authority.
+    /// 在到达日志权限对象之前，准备阶段就已失败。
     Prepare(JournalBatchPrepareError),
-    /// The single-element prepared batch reached the journal authority.
+    /// 单元素预处理批次已到达日志权限对象。
     Commit(JournalBatchAppendError<E>),
 }
 
 impl<E> JournalAppendError<E> {
-    /// Stable identity allocated for this single event.
+    /// 为该单个事件分配的稳定标识。
     pub fn batch_id(&self) -> &str {
         match self {
             Self::Prepare(error) => &error.batch_id,
@@ -1152,12 +1253,12 @@ impl<E> JournalAppendError<E> {
         }
     }
 
-    /// Whether the retained prepared value may be retried immediately.
+    /// 保留的预处理值是否可以立即重试。
     pub fn is_retry_safe(&self) -> bool {
         matches!(self, Self::Commit(error) if error.is_retry_safe())
     }
 
-    /// Recover the single-element prepared batch after a commit-stage error.
+    /// 在提交阶段出错后取回单元素预处理批次。
     pub fn into_prepared(self) -> Option<PreparedJournalBatch<E>> {
         match self {
             Self::Prepare(_) => None,
@@ -1165,13 +1266,14 @@ impl<E> JournalAppendError<E> {
         }
     }
 
-    /// Whether the live authority must be reopened before reconciliation.
+    /// 在对账之前是否必须重新打开存活的权限对象。
     pub fn requires_reopen(&self) -> bool {
         matches!(self, Self::Commit(error) if error.requires_reopen())
     }
 }
 
 impl<E> fmt::Display for JournalAppendError<E> {
+    /// 显示追加错误的描述。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Prepare(error) => error.fmt(formatter),
@@ -1182,22 +1284,28 @@ impl<E> fmt::Display for JournalAppendError<E> {
 
 impl<E: fmt::Debug> std::error::Error for JournalAppendError<E> {}
 
+/// 单事件追加的结果类型。
 pub type JournalAppendResult<E> =
     std::result::Result<JournalAppendReceipt<E>, JournalAppendError<E>>;
 
-/// Typed checkpointed-reducer failure.
+/// 类型化的检查点归约器失败。
 #[derive(Debug)]
 pub enum CheckpointedApplyError<E> {
-    /// Preparation failed before journal mutation.
+    /// 在日志变更之前准备阶段就已失败。
     Prepare(JournalBatchPrepareError),
-    /// The journal returned a typed ownership-preserving outcome.
+    /// 日志返回了一个保留所有权的类型化结果。
     Journal(JournalBatchAppendError<E>),
-    /// A committed receipt violated projection sequence invariants.
-    CommittedInvariant { batch_id: String, error: String },
+    /// 已提交的回执违反了投影序号不变量。
+    CommittedInvariant {
+        /// 涉及的批次标识。
+        batch_id: String,
+        /// 违反不变量的描述。
+        error: String,
+    },
 }
 
 impl<E> CheckpointedApplyError<E> {
-    /// Stable identity involved in this reducer apply.
+    /// 此次归约器应用涉及的稳定标识。
     pub fn batch_id(&self) -> &str {
         match self {
             Self::Prepare(error) => &error.batch_id,
@@ -1206,7 +1314,7 @@ impl<E> CheckpointedApplyError<E> {
         }
     }
 
-    /// Recover the prepared batch from a journal-stage failure.
+    /// 从日志阶段的失败中取回预处理批次。
     pub fn into_prepared(self) -> Option<PreparedJournalBatch<E>> {
         match self {
             Self::Journal(error) => error.into_prepared(),
@@ -1214,13 +1322,14 @@ impl<E> CheckpointedApplyError<E> {
         }
     }
 
-    /// Whether the journal authority must be reopened before reconciliation.
+    /// 在对账之前是否必须重新打开日志权限对象。
     pub fn requires_reopen(&self) -> bool {
         matches!(self, Self::Journal(error) if error.requires_reopen())
     }
 }
 
 impl<E> fmt::Display for CheckpointedApplyError<E> {
+    /// 显示检查点化应用错误的描述。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Prepare(error) => error.fmt(formatter),
@@ -1235,31 +1344,35 @@ impl<E> fmt::Display for CheckpointedApplyError<E> {
 
 impl<E: fmt::Debug> std::error::Error for CheckpointedApplyError<E> {}
 
-/// Append-only sequenced journal with atomic batch commits.
-///
-/// Implementations assign contiguous 1-based sequences at append time and can
-/// replay any suffix of the journal in order. Persistent implementations must
-/// preserve one [`JournalIdentity`] for the complete generation and replace it
-/// when the underlying fact history is replaced.
+/**
+支持原子批次提交的仅追加有序日志。
+
+实现在追加时分配从 1 开始的连续序号，并能按顺序重放日志的任意后缀。持久化实现
+必须在整个日志代内保持同一个 [`JournalIdentity`]，并在底层事实历史被替换时替换它。
+*/
 pub trait EventJournal<E: JournalEvent>: Send + Sync {
-    /// Stable identity of this journal generation.
+    /// 该日志代的稳定标识。
     fn journal_identity(&self) -> &JournalIdentity;
 
-    /// Commit a non-empty ordered event batch as one physical frame.
-    ///
-    /// [`JournalBatchAppendError::NotCommitted`] permits retrying the complete
-    /// batch. [`JournalBatchAppendError::OutcomeUnknown`] poisons file-backed
-    /// authorities and forbids blind retry until verified reopen.
+    /**
+    将一个非空的有序事件批次作为一个物理帧提交。
+
+    [`JournalBatchAppendError::NotCommitted`] 允许重试整个批次。
+    [`JournalBatchAppendError::OutcomeUnknown`] 会毒化基于文件的权限对象，
+    在经过验证的重新打开之前禁止盲目重试。
+    */
     fn append_batch(&self, batch: PreparedJournalBatch<E>) -> JournalBatchAppendResult<E>;
 
-    /// Reconcile a prepared identity after an unknown commit outcome without
-    /// writing. `Absent` permits retrying the retained prepared value;
-    /// `AlreadyCommitted` returns the original sequence range.
+    /**
+    在提交结果未知后，以不写入的方式对账预处理标识。`Absent` 允许重试保留的
+    预处理值；`AlreadyCommitted` 返回原始序号范围。
+    */
     fn lookup_batch(&self, batch: &PreparedJournalBatch<E>) -> Result<JournalBatchLookup<E>>;
 
-    /// Consume one event and report both its shared owned record and durability
-    /// outcome. A [`JournalDurabilityStatus::Degraded`] receipt means the full
-    /// record owns its sequence and must not be retried.
+    /**
+    消费一个事件，并同时报告其共享持有的记录与持久性结果。
+    [`JournalDurabilityStatus::Degraded`] 回执表示完整记录已占有其序号，不得重试。
+    */
     fn append(&self, event: E) -> JournalAppendResult<E> {
         let batch = PreparedJournalBatch::new(vec![event]).map_err(JournalAppendError::Prepare)?;
         let appended = self
@@ -1283,53 +1396,68 @@ pub trait EventJournal<E: JournalEvent>: Send + Sync {
         })
     }
 
-    /// Sequence that the next append will assign.
+    /// 下一次追加将分配的序号。
     fn next_sequence(&self) -> u64;
 
-    /// Last committed sequence present in the journal (`0` when empty).
-    /// Consult the append receipt to distinguish confirmed durability from a
-    /// full-write degraded commit.
+    /**
+    日志中最后一个已提交的序号（为空时为 `0`）。需查阅追加回执，以区分已确认的
+    持久性与完整写入但持久性降级的提交。
+    */
     fn last_sequence(&self) -> u64;
 
-    /// Earliest sequence that remains logically replayable.
-    ///
-    /// Non-pruning journals retain their complete history and inherit `1`.
+    /**
+    逻辑上仍可重放的最早序号。
+
+    不裁剪的日志保留完整历史，默认返回 `1`。
+    */
     fn retained_floor(&self) -> u64 {
         1
     }
 
-    /// Replay up to `limit` records with `sequence > after_sequence`, in order.
+    /// 按顺序重放最多 `limit` 条满足 `sequence > after_sequence` 的记录。
     fn replay_after(&self, after_sequence: u64, limit: usize) -> Result<Vec<JournalRecord<E>>>;
 }
 
-/// In-memory [`EventJournal`] for tests and ephemeral consumers.
+/// 用于测试和临时消费方的内存版 [`EventJournal`]。
 #[derive(Debug)]
 pub struct MemoryEventJournal<E> {
+    /// 该内存日志的日志代标识。
     identity: JournalIdentity,
+    /// 受互斥锁保护的内部状态。
     inner: Mutex<MemoryInner<E>>,
 }
 
+/// 内存日志的内部可变状态。
 #[derive(Debug, Default)]
 struct MemoryInner<E> {
+    /// 下一次追加将分配的序号。
     next_sequence: u64,
+    /// 已提交的全部记录。
     records: Vec<JournalRecord<E>>,
+    /// 按批次标识索引的已提交批次。
     batches: HashMap<String, MemoryCommittedBatch<E>>,
+    /// 若已被毒化，记录原因。
     poison: Option<String>,
 }
 
+/// 内存日志中一个已提交批次的记录。
 #[derive(Debug)]
 struct MemoryCommittedBatch<E> {
+    /// 提交时的负载摘要。
     payload_digest: String,
+    /// 提交时生成的回执。
     receipt: JournalBatchAppendReceipt<E>,
 }
 
 impl<E: JournalEvent> Default for MemoryEventJournal<E> {
+    /// 创建一个空的内存日志。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl<E: JournalEvent> MemoryEventJournal<E> {
+    /// 创建一个新的空内存日志，序号从 1 开始。
     pub fn new() -> Self {
         Self {
             identity: JournalIdentity::new(),
@@ -1344,10 +1472,12 @@ impl<E: JournalEvent> MemoryEventJournal<E> {
 }
 
 impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
+    /// 返回该内存日志的身份。
     fn journal_identity(&self) -> &JournalIdentity {
         &self.identity
     }
 
+    /// 以一次有序提交追加整个批次，并保证幂等与冲突检测。
     fn append_batch(&self, batch: PreparedJournalBatch<E>) -> JournalBatchAppendResult<E> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Err(JournalBatchAppendError::prepared_mutation(
@@ -1418,6 +1548,7 @@ impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
         Ok(receipt)
     }
 
+    /// 按批次身份查找已提交的批次。
     fn lookup_batch(&self, batch: &PreparedJournalBatch<E>) -> Result<JournalBatchLookup<E>> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Ok(JournalBatchLookup::Conflict {
@@ -1443,6 +1574,7 @@ impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
         Ok(JournalBatchLookup::Conflict { error: reason })
     }
 
+    /// 返回下一条记录将分配的序号。
     fn next_sequence(&self) -> u64 {
         self.inner
             .lock()
@@ -1450,6 +1582,7 @@ impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
             .next_sequence
     }
 
+    /// 返回最后一条已提交记录的序号。
     fn last_sequence(&self) -> u64 {
         self.inner
             .lock()
@@ -1458,6 +1591,7 @@ impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
             .saturating_sub(1)
     }
 
+    /// 重放 `after_sequence` 之后最多 `limit` 条记录。
     fn replay_after(&self, after_sequence: u64, limit: usize) -> Result<Vec<JournalRecord<E>>> {
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let start = usize::try_from(after_sequence).map_err(|_| {
@@ -1468,100 +1602,124 @@ impl<E: JournalEvent> EventJournal<E> for MemoryEventJournal<E> {
     }
 }
 
-/// State projection folded from journal events.
-///
-/// `apply` must be total over the events this reducer's domain produces; see
-/// the module invariants.
+/**
+由日志事件折叠得到的状态投影。
+
+`apply` 必须对该归约器领域产生的所有事件保持全函数（total）；参见模块不变量。
+*/
 pub trait EventReducer: Default + Serialize + DeserializeOwned + Send + Sync + 'static {
+    /// 该归约器处理的事件类型。
     type Event: JournalEvent;
 
+    /// 将单个事件折叠进当前状态。
     fn apply(&mut self, event: &Self::Event);
 
-    /// Fold an authoritative journal record, including its assigned sequence.
-    ///
-    /// Reducers that only need the payload inherit this default. Sequence-aware
-    /// projections override the hook instead of preallocating a sequence into
-    /// the event before append.
+    /**
+    折叠一条权威日志记录（包括其已分配的序号）。
+
+    只需要负载的归约器直接继承该默认实现。需要感知序号的投影应覆盖此钩子，
+    而不是在追加之前将序号预分配到事件中。
+    */
     fn apply_record(&mut self, record: &JournalRecord<Self::Event>) {
         self.apply(record.event.as_ref());
     }
 }
 
-/// Result of automatic checkpoint compounding after an append.
+/// 追加之后自动检查点复合的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckpointApplyStatus {
-    /// The configured cadence has not been reached.
+    /// 尚未达到配置的检查点节奏。
     NotDue,
-    /// The projection was checkpointed through this append.
+    /// 投影已在本次追加处保存了检查点。
     Saved,
-    /// The event and projection committed, but the derived checkpoint did not.
-    /// Callers must not retry the event; a later append or recovery retries the
-    /// discardable checkpoint.
-    Degraded { error: String },
+    /**
+    事件与投影均已提交，但派生检查点未能保存。调用方不得重试该事件；后续的
+    追加或恢复会重试这个可丢弃的检查点。
+    */
+    Degraded {
+        /// 检查点保存失败的描述。
+        error: String,
+    },
 }
 
-/// Commit receipt for one journaled projection update.
+/// 单次日志化投影更新的提交回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyReceipt {
-    /// Identity of the one-record physical batch frame.
+    /// 单记录物理批次帧的标识。
     pub batch_id: String,
-    /// Sequence committed to the authoritative journal.
+    /// 提交到权威日志的序号。
     pub sequence: u64,
-    /// Outcome of the authoritative journal append.
+    /// 权威日志追加的结果。
     pub journal: JournalDurabilityStatus,
+    /// 提交状态（新提交或已提交）。
     pub commit: JournalBatchCommitStatus,
-    /// Outcome of optional checkpoint compounding.
+    /// 可选检查点复合的结果。
     pub checkpoint: CheckpointApplyStatus,
 }
 
-/// Commit receipt for one journaled projection batch.
+/// 单个日志化投影批次的提交回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyBatchReceipt {
+    /// 物理批次帧的标识。
     pub batch_id: String,
+    /// 批次中第一条记录的序号。
     pub first_sequence: u64,
+    /// 批次中最后一条记录的序号。
     pub last_sequence: u64,
+    /// 批次包含的记录数。
     pub record_count: u64,
+    /// 权威日志追加的结果。
     pub journal: JournalDurabilityStatus,
+    /// 提交状态（新提交或已提交）。
     pub commit: JournalBatchCommitStatus,
+    /// 可选检查点复合的结果。
     pub checkpoint: CheckpointApplyStatus,
 }
 
-/// How recovery obtained and repaired its derived checkpoint.
+/// 恢复过程如何获取并修复其派生检查点。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckpointRecoveryStatus {
-    /// A valid checkpoint was loaded and no repair was needed.
+    /// 加载了有效检查点，无需修复。
     Loaded,
-    /// No checkpoint existed and the replay tail did not reach the cadence.
+    /// 不存在检查点，且重放尾部未达到检查点节奏。
     Missing,
-    /// A missing, corrupt, stale, or behind checkpoint was rebuilt from the
-    /// authoritative journal.
-    Rebuilt { reason: String },
-    /// Journal recovery succeeded, but repairing the derived checkpoint failed.
-    Degraded { reason: String, error: String },
+    /// 缺失、损坏、过期或落后的检查点已根据权威日志重建。
+    Rebuilt {
+        /// 需要重建的原因。
+        reason: String,
+    },
+    /// 日志恢复成功，但修复派生检查点失败。
+    Degraded {
+        /// 需要修复的原因。
+        reason: String,
+        /// 修复失败的描述。
+        error: String,
+    },
 }
 
-/// Recovery result for a checkpointed projection.
+/// 检查点投影的恢复结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryReceipt {
-    /// Last journal sequence folded into the recovered state.
+    /// 已折叠进恢复状态的最后一个日志序号。
     pub last_applied_sequence: u64,
-    /// Checkpoint load/repair outcome.
+    /// 检查点加载 / 修复结果。
     pub checkpoint: CheckpointRecoveryStatus,
 }
 
-/// Persisted checkpoint pairing reducer state and sequence with their Journal generation.
+/// 持久化的检查点，将归约器状态与序号及其所属日志代配对。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointFrame<S> {
-    /// Exact journal generation from which this projection was derived.
+    /// 派生该投影的确切日志代。
     pub journal_identity: JournalIdentity,
-    /// Journal sequence covered by this state snapshot.
+    /// 该状态快照所覆盖的日志序号。
     pub sequence: u64,
-    /// Reducer state at that sequence.
+    /// 该序号处的归约器状态。
     pub state: S,
 }
 
-/// Storage for Journal-bound [`CheckpointFrame`]s written by [`CheckpointedReducer`].
+/// 存储由 [`CheckpointedReducer`] 写入、绑定日志代的 [`CheckpointFrame`]。
 pub trait CheckpointStore<S>: Send + Sync {
+    /// 保存覆盖至 `through_sequence` 的状态检查点。
     fn save(
         &self,
         journal_identity: &JournalIdentity,
@@ -1569,27 +1727,36 @@ pub trait CheckpointStore<S>: Send + Sync {
         through_sequence: u64,
     ) -> Result<()>;
 
+    /// 加载最新的检查点；不存在时返回 `None`。
     fn load(&self) -> Result<Option<CheckpointFrame<S>>>;
 }
 
+/// 以序列化形式存储的检查点。
 #[derive(Debug)]
 struct StoredCheckpoint {
+    /// 所属日志代标识。
     journal_identity: JournalIdentity,
+    /// 覆盖到的序号。
     sequence: u64,
+    /// 序列化后的状态。
     state: serde_json::Value,
 }
 
-/// In-memory [`CheckpointStore`] for tests and ephemeral consumers.
-///
-/// The state is stored in its serialized form so projections never need to be
-/// `Clone` just to be checkpointed.
+/**
+用于测试和临时消费方的内存版 [`CheckpointStore`]。
+
+状态以序列化形式存储，因此投影无需仅为了保存检查点而实现 `Clone`。
+*/
 #[derive(Debug)]
 pub struct MemoryCheckpointStore<S> {
+    /// 最新的检查点。
     latest: Mutex<Option<StoredCheckpoint>>,
+    /// 状态类型标记。
     _state: PhantomData<S>,
 }
 
 impl<S> Default for MemoryCheckpointStore<S> {
+    /// 创建一个空的内存检查点存储。
     fn default() -> Self {
         Self {
             latest: Mutex::new(None),
@@ -1599,6 +1766,7 @@ impl<S> Default for MemoryCheckpointStore<S> {
 }
 
 impl<S> MemoryCheckpointStore<S> {
+    /// 创建一个空的内存检查点存储。
     pub fn new() -> Self {
         Self::default()
     }
@@ -1607,6 +1775,7 @@ impl<S> MemoryCheckpointStore<S> {
 impl<S: Serialize + DeserializeOwned + Send + Sync + 'static> CheckpointStore<S>
     for MemoryCheckpointStore<S>
 {
+    /// 保存检查点帧（覆盖之前的检查点）。
     fn save(
         &self,
         journal_identity: &JournalIdentity,
@@ -1627,6 +1796,7 @@ impl<S: Serialize + DeserializeOwned + Send + Sync + 'static> CheckpointStore<S>
         Ok(())
     }
 
+    /// 加载最近保存的检查点帧。
     fn load(&self) -> Result<Option<CheckpointFrame<S>>> {
         let latest = self
             .latest
@@ -1648,26 +1818,34 @@ impl<S: Serialize + DeserializeOwned + Send + Sync + 'static> CheckpointStore<S>
     }
 }
 
+/// 检查点归约器的内部可变状态。
 struct ReducerInner<R> {
+    /// 当前投影状态。
     state: R,
+    /// 已折叠的最后一个序号。
     last_applied: u64,
+    /// 自上次检查点以来折叠的记录数。
     since_checkpoint: u64,
 }
 
-/// Maximum records materialized by one recovery replay operation.
+/// 单次恢复重放操作最多物化的记录数。
 const RECOVER_BATCH: usize = 512;
 
-/// Folds journal events into a reducer state and compounds checkpoints.
-///
-/// `apply` appends to the journal first (durability before projection), then
-/// folds all returned records in order. When a batch crosses
-/// `checkpoint_every`, the current state is saved once at the batch boundary so
-/// later recovery replays only the tail. `checkpoint_every == 0` disables automatic compounding; call
-/// [`Self::checkpoint`] manually instead.
+/**
+将日志事件折叠进归约器状态，并复合检查点。
+
+`apply` 先追加到日志（持久性先于投影），再按顺序折叠所有返回的记录。当一个批次
+跨越 `checkpoint_every` 时，会在批次边界保存一次当前状态，使后续恢复只需重放尾部。
+`checkpoint_every == 0` 会禁用自动复合；此时应手动调用 [`Self::checkpoint`]。
+*/
 pub struct CheckpointedReducer<J, R> {
+    /// 权威日志。
     journal: Arc<J>,
+    /// 检查点存储。
     checkpoints: Arc<dyn CheckpointStore<R>>,
+    /// 自动保存检查点的记录间隔（0 表示禁用）。
     checkpoint_every: u64,
+    /// 受互斥锁保护的投影状态。
     inner: Mutex<ReducerInner<R>>,
 }
 
@@ -1676,6 +1854,7 @@ where
     R: EventReducer,
     J: EventJournal<R::Event>,
 {
+    /// 以给定日志、检查点存储和检查点间隔创建归约器，初始状态为默认值。
     pub fn new(
         journal: Arc<J>,
         checkpoints: Arc<dyn CheckpointStore<R>>,
@@ -1693,21 +1872,21 @@ where
         }
     }
 
-    /// Append a non-empty batch, fold committed records in order, and compound
-    /// at most one checkpoint at the batch boundary.
-    ///
-    /// Concurrent callers are serialized across append and fold as one
-    /// transaction, so committed sequences cannot be reordered.
+    /**
+    追加一个非空批次，按顺序折叠已提交记录，并在批次边界最多复合一个检查点。
+
+    并发调用方在追加与折叠上被串行化为一个事务，因此已提交序号不会被重排。
+    */
     pub fn apply_batch(
         &self,
         batch: PreparedJournalBatch<R::Event>,
     ) -> std::result::Result<ApplyBatchReceipt, CheckpointedApplyError<R::Event>> {
         let expected = batch.clone();
-        // Append and fold must be one transaction on the projection lock.
-        // Dropping the lock between them lets a thread holding a later
-        // sequence fold first and fail with a bogus projection gap, violating
-        // the single-owner invariant documented on this module. Lock order is
-        // always projection -> journal, matching `recover`.
+        /*
+        追加与折叠必须在投影锁上构成一个事务。若在两者之间释放锁，持有更晚序号的
+        线程可能先折叠，并因虚假的投影缺口而失败，从而违反本模块记录的单一所有者
+        不变量。加锁顺序始终是 投影 -> 日志，与 `recover` 保持一致。
+        */
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let appended = self
             .journal
@@ -1716,10 +1895,10 @@ where
         self.fold_committed_locked(&mut inner, &expected, appended)
     }
 
-    /// Fold a batch receipt that was committed by an external physical
-    /// authority. This keeps projection ownership in the framework while
-    /// allowing an application to supply a journal with custom reopen and
-    /// durability handling.
+    /**
+    折叠由外部物理权限对象提交的批次回执。这样既能将投影所有权保留在框架内，
+    又允许应用提供具有自定义重新打开和持久性处理的日志。
+    */
     pub fn apply_committed(
         &self,
         expected: &PreparedJournalBatch<R::Event>,
@@ -1729,6 +1908,7 @@ where
         self.fold_committed_locked(&mut inner, expected, appended)
     }
 
+    /// 在已持有投影锁的前提下，校验回执与预处理批次一致后按序折叠记录并按需保存检查点。
     fn fold_committed_locked(
         &self,
         inner: &mut ReducerInner<R>,
@@ -1886,8 +2066,9 @@ where
         })
     }
 
-    /// Append one event through the batch authority, fold it, and maybe
-    /// compound a checkpoint.
+    /**
+     * 通过批次权限追加单个事件并将其折叠，必要时复合生成检查点。
+     */
     pub fn apply(
         &self,
         event: R::Event,
@@ -1904,7 +2085,7 @@ where
         })
     }
 
-    /// Persist the current state as a checkpoint through the applied sequence.
+    /// 将当前状态持久化为截至已应用序号的检查点。
     pub fn checkpoint(&self) -> Result<()> {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.checkpoints.save(
@@ -1916,10 +2097,12 @@ where
         Ok(())
     }
 
-    /// Load a checkpoint for this exact Journal generation and replay the tail.
-    ///
-    /// A foreign checkpoint is rebuilt only while the complete Journal remains
-    /// replayable. Once a prefix is pruned, identity mismatch fails closed.
+    /**
+     * 加载属于本日志确切代（generation）的检查点，并重放尾部。
+     *
+     * 仅当完整日志仍可重放时，才会重建来自其他日志的检查点；
+     * 一旦前缀被裁剪，身份不匹配将以失败关闭处理。
+     */
     pub fn recover(&self) -> Result<RecoveryReceipt> {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let journal_last = self.journal.last_sequence();
@@ -2034,7 +2217,7 @@ where
         })
     }
 
-    /// Last journal sequence folded into the current state.
+    /// 已折叠进当前状态的最后一个日志序号。
     pub fn last_applied_sequence(&self) -> u64 {
         self.inner
             .lock()
@@ -2042,13 +2225,13 @@ where
             .last_applied
     }
 
-    /// Read the projected state under the reducer lock.
+    /// 在归约器锁保护下读取投影状态。
     pub fn with_state<T>(&self, f: impl FnOnce(&R) -> T) -> T {
         let inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         f(&inner.state)
     }
 
-    /// Mutably inspect the in-memory projection without bypassing the reducer lock.
+    /// 在不绕过归约器锁的前提下，以可变方式访问内存中的投影。
     pub fn with_state_mut<T>(&self, f: impl FnOnce(&mut R) -> T) -> T {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         f(&mut inner.state)
@@ -2061,6 +2244,7 @@ mod tests {
     use std::sync::Barrier;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 弱引用注册表应按软节奏清理，并在达到硬上限时立即清理。
     #[test]
     fn weak_registry_prunes_on_soft_cadence_and_immediate_hard_limit() {
         let root = PathBuf::from("registry-test");
@@ -2099,16 +2283,21 @@ mod tests {
         assert_eq!(registry.paths_beneath(&root), 0);
     }
 
+    /// 测试用归约器：累加事件值并记录事件序列。
     #[derive(Default, Serialize, Deserialize, Debug)]
     struct SumReducer {
+        /// 事件值之和
         total: i64,
+        /// 已应用的事件列表
         events: Vec<i32>,
     }
 
+    /// 序列化必定失败的测试事件。
     #[derive(Debug, Deserialize)]
     struct FailingEvent;
 
     impl Serialize for FailingEvent {
+        /// 始终返回注入的序列化错误。
         fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
@@ -2119,12 +2308,15 @@ mod tests {
         }
     }
 
+    /// 内部可变的测试事件，用于检测追加前的内部修改。
     #[derive(Debug)]
     struct MutableEvent {
+        /// 可被原子修改的事件值
         value: AtomicUsize,
     }
 
     impl Serialize for MutableEvent {
+        /// 将当前值序列化为 u64。
         fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
@@ -2135,6 +2327,7 @@ mod tests {
     }
 
     impl<'de> Deserialize<'de> for MutableEvent {
+        /// 从 usize 反序列化事件。
         fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
         where
             D: serde::Deserializer<'de>,
@@ -2147,28 +2340,39 @@ mod tests {
     }
 
     impl EventReducer for SumReducer {
+        /// 事件类型为 i32。
         type Event = i32;
 
+        /// 累加事件值并记录事件。
         fn apply(&mut self, event: &i32) {
             self.total = self.total.saturating_add(i64::from(*event));
             self.events.push(*event);
         }
     }
 
+    /// 基于内存日志的求和归约器测试装置类型。
     type SumHarness = CheckpointedReducer<MemoryEventJournal<i32>, SumReducer>;
 
+    /// 测试夹具：归约器及其共享的日志与检查点存储。
     struct SumFixture {
+        /// 被测归约器
         reducer: SumHarness,
+        /// 共享的内存日志
         journal: Arc<MemoryEventJournal<i32>>,
+        /// 共享的内存检查点存储
         checkpoints: Arc<MemoryCheckpointStore<SumReducer>>,
     }
 
+    /// 记录每次重放 limit 参数的包装日志。
     struct TrackingJournal {
+        /// 被包装的内存日志
         inner: MemoryEventJournal<i32>,
+        /// 每次 replay_after 调用的 limit 记录
         replay_limits: Mutex<Vec<usize>>,
     }
 
     impl TrackingJournal {
+        /// 创建空的跟踪日志。
         fn new() -> Self {
             Self {
                 inner: MemoryEventJournal::new(),
@@ -2178,14 +2382,17 @@ mod tests {
     }
 
     impl EventJournal<i32> for TrackingJournal {
+        /// 透传日志身份。
         fn journal_identity(&self) -> &JournalIdentity {
             self.inner.journal_identity()
         }
 
+        /// 透传批次追加。
         fn append_batch(&self, batch: PreparedJournalBatch<i32>) -> JournalBatchAppendResult<i32> {
             self.inner.append_batch(batch)
         }
 
+        /// 透传批次查找。
         fn lookup_batch(
             &self,
             batch: &PreparedJournalBatch<i32>,
@@ -2193,14 +2400,17 @@ mod tests {
             self.inner.lookup_batch(batch)
         }
 
+        /// 透传下一个序号。
         fn next_sequence(&self) -> u64 {
             self.inner.next_sequence()
         }
 
+        /// 透传最后一个序号。
         fn last_sequence(&self) -> u64 {
             self.inner.last_sequence()
         }
 
+        /// 记录 limit 后透传重放。
         fn replay_after(
             &self,
             after_sequence: u64,
@@ -2214,6 +2424,7 @@ mod tests {
         }
     }
 
+    /// 创建带指定检查点间隔的求和测试夹具。
     fn reducer_with(checkpoint_every: u64) -> SumFixture {
         let journal = Arc::new(MemoryEventJournal::new());
         let checkpoints = Arc::new(MemoryCheckpointStore::new());
@@ -2229,10 +2440,12 @@ mod tests {
         }
     }
 
+    /// 由事件列表构造测试批次。
     fn batch<E: JournalEvent>(events: Vec<E>) -> TestResult<PreparedJournalBatch<E>> {
         PreparedJournalBatch::new(events).test_context("prepare test batch")
     }
 
+    /// 内存日志应从 1 开始分配连续序号。
     #[test]
     fn memory_journal_assigns_contiguous_sequences_from_one() {
         let journal = MemoryEventJournal::new();
@@ -2248,6 +2461,7 @@ mod tests {
         assert_eq!(journal.next_sequence(), 3);
     }
 
+    /// 内存批次应为一次有序提交，空批次不产生写入。
     #[test]
     fn memory_batch_is_one_ordered_commit_and_empty_is_zero_write() -> TestResult {
         let journal = MemoryEventJournal::new();
@@ -2292,6 +2506,7 @@ mod tests {
         Ok(())
     }
 
+    /// 批次身份应幂等，身份冲突应使日志中毒。
     #[test]
     fn memory_batch_identity_is_idempotent_and_conflicts_poison() -> TestResult {
         let journal = MemoryEventJournal::new();
@@ -2342,6 +2557,7 @@ mod tests {
         Ok(())
     }
 
+    /// 幂等查找前应拒绝内部被修改的事件。
     #[test]
     fn memory_rejects_interior_mutation_before_idempotent_lookup() -> TestResult {
         let journal = MemoryEventJournal::new();
@@ -2397,6 +2613,7 @@ mod tests {
         Ok(())
     }
 
+    /// 序号溢出时批次预检应拒绝且不修改状态。
     #[test]
     fn memory_batch_preflight_rejects_sequence_overflow_without_mutation() -> TestResult {
         let journal = MemoryEventJournal::new();
@@ -2422,6 +2639,7 @@ mod tests {
         Ok(())
     }
 
+    /// 序列化失败的批次不应被提交。
     #[test]
     fn memory_batch_serialization_failure_is_not_committed() -> TestResult {
         let journal = MemoryEventJournal::<FailingEvent>::new();
@@ -2441,6 +2659,7 @@ mod tests {
         Ok(())
     }
 
+    /// 重放应遵守边界与数量上限。
     #[test]
     fn replay_after_respects_boundary_and_limit() {
         let journal = MemoryEventJournal::new();
@@ -2458,6 +2677,7 @@ mod tests {
         assert_eq!(all.len(), 10);
     }
 
+    /// apply 应折叠状态并返回序号。
     #[test]
     fn apply_folds_state_and_returns_sequence() {
         let fixture = reducer_with(0);
@@ -2470,6 +2690,7 @@ mod tests {
         });
     }
 
+    /// 自动检查点应按节奏触发。
     #[test]
     fn automatic_checkpoint_fires_on_cadence() {
         let fixture = reducer_with(2);
@@ -2485,6 +2706,7 @@ mod tests {
         assert_eq!(frame.state.total, 3);
     }
 
+    /// 跨越检查点节奏的批次应先折叠，再在批次末尾保存检查点。
     #[test]
     fn batch_crossing_checkpoint_cadence_folds_then_saves_at_batch_end() -> TestResult {
         let fixture = reducer_with(3);
@@ -2507,6 +2729,7 @@ mod tests {
         Ok(())
     }
 
+    /// 已提交的部分重叠批次只折叠连续的后缀。
     #[test]
     fn already_committed_partial_overlap_folds_only_contiguous_suffix() -> TestResult {
         let journal = Arc::new(MemoryEventJournal::new());
@@ -2542,6 +2765,7 @@ mod tests {
         Ok(())
     }
 
+    /// 恢复时应从检查点开始并只重放尾部。
     #[test]
     fn recover_replays_from_checkpoint_then_tail() {
         let fixture = reducer_with(2);
@@ -2550,8 +2774,8 @@ mod tests {
         }
         assert_eq!(fixture.reducer.last_applied_sequence(), 5);
 
-        // A second reducer sharing the journal and checkpoint store recovers
-        // by loading the checkpoint and replaying only the tail.
+        /* 第二个归约器共享同一日志和检查点存储，
+        通过加载检查点并仅重放尾部完成恢复。 */
         let second: SumHarness = CheckpointedReducer::new(
             fixture.journal,
             fixture.checkpoints as Arc<dyn CheckpointStore<SumReducer>>,
@@ -2564,6 +2788,7 @@ mod tests {
         });
     }
 
+    /// 无检查点时恢复应重放全部事件。
     #[test]
     fn recover_without_checkpoint_replays_everything() {
         let fixture = reducer_with(0);
@@ -2579,6 +2804,7 @@ mod tests {
         second.with_state(|state| assert_eq!(state.total, 10));
     }
 
+    /// 来自其他日志的同序号检查点应被重建。
     #[test]
     fn recover_rebuilds_same_sequence_checkpoint_from_another_journal() -> TestResult {
         let source = Arc::new(MemoryEventJournal::new());
@@ -2617,6 +2843,7 @@ mod tests {
         Ok(())
     }
 
+    /// apply_committed 应拒绝来自其他日志的回执。
     #[test]
     fn apply_committed_rejects_receipt_from_another_journal() -> TestResult {
         let source = Arc::new(MemoryEventJournal::new());
@@ -2644,8 +2871,10 @@ mod tests {
         Ok(())
     }
 
+    /// 缺失检查点的大量尾部应按固定批次重放。
     #[test]
     fn recovery_replays_large_missing_checkpoint_tail_in_fixed_batches() {
+        /// 测试事件总数。
         const EVENTS: i32 = 1_537;
         let journal = Arc::new(TrackingJournal::new());
         for value in 0..EVENTS {
@@ -2670,6 +2899,7 @@ mod tests {
         assert!(limits.iter().all(|limit| *limit == RECOVER_BATCH));
     }
 
+    /// 手动检查点应能通过存储往返。
     #[test]
     fn manual_checkpoint_round_trips_through_store() {
         let fixture = reducer_with(0);
@@ -2686,12 +2916,16 @@ mod tests {
         assert_eq!(frame.state.total, 6);
     }
 
+    /// 第一次保存失败、之后正常的检查点存储。
     struct FailOnceCheckpointStore {
+        /// 剩余需要注入失败的次数
         remaining_failures: AtomicUsize,
+        /// 被包装的内存检查点存储
         inner: MemoryCheckpointStore<SumReducer>,
     }
 
     impl FailOnceCheckpointStore {
+        /// 创建只失败一次的检查点存储。
         fn new() -> Self {
             Self {
                 remaining_failures: AtomicUsize::new(1),
@@ -2701,6 +2935,7 @@ mod tests {
     }
 
     impl CheckpointStore<SumReducer> for FailOnceCheckpointStore {
+        /// 在剩余失败次数内返回注入错误，否则正常保存。
         fn save(
             &self,
             journal_identity: &JournalIdentity,
@@ -2719,11 +2954,13 @@ mod tests {
             self.inner.save(journal_identity, state, through_sequence)
         }
 
+        /// 透传加载检查点。
         fn load(&self) -> Result<Option<CheckpointFrame<SumReducer>>> {
             self.inner.load()
         }
     }
 
+    /// 检查点失败时应返回已提交批次，并标记检查点降级。
     #[test]
     fn checkpoint_failure_returns_committed_batch_with_degraded_checkpoint() -> TestResult {
         let journal = Arc::new(MemoryEventJournal::new());
@@ -2760,8 +2997,10 @@ mod tests {
         Ok(())
     }
 
+    /// 并发 apply 应保持投影与日志顺序一致。
     #[test]
     fn concurrent_apply_preserves_journal_order_in_projection() {
+        /// 并发线程数。
         const THREADS: usize = 32;
         let journal = Arc::new(MemoryEventJournal::new());
         let reducer = Arc::new(CheckpointedReducer::<_, SumReducer>::new(
@@ -2799,8 +3038,10 @@ mod tests {
         );
     }
 
+    /// 并发的内存批次记录不应交错。
     #[test]
     fn concurrent_memory_batches_never_interleave_records() -> TestResult {
+        /// 并发线程数。
         const THREADS: usize = 16;
         let journal = Arc::new(MemoryEventJournal::new());
         let barrier = Arc::new(Barrier::new(THREADS));
@@ -2850,6 +3091,7 @@ mod tests {
         Ok(())
     }
 
+    /// 领先于日志的检查点应从权威事件重建。
     #[test]
     fn checkpoint_ahead_of_journal_is_rebuilt_from_authoritative_events() {
         let journal = Arc::new(MemoryEventJournal::new());
@@ -2891,21 +3133,27 @@ mod tests {
         );
     }
 
+    /// 记录所收到权威序号的测试归约器。
     #[derive(Default, Serialize, Deserialize)]
     struct SequenceAwareReducer {
+        /// 收到的记录序号列表
         sequences: Vec<u64>,
     }
 
     impl EventReducer for SequenceAwareReducer {
+        /// 事件类型为 String。
         type Event = String;
 
+        /// 忽略事件内容。
         fn apply(&mut self, _event: &String) {}
 
+        /// 记录权威序号。
         fn apply_record(&mut self, record: &JournalRecord<Self::Event>) {
             self.sequences.push(record.sequence);
         }
     }
 
+    /// 归约器在 apply 与恢复时都应收到权威序号。
     #[test]
     fn reducer_receives_authoritative_sequence_on_apply_and_recovery() {
         let journal = Arc::new(MemoryEventJournal::new());

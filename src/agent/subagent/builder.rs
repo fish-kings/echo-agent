@@ -234,10 +234,12 @@ impl SubagentBuilder {
     }
 }
 
+/// 子 Agent 构建器的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证同步（sync）类型子 Agent 的构建。
     #[test]
     fn test_builder_sync() {
         let def = SubagentBuilder::new("subagent")
@@ -252,6 +254,7 @@ mod tests {
         assert!(def.inherit_history.is_none());
     }
 
+    /// 验证派生（fork）类型子 Agent 的构建。
     #[test]
     fn test_builder_fork() {
         let def = SubagentBuilder::new("researcher")
@@ -278,6 +281,7 @@ mod tests {
         );
     }
 
+    /// 验证 fork 模式默认的 `inherit_history` 已下调为 2。
     #[test]
     fn test_builder_fork_default_inherit_history_lowered() {
         // Sprint 6b：fork_mode() 的默认 inherit_history 是 2（之前是 10）。
@@ -288,6 +292,7 @@ mod tests {
         assert_eq!(def.inherit_history, Some(2));
     }
 
+    /// 验证队友（teammate）类型子 Agent 的构建。
     #[test]
     fn test_builder_teammate() {
         let def = SubagentBuilder::new("tm").teammate_mode().build();
@@ -296,12 +301,14 @@ mod tests {
         assert!(def.inherit_history.is_none());
     }
 
+    /// 验证未指定时会自动生成描述。
     #[test]
     fn test_builder_auto_description() {
         let def = SubagentBuilder::new("auto").build();
         assert!(def.description.contains("auto"));
     }
 
+    /// 验证自定义类型子 Agent 的构建。
     #[test]
     fn test_builder_custom_kind() {
         let def = SubagentBuilder::new("custom")
@@ -310,6 +317,7 @@ mod tests {
         assert!(matches!(def.kind, SubagentKind::Custom { .. }));
     }
 
+    /// 验证插件类型子 Agent 的构建。
     #[test]
     fn test_builder_plugin_kind() {
         let def = SubagentBuilder::new("plugin")
@@ -318,4 +326,3 @@ mod tests {
         assert!(matches!(def.kind, SubagentKind::Plugin { .. }));
     }
 }
-</content>

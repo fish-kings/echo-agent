@@ -1,9 +1,11 @@
-//! 沙箱管理器
-//!
-//! 自动检测可用的沙箱执行环境，按安全策略路由命令到合适的沙箱层：
-//! - 优先使用满足安全策略的最轻量沙箱
-//! - 自动降级：如 Docker 不可用则回退到本地沙箱
-//! - 统一的 `execute()` 接口屏蔽底层差异
+/*!
+沙箱管理器
+
+自动检测可用的沙箱执行环境，按安全策略路由命令到合适的沙箱层：
+- 优先使用满足安全策略的最轻量沙箱
+- 自动降级：如 Docker 不可用则回退到本地沙箱
+- 统一的 `execute()` 接口屏蔽底层差异
+*/
 
 use super::{
     DockerSandbox, ExecutionResult, IsolationLevel, K8sSandbox, LocalSandbox, ResourceLimits,
@@ -83,8 +85,10 @@ impl SandboxExecutor for SandboxManager {
         Box::pin(async move { SandboxManager::execute(self, command).await })
     }
 
-    /// 以流式方式执行命令，实时返回执行过程中的事件；
-    /// 若无法满足所需隔离级别且不允许降级，则返回错误。
+    /**
+    以流式方式执行命令，实时返回执行过程中的事件；
+    若无法满足所需隔离级别且不允许降级，则返回错误。
+    */
     fn execute_stream<'a>(
         &'a self,
         command: SandboxCommand,
@@ -178,8 +182,10 @@ impl SandboxExecutor for SandboxManager {
         })
     }
 
-    /// 执行命令并返回结果，同时附带实际采用的隔离级别「回执」，
-    /// 便于调用方判断是否发生了隔离级别降级。
+    /**
+    执行命令并返回结果，同时附带实际采用的隔离级别「回执」，
+    便于调用方判断是否发生了隔离级别降级。
+    */
     fn execute_with_isolation_receipt(
         &self,
         command: SandboxCommand,
@@ -284,10 +290,12 @@ impl SandboxManager {
         self.allow_fallback = allow_fallback;
     }
 
-    /// 当且仅当配置了容器化沙箱（Docker 或 K8s）时返回 true。
-    ///
-    /// 产品可用此方法判断代码执行类功能是否满足「必须使用容器隔离，
-    /// 而非本地后端」这一契约要求。
+    /**
+    当且仅当配置了容器化沙箱（Docker 或 K8s）时返回 true。
+
+    产品可用此方法判断代码执行类功能是否满足「必须使用容器隔离，
+    而非本地后端」这一契约要求。
+    */
     pub fn has_container_sandbox(&self) -> bool {
         self.docker.is_some() || self.k8s.is_some()
     }
@@ -391,12 +399,14 @@ impl SandboxManager {
         Ok((result, actual))
     }
 
-    /// 选择最佳执行器
-    ///
-    /// 优先选择满足隔离级别要求的最轻量执行器（Local -> Docker -> K8s）。
-    /// 如果没有执行器满足要求，根据 `allow_fallback` 决定：
-    /// - `true`: 返回可用执行器中隔离最强的一层（实际隔离级别可能低于要求）
-    /// - `false`: 返回错误
+    /**
+    选择最佳执行器
+
+    优先选择满足隔离级别要求的最轻量执行器（Local -> Docker -> K8s）。
+    如果没有执行器满足要求，根据 `allow_fallback` 决定：
+    - `true`: 返回可用执行器中隔离最强的一层（实际隔离级别可能低于要求）
+    - `false`: 返回错误
+    */
     async fn select_executor(
         &self,
         required: IsolationLevel,
@@ -558,8 +568,10 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// 验证即便开启了降级允许（`allow_fallback`），命令显式声明的最低隔离级别
-    /// 也绝不会被降级到 Process：`execute`/`execute_with_limits`/`execute_stream` 均应报错。
+    /**
+    验证即便开启了降级允许（`allow_fallback`），命令显式声明的最低隔离级别
+    也绝不会被降级到 Process：`execute`/`execute_with_limits`/`execute_stream` 均应报错。
+    */
     #[tokio::test]
     async fn explicit_minimum_never_falls_back_to_process() {
         let mut manager = SandboxManager::local_only();
@@ -579,8 +591,10 @@ mod tests {
         assert!(manager.execute_stream(command).await.is_err());
     }
 
-    /// 验证当配置的容器后端（Docker）实际不可用时，管理器不会谎称能提供 OS 级隔离，
-    /// 且在允许降级的情况下会正确回退到本地执行器并如实报告实际隔离级别。
+    /**
+    验证当配置的容器后端（Docker）实际不可用时，管理器不会谎称能提供 OS 级隔离，
+    且在允许降级的情况下会正确回退到本地执行器并如实报告实际隔离级别。
+    */
     #[cfg(unix)]
     #[tokio::test]
     async fn unavailable_configured_container_does_not_claim_available_os_isolation() -> Result<()>
@@ -632,8 +646,10 @@ mod tests {
         assert!(result.success());
     }
 
-    /// 验证 `execute_with_limits` 会考虑资源限制（如允许网络）来评估所需隔离级别，
-    /// 当所需级别在不允许降级的 `local_only` 管理器上无法满足时应返回错误。
+    /**
+    验证 `execute_with_limits` 会考虑资源限制（如允许网络）来评估所需隔离级别，
+    当所需级别在不允许降级的 `local_only` 管理器上无法满足时应返回错误。
+    */
     #[tokio::test]
     async fn test_execute_with_limits_uses_limit_aware_policy() {
         let mut manager = SandboxManager::local_only();

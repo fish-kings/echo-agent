@@ -1,14 +1,16 @@
-//! demo10_streaming.rs —— 流式输出综合演示
-//!
-//! 展示 Agent 的流式输出能力：
-//! 1. execute_stream() —— 实时获取 Token、工具调用、最终答案
-//! 2. chat_stream() —— 多轮对话流式输出
-//! 3. AgentEvent 事件类型处理
-//!
-//! 运行方式：
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo10_streaming
-//! ```
+/*!
+demo10_streaming.rs —— 流式输出综合演示
+
+展示 Agent 的流式输出能力：
+1. execute_stream() —— 实时获取 Token、工具调用、最终答案
+2. chat_stream() —— 多轮对话流式输出
+3. AgentEvent 事件类型处理
+
+运行方式：
+```bash
+cargo run -p echo-agent-learning --example demo10_streaming
+```
+*/
 mod support;
 
 use echo_agent::agent::{Agent, AgentEvent};
@@ -19,21 +21,25 @@ use futures::StreamExt;
 use std::io::Write;
 use std::time::Duration;
 
+/// 工具：返回两数之和。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 工具：返回 a 减 b 的差。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 工具：返回两数之积。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 工具：返回 a 除以 b 的商，除数为 0 时返回错误结果。
 #[tool(name = "divide", description = "两数相除")]
 async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     if b == 0.0 {
@@ -42,6 +48,7 @@ async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} / {} = {}", a, b, a / b)))
 }
 
+/// 示例入口：依次运行原始 LLM 流、Agent 文本流与 Agent 工具调用流三个演示。
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -77,6 +84,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// 演示直接调用 LLM 的原始流式接口，逐块打印模型输出。
 async fn demo_raw_stream() -> echo_agent::error::Result<()> {
     let llm_config = support::llm_config(None)?.with_timeouts(
         LlmTimeouts::default()
@@ -113,6 +121,7 @@ async fn demo_raw_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 演示通过 Agent 执行纯文本流式对话，实时打印生成的 token。
 async fn demo_agent_text_stream() -> echo_agent::error::Result<()> {
     // 使用 AgentBuilder 创建 Agent
     let agent = ReactAgentBuilder::new()
@@ -161,6 +170,7 @@ async fn demo_agent_text_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 演示 Agent 在流式执行中调用工具，打印工具调用与结果事件。
 async fn demo_agent_tool_stream() -> echo_agent::error::Result<()> {
     // 使用 AgentBuilder 创建 Agent
     let mut agent = ReactAgentBuilder::new()
@@ -237,6 +247,7 @@ async fn demo_agent_tool_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 按字符数截断字符串，超出 `max` 时追加省略号。
 fn truncate(s: &str, max: usize) -> String {
     let mut chars = s.chars();
     let out: String = chars.by_ref().take(max).collect();
@@ -247,6 +258,7 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// 打印示例启动横幅。
 fn print_banner() {
     println!("{}", "═".repeat(60));
     println!("      Echo Agent × 流式输出综合演示 (demo10)");

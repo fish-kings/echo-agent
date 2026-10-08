@@ -1,63 +1,77 @@
-//! 人工介入（Human-in-the-Loop）
-//!
-//! 在工具执行前拦截，向外部请求审批或文本输入。
-//!
-//! ## 设计原则
-//!
-//! - **事件驱动**: 审批请求通过事件通知上层应用，而非直接阻塞
-//! - **统一入口**: 用户输入、审批响应和任务选择共用同一个输入通道
-//! - **异步解耦**: Agent 执行与用户交互分离，支持复杂 UI 场景
-//! - **策略驱动**: 通过 `PermissionService` 配置权限策略，支持风险等级和会话缓存
-//!
-//! ## 使用示例
-//!
-//! ```rust,no_run
-//! use echo_core::error::Result;
-//! use echo_orchestration::human_loop::{ApprovalDecision, HumanLoopEvent, HumanLoopManager};
-//! use std::sync::Arc;
-//!
-//! # async fn example() -> Result<()> {
-//! // 创建 manager
-//! let manager = Arc::new(HumanLoopManager::new());
-//!
-//! // 在后台任务中监听事件
-//! let mgr = manager.clone();
-//! tokio::spawn(async move {
-//!     while let Some(event) = mgr.recv_event().await {
-//!         match event {
-//!             HumanLoopEvent::ApprovalRequest { tool_name, responder, .. } => {
-//!                 println!("工具 '{}' 需要审批", tool_name);
-//!                 responder.respond(ApprovalDecision::Approved);
-//!             }
-//!             HumanLoopEvent::InputRequest { prompt, responder } => {
-//!                 println!("Agent 询问: {}", prompt);
-//!                 responder.respond("用户输入的内容".to_string());
-//!             }
-//!             HumanLoopEvent::SelectionRequest { task_id, options, responder, .. } => {
-//!                 println!("任务 '{}' 需要选择", task_id);
-//!                 let selection = options.first().cloned().unwrap_or_default();
-//!                 responder.respond(selection, None);
-//!             }
-//!         }
-//!     }
-//! });
-//!
-//! // 将 manager 接入你自己的 runtime 层，或通过 `echo_agent` façade 使用。
-//! # Ok(())
-//! # }
-//! ```
+/*!
+人工介入（Human-in-the-Loop）
 
+在工具执行前拦截，向外部请求审批或文本输入。
+
+## 设计原则
+
+- **事件驱动**: 审批请求通过事件通知上层应用，而非直接阻塞
+- **统一入口**: 用户输入、审批响应和任务选择共用同一个输入通道
+- **异步解耦**: Agent 执行与用户交互分离，支持复杂 UI 场景
+- **策略驱动**: 通过 `PermissionService` 配置权限策略，支持风险等级和会话缓存
+
+## 使用示例
+
+```rust,no_run
+use echo_core::error::Result;
+use echo_orchestration::human_loop::{ApprovalDecision, HumanLoopEvent, HumanLoopManager};
+use std::sync::Arc;
+
+# async fn example() -> Result<()> {
+// 创建 manager
+let manager = Arc::new(HumanLoopManager::new());
+
+// 在后台任务中监听事件
+let mgr = manager.clone();
+tokio::spawn(async move {
+    while let Some(event) = mgr.recv_event().await {
+        match event {
+            HumanLoopEvent::ApprovalRequest { tool_name, responder, .. } => {
+                println!("工具 '{}' 需要审批", tool_name);
+                responder.respond(ApprovalDecision::Approved);
+            }
+            HumanLoopEvent::InputRequest { prompt, responder } => {
+                println!("Agent 询问: {}", prompt);
+                responder.respond("用户输入的内容".to_string());
+            }
+            HumanLoopEvent::SelectionRequest { task_id, options, responder, .. } => {
+                println!("任务 '{}' 需要选择", task_id);
+                let selection = options.first().cloned().unwrap_or_default();
+                responder.respond(selection, None);
+            }
+        }
+    }
+});
+
+// 将 manager 接入你自己的 runtime 层，或通过 `echo_agent` façade 使用。
+# Ok(())
+# }
+```
+*/
+
+/// 会话级审批缓存
 mod approval_cache;
+/// 权限审计追踪
 mod audit;
+/// 批量审批
 mod batch;
+/// auto 模式下的权限分类器
 mod classifier;
+/// 命令行人工介入 Provider
 mod console;
+/// 工具名模式匹配
 mod pattern;
+/// 权限请求抽象（支持不同 UI 实现）
 pub mod permission;
+/// 审批策略类型
 pub mod policy;
+/// 受保护路径检查器
 mod protected;
+/// 统一权限服务
 pub mod service;
+/// Webhook 人工介入 Provider
 mod webhook;
+/// WebSocket 人工介入 Provider（需启用 `websocket` feature）
 #[cfg(feature = "websocket")]
 mod websocket;
 
@@ -101,7 +115,10 @@ pub enum ApprovalDecision {
     /// 用户批准执行
     Approved,
     /// 用户批准执行，并指定审批范围（用于会话级缓存）
-    ApprovedWithScope { scope: ApprovalScope },
+    ApprovedWithScope {
+        /// 审批范围
+        scope: ApprovalScope,
+    },
     /// 用户修改了参数后批准执行
     Modified {
         /// 修改后的参数
@@ -110,22 +127,29 @@ pub enum ApprovalDecision {
         scope: ApprovalScope,
     },
     /// 用户拒绝执行
-    Rejected { reason: Option<String> },
+    Rejected {
+        /// 拒绝原因（可选）
+        reason: Option<String>,
+    },
     /// 用户推迟决策（暂不处理）
     Deferred,
 }
 
 // ── 响应器 ─────────────────────────────────────────────────────────────────
 
-/// 审批响应器：用于向 Agent 返回用户的审批决策
-///
-/// 通过 [`ApprovalResponder::respond`] 方法返回用户决定。
-/// 如果响应器被丢弃而未调用 respond，视为拒绝。
+/**
+审批响应器：用于向 Agent 返回用户的审批决策
+
+通过 [`ApprovalResponder::respond`] 方法返回用户决定。
+如果响应器被丢弃而未调用 respond，视为拒绝。
+*/
 pub struct ApprovalResponder {
+    /// 一次性发送端；响应或丢弃后被取走
     sender: Option<oneshot::Sender<ApprovalDecision>>,
 }
 
 impl ApprovalResponder {
+    /// 用 oneshot 发送端创建审批响应器。
     fn new(sender: oneshot::Sender<ApprovalDecision>) -> Self {
         Self {
             sender: Some(sender),
@@ -166,6 +190,7 @@ impl ApprovalResponder {
 }
 
 impl Drop for ApprovalResponder {
+    /// 未响应即丢弃时，默认发送拒绝决策。
     fn drop(&mut self) {
         if let Some(sender) = self.sender.take() {
             // 未响应时默认拒绝
@@ -177,6 +202,7 @@ impl Drop for ApprovalResponder {
 }
 
 impl std::fmt::Debug for ApprovalResponder {
+    /// 仅输出是否仍持有发送端。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ApprovalResponder")
             .field("has_sender", &self.sender.is_some())
@@ -186,10 +212,12 @@ impl std::fmt::Debug for ApprovalResponder {
 
 /// 输入响应器：用于向 Agent 返回用户的文本输入
 pub struct InputResponder {
+    /// 一次性发送端；响应或丢弃后被取走
     sender: Option<oneshot::Sender<String>>,
 }
 
 impl InputResponder {
+    /// 用 oneshot 发送端创建输入响应器。
     fn new(sender: oneshot::Sender<String>) -> Self {
         Self {
             sender: Some(sender),
@@ -205,6 +233,7 @@ impl InputResponder {
 }
 
 impl Drop for InputResponder {
+    /// 未响应即丢弃时，默认发送空字符串。
     fn drop(&mut self) {
         if let Some(sender) = self.sender.take() {
             let _ = sender.send(String::new());
@@ -213,6 +242,7 @@ impl Drop for InputResponder {
 }
 
 impl std::fmt::Debug for InputResponder {
+    /// 仅输出是否仍持有发送端。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InputResponder")
             .field("has_sender", &self.sender.is_some())
@@ -222,10 +252,12 @@ impl std::fmt::Debug for InputResponder {
 
 /// 选择响应器：用于任务 checkpoint 的选项选择
 pub struct SelectionResponder {
+    /// 一次性发送端；响应或丢弃后被取走
     sender: Option<oneshot::Sender<(String, Option<String>)>>,
 }
 
 impl SelectionResponder {
+    /// 用 oneshot 发送端创建选择响应器。
     fn new(sender: oneshot::Sender<(String, Option<String>)>) -> Self {
         Self {
             sender: Some(sender),
@@ -241,6 +273,7 @@ impl SelectionResponder {
 }
 
 impl Drop for SelectionResponder {
+    /// 未响应即丢弃时，默认发送取消选择。
     fn drop(&mut self) {
         if let Some(sender) = self.sender.take() {
             // 未响应时默认取消
@@ -250,6 +283,7 @@ impl Drop for SelectionResponder {
 }
 
 impl std::fmt::Debug for SelectionResponder {
+    /// 仅输出是否仍持有发送端。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SelectionResponder")
             .field("has_sender", &self.sender.is_some())
@@ -259,10 +293,12 @@ impl std::fmt::Debug for SelectionResponder {
 
 // ── 事件 ───────────────────────────────────────────────────────────────────
 
-/// 人工介入事件（通知上层应用需要用户介入）
-///
-/// 上层应用通过 [`HumanLoopManager::recv_event`] 接收事件，
-/// 并通过事件中的 `responder` 返回用户决定。
+/**
+人工介入事件（通知上层应用需要用户介入）
+
+上层应用通过 [`HumanLoopManager::recv_event`] 接收事件，
+并通过事件中的 `responder` 返回用户决定。
+*/
 #[derive(Debug)]
 pub enum HumanLoopEvent {
     /// Agent 请求审批工具执行
@@ -306,12 +342,14 @@ pub enum HumanLoopEvent {
 
 // ── Manager (事件驱动模式) ────────────────────────────────────────────────
 
-/// 人工介入管理器（事件驱动模式）
-///
-/// 推荐的 Human-in-the-Loop 实现方式：
-/// - Agent 通过 `request` 方法发起请求并等待响应
-/// - 上层应用通过 `recv_event` 接收事件并返回用户决定
-/// - 两者解耦，适合聊天应用、Web 应用等场景
+/**
+人工介入管理器（事件驱动模式）
+
+推荐的 Human-in-the-Loop 实现方式：
+- Agent 通过 `request` 方法发起请求并等待响应
+- 上层应用通过 `recv_event` 接收事件并返回用户决定
+- 两者解耦，适合聊天应用、Web 应用等场景
+*/
 pub struct HumanLoopManager {
     /// 事件发送端（Agent -> 上层应用）
     event_tx: mpsc::Sender<HumanLoopEvent>,
@@ -338,30 +376,36 @@ impl HumanLoopManager {
         }
     }
 
-    /// 接收人工介入事件（上层应用调用）
-    ///
-    /// 返回 `None` 表示 Manager 已关闭。
+    /**
+    接收人工介入事件（上层应用调用）
+
+    返回 `None` 表示 Manager 已关闭。
+    */
     pub async fn recv_event(&self) -> Option<HumanLoopEvent> {
         let mut guard = self.event_rx.lock().await;
         let receiver = guard.as_mut()?;
         receiver.recv().await
     }
 
-    /// 尝试非阻塞接收事件
-    ///
-    /// Uses `try_lock()` to avoid blocking the caller. Returns `None` if the
-    /// lock is currently held or if no event is available.
+    /**
+    尝试非阻塞接收事件
+
+    使用 `try_lock()` 避免阻塞调用方。若锁当前被占用或暂无事件，
+    则返回 `None`。
+    */
     pub fn try_recv_event(&self) -> Option<HumanLoopEvent> {
         let mut guard = self.event_rx.try_lock().ok()?;
         let receiver = guard.as_mut()?;
         receiver.try_recv().ok()
     }
 
-    /// 运行事件处理循环，直到 channel 关闭
-    ///
-    /// **注意**：此方法会消费 `event_rx`（通过 `take`），
-    /// 因此只能调用一次。第二次调用 `serve` 将立即返回。
-    /// 如需多次服务，请使用 `serve_with_receiver` 并传入独立的 receiver。
+    /**
+    运行事件处理循环，直到 channel 关闭
+
+    **注意**：此方法会消费 `event_rx`（通过 `take`），
+    因此只能调用一次。第二次调用 `serve` 将立即返回。
+    如需多次服务，请使用 `serve_with_receiver` 并传入独立的 receiver。
+    */
     pub async fn serve(&self, handler: &dyn HumanLoopHandler) {
         // 一次性取出 event_rx，避免每次 recv_event 都锁住并尝试 take
         let receiver = {
@@ -378,9 +422,11 @@ impl HumanLoopManager {
         }
     }
 
-    /// 使用指定的 receiver 运行事件处理循环
-    ///
-    /// 适用于需要将接收端分离到独立任务的场景。
+    /**
+    使用指定的 receiver 运行事件处理循环
+
+    适用于需要将接收端分离到独立任务的场景。
+    */
     pub async fn serve_with_receiver(
         mut receiver: mpsc::Receiver<HumanLoopEvent>,
         handler: &dyn HumanLoopHandler,
@@ -392,12 +438,14 @@ impl HumanLoopManager {
 }
 
 impl Default for HumanLoopManager {
+    /// 创建默认缓冲区大小的管理器。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl HumanLoopProvider for HumanLoopManager {
+    /// 将请求转换为事件发送给处理端，并等待对应的响应器返回结果。
     fn request(&self, req: HumanLoopRequest) -> BoxFuture<'_, Result<HumanLoopResponse>> {
         Box::pin(async move {
             match req.kind {
@@ -515,10 +563,12 @@ impl HumanLoopProvider for HumanLoopManager {
 
 // ── HumanLoopHandler trait ────────────────────────────────────────────────────
 
-/// 将 [`HumanLoopEvent`] 转化为具体 UI 交互的桥接接口
-///
-/// 实现此 trait 即可将 agent 的人工介入请求接入任意输入渠道，
-/// 所有实现共用同一套事件驱动基础设施。
+/**
+将 [`HumanLoopEvent`] 转化为具体 UI 交互的桥接接口
+
+实现此 trait 即可将 agent 的人工介入请求接入任意输入渠道，
+所有实现共用同一套事件驱动基础设施。
+*/
 pub trait HumanLoopHandler: Send + Sync {
     /// 工具审批请求：展示工具信息，收集用户的批准 / 拒绝决策
     fn on_approval<'a>(
@@ -531,9 +581,11 @@ pub trait HumanLoopHandler: Send + Sync {
     /// 文本输入请求：展示提示信息，收集用户的自由文本输入
     fn on_input<'a>(&'a self, prompt: &'a str) -> BoxFuture<'a, String>;
 
-    /// 任务 checkpoint 选择：展示选项列表，收集用户的选择
-    ///
-    /// 默认实现选择第一个选项（向后兼容）。
+    /**
+    任务 checkpoint 选择：展示选项列表，收集用户的选择
+
+    默认实现选择第一个选项（向后兼容）。
+    */
     fn on_selection<'a>(
         &'a self,
         _task_id: &'a str,
@@ -601,11 +653,11 @@ pub enum HumanLoopKind {
 /// 向人工发起的介入请求
 #[derive(Debug, Clone)]
 pub struct HumanLoopRequest {
-    /// Stable request identifier for concurrent UI correlation.
+    /// 稳定的请求标识，用于并发 UI 场景下的请求关联。
     pub request_id: Option<String>,
-    /// Logical conversation/session identity.
+    /// 逻辑会话标识。
     pub session_id: Option<String>,
-    /// Agent or subagent identity.
+    /// Agent 或子 Agent 标识。
     pub agent_name: Option<String>,
     /// 请求类型
     pub kind: HumanLoopKind,
@@ -617,9 +669,9 @@ pub struct HumanLoopRequest {
     pub args: Option<Value>,
     /// 风险等级（仅 Approval 场景）
     pub risk_level: Option<RiskLevel>,
-    /// Structured approval context.
+    /// 结构化的审批上下文。
     pub approval_context: Option<PermissionContext>,
-    /// Structured response suggestions.
+    /// 结构化的响应建议。
     pub suggestions: Vec<Suggestion>,
     /// 超时时长（None 表示无限等待）
     pub timeout: Option<Duration>,
@@ -775,11 +827,22 @@ pub enum HumanLoopResponse {
     /// 用户批准
     Approved,
     /// 用户带范围批准
-    ApprovedWithScope { scope: ApprovalScope },
+    ApprovedWithScope {
+        /// 审批范围
+        scope: ApprovalScope,
+    },
     /// 用户修改了参数后批准
-    ModifiedArgs { args: Value, scope: ApprovalScope },
+    ModifiedArgs {
+        /// 修改后的参数
+        args: Value,
+        /// 审批范围
+        scope: ApprovalScope,
+    },
     /// 用户拒绝
-    Rejected { reason: Option<String> },
+    Rejected {
+        /// 拒绝原因（可选）
+        reason: Option<String>,
+    },
     /// 用户输入的文本
     Text(String),
     /// 等待超时
@@ -788,20 +851,24 @@ pub enum HumanLoopResponse {
     Deferred,
     /// 用户选择了选项（任务 checkpoint 响应）
     Selection {
+        /// 用户选中的选项
         selection: String,
+        /// 用户附加的可选指令
         instructions: Option<String>,
     },
 }
 
 // ── Provider trait ──────────────────────────────────────────────────────────
 
-/// 人工介入 Provider trait
-///
-/// 内置实现：
-/// - [`HumanLoopManager`]：事件驱动模式（推荐）
-/// - [`ConsoleHumanLoopProvider`]：命令行阻塞模式
-/// - [`WebhookHumanLoopProvider`]：HTTP 回调模式
-/// - `WebSocketHumanLoopProvider`：WebSocket 模式（启用 `websocket` feature）
+/**
+人工介入 Provider trait
+
+内置实现：
+- [`HumanLoopManager`]：事件驱动模式（推荐）
+- [`ConsoleHumanLoopProvider`]：命令行阻塞模式
+- [`WebhookHumanLoopProvider`]：HTTP 回调模式
+- `WebSocketHumanLoopProvider`：WebSocket 模式（启用 `websocket` feature）
+*/
 pub trait HumanLoopProvider: Send + Sync {
     /// 发起人工介入请求
     fn request(&self, req: HumanLoopRequest) -> BoxFuture<'_, Result<HumanLoopResponse>>;
@@ -818,6 +885,7 @@ pub fn default_provider() -> Arc<dyn HumanLoopProvider> {
 mod tests {
     use super::*;
 
+    /// 验证审批决策变体的构造与匹配。
     #[test]
     fn test_approval_decision_variants() {
         let approved = ApprovalDecision::Approved;
@@ -836,6 +904,7 @@ mod tests {
         }
     }
 
+    /// 验证 respond 能发送审批决策。
     #[test]
     fn test_approval_responder_respond() {
         let (tx, mut rx) = oneshot::channel();
@@ -848,6 +917,7 @@ mod tests {
         assert_eq!(result.unwrap(), ApprovalDecision::Approved);
     }
 
+    /// 验证 approve 快捷方法。
     #[test]
     fn test_approval_responder_approve() {
         let (tx, mut rx) = oneshot::channel();
@@ -860,6 +930,7 @@ mod tests {
         assert_eq!(result.unwrap(), ApprovalDecision::Approved);
     }
 
+    /// 验证带范围批准的快捷方法。
     #[test]
     fn test_approval_responder_approve_with_scope() {
         let (tx, mut rx) = oneshot::channel();
@@ -877,6 +948,7 @@ mod tests {
         }
     }
 
+    /// 验证 reject 快捷方法。
     #[test]
     fn test_approval_responder_reject() {
         let (tx, mut rx) = oneshot::channel();
@@ -894,6 +966,7 @@ mod tests {
         }
     }
 
+    /// 验证未响应即丢弃时默认拒绝。
     #[test]
     fn test_approval_responder_drop_without_response() {
         let (tx, mut rx) = oneshot::channel();
@@ -909,6 +982,7 @@ mod tests {
         }
     }
 
+    /// 验证输入响应器能发送文本。
     #[test]
     fn test_input_responder_respond() {
         let (tx, mut rx) = oneshot::channel();
@@ -921,6 +995,7 @@ mod tests {
         assert_eq!(result.unwrap(), "user input");
     }
 
+    /// 验证审批请求的构造。
     #[test]
     fn test_human_loop_request_approval() {
         let request = HumanLoopRequest::approval("test_tool", serde_json::json!({"arg": "value"}));
@@ -930,6 +1005,7 @@ mod tests {
         assert!(request.args.is_some());
     }
 
+    /// 验证带风险等级的请求构造。
     #[test]
     fn test_human_loop_request_with_risk() {
         let request = HumanLoopRequest::approval_with_risk(
@@ -942,6 +1018,7 @@ mod tests {
         assert_eq!(request.risk_level, Some(RiskLevel::Critical));
     }
 
+    /// 验证输入请求的构造。
     #[test]
     fn test_human_loop_request_input() {
         let request = HumanLoopRequest::input("Please enter your name");
@@ -952,6 +1029,7 @@ mod tests {
         assert!(request.args.is_none());
     }
 
+    /// 验证各响应变体的构造。
     #[test]
     fn test_human_loop_response_variants() {
         let approved = HumanLoopResponse::Approved;
@@ -969,17 +1047,20 @@ mod tests {
         assert!(matches!(deferred, HumanLoopResponse::Deferred));
     }
 
+    /// 验证管理器的创建。
     #[tokio::test]
     async fn test_human_loop_manager_new() {
         let _manager = HumanLoopManager::new();
     }
 
+    /// 验证缓冲区大小为 0 时被规范化且不会 panic。
     #[test]
     fn zero_buffer_is_normalized_without_panicking() {
         let manager = HumanLoopManager::with_buffer(0);
         assert!(manager.try_recv_event().is_none());
     }
 
+    /// 验证请求类型变体。
     #[test]
     fn test_human_loop_kind_variants() {
         assert!(matches!(HumanLoopKind::Approval, HumanLoopKind::Approval));

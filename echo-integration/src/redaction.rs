@@ -1,25 +1,29 @@
-//! Redaction shared by integration configuration Debug output and diagnostics.
-//!
-//! Integration configs contain credentials by design.  Following the existing
-//! `LlmConfig` Debug contract, this module keeps the secret-bearing values out
-//! of derived Debug output and applies the framework retention policy to raw
-//! transport errors before they become logs or returned error strings.
+/*!
+集成配置的 Debug 输出与诊断信息共用的脱敏工具。
+
+集成配置天然包含凭据。本模块沿用现有 `LlmConfig` 的 Debug 约定：
+让携带密钥的值不出现在派生的 Debug 输出中，并在原始传输错误
+变成日志或返回的错误字符串之前，套用框架的内容保留策略。
+*/
 
 use echo_core::utils::retention::ContentRetentionPolicy;
 use serde_json::Value;
 #[cfg(any(feature = "mcp", test))]
 use std::collections::HashMap;
 
+/// 脱敏后替换敏感内容所用的占位文本。
 pub(crate) const REDACTED: &str = "[REDACTED]";
 
-/// Redact credential-shaped text before it is logged or embedded in an error.
+/// 在记录日志或嵌入错误信息之前，对形似凭据的文本进行脱敏。
 pub(crate) fn text(value: &str) -> String {
     ContentRetentionPolicy::default().sanitize_text(value)
 }
 
-/// Remove exact credentials owned by the current config before applying
-/// shape-based redaction and bounded retention.  This order also covers a
-/// credential that crosses the retention boundary.
+/**
+先精确移除当前配置持有的凭据，再执行基于形态的脱敏与有界保留。
+
+这样的顺序也能覆盖跨越保留截断边界的凭据。
+*/
 pub(crate) fn text_with_secrets<S>(value: &str, secrets: impl IntoIterator<Item = S>) -> String
 where
     S: AsRef<str>,
@@ -57,7 +61,7 @@ where
     text(&sanitized)
 }
 
-/// Redact nested credential fields before diagnostic formatting.
+/// 在格式化诊断信息之前，对嵌套的凭据字段进行脱敏。
 #[cfg(any(feature = "channels", test))]
 pub(crate) fn json(value: &Value) -> Value {
     let mut sanitized = value.clone();
@@ -65,9 +69,9 @@ pub(crate) fn json(value: &Value) -> Value {
     sanitized
 }
 
-/// Redact structured diagnostics plus exact values configured for the current
-/// extension instance.
+/// 对结构化诊断信息脱敏，并移除当前扩展实例配置的精确敏感值。
 pub(crate) fn json_with_secrets(value: &Value, secrets: &[String]) -> Value {
+    /// 递归遍历 JSON，把所有字符串中的精确敏感值替换掉。
     fn redact_strings(value: &mut Value, secrets: &[String]) {
         match value {
             Value::String(text) => {
@@ -93,8 +97,11 @@ pub(crate) fn json_with_secrets(value: &Value, secrets: &[String]) -> Value {
     sanitized
 }
 
-/// Remove user information and query/fragment values from a URL used in a
-/// diagnostic.  Transport requests continue to use the original URL.
+/**
+移除诊断用 URL 中的用户信息以及查询参数值和片段值。
+
+传输请求本身仍使用原始 URL。
+*/
 pub(crate) fn url(value: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(value) else {
         return "[REDACTED URL]".to_string();
@@ -124,8 +131,7 @@ pub(crate) fn url(value: &str) -> String {
     parsed.to_string()
 }
 
-/// Format a reqwest error without allowing its attached request URL to bypass
-/// URL credential redaction.
+/// 格式化 reqwest 错误，防止其附带的请求 URL 绕过 URL 凭据脱敏。
 pub(crate) fn request_error<S>(
     error: reqwest::Error,
     secrets: impl IntoIterator<Item = S>,
@@ -147,22 +153,24 @@ where
     text_with_secrets(&diagnostic, secrets.iter())
 }
 
-/// Preserve whether an optional secret was configured without exposing it.
+/// 保留可选密钥“是否已配置”的信息，但不暴露其内容。
 #[cfg(any(feature = "channels", test))]
 pub(crate) fn optional<T>(value: Option<&T>) -> Option<&'static str> {
     value.map(|_| REDACTED)
 }
 
-/// Preserve whether a secret-bearing collection was configured without
-/// exposing either its keys or values.
+/// 保留含密钥集合“是否已配置”的信息，但不暴露其中的键或值。
 #[cfg(any(feature = "mcp", test))]
 pub(crate) fn collection_is_redacted(is_empty: bool) -> &'static str {
     if is_empty { "[]" } else { REDACTED }
 }
 
-/// Return exact values that must be removed from HTTP diagnostics.  For an
-/// Authorization header, include both the full wire value and the credential
-/// after its scheme because servers commonly echo only the payload.
+/**
+返回必须从 HTTP 诊断信息中移除的精确值。
+
+对于 Authorization 头，同时包含完整的线上值和认证方案之后的凭据部分，
+因为服务端通常只回显凭据本体。
+*/
 #[cfg(any(feature = "mcp", test))]
 pub(crate) fn header_secrets(headers: &HashMap<String, String>) -> Vec<String> {
     let mut secrets = Vec::new();
@@ -186,6 +194,7 @@ pub(crate) fn header_secrets(headers: &HashMap<String, String>) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// 验证扩展凭据赋值会被脱敏。
     #[test]
     fn redacts_extension_credential_assignments() {
         let secrets = [
@@ -207,6 +216,7 @@ mod tests {
         assert_eq!(url("://host?ticket=invalid-url-secret"), "[REDACTED URL]");
     }
 
+    /// 验证 Option 与集合的脱敏只保留结构形状。
     #[test]
     fn optional_and_collection_redaction_keep_shape_only() {
         assert_eq!(optional(Some(&"secret")), Some(REDACTED));
@@ -215,6 +225,7 @@ mod tests {
         assert_eq!(collection_is_redacted(false), REDACTED);
     }
 
+    /// 验证 Authorization 密钥集合同时包含认证方案与载荷。
     #[test]
     fn authorization_secret_set_includes_scheme_and_payload() {
         let headers = HashMap::from([(
@@ -232,6 +243,7 @@ mod tests {
         assert!(secrets.iter().any(|secret| secret == "opaque-credential"));
     }
 
+    /// 验证配置值即使没有字段名也会被脱敏。
     #[test]
     fn configured_values_are_redacted_without_field_names() {
         let sanitized = text_with_secrets(
@@ -254,6 +266,7 @@ mod tests {
         assert!(!sanitized.contains("opaque"));
     }
 
+    /// 验证嵌套 JSON 与 URL 中的凭据会被脱敏。
     #[test]
     fn redacts_nested_json_and_url_credentials() {
         let value = serde_json::json!({
@@ -297,6 +310,7 @@ mod tests {
         }
     }
 
+    /// 验证 reqwest 错误中附带的 URL 会被脱敏。
     #[tokio::test]
     async fn reqwest_error_redacts_attached_url() -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

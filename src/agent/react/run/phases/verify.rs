@@ -139,6 +139,7 @@ pub(crate) async fn verify_final_text(
 
 // ── 测试 ────────────────────────────────────────────────────────────
 
+/// 验证阶段的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,8 +147,10 @@ mod tests {
     use crate::agent::config::AgentConfig;
     use echo_core::agent::StaticCritic;
 
-    /// `verifier_enabled = false`（默认值）会无条件接受任何答案，
-    /// 不会触碰 critic 或上下文。
+    /**
+     * `verifier_enabled = false`（默认值）会无条件接受任何答案，
+     * 不会触碰 critic 或上下文。
+     */
     #[tokio::test]
     async fn verify_answer_disabled_returns_true() {
         let config = AgentConfig::new("test-model", "agent", "sys");
@@ -209,8 +212,10 @@ mod tests {
         );
     }
 
-    /// 一旦 `retry_count` 达到 `verifier_max_retries`，即使 critic 持续判定失败，
-    /// 也会直接接受答案（避免无限的自我修正循环）。
+    /**
+     * 一旦 `retry_count` 达到 `verifier_max_retries`，即使 critic 持续判定失败，
+     * 也会直接接受答案（避免无限的自我修正循环）。
+     */
     #[tokio::test]
     async fn verify_answer_max_retries_short_circuits_to_true() {
         let config = AgentConfig::new("test-model", "agent", "sys")
@@ -227,4 +232,3 @@ mod tests {
         );
     }
 }
-</content>

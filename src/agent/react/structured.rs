@@ -122,17 +122,22 @@ fn extract_json_from_markdown(text: &str) -> Option<&str> {
     content.find("```").map(|end| content[..end].trim())
 }
 
+/// 结构化输出解析的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Deserialize;
 
+    /// 测试用的结构化输出目标类型。
     #[derive(Debug, Deserialize, PartialEq)]
     struct Person {
+        /// 姓名。
         name: String,
+        /// 年龄。
         age: u32,
     }
 
+    /// 验证可直接解析纯 JSON 文本。
     #[test]
     fn test_parse_json_direct() {
         let result: Person = parse_json_output(r#"{"name": "Alice", "age": 30}"#).unwrap();
@@ -145,12 +150,14 @@ mod tests {
         );
     }
 
+    /// 验证可解析首尾带空白的 JSON 文本。
     #[test]
     fn test_parse_json_with_whitespace() {
         let result: Person = parse_json_output("  \n{\"name\": \"Bob\", \"age\": 25}\n  ").unwrap();
         assert_eq!(result.name, "Bob");
     }
 
+    /// 验证可从 Markdown 代码块中解析 JSON。
     #[test]
     fn test_parse_json_from_markdown() {
         let text = r#"Here is the result:
@@ -163,18 +170,21 @@ mod tests {
         assert_eq!(result.age, 35);
     }
 
+    /// 验证非 JSON 文本解析失败。
     #[test]
     fn test_parse_json_failure() {
         let result = parse_json_output::<Person>("not json at all");
         assert!(result.is_err());
     }
 
+    /// 验证可从 Markdown 代码块中提取 JSON 字符串。
     #[test]
     fn test_extract_json_from_markdown() {
         let text = "```json\n{\"a\": 1}\n```";
         assert_eq!(extract_json_from_markdown(text), Some("{\"a\": 1}"));
     }
 
+    /// 验证没有 Markdown 代码块时返回 None。
     #[test]
     fn test_extract_json_no_markdown() {
         assert_eq!(extract_json_from_markdown("{\"a\": 1}"), None);

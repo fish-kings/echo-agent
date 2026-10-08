@@ -1,8 +1,10 @@
-//! Timestamp utility functions
+//! 时间戳工具函数
 
-/// Get the current Unix timestamp in seconds, returns 0 on failure.
-///
-/// Replaces scattered `SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()` calls.
+/**
+获取当前 Unix 时间戳（秒），失败时返回 0。
+
+用于替代各处散落的 `SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()` 调用。
+*/
 pub fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -10,7 +12,7 @@ pub fn now_secs() -> u64 {
         .as_secs()
 }
 
-/// Get the current Unix timestamp in milliseconds, returns 0 on failure.
+/// 获取当前 Unix 时间戳（毫秒），失败时返回 0。
 pub fn now_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -18,48 +20,56 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-// ── 本地时区时间（面向用户展示用）──────────────────────────────────────────
-//
-// 项目时间策略：存储内部一律用 UTC（绝对时刻，无歧义），仅在"输出给人看"
-// 的场景（API 序列化、日志、SQLite 默认值）转成本地时区。下面这些函数
-// 是该策略的统一入口，避免各处散落地调 chrono::Local::now()。
-// epoch 整数路径（now_secs/now_millis）与时区无关，不在此列。
+/* ── 本地时区时间（面向用户展示用）──────────────────────────────────────────
 
-/// 当前本地时区时间（带偏移），用于面向用户的时间展示。
-///
-/// 序列化为带偏移 RFC3339（如 `2026-07-09T09:50:48.876+08:00`）。
-/// 注意：存储内部仍用 UTC（绝对时刻安全），本函数仅用于"输出给人看"的场景。
-/// 读取系统时区（`TZ` 环境变量或系统配置）。
+项目时间策略：存储内部一律用 UTC（绝对时刻，无歧义），仅在"输出给人看"
+的场景（API 序列化、日志、SQLite 默认值）转成本地时区。下面这些函数
+是该策略的统一入口，避免各处散落地调 chrono::Local::now()。
+epoch 整数路径（now_secs/now_millis）与时区无关，不在此列。 */
+
+/**
+当前本地时区时间（带偏移），用于面向用户的时间展示。
+
+序列化为带偏移 RFC3339（如 `2026-07-09T09:50:48.876+08:00`）。
+注意：存储内部仍用 UTC（绝对时刻安全），本函数仅用于"输出给人看"的场景。
+读取系统时区（`TZ` 环境变量或系统配置）。
+*/
 pub fn now_local() -> chrono::DateTime<chrono::FixedOffset> {
     chrono::Local::now().fixed_offset()
 }
 
-/// 把任意时区的 `DateTime` 转成本地偏移（序列化/展示用）。
-///
-/// 典型用法：把内部存储的 `DateTime<Utc>` 转成本地偏移后再 `to_rfc3339()`。
+/**
+把任意时区的 `DateTime` 转成本地偏移（序列化/展示用）。
+
+典型用法：把内部存储的 `DateTime<Utc>` 转成本地偏移后再 `to_rfc3339()`。
+*/
 pub fn to_local<Tz: chrono::TimeZone>(
     dt: chrono::DateTime<Tz>,
 ) -> chrono::DateTime<chrono::FixedOffset> {
     dt.with_timezone(&chrono::Local).fixed_offset()
 }
 
-/// serde 模块：把 `DateTime<Utc>` 序列化成带本地偏移的 RFC3339。
-///
-/// 用法：`#[serde(with = "echo_core::utils::time::local_rfc3339")]`
-///
-/// - 序列化方向：`DateTime<Utc>` → 本地偏移 RFC3339 字符串（前端 `new Date()` 可正确解析）。
-/// - 反序列化方向：标准 RFC3339 解析回 `DateTime<Utc>`，对 UTC(`Z`) 和本地偏移(`+08:00`)
-///   字符串都兼容，历史数据无需迁移。
-///
-/// 字段类型保持 `DateTime<Utc>` 不变（方案 B：不动类型，只改序列化输出）。
+/**
+serde 模块：把 `DateTime<Utc>` 序列化成带本地偏移的 RFC3339。
+
+用法：`#[serde(with = "echo_core::utils::time::local_rfc3339")]`
+
+- 序列化方向：`DateTime<Utc>` → 本地偏移 RFC3339 字符串（前端 `new Date()` 可正确解析）。
+- 反序列化方向：标准 RFC3339 解析回 `DateTime<Utc>`，对 UTC(`Z`) 和本地偏移(`+08:00`)
+  字符串都兼容，历史数据无需迁移。
+
+字段类型保持 `DateTime<Utc>` 不变（方案 B：不动类型，只改序列化输出）。
+*/
 pub mod local_rfc3339 {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
 
+    /// 将 `DateTime<Utc>` 序列化为本地偏移 RFC3339 字符串
     pub fn serialize<S: Serializer>(dt: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error> {
         s.serialize_str(&super::to_local(*dt).to_rfc3339())
     }
 
+    /// 从 RFC3339 字符串反序列化并归一到 UTC
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<DateTime<Utc>, D::Error> {
         // 标准解析：带 Z 或 +08:00 的 RFC3339 都能正确读回并归一到 UTC。
         DateTime::parse_from_rfc3339(&String::deserialize(d)?)
@@ -68,15 +78,18 @@ pub mod local_rfc3339 {
     }
 }
 
-/// serde 模块：`Option<DateTime<Utc>>` 的本地偏移 RFC3339 序列化。
-///
-/// 用法：`#[serde(with = "echo_core::utils::time::option_local_rfc3339")]`
-///
-/// `None` 序列化为 JSON `null`；`Some` 走与 [`local_rfc3339`] 相同的本地偏移规则。
+/**
+serde 模块：`Option<DateTime<Utc>>` 的本地偏移 RFC3339 序列化。
+
+用法：`#[serde(with = "echo_core::utils::time::option_local_rfc3339")]`
+
+`None` 序列化为 JSON `null`；`Some` 走与 [`local_rfc3339`] 相同的本地偏移规则。
+*/
 pub mod option_local_rfc3339 {
     use chrono::{DateTime, Utc};
     use serde::{Deserialize, Deserializer, Serializer};
 
+    /// 将 `Option<DateTime<Utc>>` 序列化为本地偏移 RFC3339 字符串或 `null`
     pub fn serialize<S: Serializer>(opt: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
         match opt {
             Some(dt) => s.serialize_some(&super::to_local(*dt).to_rfc3339()),
@@ -84,6 +97,7 @@ pub mod option_local_rfc3339 {
         }
     }
 
+    /// 从可空 RFC3339 字符串反序列化并归一到 UTC
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DateTime<Utc>>, D::Error> {
         let opt = Option::<String>::deserialize(d)?;
         match opt {
@@ -150,8 +164,8 @@ mod tests {
             Ok(s) => s,
             Err(e) => panic!("serialize failed: {e}"),
         };
-        // 序列化输出应带本地偏移（+ 或 -），而非仅 UTC 的 Z。
-        // 注意：RFC3339 日期部分也含 `-`（如 2026-07-09），所以用更精确的偏移检测。
+        /* 序列化输出应带本地偏移（+ 或 -），而非仅 UTC 的 Z。
+        注意：RFC3339 日期部分也含 `-`（如 2026-07-09），所以用更精确的偏移检测。 */
         let has_offset = json.contains("+")
             || json.ends_with("-00:00\"}")
             || json.contains("T")

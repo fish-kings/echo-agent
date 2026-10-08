@@ -2,28 +2,37 @@ use crate::llm::types::{Message, ToolDefinition};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Cache-relevant request fingerprints recorded with one model call.
-///
-/// `stable_prefix_hash` covers the full provider-cacheable prefix, including
-/// conversation history. Component hashes isolate changes in the stable
-/// system/canonical prefix and tool schema.
+/**
+随单次模型调用记录的、与缓存相关的请求指纹。
+
+`stable_prefix_hash` 覆盖 provider 可缓存的完整前缀（包括对话历史）。
+各分量哈希用于隔离稳定的 system/canonical 前缀与工具 schema 的变化。
+*/
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptCacheFingerprint {
+    /// 完整稳定前缀（system + canonical + tools + history）的哈希
     pub stable_prefix_hash: String,
+    /// system + canonical 前缀的哈希
     pub system_prefix_hash: String,
+    /// 工具 schema 的哈希
     pub tools_schema_hash: String,
+    /// 对话历史的哈希
     pub history_hash: String,
+    /// 稳定前缀中的消息条数
     pub stable_prefix_message_count: usize,
+    /// 工具数量
     pub tool_count: usize,
 }
 
-/// 计算稳定前缀的 SHA-256 哈希（canonical 序列化），用于日志观测缓存失效。
-///
-/// 关键：必须跨进程可复现，所以：
-/// 1. 用 SHA-256 而非 `DefaultHasher`（后者跨进程/跨版本不稳）
-/// 2. tools schema uses the shared recursive canonical JSON encoder, avoiding
-///    map-order differences across processes and feature combinations
-/// 3. 只 hash 稳定段（system + canonical + tools + history），不含 runtime_context
+/**
+计算稳定前缀的 SHA-256 哈希（canonical 序列化），用于日志观测缓存失效。
+
+关键：必须跨进程可复现，所以：
+1. 用 SHA-256 而非 `DefaultHasher`（后者跨进程/跨版本不稳）
+2. tools schema 使用共享的递归 canonical JSON 编码器，避免跨进程与
+   不同 feature 组合下的 map 顺序差异
+3. 只 hash 稳定段（system + canonical + tools + history），不含 runtime_context
+*/
 pub fn stable_prefix_hash(
     system: &[Message],
     canonical: &[Message],
@@ -54,7 +63,7 @@ pub fn stable_prefix_hash(
         .collect()
 }
 
-/// Build canonical component fingerprints for cache diagnostics.
+/// 构建用于缓存诊断的 canonical 分量指纹。
 pub fn prompt_cache_fingerprint(
     system: &[Message],
     canonical: &[Message],
@@ -92,6 +101,7 @@ pub fn prompt_cache_fingerprint(
     }
 }
 
+/// 完成哈希计算并返回前 8 字节（16 位 hex）
 fn finish_hash(hasher: Sha256) -> String {
     let result = hasher.finalize();
     result
@@ -101,6 +111,7 @@ fn finish_hash(hasher: Sha256) -> String {
         .collect()
 }
 
+/// 将一条消息（角色 + 文本内容）写入哈希器
 fn hash_message(hasher: &mut Sha256, m: &Message) {
     hasher.update(b"MSG:");
     hasher.update(m.role.as_str().as_bytes());
@@ -111,6 +122,7 @@ fn hash_message(hasher: &mut Sha256, m: &Message) {
     hasher.update(b"\n");
 }
 
+/// 将一个工具定义（名称 + canonical 参数 schema）写入哈希器
 fn hash_tool(hasher: &mut Sha256, t: &ToolDefinition) {
     hasher.update(b"TOOL:");
     hasher.update(t.function.name.as_bytes());

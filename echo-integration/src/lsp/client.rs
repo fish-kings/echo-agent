@@ -1,5 +1,7 @@
-//! Stdio-based LSP client — spawns a language server process and
-//! communicates via JSON-RPC over stdin/stdout.
+/*!
+ * 基于 stdio 的 LSP 客户端——启动语言服务器子进程，
+ * 并通过 stdin/stdout 上的 JSON-RPC 与其通信。
+ */
 
 use echo_core::lsp::{
     CompletionItem, Diagnostic, HoverInfo, Location, LspClient, LspError, LspResult,
@@ -16,17 +18,21 @@ use tokio::sync::{Mutex, oneshot};
 
 use super::jsonrpc::{self, JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
-/// Shared manager lifecycle fence captured by every derived client handle.
-///
-/// The fence is intentionally internal to the framework. SDK handles retain
-/// the existing client shape, while the manager remains the only authority
-/// that can keep a child process live.
+/**
+ * 由每个派生客户端句柄捕获的、共享的管理器生命周期栅栏。
+ *
+ * 该栅栏刻意保持为框架内部实现。SDK 句柄保留现有的客户端形态，
+ * 而管理器始终是唯一有权维持子进程存活的主体。
+ */
 pub(crate) struct LspLifecycle {
+    /// 该生命周期所属的代次（generation）。
     pub(crate) generation: u64,
+    /// 生命周期是否已关闭。
     closed: AtomicBool,
 }
 
 impl LspLifecycle {
+    /// 以指定代次创建一个尚未关闭的生命周期栅栏。
     pub(crate) fn new(generation: u64) -> Self {
         Self {
             generation,
@@ -34,29 +40,39 @@ impl LspLifecycle {
         }
     }
 
+    /// 关闭栅栏，此后所有派生句柄均视为失效。
     pub(crate) fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
     }
 
+    /// 判断栅栏未关闭且代次与给定值一致。
     pub(crate) fn is_live(&self, generation: u64) -> bool {
         !self.closed.load(Ordering::SeqCst) && self.generation == generation
     }
 }
 
+/// 单个 JSON-RPC 请求的超时时间。
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// 允许接收的单条 LSP 消息最大字节数。
 const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 
+/// 判断消息体大小是否在允许范围内。
 fn accepts_lsp_message_size(bytes: usize) -> bool {
     bytes <= MAX_LSP_MESSAGE_BYTES
 }
 
+/// 客户端运行时状态：服务器状态与请求准入共享同一把锁。
 struct LspRuntime {
+    /// 服务器当前状态。
     status: LspServerStatus,
+    /// 等待响应的请求，按请求 ID 索引。
     pending: HashMap<u64, oneshot::Sender<JsonRpcResponse>>,
+    /// 是否仍接受新请求。
     accepting: bool,
 }
 
 impl LspRuntime {
+    /// 登记一个待响应请求；服务器未运行或已停止接受请求时返回错误。
     fn register(&mut self, id: u64, tx: oneshot::Sender<JsonRpcResponse>) -> LspResult<()> {
         if !self.status.running || !self.accepting {
             return Err(LspError::NotInitialized);
@@ -65,6 +81,7 @@ impl LspRuntime {
         Ok(())
     }
 
+    /// 终结运行时：停止接受请求、标记为未运行，并丢弃所有待响应请求。
     fn settle(&mut self, error: Option<String>) {
         self.accepting = false;
         self.status.running = false;
@@ -76,6 +93,7 @@ impl LspRuntime {
         self.pending.clear();
     }
 
+    /// 进入终止流程：停止接受请求、记录首个错误并丢弃待响应请求。
     fn begin_terminal(&mut self, error: Option<String>) {
         self.accepting = false;
         if self.status.last_error.is_none() {
@@ -85,45 +103,49 @@ impl LspRuntime {
     }
 }
 
-/// Stdio-based LSP client for a single language server.
-///
-/// Spawns the server as a child process and communicates via JSON-RPC
-/// over stdin (requests) and stdout (responses).
+/**
+ * 面向单个语言服务器的 stdio LSP 客户端。
+ *
+ * 以子进程方式启动服务器，并通过 stdin（请求）与 stdout（响应）
+ * 上的 JSON-RPC 进行通信。
+ */
 pub struct StdioLspClient {
-    /// Language identifier.
+    /// 语言标识。
     language: String,
-    /// Server configuration.
+    /// 服务器配置。
     config: LspServerConfig,
-    /// Child process handle.
+    /// 子进程句柄。
     child: Option<Arc<Mutex<Child>>>,
-    /// Channel to send JSON-RPC messages to the writer task.
+    /// 向写入任务发送 JSON-RPC 消息的通道。
     writer_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>>,
+    /// 负责写 stdin 的后台任务。
     writer_task: Option<tokio::task::JoinHandle<()>>,
+    /// 负责读 stdout 的后台任务。
     reader_task: Option<tokio::task::JoinHandle<()>>,
-    /// Next request ID.
+    /// 下一个请求 ID。
     next_id: AtomicU64,
-    /// Status and request admission share one atomic failure boundary.
+    /// 状态与请求准入共享同一个原子失败边界。
     runtime: Arc<StdMutex<LspRuntime>>,
-    /// Cached diagnostics per file URI.
+    /// 按文件 URI 缓存的诊断信息。
     diagnostics_cache: Arc<Mutex<HashMap<String, Vec<Diagnostic>>>>,
-    /// Manager lifecycle captured when this derived handle was created.
+    /// 创建该派生句柄时捕获的管理器生命周期。
     lifecycle: Arc<LspLifecycle>,
-    /// Generation associated with this client handle.
+    /// 与该客户端句柄关联的代次。
     lifecycle_generation: u64,
-    /// Client-level close fence, set by explicit stop/shutdown.
+    /// 客户端级关闭栅栏，由显式 stop/shutdown 设置。
     closed: Arc<AtomicBool>,
-    /// Suppress intentional EOF/error during graceful shutdown.
+    /// 在优雅关闭期间抑制预期内的 EOF/错误上报。
     stopping: Arc<AtomicBool>,
 }
 
 impl StdioLspClient {
-    /// Create a new client (does not start the server yet).
+    /// 创建新客户端（此时尚未启动服务器）。
     pub fn new(config: LspServerConfig) -> Self {
         let lifecycle = Arc::new(LspLifecycle::new(0));
         Self::new_bound(config, lifecycle, 0)
     }
 
-    /// Create a client bound to a manager lifecycle.
+    /// 创建绑定到管理器生命周期的客户端。
     pub(crate) fn new_bound(
         config: LspServerConfig,
         lifecycle: Arc<LspLifecycle>,
@@ -158,6 +180,7 @@ impl StdioLspClient {
         }
     }
 
+    /// 确认客户端与所属生命周期仍然有效，否则返回未初始化错误。
     fn ensure_live(&self) -> LspResult<()> {
         if self.closed.load(Ordering::SeqCst) || !self.lifecycle.is_live(self.lifecycle_generation)
         {
@@ -166,6 +189,7 @@ impl StdioLspClient {
         Ok(())
     }
 
+    /// 在运行时锁内修改服务器状态。
     fn update_runtime(&self, update: impl FnOnce(&mut LspServerStatus)) {
         let mut runtime = self
             .runtime
@@ -174,14 +198,17 @@ impl StdioLspClient {
         update(&mut runtime.status);
     }
 
+    /// 设置重启次数。
     pub(crate) fn set_restart_count(&self, count: u32) {
         self.update_runtime(|status| status.restart_count = count);
     }
 
+    /// 记录最近一次错误。
     pub(crate) fn set_last_error(&self, error: String) {
         self.update_runtime(|status| status.last_error = Some(error));
     }
 
+    /// 仅当服务器仍在运行且接受请求时标记为已初始化，返回是否成功。
     fn mark_initialized_if_running(&self) -> bool {
         let mut runtime = self
             .runtime
@@ -194,7 +221,7 @@ impl StdioLspClient {
         true
     }
 
-    /// Kill a process without sending more protocol messages.
+    /// 不再发送任何协议消息，直接终止进程。
     async fn abort_process(&mut self) {
         self.writer_tx = None;
         if let Some(child) = self.child.take() {
@@ -220,12 +247,14 @@ impl StdioLspClient {
             .settle(None);
     }
 
+    /// 强制结束子进程并等待其退出。
     async fn terminate_child(child: &Arc<Mutex<Child>>) {
         let mut child = child.lock().await;
         let _ = child.start_kill();
         let _ = child.wait().await;
     }
 
+    /// 测试辅助：判断子进程是否已退出。
     #[cfg(test)]
     pub(crate) async fn process_has_exited(&self) -> bool {
         let Some(child) = self.child.as_ref() else {
@@ -234,12 +263,12 @@ impl StdioLspClient {
         child.lock().await.try_wait().ok().flatten().is_some()
     }
 
-    /// Spawn the server process and set up communication channels.
+    /// 启动服务器进程并建立通信通道。
     fn spawn_process(&mut self) -> Result<(), LspError> {
         let mut cmd = Command::new(&self.config.command);
         cmd.args(&self.config.args);
 
-        // Set environment variables
+        // 设置环境变量
         for (key, value) in &self.config.env {
             cmd.env(key, value);
         }
@@ -262,7 +291,7 @@ impl StdioLspClient {
             .take()
             .ok_or_else(|| LspError::SpawnError("Failed to capture stdout".into()))?;
 
-        // Create writer channel
+        // 创建写入通道
         let (writer_tx, mut writer_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
 
         let child_id = child.id();
@@ -279,8 +308,10 @@ impl StdioLspClient {
             runtime.accepting = true;
         }
 
-        // Writer failure must settle pending calls even if the child keeps
-        // stdout open indefinitely after its stdin has closed.
+        /*
+         * 写入失败时必须终结所有待响应调用，
+         * 即使子进程在 stdin 关闭后仍无限期保持 stdout 打开。
+         */
         let writer_runtime = Arc::clone(&self.runtime);
         let writer_cache = Arc::clone(&self.diagnostics_cache);
         let writer_child = Arc::clone(&child);
@@ -311,7 +342,7 @@ impl StdioLspClient {
             }
         });
 
-        // Spawn reader task
+        // 启动读取任务
         let diagnostics_cache = self.diagnostics_cache.clone();
         let runtime = Arc::clone(&self.runtime);
         let closed = Arc::clone(&self.closed);
@@ -343,7 +374,7 @@ impl StdioLspClient {
         Ok(())
     }
 
-    /// Read loop — parses LSP framed messages from stdout.
+    /// 读取循环——从 stdout 解析带帧头的 LSP 消息。
     async fn read_loop(
         mut reader: BufReader<tokio::process::ChildStdout>,
         runtime: Arc<StdMutex<LspRuntime>>,
@@ -352,7 +383,7 @@ impl StdioLspClient {
         let mut header_line = String::new();
 
         loop {
-            // Read headers until empty line
+            // 读取头部直到遇到空行
             let mut content_length: Option<usize> = None;
             loop {
                 header_line.clear();
@@ -364,7 +395,7 @@ impl StdioLspClient {
 
                 let trimmed = header_line.trim();
                 if trimmed.is_empty() {
-                    break; // End of headers
+                    break; // 头部结束
                 }
 
                 if let Some((name, _)) = trimmed.split_once(':') {
@@ -386,20 +417,20 @@ impl StdioLspClient {
                 return format!("Language server message exceeds {MAX_LSP_MESSAGE_BYTES} bytes");
             }
 
-            // Read body
+            // 读取消息体
             let mut body = vec![0u8; len];
             if let Err(error) = reader.read_exact(&mut body).await {
                 return format!("Language server message body truncated: {error}");
             }
 
-            // Parse JSON
+            // 解析 JSON
             let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) else {
                 continue;
             };
 
-            // Check if it's a notification (no id) or a response (has id)
+            // 判断是通知（无 id）还是响应（有 id）
             if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
-                // Response to a request
+                // 对某个请求的响应
                 if let Ok(resp) = serde_json::from_value::<JsonRpcResponse>(value) {
                     let mut runtime = runtime.lock().unwrap_or_else(|poison| poison.into_inner());
                     if let Some(tx) = runtime.pending.remove(&id) {
@@ -407,7 +438,7 @@ impl StdioLspClient {
                     }
                 }
             } else if let Some(method) = value.get("method").and_then(|v| v.as_str()) {
-                // Server notification
+                // 服务器通知
                 if method == "textDocument/publishDiagnostics"
                     && let Some(params) = value.get("params")
                     && let Some(uri) = params.get("uri").and_then(|v| v.as_str())
@@ -432,7 +463,7 @@ impl StdioLspClient {
         }
     }
 
-    /// Send a JSON-RPC request and wait for the response.
+    /// 发送 JSON-RPC 请求并等待响应。
     async fn send_request(
         &self,
         method: &str,
@@ -512,7 +543,7 @@ impl StdioLspClient {
             .ok_or_else(|| LspError::ServerError("Empty response".into()))
     }
 
-    /// Send a JSON-RPC notification (no response expected).
+    /// 发送 JSON-RPC 通知（无需响应）。
     async fn send_notification(
         &self,
         method: &str,
@@ -538,18 +569,22 @@ impl StdioLspClient {
 }
 
 impl LspClient for StdioLspClient {
+    /// 返回语言标识。
     fn language(&self) -> &str {
         &self.language
     }
 
+    /// 服务器是否正在运行。
     fn is_running(&self) -> bool {
         self.status().running
     }
 
+    /// 服务器是否已完成初始化握手。
     fn is_initialized(&self) -> bool {
         self.status().initialized
     }
 
+    /// 启动服务器进程并完成 initialize/initialized 握手。
     fn initialize<'a>(&'a mut self, root_uri: &'a str) -> BoxFuture<'a, LspResult<()>> {
         Box::pin(async move {
             self.ensure_live()?;
@@ -558,21 +593,22 @@ impl LspClient for StdioLspClient {
                     "Language server is already started".to_string(),
                 ));
             }
-            // Spawn the process
+            // 启动进程
             if let Err(error) = self.spawn_process() {
                 self.set_last_error(error.to_string());
                 return Err(error);
             }
 
-            // Shutdown may win while spawning or while the child is starting.
-            // Abort the just-created child instead of allowing an unowned
-            // process to survive the manager that created it.
+            /*
+             * 关闭操作可能在启动进程期间或子进程启动过程中抢先完成。
+             * 此时应中止刚创建的子进程，避免无主进程在创建它的管理器之后继续存活。
+             */
             if let Err(error) = self.ensure_live() {
                 self.abort_process().await;
                 return Err(error);
             }
 
-            // Send initialize request
+            // 发送 initialize 请求
             let params = serde_json::json!({
                 "processId": std::process::id(),
                 "rootUri": root_uri,
@@ -601,7 +637,7 @@ impl LspClient for StdioLspClient {
                 return Err(error);
             }
 
-            // Send initialized notification
+            // 发送 initialized 通知
             if let Err(error) = self
                 .send_notification("initialized", Some(serde_json::json!({})))
                 .await
@@ -624,17 +660,18 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 发送 shutdown/exit 并终止服务器进程。
     fn shutdown(&mut self) -> BoxFuture<'_, LspResult<()>> {
         Box::pin(async move {
             self.stopping.store(true, Ordering::SeqCst);
             if self.is_running() {
-                // Send shutdown request
+                // 发送 shutdown 请求
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     self.send_request("shutdown", None),
                 )
                 .await;
-                // Send exit notification
+                // 发送 exit 通知
                 let _ = tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     self.send_notification("exit", None),
@@ -647,6 +684,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 返回指定文件 URI 的缓存诊断信息。
     fn diagnostics<'a>(&'a self, uri: &'a str) -> BoxFuture<'a, LspResult<Vec<Diagnostic>>> {
         Box::pin(async move {
             self.ensure_live()?;
@@ -658,6 +696,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 跳转到定义。
     fn goto_definition<'a>(
         &'a self,
         uri: &'a str,
@@ -673,7 +712,7 @@ impl LspClient for StdioLspClient {
                 .send_request("textDocument/definition", Some(params))
                 .await?;
 
-            // Result can be a single Location or an array
+            // 结果可能是单个 Location 或数组
             let locations: Vec<Location> =
                 if let Ok(loc) = serde_json::from_value::<Location>(result.clone()) {
                     vec![loc]
@@ -685,6 +724,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 查找引用（包含声明本身）。
     fn find_references<'a>(
         &'a self,
         uri: &'a str,
@@ -706,6 +746,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 获取指定位置的悬停信息。
     fn hover<'a>(
         &'a self,
         uri: &'a str,
@@ -725,7 +766,7 @@ impl LspClient for StdioLspClient {
                 return Ok(None);
             }
 
-            // Extract contents from hover result
+            // 从 hover 结果中提取内容
             let contents = result
                 .get("contents")
                 .map(|v| {
@@ -749,6 +790,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 获取指定位置的补全项。
     fn completion<'a>(
         &'a self,
         uri: &'a str,
@@ -764,7 +806,7 @@ impl LspClient for StdioLspClient {
                 .send_request("textDocument/completion", Some(params))
                 .await?;
 
-            // Result can be CompletionItem[] or CompletionList
+            // 结果可能是 CompletionItem[] 或 CompletionList
             let items: Vec<CompletionItem> = if let Some(items) = result.get("items") {
                 serde_json::from_value(items.clone()).unwrap_or_default()
             } else {
@@ -775,6 +817,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 通知服务器文件已打开。
     fn did_open<'a>(
         &'a self,
         uri: &'a str,
@@ -795,6 +838,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 通知服务器文件内容发生变更。
     fn did_change<'a>(
         &'a self,
         uri: &'a str,
@@ -823,6 +867,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 通知服务器文件已保存。
     fn did_save<'a>(&'a self, uri: &'a str) -> BoxFuture<'a, LspResult<()>> {
         Box::pin(async move {
             let params = serde_json::json!({
@@ -833,6 +878,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 通知服务器文件已关闭。
     fn did_close<'a>(&'a self, uri: &'a str) -> BoxFuture<'a, LspResult<()>> {
         Box::pin(async move {
             let params = serde_json::json!({
@@ -843,6 +889,7 @@ impl LspClient for StdioLspClient {
         })
     }
 
+    /// 返回当前服务器状态快照。
     fn status(&self) -> LspServerStatus {
         self.runtime
             .lock()
@@ -856,6 +903,7 @@ impl LspClient for StdioLspClient {
 mod message_size_tests {
     use super::*;
 
+    /// 拒绝超过上限的 Content-Length。
     #[test]
     fn rejects_unbounded_content_length() {
         assert!(accepts_lsp_message_size(MAX_LSP_MESSAGE_BYTES));
@@ -864,6 +912,7 @@ mod message_size_tests {
         ));
     }
 
+    /// EOF 终结与请求准入共享同一边界：终结后不再接纳新请求。
     #[test]
     fn eof_settlement_and_request_admission_share_one_boundary() -> Result<(), String> {
         let mut runtime = LspRuntime {

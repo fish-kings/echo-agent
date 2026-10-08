@@ -1,4 +1,4 @@
-//! Cache identity contracts for request construction and accounting.
+//! 请求构造与用量统计中的缓存身份契约测试。
 
 #[cfg(feature = "testing")]
 use echo_agent::agent::Agent;
@@ -13,6 +13,7 @@ use futures::StreamExt;
 #[cfg(feature = "testing")]
 use std::sync::Arc;
 
+/// `execute` 会把包含 Unicode 的 `cache_user_id` 原样传递到生产请求中。
 #[cfg(feature = "testing")]
 #[tokio::test]
 async fn execute_propagates_unicode_cache_user_id_to_the_production_request()
@@ -29,6 +30,7 @@ async fn execute_propagates_unicode_cache_user_id_to_the_production_request()
     Ok(())
 }
 
+/// `execute_stream` 在每一轮都传递同一个稳定的 `cache_user_id`。
 #[cfg(feature = "testing")]
 #[tokio::test]
 async fn execute_stream_propagates_stable_cache_user_id_on_every_turn()
@@ -57,8 +59,10 @@ async fn execute_stream_propagates_stable_cache_user_id_on_every_turn()
     Ok(())
 }
 
-/// Verify that `AgentConfig` supports setting `cache_user_id` and that it
-/// appears in the builder chain.
+/**
+验证 `AgentConfig` 支持设置 `cache_user_id`，
+并且该设置可在构建器链中使用。
+*/
 #[test]
 fn agent_config_accepts_cache_user_id() {
     let config =
@@ -66,20 +70,20 @@ fn agent_config_accepts_cache_user_id() {
     assert_eq!(config.get_cache_user_id(), Some("test-cache-user-001"));
 }
 
-/// Verify that `ChatRequest::user_id` defaults to `None` (safe default).
+/// 验证 `ChatRequest::user_id` 默认为 `None`（安全的默认值）。
 #[test]
 fn chat_request_user_id_defaults_none() {
     let request = ChatRequest::new(vec![]);
     assert_eq!(request.user_id, None);
 }
 
-/// Verify that `ChatRequest` accepts `cache_hints`.
+/// 验证 `ChatRequest` 接受 `cache_hints`。
 #[test]
 fn chat_request_accepts_cache_hints() {
     let mut request = ChatRequest::new(vec![]);
     assert!(request.cache_hints.is_none());
 
-    // Simulate what think.rs does: attach cache hints.
+    // 模拟 think.rs 的行为：附加缓存提示。
     let hints = echo_core::llm::cache::CacheHints {
         breakpoints: vec![],
         stable_prefix_hash: Some("deadbeef".to_string()),
@@ -96,16 +100,16 @@ fn chat_request_accepts_cache_hints() {
     );
 }
 
-/// Verify `TokenUsageTracker` cumulative cache hit rate calculation.
+/// 验证 `TokenUsageTracker` 的累计缓存命中率计算。
 #[test]
 fn token_tracker_cumulative_cache_hit_rate() {
     use echo_core::tokenizer::TokenUsageTracker;
     let tracker = TokenUsageTracker::new("test-model");
 
-    // No requests → no rate
+    // 没有请求 → 没有命中率
     assert!(tracker.cumulative_cache_hit_rate().is_none());
 
-    // 1st request via record_usage: 100 prompt, 50 cached
+    // 通过 record_usage 记录第 1 次请求：100 个 prompt token，50 个命中缓存
     tracker.record_usage(&echo_core::llm::types::Usage {
         prompt_tokens: Some(100),
         completion_tokens: Some(50),
@@ -115,7 +119,7 @@ fn token_tracker_cumulative_cache_hit_rate() {
         ..Default::default()
     });
 
-    // 2nd request via record_usage: 200 prompt, 180 cached
+    // 通过 record_usage 记录第 2 次请求：200 个 prompt token，180 个命中缓存
     tracker.record_usage(&echo_core::llm::types::Usage {
         prompt_tokens: Some(200),
         completion_tokens: Some(100),
@@ -125,7 +129,7 @@ fn token_tracker_cumulative_cache_hit_rate() {
         ..Default::default()
     });
 
-    // Cumulative: (50+180) / ((100)+(200)+(50+180)) = 230/530 ≈ 43.4%
+    // 累计：(50+180) / ((100)+(200)+(50+180)) = 230/530 ≈ 43.4%
     let Some(rate) = tracker.cumulative_cache_hit_rate() else {
         return;
     };
@@ -136,7 +140,7 @@ fn token_tracker_cumulative_cache_hit_rate() {
     );
 }
 
-/// Verify that the `stable_prefix_hash` is deterministic (same input → same output).
+/// 验证 `stable_prefix_hash` 是确定性的（相同输入 → 相同输出）。
 #[test]
 fn stable_prefix_hash_is_deterministic() {
     use echo_core::llm::Message;
@@ -150,7 +154,7 @@ fn stable_prefix_hash_is_deterministic() {
     assert_eq!(h1, h2);
 }
 
-/// Verify that `AnthropicCachePlan` produces sensible breakpoints.
+/// 验证 `AnthropicCachePlan` 生成合理的缓存断点。
 #[test]
 fn anthropic_cache_plan_is_sensible() {
     use echo_core::llm::Message;
@@ -167,12 +171,12 @@ fn anthropic_cache_plan_is_sensible() {
     let layout = PromptCacheLayout::from_messages(&msgs, &[]);
     let plan = AnthropicCachePlan::from_layout(&layout);
 
-    // With system + 4 history messages, we should get:
-    // - SystemLastBlock (system present)
-    // - HistoryIndex(~75%) (history >= 4)
-    // - HistoryLastStable (history non-empty)
+    /* 有 system + 4 条历史消息时，应得到：
+    - SystemLastBlock（存在 system）
+    - HistoryIndex(~75%)（历史 >= 4）
+    - HistoryLastStable（历史非空） */
     assert!(plan.has_system_breakpoint);
-    assert!(!plan.has_tool_breakpoint); // no tools
+    assert!(!plan.has_tool_breakpoint); // 没有工具
     assert!(!plan.breakpoints.is_empty());
     assert!(plan.breakpoints.len() <= 4);
 }

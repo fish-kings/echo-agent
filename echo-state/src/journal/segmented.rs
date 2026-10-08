@@ -1,18 +1,17 @@
-//! Directory-backed segmented event journal.
-//!
-//! Kafka's log model uses immutable segments while offsets remain global. This
-//! implementation applies that storage shape to the framework journal: every
-//! segment name is its first global sequence, closed segments are immutable,
-//! and only the active segment may repair a crash-torn batch frame. A batch is
-//! always contained by one segment; an oversized batch owns a segment. LangGraph-style
-//! checkpoints remain derived state above this authoritative event history;
-//! callers choose retention and pin policy by passing a keep cursor to prune.
-//! Each batch may select `Flush` or `SyncData` without opening a second
-//! authority; event classification remains a caller policy.
-//! Batch frames and the retained-floor marker preserve one Journal generation
-//! identity, including after the segment containing sequence one is removed.
-//! Product stream identities, retention counts, and UI projections do not live
-//! in this module.
+/*!
+基于目录的分段事件日志（segmented event journal）。
+
+Kafka 的日志模型使用不可变分段，同时保持全局偏移量。本实现将这种存储形态
+应用到框架日志上：每个分段的文件名就是其首个全局序号，已关闭分段不可变，
+只有活动分段可以修复因崩溃而撕裂的批次帧。一个批次总是完整包含在一个分段内；
+超大批次独占一个分段。LangGraph 风格的检查点仍是位于这份权威事件历史之上的派生状态；
+调用方通过向 prune 传入保留游标来选择保留与钉住（pin）策略。
+每个批次可以选择 `Flush` 或 `SyncData`，而不会开启第二个权威来源；
+事件分类仍由调用方策略决定。
+批次帧与保留下限标记（retained-floor marker）保持同一个 Journal 代际身份，
+即使包含序号 1 的分段已被删除也是如此。
+产品流身份、保留计数与 UI 投影不在本模块中实现。
+*/
 
 use super::{
     BatchIdentity, EventJournal, JournalAppendError, JournalAppendReceipt, JournalAppendResult,
@@ -39,43 +38,65 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// 分段文件的扩展名后缀。
 const SEGMENT_SUFFIX: &str = ".jsonl";
+/// 分段文件名中序号部分的固定位数（零填充）。
 const SEGMENT_DIGITS: usize = 20;
+/// 独占文件租约使用的权威名称。
 const LEASE_AUTHORITY: &str = "segmented-event-journal";
+/// 保留下限标记文件名。
 const RETENTION_MARKER: &str = ".retained-floor.json";
+/// 保留下限标记的 schema 版本号。
 const RETENTION_SCHEMA_VERSION: u16 = 2;
 
+/// 将消息包装为日志错误。
 fn journal_error(message: impl Into<String>) -> ReactError {
     ReactError::Other(message.into())
 }
 
+/// 将 I/O 错误连同上下文包装为日志错误。
 fn io_error(context: &str, error: std::io::Error) -> ReactError {
     journal_error(format!("{context}: {error}"))
 }
 
+/// 用于计算保留下限标记摘要的完整性输入（不含摘要本身）。
 #[derive(Debug, Serialize)]
 struct RetentionIntegrity<'a> {
+    /// 标记 schema 版本。
     schema_version: u16,
+    /// 日志代际身份。
     journal_identity: &'a JournalIdentity,
+    /// 已保留的最小序号下限。
     retained_floor: u64,
+    /// 是否仍有待清理的旧分段。
     cleanup_pending: bool,
 }
 
+/// 持久化到磁盘的保留下限标记。
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RetentionMarker {
+    /// 标记 schema 版本。
     schema_version: u16,
+    /// 日志代际身份。
     journal_identity: JournalIdentity,
+    /// 已保留的最小序号下限。
     retained_floor: u64,
+    /// 是否仍有待清理的旧分段。
     cleanup_pending: bool,
+    /// 对上述字段计算得到的 SHA-256 完整性摘要（小写十六进制）。
     digest: String,
 }
 
+/// 保留下限标记写入结果状态。
 enum MarkerWriteStatus {
+    /// 写入并持久化已确认。
     Confirmed,
+    /// 写入降级：内容可能已写入，但持久化确认失败。
     Degraded { error: String },
 }
 
+/// 对值做规范化 JSON 编码后计算 SHA-256，返回小写十六进制摘要。
 fn integrity_digest<T: Serialize>(value: &T) -> Result<String> {
     let bytes = canonical_json_bytes(value).map_err(|error| {
         journal_error(format!("failed to encode journal integrity input: {error}"))
@@ -89,6 +110,7 @@ fn integrity_digest<T: Serialize>(value: &T) -> Result<String> {
     Ok(encoded)
 }
 
+/// 将 0..=15 的半字节转换为小写十六进制字符。
 fn lower_hex_digit(nibble: u8) -> char {
     match nibble {
         0..=9 => char::from(b'0'.saturating_add(nibble)),
@@ -96,6 +118,7 @@ fn lower_hex_digit(nibble: u8) -> char {
     }
 }
 
+/// 计算保留下限标记的完整性摘要。
 fn retention_digest(
     schema_version: u16,
     journal_identity: &JournalIdentity,
@@ -110,6 +133,7 @@ fn retention_digest(
     })
 }
 
+/// 加载并校验保留下限标记；标记不存在时返回 `None`。
 fn load_retention_marker(directory: &Path, context: &str) -> Result<Option<RetentionMarker>> {
     let path = directory.join(RETENTION_MARKER);
     let bytes = match read_existing(&path) {
@@ -148,14 +172,17 @@ fn load_retention_marker(directory: &Path, context: &str) -> Result<Option<Reten
     Ok(Some(marker))
 }
 
+/// 根据起始序号生成分段文件名。
 fn segment_name(start_sequence: u64) -> String {
     format!("{start_sequence:020}{SEGMENT_SUFFIX}")
 }
 
+/// 根据起始序号生成分段文件完整路径。
 fn segment_path(directory: &Path, start_sequence: u64) -> PathBuf {
     directory.join(segment_name(start_sequence))
 }
 
+/// 解析分段文件名，返回其起始序号；格式不合法时返回 `None`。
 fn parse_segment_name(name: &str) -> Option<u64> {
     let digits = name.strip_suffix(SEGMENT_SUFFIX)?;
     if digits.len() != SEGMENT_DIGITS || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -164,6 +191,7 @@ fn parse_segment_name(name: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// 列出目录中所有分段文件，按起始序号升序排列。
 fn list_segment_paths(directory: &Path, context: &str) -> Result<Vec<(u64, PathBuf)>> {
     let mut segments = Vec::new();
     let entries = std::fs::read_dir(directory).map_err(|error| io_error(context, error))?;
@@ -190,41 +218,64 @@ fn list_segment_paths(directory: &Path, context: &str) -> Result<Vec<(u64, PathB
     Ok(segments)
 }
 
+/// 已扫描分段的内存状态。
 #[derive(Debug, Clone)]
 struct SegmentState {
+    /// 分段文件路径。
     path: PathBuf,
+    /// 分段内批次帧所属的日志代际身份（空分段为 `None`）。
     journal_identity: Option<JournalIdentity>,
+    /// 分段的首个全局序号。
     start_sequence: u64,
+    /// 分段的最后一个全局序号（空分段时为 `start_sequence - 1`）。
     end_sequence: u64,
+    /// 分段中有效数据的字节数。
     bytes: u64,
+    /// 每条记录所在批次帧的字节偏移。
     record_offsets: Vec<u64>,
+    /// 分段内批次的索引。
     batches: Vec<SegmentBatchIndex>,
+    /// 活动分段的文件身份守卫；已关闭分段为 `None`。
     active_file_guard: Option<Arc<ExistingRegularFileGuard>>,
 }
 
+/// 单个分段内的批次索引项。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SegmentBatchIndex {
+    /// 批次 ID。
     batch_id: String,
+    /// 批次身份。
     identity: BatchIdentity,
+    /// 批次帧在分段内的字节偏移。
     frame_offset: u64,
 }
 
+/// 跨分段的批次索引项。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SegmentedBatchIndex {
+    /// 批次身份。
     identity: BatchIdentity,
+    /// 批次所在分段的路径。
     path: PathBuf,
+    /// 批次帧在分段内的字节偏移。
     frame_offset: u64,
 }
 
+/// 未经解码的不透明分段状态（仅基于物理元数据）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OpaqueSegmentState {
+    /// 分段文件路径。
     path: PathBuf,
+    /// 分段的首个全局序号。
     start_sequence: u64,
+    /// 分段的最后一个全局序号（未知时为 `None`）。
     end_sequence: Option<u64>,
+    /// 观测到的分段字节数。
     bytes: u64,
 }
 
 impl OpaqueSegmentState {
+    /// 转换为物理分段元数据。
     fn metadata(&self) -> JournalPhysicalSegmentMetadata {
         JournalPhysicalSegmentMetadata {
             path: self.path.clone(),
@@ -236,10 +287,12 @@ impl OpaqueSegmentState {
 }
 
 impl SegmentState {
+    /// 分段是否包含记录。
     fn has_records(&self) -> bool {
         !self.record_offsets.is_empty()
     }
 
+    /// 转换为分段元数据，`active` 表示是否为活动分段。
     fn metadata(&self, active: bool) -> JournalSegmentMetadata {
         JournalSegmentMetadata {
             path: self.path.clone(),
@@ -251,6 +304,11 @@ impl SegmentState {
     }
 }
 
+/**
+扫描并校验一个分段文件，重建其内存状态。
+
+活动分段可截断崩溃导致的不完整尾部；已关闭分段若存在撕裂尾部或为空则报错。
+*/
 fn scan_segment<E: JournalEvent>(
     path: &Path,
     start_sequence: u64,
@@ -368,6 +426,7 @@ fn scan_segment<E: JournalEvent>(
     })
 }
 
+/// 确保日志根目录存在且为目录。
 fn ensure_journal_directory(directory: &Path, context: &str) -> Result<()> {
     create_dir_all_durable(directory).map_err(|error| io_error(context, error))?;
     let metadata =
@@ -380,6 +439,7 @@ fn ensure_journal_directory(directory: &Path, context: &str) -> Result<()> {
     Ok(())
 }
 
+/// 创建一个新的空分段文件并持久化目录项。
 fn create_segment(
     directory: &Path,
     directory_guard: &ExistingDirectoryGuard,
@@ -427,6 +487,11 @@ fn create_segment(
     })
 }
 
+/**
+扫描整个日志目录，校验保留下限标记与分段连续性，重建日志状态。
+
+目录为空且 `create_if_empty` 为真时会创建首个分段。
+*/
 fn scan_directory<E: JournalEvent>(
     directory: &Path,
     directory_guard: &ExistingDirectoryGuard,
@@ -578,101 +643,128 @@ fn scan_directory<E: JournalEvent>(
     })
 }
 
-/// Stable metadata for one retained journal segment.
+/// 单个已保留日志分段的稳定元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalSegmentMetadata {
-    /// Canonical segment path.
+    /// 规范化的分段路径。
     pub path: PathBuf,
-    /// First global sequence encoded by the file name.
+    /// 由文件名编码的首个全局序号。
     pub start_sequence: u64,
-    /// Last global sequence in the segment. An empty active segment reports
-    /// `start_sequence - 1`.
+    /**
+    分段中的最后一个全局序号。空的活动分段报告
+    `start_sequence - 1`。
+    */
     pub end_sequence: u64,
-    /// Valid bytes currently stored in the segment.
+    /// 分段中当前存储的有效字节数。
     pub bytes: u64,
-    /// Whether this is the only mutable segment.
+    /// 是否为唯一可变的（活动）分段。
     pub active: bool,
 }
 
-/// Observed filesystem metadata for one physically removed opaque segment.
+/// 一个已被物理删除的不透明分段的观测文件系统元数据。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalPhysicalSegmentMetadata {
-    /// Removed path.
+    /// 被删除的路径。
     pub path: PathBuf,
-    /// Start sequence encoded by the validated file name.
+    /// 由已校验文件名编码的起始序号。
     pub start_sequence: u64,
-    /// Exact end only when this process previously validated the segment.
+    /// 仅当本进程此前校验过该分段时才有精确的结束序号。
     pub end_sequence: Option<u64>,
-    /// File size observed before physical deletion.
+    /// 物理删除前观测到的文件大小。
     pub observed_bytes: u64,
 }
 
-/// Durable logical retention state for a segmented journal.
+/// 分段日志的持久化逻辑保留状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JournalRetentionMetadata {
-    /// Earliest sequence callers may request from replay.
+    /// 调用方可以请求回放的最早序号。
     pub retained_floor: u64,
-    /// Physical prefix deletion or its directory barrier still needs retry.
+    /// 物理前缀删除或其目录屏障仍需重试。
     pub cleanup_pending: bool,
 }
 
-/// Outcome of physical cleanup after a logical prune commits.
+/// 逻辑修剪提交后的物理清理结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalPhysicalCleanupStatus {
-    /// Every logically pruned file was removed and the directory was synced.
+    /// 所有被逻辑修剪的文件均已删除，且目录已同步。
     Confirmed,
-    /// The logical floor committed, but physical cleanup remains retryable.
-    Degraded { error: String },
+    /// 逻辑下限已提交，但物理清理仍可重试。
+    Degraded {
+        /// 物理清理失败的错误信息。
+        error: String,
+    },
 }
 
-/// Durability of the logical retained-floor marker.
+/// 逻辑保留下限标记的持久性状态。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalPruneCommitStatus {
-    /// The logical retained floor and its parent-directory barrier completed.
+    /// 逻辑保留下限及其父目录屏障均已完成。
     Confirmed,
-    /// The complete marker is visible, but its directory barrier needs retry.
-    Degraded { error: String },
+    /// 完整标记已可见，但其目录屏障需要重试。
+    Degraded {
+        /// 目录屏障失败的错误信息。
+        error: String,
+    },
 }
 
-/// Typed receipt for whole-segment pruning.
+/// 整段修剪的类型化回执。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalPruneReceipt {
-    /// Durable earliest logically retained sequence.
+    /// 持久化的最早逻辑保留序号。
     pub retained_floor: u64,
-    /// Durability of the logical retained-floor transition.
+    /// 逻辑保留下限变更的持久性状态。
     pub commit: JournalPruneCommitStatus,
-    /// Segments newly excluded from logical replay by this call.
+    /// 本次调用新排除出逻辑回放的分段。
     pub logically_pruned: Vec<JournalSegmentMetadata>,
-    /// Segment files physically removed by this call.
+    /// 本次调用物理删除的分段文件。
     pub physically_removed: Vec<JournalPhysicalSegmentMetadata>,
-    /// Whether physical deletion and its directory barrier completed.
+    /// 物理删除及其目录屏障是否已完成。
     pub cleanup: JournalPhysicalCleanupStatus,
 }
 
+/// 分段日志的可变内部状态（受互斥锁保护）。
 #[derive(Debug)]
 struct SegmentedJournalState {
+    /// 日志代际身份。
     journal_identity: JournalIdentity,
+    /// 下一次追加将使用的全局序号。
     next_sequence: u64,
+    /// 逻辑上保留的分段，最后一个为活动分段。
     segments: Vec<SegmentState>,
+    /// 已逻辑修剪但尚未物理删除的分段。
     obsolete_segments: Vec<OpaqueSegmentState>,
+    /// 当前保留下限。
     retained_floor: u64,
+    /// 是否有待完成的物理清理。
     cleanup_pending: bool,
+    /// 保留标记的目录屏障是否待重试。
     marker_barrier_pending: bool,
+    /// 批次 ID 到批次索引的映射。
     batches: HashMap<String, SegmentedBatchIndex>,
+    /// 状态中毒原因；一旦设置，后续写操作将被拒绝。
     poison: Option<String>,
 }
 
+/// 同一目录下所有句柄共享的规范化日志权威。
 #[derive(Debug)]
 struct SharedSegmentedJournalState {
+    /// 日志代际身份。
     journal_identity: JournalIdentity,
+    /// 事件类型，用于防止以不同类型重复打开。
     event_type: TypeId,
+    /// 活动分段滚动的字节阈值。
     max_active_segment_bytes: u64,
+    /// 默认文件持久性策略。
     durability: FileDurability,
+    /// 受锁保护的可变状态。
     state: Mutex<SegmentedJournalState>,
+    /// 日志目录的身份守卫。
     directory_guard: ExistingDirectoryGuard,
+    /// 跨进程独占文件租约。
     _lease: ExclusiveFileLease,
 }
 
+/// 比较两组分段的布局是否一致（忽略文件守卫）。
 fn segment_layout_matches(left: &[SegmentState], right: &[SegmentState]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -686,6 +778,7 @@ fn segment_layout_matches(left: &[SegmentState], right: &[SegmentState]) -> bool
         })
 }
 
+/// 比较两组不透明分段的布局是否一致。
 fn opaque_layout_matches(left: &[OpaqueSegmentState], right: &[OpaqueSegmentState]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(left, right)| {
@@ -695,6 +788,7 @@ fn opaque_layout_matches(left: &[OpaqueSegmentState], right: &[OpaqueSegmentStat
         })
 }
 
+/// 校验活动分段的文件身份与长度未被外部改动。
 fn verify_active_segment_identity(state: &SegmentedJournalState, context: &str) -> Result<()> {
     let active = state
         .segments
@@ -716,6 +810,7 @@ fn verify_active_segment_identity(state: &SegmentedJournalState, context: &str) 
     Ok(())
 }
 
+/// 修复前校验活动分段：允许增长，但不允许收缩。
 fn verify_live_active_segment_for_repair(
     state: &SegmentedJournalState,
     context: &str,
@@ -740,49 +835,68 @@ fn verify_live_active_segment_for_repair(
     Ok(())
 }
 
+/// 进程级分段日志权威注册表。
 fn segmented_registry() -> &'static Mutex<WeakRegistry<SharedSegmentedJournalState>> {
+    /// 分段日志共享状态的全局弱引用注册表。
     static REGISTRY: OnceLock<Mutex<WeakRegistry<SharedSegmentedJournalState>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(WeakRegistry::new()))
 }
 
-/// Directory-backed segmented [`EventJournal`].
-///
-/// Segment files are named with their 20-digit global start sequence. Appends
-/// roll before the next record once the active file reaches
-/// `max_active_segment_bytes`; a single indivisible record may exceed the
-/// threshold. Repeated opens in one process share one canonical authority.
-/// Another process fails to open while that authority is alive.
+/**
+基于目录的分段 [`EventJournal`]。
+
+分段文件以 20 位全局起始序号命名。一旦活动文件达到
+`max_active_segment_bytes`，追加会在下一条记录之前滚动到新分段；
+单个不可分割的记录可以超过该阈值。同一进程中的重复打开共享同一个规范权威。
+该权威存活期间，其它进程的打开会失败。
+*/
 #[derive(Debug)]
 pub struct SegmentedFileEventJournal<E> {
+    /// 日志目录路径。
     directory: PathBuf,
+    /// 日志代际身份。
     journal_identity: JournalIdentity,
+    /// 共享的日志权威；在 drop 时被取走。
     shared: Option<Arc<SharedSegmentedJournalState>>,
+    /// 测试用：注入的追加故障。
     #[cfg(test)]
     append_fault: Mutex<Option<AppendFault>>,
+    /// 测试用：记录每次追加所用的持久性策略。
     #[cfg(test)]
     append_durabilities: Mutex<Vec<FileDurability>>,
+    /// 测试用：注入同步失败。
     #[cfg(test)]
     sync_fault: Mutex<bool>,
+    /// 测试用：注入截断后的目录屏障失败。
     #[cfg(test)]
     truncate_barrier_fault: Mutex<bool>,
+    /// 测试用：注入对账读取失败。
     #[cfg(test)]
     reconcile_read_fault: Mutex<bool>,
+    /// 测试用：注入分段创建失败。
     #[cfg(test)]
     create_fault: Mutex<bool>,
+    /// 测试用：在写入指定字节数后注入标记写入失败。
     #[cfg(test)]
     marker_write_fault_after: Mutex<Option<usize>>,
+    /// 测试用：标记完整写入后注入失败。
     #[cfg(test)]
     marker_full_write_fault: Mutex<bool>,
+    /// 测试用：在删除指定数量文件后注入删除失败。
     #[cfg(test)]
     delete_fault_after: Mutex<Option<usize>>,
+    /// 测试用：注入目录同步失败。
     #[cfg(test)]
     directory_sync_fault: Mutex<bool>,
+    /// 测试用：目录同步尝试次数。
     #[cfg(test)]
     directory_sync_attempts: std::sync::atomic::AtomicUsize,
+    /// 事件类型标记。
     _event: PhantomData<fn() -> E>,
 }
 
 impl<E> Drop for SegmentedFileEventJournal<E> {
+    /// 释放共享权威在注册表中的句柄引用。
     fn drop(&mut self) {
         let Some(shared) = self.shared.take() else {
             return;
@@ -796,20 +910,30 @@ impl<E> Drop for SegmentedFileEventJournal<E> {
     }
 }
 
+/// 测试用的追加故障类型。
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 enum AppendFault {
+    /// 不写入任何字节并返回 InvalidData。
     ZeroWriteInvalidData,
+    /// 完整写入后返回错误。
     FullWrite,
+    /// 完整写入后返回 InvalidData。
     FullWriteInvalidData,
+    /// 仅写入部分字节后返回错误。
     PartialWrite { bytes: usize },
+    /// 仅写入部分字节后返回 InvalidData。
     PartialWriteInvalidData { bytes: usize },
+    /// 缺少最后一个字节并返回 InvalidData。
     MissingLastByteInvalidData,
+    /// 写入无法识别的后缀。
     UnrecognizedSuffix,
+    /// 写入无法识别的后缀并返回 InvalidData。
     UnrecognizedSuffixInvalidData,
 }
 
 impl<E: JournalEvent> SegmentedFileEventJournal<E> {
+    /// 基于共享权威构造句柄。
     fn from_shared(directory: PathBuf, shared: Arc<SharedSegmentedJournalState>) -> Self {
         Self {
             directory,
@@ -841,24 +965,27 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         }
     }
 
+    /// 获取共享权威；句柄正在关闭时报错。
     fn shared(&self) -> Result<&Arc<SharedSegmentedJournalState>> {
         self.shared
             .as_ref()
             .ok_or_else(|| journal_error("segmented journal handle is already closing"))
     }
 
+    /// 获取共享权威（返回 I/O 错误类型）。
     fn shared_io(&self) -> std::io::Result<&Arc<SharedSegmentedJournalState>> {
         self.shared
             .as_ref()
             .ok_or_else(|| std::io::Error::other("segmented journal handle is already closing"))
     }
 
+    /// 校验日志目录身份未被替换。
     fn verify_directory_identity(&self, context: &str) -> Result<()> {
         verify_existing_directory(&self.directory, &self.shared()?.directory_guard)
             .map_err(|error| io_error(context, error))
     }
 
-    /// Open or create a segmented journal directory.
+    /// 打开或创建分段日志目录。
     pub fn open(
         directory: impl Into<PathBuf>,
         max_active_segment_bytes: u64,
@@ -916,8 +1043,10 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
                 false,
             )?;
             if rescanned.next_sequence == 1 && rescanned.retained_floor == 1 {
-                // An empty journal has no persisted batch frame yet. Reuse the
-                // live authority identity until its first commit persists it.
+                /*
+                空日志尚无任何已持久化的批次帧。在首次提交将其持久化之前，
+                复用存活权威的身份。
+                */
                 rescanned.journal_identity = state.journal_identity.clone();
             }
             verify_existing_directory(&directory, &shared.directory_guard)
@@ -968,12 +1097,12 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         Ok(Self::from_shared(directory, shared))
     }
 
-    /// Canonical journal directory.
+    /// 规范化后的日志目录。
     pub fn directory(&self) -> &Path {
         &self.directory
     }
 
-    /// Snapshot retained segment ranges and sizes.
+    /// 获取已保留分段的范围与大小快照。
     pub fn segments(&self) -> Vec<JournalSegmentMetadata> {
         let Some(shared) = self.shared.as_ref() else {
             return Vec::new();
@@ -992,7 +1121,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
             .collect()
     }
 
-    /// Read the durable logical replay floor and pending cleanup state.
+    /// 读取持久化的逻辑回放下限以及待清理状态。
     pub fn retention_metadata(&self) -> JournalRetentionMetadata {
         let Some(shared) = self.shared.as_ref() else {
             return JournalRetentionMetadata {
@@ -1010,7 +1139,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         }
     }
 
-    /// Force a data durability barrier and finish pending prune cleanup.
+    /// 强制执行数据持久性屏障，并完成待处理的修剪清理。
     pub fn sync_data(&self) -> Result<()> {
         let shared = self.shared()?;
         let mut state = shared
@@ -1040,14 +1169,15 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         Ok(())
     }
 
-    /// Remove complete closed segments strictly before the caller's keep
-    /// cursor. The active segment is never removed and no retention policy is
-    /// inferred by the framework. The caller must first persist a checkpoint
-    /// through `retained_floor - 1` and preserve any product-level pins.
-    ///
-    /// Once the retained-floor marker commits, this returns a typed receipt
-    /// even if physical deletion is degraded. Retry this method or call
-    /// [`Self::sync_data`] to finish pending cleanup.
+    /**
+    删除严格位于调用方保留游标之前的完整已关闭分段。
+    活动分段永远不会被删除，框架也不会推断任何保留策略。
+    调用方必须先持久化覆盖到 `retained_floor - 1` 的检查点，
+    并保留任何产品层面的钉住（pin）。
+
+    一旦保留下限标记提交，即使物理删除降级，本方法也会返回类型化回执。
+    可重试本方法或调用 [`Self::sync_data`] 来完成待处理的清理。
+    */
     pub fn prune_closed_segments_before(
         &self,
         keep_from_sequence: u64,
@@ -1142,6 +1272,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         })
     }
 
+    /// 将低于保留下限的逻辑分段移入待删除的不透明分段列表，并移除其批次索引。
     fn move_logical_prefix_to_obsolete(state: &mut SegmentedJournalState) {
         let mut retained = Vec::with_capacity(state.segments.len());
         for segment in std::mem::take(&mut state.segments) {
@@ -1165,6 +1296,11 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         state.segments = retained;
     }
 
+    /**
+    原子写入保留下限标记。
+
+    写入报错时会重新读取标记进行对账：若磁盘上已是期望内容则返回降级状态，否则返回错误。
+    */
     fn write_retention_marker(
         &self,
         journal_identity: &JournalIdentity,
@@ -1245,6 +1381,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         }
     }
 
+    /// 重试保留标记的目录屏障，并据磁盘标记更新待清理状态。
     fn confirm_marker_barrier(&self, state: &mut SegmentedJournalState) -> Result<()> {
         self.sync_segment_directory()
             .map_err(|error| io_error("segmented journal retained-floor barrier retry", error))?;
@@ -1264,6 +1401,11 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         Ok(())
     }
 
+    /**
+    执行待处理的物理清理：删除已废弃分段、同步目录，并将标记更新为清理完成。
+
+    返回本次实际删除的分段以及清理状态。
+    */
     fn finish_pending_cleanup(
         &self,
         state: &mut SegmentedJournalState,
@@ -1321,6 +1463,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         (removed, JournalPhysicalCleanupStatus::Confirmed)
     }
 
+    /// 删除一个已被修剪的分段文件（测试构建下可注入失败）。
     fn remove_pruned_segment(&self, path: &Path) -> std::io::Result<()> {
         #[cfg(test)]
         {
@@ -1341,6 +1484,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         std::fs::remove_file(path)
     }
 
+    /// 同步日志目录，使目录项变更持久化（测试构建下可注入失败）。
     fn sync_segment_directory(&self) -> std::io::Result<()> {
         let shared = self.shared_io()?;
         #[cfg(test)]
@@ -1361,6 +1505,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         sync_existing_directory_matching(&self.directory, &shared.directory_guard)
     }
 
+    /// 持久化当前活动分段后，以下一个序号创建新的活动分段。
     fn roll_segment(&self, state: &mut SegmentedJournalState) -> Result<()> {
         let active = state
             .segments
@@ -1403,6 +1548,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         Ok(())
     }
 
+    /// 对活动分段执行 `SyncData` 持久性屏障（测试构建下可注入失败）。
     fn sync_active(&self, active: &SegmentState) -> std::io::Result<()> {
         #[cfg(test)]
         {
@@ -1429,6 +1575,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         )
     }
 
+    /// 将一行批次帧追加到活动分段（测试构建下可注入追加故障）。
     fn append_line(
         &self,
         active: &SegmentState,
@@ -1489,6 +1636,12 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         append_existing_matching(&active.path, file_guard, active.bytes, line, durability)
     }
 
+    /**
+    追加失败后对账活动分段的尾部。
+
+    若完整帧已写入则返回降级的持久性状态；若只写入了帧前缀则截断并返回 `None`；
+    若尾部无法识别则返回错误。
+    */
     fn reconcile_failed_append(
         &self,
         active: &SegmentState,
@@ -1544,6 +1697,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         )))
     }
 
+    /// 将活动分段截断回已知的有效长度，去除部分写入的后缀。
     fn truncate_partial_suffix(
         &self,
         active: &SegmentState,
@@ -1580,6 +1734,11 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         )
     }
 
+    /**
+    根据索引读取并校验一个已提交批次，构造 `AlreadyCommitted` 回执。
+
+    `confirm_durability` 为真时会对活动分段执行持久性确认。
+    */
     fn read_indexed_batch(
         &self,
         state: &SegmentedJournalState,
@@ -1639,12 +1798,13 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
             commit: JournalBatchCommitStatus::AlreadyCommitted,
         })
     }
-    /// Append one atomic batch using an event-specific durability policy.
-    ///
-    /// This uses the same serialized sequence authority as [`EventJournal::append`].
-    /// A full write whose requested barrier fails returns a degraded committed
-    /// receipt and must not be retried. Partial writes are truncated using the
-    /// requested durability before the sequence can be reused.
+    /**
+    使用事件特定的持久性策略追加一个原子批次。
+
+    与 [`EventJournal::append`] 使用同一个串行化的序号权威。
+    若完整写入后请求的屏障失败，将返回降级的已提交回执，且不得重试。
+    部分写入会在序号被复用前按请求的持久性策略截断。
+    */
     pub fn append_batch_with_durability(
         &self,
         batch: PreparedJournalBatch<E>,
@@ -1826,8 +1986,7 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
         })
     }
 
-    /// Append one event through the atomic batch authority with an explicit
-    /// durability policy.
+    /// 通过原子批次权威、以显式持久性策略追加单个事件。
     pub fn append_with_durability(
         &self,
         event: E,
@@ -1853,11 +2012,14 @@ impl<E: JournalEvent> SegmentedFileEventJournal<E> {
     }
 }
 
+/// 分段日志对 [`EventJournal`] 的实现。
 impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
+    /// 返回日志代际身份。
     fn journal_identity(&self) -> &JournalIdentity {
         &self.journal_identity
     }
 
+    /// 使用打开时配置的默认持久性策略追加批次。
     fn append_batch(&self, batch: PreparedJournalBatch<E>) -> JournalBatchAppendResult<E> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Err(JournalBatchAppendError::prepared_mutation(
@@ -1877,6 +2039,7 @@ impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
         self.append_batch_with_durability(batch, durability)
     }
 
+    /// 按批次 ID 查询是否已提交；负载冲突时会使句柄中毒。
     fn lookup_batch(&self, batch: &PreparedJournalBatch<E>) -> Result<JournalBatchLookup<E>> {
         if let Err(error) = batch.validate_payload_integrity() {
             return Ok(JournalBatchLookup::Conflict {
@@ -1918,6 +2081,7 @@ impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
         }
     }
 
+    /// 返回下一次追加将使用的序号；句柄关闭后返回 1。
     fn next_sequence(&self) -> u64 {
         self.shared
             .as_ref()
@@ -1931,10 +2095,12 @@ impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
             .unwrap_or(1)
     }
 
+    /// 返回最后一个已提交的序号。
     fn last_sequence(&self) -> u64 {
         self.next_sequence().saturating_sub(1)
     }
 
+    /// 返回当前逻辑保留下限；句柄关闭后返回 1。
     fn retained_floor(&self) -> u64 {
         self.shared
             .as_ref()
@@ -1948,6 +2114,11 @@ impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
             .unwrap_or(1)
     }
 
+    /**
+    回放 `after_sequence` 之后最多 `limit` 条记录。
+
+    请求序号低于保留下限时报错；回放过程中会校验批次序号、索引身份与分段元数据的一致性。
+    */
     fn replay_after(&self, after_sequence: u64, limit: usize) -> Result<Vec<JournalRecord<E>>> {
         let context = format!("segmented journal replay {}", self.directory.display());
         let shared = self.shared()?;
@@ -2071,6 +2242,7 @@ impl<E: JournalEvent> EventJournal<E> for SegmentedFileEventJournal<E> {
     }
 }
 
+/// 分段日志的单元测试。
 #[cfg(test)]
 mod tests {
     use super::super::{
@@ -2080,6 +2252,7 @@ mod tests {
     use super::*;
     use std::sync::Barrier;
 
+    /// 获取测试句柄的共享权威。
     fn shared<E>(journal: &SegmentedFileEventJournal<E>) -> &Arc<SharedSegmentedJournalState> {
         journal
             .shared
@@ -2087,22 +2260,33 @@ mod tests {
             .expect("live segmented journal handle")
     }
 
+    /// 用给定事件构造一个预备批次。
     fn batch<E: JournalEvent>(events: Vec<E>) -> TestResult<PreparedJournalBatch<E>> {
         PreparedJournalBatch::new(events).test_context("prepare test batch")
     }
 
+    /// 批次帧篡改方式，用于构造损坏帧的测试。
     #[derive(Clone, Copy)]
     enum FrameTamper {
+        /// 篡改 schema 版本。
         Schema,
+        /// 篡改日志代际身份。
         JournalIdentity,
+        /// 篡改批次 ID。
         BatchId,
+        /// 篡改首个序号。
         FirstSequence,
+        /// 篡改记录中的批次 ID。
         RecordBatchId,
+        /// 篡改记录序号。
         RecordSequence,
+        /// 篡改记录负载。
         Payload,
+        /// 篡改负载摘要。
         Digest,
     }
 
+    /// 生成一个按指定方式篡改过的批次帧字节。
     fn tampered_frame(tamper: FrameTamper) -> TestResult<Vec<u8>> {
         let prepared = prepare_journal_frame(
             &batch(vec!["original".to_string()])?,
@@ -2174,6 +2358,7 @@ mod tests {
         Ok(bytes)
     }
 
+    /// 创建一个唯一的临时测试根目录。
     fn temp_root(label: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
             "echo-segmented-journal-{label}-{}-{}",
@@ -2184,6 +2369,7 @@ mod tests {
         root
     }
 
+    /// 以字符串事件类型打开分段日志。
     fn open_strings(
         root: &Path,
         max_bytes: u64,
@@ -2193,6 +2379,7 @@ mod tests {
             .expect("open segmented journal")
     }
 
+    /// 读取分段首条 JSON 行，按回调修改后写回。
     fn mutate_json_line(
         path: &Path,
         mutate: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
@@ -2210,19 +2397,24 @@ mod tests {
         std::fs::write(path, encoded).expect("write mutated segment");
     }
 
+    /// 测试用的简单归约器，按顺序保存所有事件。
     #[derive(Default, Debug, Serialize, Deserialize)]
     struct RetainedReducer {
+        /// 已归约的事件列表。
         events: Vec<String>,
     }
 
     impl EventReducer for RetainedReducer {
+        /// 归约的事件类型为字符串。
         type Event = String;
 
+        /// 将事件追加到列表。
         fn apply(&mut self, event: &String) {
             self.events.push(event.clone());
         }
     }
 
+    /// 写入一个检查点夹具。
     fn write_checkpoint(
         path: &Path,
         journal_identity: &JournalIdentity,
@@ -2237,6 +2429,7 @@ mod tests {
             .expect("write checkpoint fixture");
     }
 
+    /// 验证分段滚动后全局游标保持唯一连续。
     #[test]
     fn rollover_preserves_one_global_cursor() {
         let root = temp_root("rollover");
@@ -2265,6 +2458,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证批次不跨分段，且超大批次独占一个分段。
     #[test]
     fn batch_never_crosses_segments_and_oversized_batch_is_isolated() -> TestResult {
         let root = temp_root("batch-rollover");
@@ -2317,6 +2511,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证批次完整性摘要为固定宽度的小写十六进制。
     #[test]
     fn batch_integrity_digest_is_fixed_width_lowercase_hex() -> TestResult {
         let prepared = prepare_journal_frame(
@@ -2340,6 +2535,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证全新的嵌套目录使用持久化方式创建。
     #[test]
     fn fresh_nested_directory_uses_durable_creation() {
         let root = temp_root("fresh-parent-sync");
@@ -2353,8 +2549,10 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证并发追加的批次序号连续且互不交错。
     #[test]
     fn concurrent_segmented_batches_are_contiguous_and_never_interleave() -> TestResult {
+        /// 并发追加的批次数量。
         const APPENDS: usize = 16;
         let root = temp_root("concurrent");
         let journal = Arc::new(open_strings(&root, 4096, FileDurability::Flush));
@@ -2409,6 +2607,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证活动分段撕裂的批次尾部被修复，且不会暴露部分记录。
     #[test]
     fn active_torn_batch_tail_is_repaired_without_partial_visibility() -> TestResult {
         let root = temp_root("active-torn");
@@ -2465,6 +2664,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已关闭分段存在撕裂尾部时打开失败。
     #[test]
     fn closed_torn_tail_fails_open() {
         let root = temp_root("closed-torn");
@@ -2492,6 +2692,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证已关闭分段损坏时打开失败。
     #[test]
     fn closed_segment_corruption_fails_open() {
         let root = temp_root("closed-corrupt");
@@ -2511,6 +2712,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证分段批次帧拒绝任何完整性字段的篡改。
     #[test]
     fn segmented_batch_frame_rejects_every_integrity_field_tamper() -> TestResult {
         for tamper in [
@@ -2541,6 +2743,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证冷扫描拒绝重复的完整批次帧。
     #[test]
     fn segmented_cold_scan_rejects_a_duplicated_complete_batch_frame() -> TestResult {
         let root = temp_root("duplicate-frame");
@@ -2573,6 +2776,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证冷扫描拒绝混合不同代际的分段。
     #[test]
     fn segmented_cold_scan_rejects_mixed_generation_segments() -> TestResult {
         let root_a = temp_root("mixed-generation-a");
@@ -2623,6 +2827,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证分段序号存在缺口时打开失败。
     #[test]
     fn segment_gap_fails_open() {
         let root = temp_root("segment-gap");
@@ -2642,6 +2847,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证摘要不匹配时打开与回放均失败。
     #[test]
     fn digest_mismatch_fails_open_and_replay() {
         let root = temp_root("digest");
@@ -2666,6 +2872,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证记录中出现未知字段时以关闭方式失败。
     #[test]
     fn unknown_record_field_fails_closed() {
         let root = temp_root("unknown-field");
@@ -2682,6 +2889,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证按事件指定持久性与显式屏障均能成功。
     #[test]
     fn per_event_durability_and_explicit_barrier_succeed() {
         for durability in [FileDurability::Flush, FileDurability::SyncData] {
@@ -2698,6 +2906,7 @@ mod tests {
         }
     }
 
+    /// 验证同一句柄在跨越滚动时交替使用不同的事件持久性。
     #[test]
     fn one_handle_alternates_event_durability_across_rollovers() {
         let root = temp_root("mixed-durability");
@@ -2730,6 +2939,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证按事件完整写入的降级回执占用序号且不重试。
     #[test]
     fn per_event_full_write_degraded_receipt_owns_sequence_without_retry() {
         let root = temp_root("mixed-full-write");
@@ -2758,6 +2968,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证按事件部分写入会以请求的持久性策略修复。
     #[test]
     fn per_event_partial_write_repairs_with_requested_durability() {
         let root = temp_root("mixed-partial-write");
@@ -2792,6 +3003,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证在同步屏障完成前不会打开下一个分段。
     #[test]
     fn rollover_does_not_open_next_segment_before_sync_barrier() {
         let root = temp_root("rollover-barrier");
@@ -2820,6 +3032,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证结果不明确的分段创建会在重试时被接管。
     #[test]
     fn ambiguous_segment_creation_is_adopted_on_retry() {
         let root = temp_root("create-ambiguity");
@@ -2860,6 +3073,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证完整写入报错时返回降级回执。
     #[test]
     fn full_write_error_returns_degraded_receipt() {
         let root = temp_root("full-write");
@@ -2881,6 +3095,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证部分写入在序号复用前被修复。
     #[test]
     fn partial_write_is_repaired_before_sequence_reuse() {
         let root = temp_root("partial-write");
@@ -2900,6 +3115,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证无法识别的追加后缀会使句柄中毒直至重新打开。
     #[test]
     fn unrecognized_append_suffix_poisons_until_reopen() {
         let root = temp_root("poison");
@@ -2933,6 +3149,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证分段批次故障矩阵具有明确的重试契约。
     #[test]
     fn segmented_batch_fault_matrix_has_explicit_retry_contract() -> TestResult {
         let full_root = temp_root("batch-full");
@@ -3175,6 +3392,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证有界回放可以跨越多个分段。
     #[test]
     fn bounded_replay_crosses_segments() {
         let root = temp_root("bounded-replay");
@@ -3194,6 +3412,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证修剪只删除完整的已关闭分段。
     #[test]
     fn prune_removes_only_whole_closed_segments() {
         let root = temp_root("prune");
@@ -3252,6 +3471,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证 limit 为 0 时仍会拒绝低于保留下限的游标。
     #[test]
     fn zero_limit_still_rejects_a_cursor_below_retained_floor() {
         let root = temp_root("zero-limit-floor");
@@ -3271,6 +3491,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证缺少前缀且没有标记时打开失败。
     #[test]
     fn missing_prefix_without_marker_fails_open() {
         let root = temp_root("missing-prefix-marker");
@@ -3290,6 +3511,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证保留下限标记损坏时打开失败。
     #[test]
     fn corrupt_retained_floor_marker_fails_open() {
         let root = temp_root("corrupt-floor-marker");
@@ -3314,6 +3536,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证篡改保留下限标记的身份时打开失败。
     #[test]
     fn retained_floor_marker_identity_tamper_fails_open() -> TestResult {
         let root = temp_root("retention-identity-tamper");
@@ -3343,6 +3566,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证初始标记写入失败时不会提交逻辑修剪。
     #[test]
     fn initial_marker_write_failure_does_not_commit_logical_prune() {
         let root = temp_root("marker-first-fault");
@@ -3368,6 +3592,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证部分删除为降级状态、已同步，且重新打开后可重试。
     #[test]
     fn partial_delete_is_degraded_synced_and_retryable_after_reopen() {
         use std::sync::atomic::Ordering;
@@ -3435,6 +3660,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证目录同步失败会保持待处理状态，直到显式屏障完成。
     #[test]
     fn directory_sync_failure_stays_pending_until_explicit_barrier() {
         let root = temp_root("prune-dir-sync");
@@ -3466,6 +3692,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证最终标记失败返回降级回执，并在重新打开后保持。
     #[test]
     fn final_marker_failure_returns_degraded_receipt_and_survives_reopen() {
         let root = temp_root("marker-final-fault");
@@ -3496,6 +3723,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证可见标记的屏障失败被类型化报告，且不删除任何文件。
     #[test]
     fn visible_marker_barrier_failure_is_typed_and_deletes_nothing() {
         let root = temp_root("visible-marker-barrier");
@@ -3543,6 +3771,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证待删除的废弃前缀在崩溃恢复中保持不透明。
     #[test]
     fn pending_obsolete_prefix_is_opaque_across_crash_recovery() {
         let root = temp_root("opaque-obsolete-prefix");
@@ -3599,6 +3828,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证清理已确认后，重新出现的废弃前缀会被拒绝。
     #[test]
     fn confirmed_cleanup_rejects_reappearing_obsolete_prefix() {
         let root = temp_root("confirmed-obsolete-prefix");
@@ -3618,6 +3848,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证修剪后的恢复会拒绝不可用及外来的检查点。
     #[test]
     fn pruned_recovery_rejects_unusable_and_foreign_checkpoints() {
         let root = temp_root("pruned-checkpoints");
@@ -3696,6 +3927,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证重复打开共享同一权威，配置不匹配时被拒绝。
     #[test]
     fn duplicate_open_shares_authority_and_mismatch_rejects() {
         let root = temp_root("duplicate");
@@ -3723,6 +3955,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证存活目录丢失或被替换时失败，且不会重置。
     #[test]
     fn live_directory_missing_and_replacement_fail_without_reset() {
         let parent = temp_root("directory-replacement-parent");
@@ -3796,6 +4029,7 @@ mod tests {
         std::fs::remove_dir_all(parent).ok();
     }
 
+    /// 验证活动分段被同长度替换后所有存活 I/O 均失败。
     #[test]
     fn active_segment_same_length_replacement_fails_all_live_io() {
         let root = temp_root("active-replacement");
@@ -3826,6 +4060,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证已关闭分段被同长度替换后仍会校验摘要。
     #[test]
     fn closed_segment_same_length_replacement_still_verifies_digest() {
         let root = temp_root("closed-replacement");
@@ -3862,6 +4097,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 构造一个包含已关闭分段的日志夹具。
     fn closed_segment_fixture(
         label: &str,
     ) -> (
@@ -3881,6 +4117,7 @@ mod tests {
         (root, journal, closed)
     }
 
+    /// 验证空的已关闭分段导致回放失败。
     #[test]
     fn empty_closed_segment_fails_replay() {
         let (root, journal, closed) = closed_segment_fixture("closed-empty");
@@ -3893,6 +4130,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证被截断的已关闭分段导致回放失败。
     #[test]
     fn truncated_closed_segment_fails_replay() {
         let (root, journal, closed) = closed_segment_fixture("closed-truncated");
@@ -3910,6 +4148,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证已关闭分段带额外后缀时回放失败。
     #[test]
     fn closed_segment_extra_suffix_fails_replay() {
         let (root, journal, closed) = closed_segment_fixture("closed-extra");
@@ -3923,6 +4162,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证注册表在多轮大批量存活句柄 drop 后计数准确。
     #[test]
     fn registry_mass_live_drop_is_exact_across_multiple_waves() {
         let root = temp_root("weak-registry");
@@ -3989,6 +4229,7 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 验证两个别名并发 drop 后立即重新打开仍可用。
     #[test]
     fn concurrent_two_alias_drop_and_immediate_reopen_remains_available() {
         let root = temp_root("concurrent-close-reopen");
@@ -4030,8 +4271,10 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 子进程租约探测所用的环境变量名。
     const LEASE_PROBE_ENV: &str = "ECHO_SEGMENTED_JOURNAL_LEASE_PROBE";
 
+    /// 子进程探测入口：在另一进程中尝试打开日志并断言失败。
     #[test]
     fn process_lease_probe() {
         let Ok(root) = std::env::var(LEASE_PROBE_ENV) else {
@@ -4046,6 +4289,7 @@ mod tests {
         );
     }
 
+    /// 验证租约存活期间，竞争进程打开失败。
     #[test]
     fn competing_process_fails_open_while_lease_is_alive() {
         let root = temp_root("process-lease");
@@ -4067,17 +4311,23 @@ mod tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    /// 不实现 Clone 的测试事件。
     #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct NonCloneEvent {
+        /// 事件值。
         value: String,
     }
 
+    /// 序列化结果可在外部被修改的测试事件。
     #[derive(Debug)]
     struct MutableSegmentEvent {
+        /// 可变的事件值。
         value: std::sync::atomic::AtomicUsize,
     }
 
+    /// 将事件序列化为当前原子值。
     impl Serialize for MutableSegmentEvent {
+        /// 序列化当前值。
         fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
         where
             S: serde::Serializer,
@@ -4090,6 +4340,7 @@ mod tests {
     }
 
     impl<'de> Deserialize<'de> for MutableSegmentEvent {
+        /// 从整数反序列化事件。
         fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
         where
             D: serde::Deserializer<'de>,
@@ -4101,6 +4352,7 @@ mod tests {
         }
     }
 
+    /// 验证在冷启动幂等匹配前拒绝被篡改的未知负载。
     #[test]
     fn segmented_rejects_mutated_unknown_payload_before_cold_idempotent_match() -> TestResult {
         let root = temp_root("mutable-unknown");
@@ -4177,6 +4429,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证不可 Clone 的事件无需 serde 复制即可追加与回放。
     #[test]
     fn non_clone_events_append_and_replay_without_serde_copy() -> TestResult {
         let memory = super::super::MemoryEventJournal::new();

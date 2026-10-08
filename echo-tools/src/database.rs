@@ -1,9 +1,11 @@
-//! Database SQL tools
-//!
-//! Provides cross-database read-only query capabilities via sqlx:
-//! - sql_query: execute read-only SQL queries
-//! - list_tables: list all tables in the database
-//! - describe_table: view table structure
+/*!
+数据库 SQL 工具
+
+基于 sqlx 提供跨数据库的只读查询能力：
+- sql_query：执行只读 SQL 查询
+- list_tables：列出数据库中的所有表
+- describe_table：查看表结构
+*/
 
 use base64::Engine;
 use futures::{StreamExt, future::BoxFuture};
@@ -20,51 +22,62 @@ use echo_core::tools::pagination::{PageInfo, PageRequest};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult, ToolRiskLevel};
 
+/// SQL 查询默认每页行数
 const DEFAULT_SQL_PAGE_ROWS: usize = 50;
+/// SQL 查询每页最大行数
 const MAX_SQL_PAGE_ROWS: usize = 100;
+/// 结果溢出到 artifact 时，内联列名保留的最大字符数
 const MAX_INLINE_COLUMN_CHARS: usize = 80;
+/// 结果溢出到 artifact 时，内联单元格保留的最大字符数
 const MAX_INLINE_CELL_CHARS: usize = 512;
 
-// sqlx 0.8 `any` mode requires drivers to be installed at runtime before the
-// first `AnyPool` connection. Without this, connecting panics with
-// "No drivers installed". We install all compiled-in drivers once, lazily on
-// first use, guarded by a OnceLock so repeated calls are cheap and safe.
-//
-// (sqlx 0.8 removed the automatic install that earlier versions did via
-// `AnyConnection::install_default_drivers` being called implicitly; the
-// explicit `install_default_drivers()` is the documented replacement.)
+/**
+确保 sqlx `any` 驱动已安装。
+
+sqlx 0.8 的 `any` 模式要求在第一次建立 `AnyPool` 连接前于运行时安装驱动，
+否则连接时会以 "No drivers installed" panic。这里在首次使用时惰性地
+安装所有已编译进来的驱动，并用 OnceLock 保护，使重复调用既廉价又安全。
+
+（早期版本会隐式调用 `AnyConnection::install_default_drivers` 自动安装，
+sqlx 0.8 移除了这一行为；显式调用 `install_default_drivers()` 是官方文档给出的替代方式。）
+*/
 fn ensure_drivers_installed() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
-        // install_default_drivers installs every driver feature compiled into
-        // sqlx (sqlite/postgres/mysql as enabled in Cargo.toml). Idempotent.
+        // install_default_drivers 会安装 sqlx 中已编译的所有驱动（取决于 Cargo.toml 中启用的 sqlite/postgres/mysql），且幂等。
         sqlx::any::install_default_drivers();
     });
 }
 
-// ── SQL Query (read-only) ─────────────────────────────────────────────────────────
+// ── SQL 查询（只读） ─────────────────────────────────────────────────────────
 
+/// 只读 SQL 查询工具，支持分页与大结果溢出到 artifact
 pub struct SqlQueryTool;
 
 impl Tool for SqlQueryTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "sql_query"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 返回工具风险等级
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::ReadOnly
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Execute read-only SQL queries (SELECT only). Supports SQLite, MySQL, PostgreSQL. \
          Connection URL format: sqlite://path.db, mysql://user:pass@host/db, postgresql://user:pass@host/db"
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -92,6 +105,7 @@ impl Tool for SqlQueryTool {
         })
     }
 
+    /// 结合工具上下文执行工具逻辑
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -103,7 +117,7 @@ impl Tool for SqlQueryTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("connection_url".to_string()))?;
 
-            // Validate connection URL scheme
+            // 校验连接 URL 的 scheme
             validate_db_url(conn_url)?;
 
             let query = parameters
@@ -138,6 +152,7 @@ impl Tool for SqlQueryTool {
     }
 }
 
+/// 校验查询是否为只读语句：必须以允许的关键字开头，且不含任何写入类关键字
 fn validate_readonly_query(query: &str) -> std::result::Result<(), String> {
     let trimmed = query.trim().to_uppercase();
     let allowed = trimmed.starts_with("SELECT")
@@ -186,23 +201,28 @@ fn validate_readonly_query(query: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-// ── List tables ───────────────────────────────────────────────────────────────────
+// ── 列出数据表 ───────────────────────────────────────────────────────────────────
 
+/// 列出数据库中所有表的工具
 pub struct ListTablesTool;
 
 impl Tool for ListTablesTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "list_tables"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "List all tables in the database. Supports SQLite, MySQL, PostgreSQL."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -216,6 +236,7 @@ impl Tool for ListTablesTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let conn_url = parameters
@@ -223,16 +244,16 @@ impl Tool for ListTablesTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("connection_url".to_string()))?;
 
-            // Validate connection URL scheme
+            // 校验连接 URL 的 scheme
             validate_db_url(conn_url)?;
 
-            // Choose appropriate query based on database type
+            // 根据数据库类型选择合适的查询语句
             let query = if conn_url.starts_with("sqlite") {
                 "SELECT name AS table_name FROM sqlite_master WHERE type='table' ORDER BY name"
             } else if conn_url.starts_with("mysql") {
                 "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME"
             } else {
-                // PostgreSQL and others
+                // PostgreSQL 及其他数据库
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name"
             };
 
@@ -244,23 +265,28 @@ impl Tool for ListTablesTool {
     }
 }
 
-// ── Describe table structure ───────────────────────────────────────────────────────────────
+// ── 查看表结构 ───────────────────────────────────────────────────────────────
 
+/// 查看指定表结构（列名、类型、是否可空）的工具
 pub struct DescribeTableTool;
 
 impl Tool for DescribeTableTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "describe_table"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "View the structure of a specified table (column names, types, nullable). Supports SQLite, MySQL, PostgreSQL."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -278,6 +304,7 @@ impl Tool for DescribeTableTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let conn_url = parameters
@@ -285,7 +312,7 @@ impl Tool for DescribeTableTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("connection_url".to_string()))?;
 
-            // Validate connection URL scheme
+            // 校验连接 URL 的 scheme
             validate_db_url(conn_url)?;
 
             let table_name = parameters
@@ -293,7 +320,7 @@ impl Tool for DescribeTableTool {
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::MissingParameter("table_name".to_string()))?;
 
-            // Validate table name: only allow alphanumeric, underscore, dot (for schema.table)
+            // 校验表名：只允许字母数字、下划线和点（用于 schema.table）
             if !table_name
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
@@ -304,7 +331,7 @@ impl Tool for DescribeTableTool {
                 )));
             }
 
-            // Choose appropriate query based on database type
+            // 根据数据库类型选择合适的查询语句
             let query = if conn_url.starts_with("sqlite") {
                 format!("PRAGMA table_info('{}')", table_name.replace('\'', "''"))
             } else if conn_url.starts_with("mysql") {
@@ -334,12 +361,14 @@ impl Tool for DescribeTableTool {
     }
 }
 
-// ── Helper ───────────────────────────────────────────────────────────────────
+// ── 辅助函数 ───────────────────────────────────────────────────────────────────
 
-/// Validate database connection URL scheme using proper parsing.
-///
-/// Only allows `sqlite://`, `mysql://`, `postgresql://`, and `postgres://` schemes.
-/// For SQLite, also validates that the path doesn't contain suspicious patterns.
+/**
+通过解析校验数据库连接 URL 的 scheme。
+
+只允许 `sqlite://`、`mysql://`、`postgresql://` 和 `postgres://`。
+对于 SQLite，还会校验路径中不含可疑字符。
+*/
 fn validate_db_url(url_str: &str) -> Result<()> {
     let (scheme, path) = url_str
         .split_once("://")
@@ -362,9 +391,9 @@ fn validate_db_url(url_str: &str) -> Result<()> {
         }
     }
 
-    // For SQLite, validate the path doesn't contain suspicious patterns
+    // 对 SQLite 校验路径不含可疑字符
     if scheme == "sqlite" {
-        // Strip leading slash for relative paths (sqlite:///path vs sqlite://:memory:)
+        // 去掉开头的斜杠以兼容相对路径（sqlite:///path 与 sqlite://:memory:）
         let path = path.strip_prefix('/').unwrap_or(path);
         if path.contains('\0') || path.contains('\n') || path.contains('\r') {
             return Err(ToolError::InvalidParameter {
@@ -378,29 +407,43 @@ fn validate_db_url(url_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// Execute a read-only query and return structured JSON.
-///
-/// Defense-in-depth: wraps non-SQLite queries in an explicit READ ONLY transaction,
-/// so the database itself rejects any mutation attempt (not just our keyword filter).
+/**
+只读查询返回的结构化行数据。
+
+纵深防御：非 SQLite 查询会包裹在显式的 READ ONLY 事务中，
+由数据库本身拒绝任何写入尝试（而不只依赖关键字过滤）。
+*/
 struct DbRows {
+    /// 列名列表
     columns: Vec<String>,
+    /// 行数据，每行按列顺序存放 JSON 值
     rows: Vec<Vec<serde_json::Value>>,
 }
 
+/// 单页查询结果
 struct DbPage {
+    /// 列名列表
     columns: Vec<String>,
+    /// 当前页的行数据
     rows: Vec<Vec<serde_json::Value>>,
+    /// 分页信息（下一页游标、是否截断等）
     page_info: PageInfo,
 }
 
+/// SQL 分页游标的序列化载荷
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SqlCursor {
+    /// 游标格式版本，目前固定为 1
     version: u8,
+    /// 连接 URL 与查询语句的指纹，防止游标被用于其它查询
     fingerprint: String,
+    /// 下一页起始行偏移
     offset: usize,
+    /// 生成游标时的每页行数
     limit: usize,
 }
 
+/// 计算连接 URL 与查询语句的 SHA-256 指纹
 fn sql_query_fingerprint(conn_url: &str, query: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(conn_url.as_bytes());
@@ -409,6 +452,7 @@ fn sql_query_fingerprint(conn_url: &str, query: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// 解码并校验分页游标，返回起始偏移；无游标时返回 0
 fn decode_sql_cursor(request: &PageRequest, conn_url: &str, query: &str) -> Result<usize> {
     let Some(cursor) = request.cursor.as_deref() else {
         return Ok(0);
@@ -437,6 +481,7 @@ fn decode_sql_cursor(request: &PageRequest, conn_url: &str, query: &str) -> Resu
     Ok(decoded.offset)
 }
 
+/// 将分页游标编码为 URL 安全的 base64 字符串
 fn encode_sql_cursor(cursor: &SqlCursor) -> Result<String> {
     let bytes = serde_json::to_vec(cursor).map_err(|error| ToolError::ExecutionFailed {
         tool: "sql_query".to_string(),
@@ -445,6 +490,7 @@ fn encode_sql_cursor(cursor: &SqlCursor) -> Result<String> {
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }
 
+/// 以只读方式执行查询并返回一页结果（非 SQLite 使用 READ ONLY 事务）
 async fn execute_readonly_page(
     conn_url: &str,
     query: &str,
@@ -492,6 +538,7 @@ async fn execute_readonly_page(
     build_db_page(rows, request, offset, conn_url, query)
 }
 
+/// 从行流中跳过 `offset` 行后最多收集 `take` 行
 async fn collect_bounded_rows<S>(
     mut stream: S,
     offset: usize,
@@ -519,6 +566,7 @@ where
     Ok(rows)
 }
 
+/// 根据多取一行的结果判断是否还有下一页，并构建分页结果
 fn build_db_page(
     mut rows: Vec<sqlx::any::AnyRow>,
     request: &PageRequest,
@@ -556,6 +604,7 @@ fn build_db_page(
 }
 
 impl DbRows {
+    /// 转换为包含列、行和总行数的 JSON
     fn into_json(self) -> serde_json::Value {
         let total_rows = self.rows.len();
         serde_json::json!({
@@ -566,6 +615,7 @@ impl DbRows {
     }
 }
 
+/// 以只读方式执行查询并返回全部结果行
 async fn execute_readonly_query(conn_url: &str, query: &str) -> Result<DbRows> {
     ensure_drivers_installed();
     let pool = AnyPoolOptions::new()
@@ -578,7 +628,7 @@ async fn execute_readonly_query(conn_url: &str, query: &str) -> Result<DbRows> {
         })?;
 
     if conn_url.starts_with("sqlite") {
-        // SQLite does not support SET TRANSACTION READ ONLY — skip.
+        // SQLite 不支持 SET TRANSACTION READ ONLY，跳过。
         let rows =
             sqlx::query(query)
                 .fetch_all(&pool)
@@ -589,9 +639,9 @@ async fn execute_readonly_query(conn_url: &str, query: &str) -> Result<DbRows> {
                 })?;
         format_db_rows(&rows)
     } else {
-        // PostgreSQL/MySQL: wrap in an explicit READ ONLY transaction.
-        // Using pool.begin() starts an explicit transaction; SET TRANSACTION READ ONLY
-        // then applies to this transaction (not just an autocommit-internal one).
+        /* PostgreSQL/MySQL：包裹在显式的 READ ONLY 事务中。
+        pool.begin() 会开启显式事务，随后 SET TRANSACTION READ ONLY
+        作用于该事务（而不仅是自动提交内部的隐式事务）。 */
         let mut tx = pool.begin().await.map_err(|e| ToolError::ExecutionFailed {
             tool: "database".to_string(),
             message: format!("Failed to begin transaction: {}", e),
@@ -609,16 +659,15 @@ async fn execute_readonly_query(conn_url: &str, query: &str) -> Result<DbRows> {
                 message: format!("Query execution failed: {}", e),
             }
         })?;
-        // Read-only transaction — explicitly rollback (nothing to write). The
-        // comment previously said "rollback on drop otherwise" but the code
-        // committed; align the two (P1-1). For a read-only tx commit/rollback
-        // are equivalent, but rollback is unambiguous about intent.
+        /* 只读事务：显式回滚（没有需要写入的内容）。之前的注释写的是
+        "否则在 drop 时回滚"，但代码实际执行了 commit；这里让两者保持一致（P1-1）。
+        对只读事务而言 commit 与 rollback 等价，但 rollback 的意图更明确。 */
         tx.rollback().await.ok();
         format_db_rows(&rows)
     }
 }
 
-/// Format sqlx query result rows into structured JSON.
+/// 将 sqlx 查询结果行格式化为结构化 JSON。
 fn format_db_rows(rows: &[sqlx::any::AnyRow]) -> Result<DbRows> {
     let columns: Vec<String> = rows
         .first()
@@ -647,6 +696,7 @@ fn format_db_rows(rows: &[sqlx::any::AnyRow]) -> Result<DbRows> {
     })
 }
 
+/// 按列类型将单个单元格解码为 JSON 值（BLOB 编码为 base64 对象）
 fn decode_db_cell(
     row: &sqlx::any::AnyRow,
     index: usize,
@@ -706,6 +756,7 @@ fn decode_db_cell(
     Ok(value)
 }
 
+/// 构建 SQL 分页结果：若配置了 artifact 则持久化完整输出，并只内联截断后的预览
 fn sql_page_result(
     ctx: &echo_core::tools::ToolContext,
     full_data: serde_json::Value,
@@ -751,6 +802,7 @@ fn sql_page_result(
     Ok(result)
 }
 
+/// 生成内联预览数据：截断过长的列名与单元格文本
 fn project_sql_data(data: &serde_json::Value) -> serde_json::Value {
     let columns = data
         .get("columns")
@@ -798,6 +850,7 @@ fn project_sql_data(data: &serde_json::Value) -> serde_json::Value {
     })
 }
 
+/// 按字符数截断字符串，超出时追加 "..."
 fn char_preview(value: &str, max_chars: usize) -> String {
     let mut preview: String = value.chars().take(max_chars).collect();
     if value.chars().count() > max_chars {
@@ -806,6 +859,7 @@ fn char_preview(value: &str, max_chars: usize) -> String {
     preview
 }
 
+/// 将 artifact 引用及溢出相关元数据写入工具结果
 fn apply_sql_artifact(
     artifact: ToolOutputArtifactRef,
     original_bytes: usize,
@@ -829,6 +883,7 @@ mod tests {
     use super::*;
     use echo_core::error::ReactError;
 
+    /// SQLite 分页结果有界，且保留各类型单元格的值
     #[tokio::test]
     async fn sqlite_page_is_bounded_and_preserves_typed_cells() -> Result<()> {
         let directory = tempfile::tempdir().map_err(ReactError::from)?;
@@ -921,6 +976,7 @@ mod tests {
         Ok(())
     }
 
+    /// 写入类 SQL 永远不会被视为只读查询
     #[test]
     fn writable_sql_never_qualifies_as_read_only() {
         use echo_core::tools::Tool;

@@ -15,8 +15,10 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-// 完整的工具结果保持内联存放，这样流水线可以复用同一个带类型的流事件，
-// 而不必为每个流式条目额外分配内存。
+/*
+ * 完整的工具结果保持内联存放，这样流水线可以复用同一个带类型的流事件，
+ * 而不必为每个流式条目额外分配内存。
+ */
 #[allow(clippy::large_enum_variant)]
 /** 工具流水线内部事件：既承载“调用已发出”的标准事件，也承载工具执行期间的流式增量事件。 */
 pub(crate) enum ToolPipelineEvent {
@@ -144,7 +146,7 @@ impl ToolExecutionContext {
     }
 }
 
-// ── PipelineStage trait ────────────────────────────────────────────
+// ── PipelineStage 特征 ────────────────────────────────────────────
 
 /**
  * 工具执行流水线中的单个阶段。
@@ -165,17 +167,19 @@ pub(crate) trait PipelineStage: Send + Sync {
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()>;
 
-    /// 该阶段在 `ctx.blocked` 被设置之后是否仍需运行。
-    ///
-    /// 执行门控类阶段一如既往会终止流水线，但记录“已发生事实”的观察类阶段
-    /// （如追踪、终态回调）可以选择继续运行，从而让被阻止的调用也留下如实的
-    /// 记录（#102）。
+    /**
+     * 该阶段在 `ctx.blocked` 被设置之后是否仍需运行。
+     *
+     * 执行门控类阶段一如既往会终止流水线，但记录“已发生事实”的观察类阶段
+     * （如追踪、终态回调）可以选择继续运行，从而让被阻止的调用也留下如实的
+     * 记录（#102）。
+     */
     fn runs_after_block(&self) -> bool {
         false
     }
 }
 
-// ── Stage implementations ──────────────────────────────────────────
+// ── 各阶段实现 ──────────────────────────────────────────
 
 /**
  * 干预回调阶段 —— 在所有其他阶段之前检查干预回调。
@@ -187,10 +191,12 @@ pub struct InterventionStage;
 
 #[async_trait]
 impl PipelineStage for InterventionStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "intervention"
     }
 
+    /// 执行干预回调，按其决策阻止、重定向、修改参数或注入上下文。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -239,10 +245,12 @@ pub struct ToolVisibilityStage;
 
 #[async_trait]
 impl PipelineStage for ToolVisibilityStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "tool_visibility"
     }
 
+    /// 工具被禁用或在当前调用范围内未激活时阻止调用。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -281,10 +289,12 @@ pub struct PreToolUseHookStage;
 
 #[async_trait]
 impl PipelineStage for PreToolUseHookStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "pre_tool_use_hook"
     }
 
+    /// 运行 PreToolUse 钩子，并应用其阻止或参数改写结果。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -365,10 +375,12 @@ pub struct PermissionStage;
 
 #[async_trait]
 impl PipelineStage for PermissionStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "permission"
     }
 
+    /// 通过 PermissionService 检查工具审批，拒绝时阻止调用。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -466,10 +478,12 @@ pub struct ReadBeforeEditStage;
 
 #[async_trait]
 impl PipelineStage for ReadBeforeEditStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "read_before_edit"
     }
 
+    /// 对写类工具检查目标路径是否已先被读取，未读取则阻止。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -513,10 +527,12 @@ pub struct SkillPermissionStage;
 
 #[async_trait]
 impl PipelineStage for SkillPermissionStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "skill_permission"
     }
 
+    /// 按技能的工具白名单检查权限，不在白名单内则阻止。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -548,22 +564,27 @@ pub struct AuditStage;
 
 #[async_trait]
 impl PipelineStage for AuditStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "audit"
     }
 
+    /// 被阻止的调用同样需要运行该阶段。
     fn runs_after_block(&self) -> bool {
         true
     }
 
+    /// 将已落定的工具结果写入审计日志。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()> {
         if let (Some(_), Some(result)) = (&snapshot.guard.audit_logger, &ctx.result) {
-            // post-use 钩子可能会拒绝一个已经发生的效果。
-            // 这里保留该输出，同时上报最终的失败状态。
+            /*
+             * post-use 钩子可能会拒绝一个已经发生的效果。
+             * 这里保留该输出，同时上报最终的失败状态。
+             */
             let output = if !result.success && result.output.is_empty() {
                 ctx.audit_error_output.as_deref().unwrap_or("")
             } else {
@@ -592,10 +613,12 @@ pub struct InvocationStage;
 
 #[async_trait]
 impl PipelineStage for InvocationStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "invocation"
     }
 
+    /// 发布规范化的调用记录。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -610,10 +633,12 @@ pub struct ExecuteStage;
 
 #[async_trait]
 impl PipelineStage for ExecuteStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "execute"
     }
 
+    /// 通过 ToolManager 执行工具，并把基础设施错误转换为失败结果。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -636,12 +661,14 @@ impl PipelineStage for ExecuteStage {
             ))
             .await;
 
-        // 执行工具；若发生基础设施层面的错误，转换为 ToolResult{success:false}，
-        // 这样下游阶段（追踪、post-hook、回调）依然能够正常运行。
-        //
-        // 从 snapshot 的 RuntimeConfig 为本次调用构建专属的 ToolContext，
-        // 使（共享、无状态的）ToolManager 拿到的是“这一个” agent/session 对应的
-        // working_dir —— 避免跨会话的当前目录污染。
+        /*
+         * 执行工具；若发生基础设施层面的错误，转换为 ToolResult{success:false}，
+         * 这样下游阶段（追踪、post-hook、回调）依然能够正常运行。
+         *
+         * 从 snapshot 的 RuntimeConfig 为本次调用构建专属的 ToolContext，
+         * 使（共享、无状态的）ToolManager 拿到的是“这一个” agent/session 对应的
+         * working_dir —— 避免跨会话的当前目录污染。
+         */
         let effect_sink: Option<echo_core::tools::ToolEffectSinkFn> =
             if snapshot.run_store.is_some() && snapshot.trace_run_id.is_some() {
                 let invocation = snapshot.clone();
@@ -810,16 +837,20 @@ impl PipelineStage for ExecuteStage {
         }
         ctx.result = Some(result.clone());
 
-        // 已确认的效果属于工具本身，而非 post-use 呈现阶段的产物。
-        // 必须在钩子有机会卡住或拒绝返回结果之前先把它们持久化。
+        /*
+         * 已确认的效果属于工具本身，而非 post-use 呈现阶段的产物。
+         * 必须在钩子有机会卡住或拒绝返回结果之前先把它们持久化。
+         */
         for effect in &result.effects {
             snapshot
                 .record_tool_effect(effect, &ctx.tool_name, &ctx.call_id)
                 .await;
         }
 
-        // 解析后的路径是工具自身确认的事实；模型给出的参数可能是相对路径
-        // 或经过改写，不能单凭它来断定一次成功的读取。
+        /*
+         * 解析后的路径是工具自身确认的事实；模型给出的参数可能是相对路径
+         * 或经过改写，不能单凭它来断定一次成功的读取。
+         */
         if result.success {
             for effect in &result.effects {
                 if let echo_core::tools::ToolEffect::FileRead { path } = effect {
@@ -837,10 +868,12 @@ pub struct PostToolUseHookStage;
 
 #[async_trait]
 impl PipelineStage for PostToolUseHookStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "post_tool_use_hook"
     }
 
+    /// 根据工具结果运行 PostToolUse 或 PostToolUseFailure 钩子。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -885,8 +918,10 @@ impl PipelineStage for PostToolUseHookStage {
             let reason = post_result.block_reason.unwrap_or_else(|| {
                 format!("Tool {} output blocked by post-use hook", ctx.tool_name)
             });
-            // 策略拒绝的是一次已经执行完毕的调用，而不是执行过程本身。
-            // 结算时保留其输出/产物以及可恢复性相关的事实。
+            /*
+             * 策略拒绝的是一次已经执行完毕的调用，而不是执行过程本身。
+             * 结算时保留其输出/产物以及可恢复性相关的事实。
+             */
             let mut failure = tool_result.failure.clone().unwrap_or_else(|| {
                 crate::tools::ToolFailure::new(crate::tools::ToolFailureCategory::PartialSideEffect)
             });
@@ -913,14 +948,17 @@ pub struct OutputGuardStage;
 
 #[async_trait]
 impl PipelineStage for OutputGuardStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "output_guard"
     }
 
+    /// 被阻止的调用同样需要运行该阶段。
     fn runs_after_block(&self) -> bool {
         true
     }
 
+    /// 对工具输出运行输出防护检查，必要时改写或拦截输出。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -955,14 +993,17 @@ pub struct TruncationStage;
 
 #[async_trait]
 impl PipelineStage for TruncationStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "truncation"
     }
 
+    /// 被阻止的调用同样需要运行该阶段。
     fn runs_after_block(&self) -> bool {
         true
     }
 
+    /// 按 token 预算截断工具输出，必要时溢出到产物文件。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -1026,6 +1067,7 @@ impl CallbackStage {
 
 #[async_trait]
 impl PipelineStage for CallbackStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         match self.phase {
             CallbackPhase::Start => "callback_start",
@@ -1033,12 +1075,15 @@ impl PipelineStage for CallbackStage {
         }
     }
 
-    // CallbackEnd 是调用方观察到的终态：即便发生了 post-effect 阻止（#102），
-    // 它也必须携带真实结果被触发。
+    /**
+     * CallbackEnd 是调用方观察到的终态：即便发生了 post-effect 阻止（#102），
+     * 它也必须携带真实结果被触发。
+     */
     fn runs_after_block(&self) -> bool {
         matches!(self.phase, CallbackPhase::End)
     }
 
+    /// 按阶段触发开始或终态回调。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -1057,8 +1102,10 @@ impl PipelineStage for CallbackStage {
                         .as_deref()
                         .or_else(|| ctx.result.as_ref().map(|r| r.output.as_str()))
                         .unwrap_or("");
-                    // 在拿到工具结果之前发生的、带类型的取消/超时属于“被中断的
-                    // 尝试”，而不是一次已完成的工具失败。
+                    /*
+                     * 在拿到工具结果之前发生的、带类型的取消/超时属于“被中断的
+                     * 尝试”，而不是一次已完成的工具失败。
+                     */
                     let failure = ctx.result.as_ref().filter(|result| !result.success);
                     if let Some(result) = failure {
                         if let Some(interruption) = ctx.interrupted_execution_error.as_ref() {
@@ -1105,24 +1152,30 @@ pub struct TraceRecordingStage;
 
 #[async_trait]
 impl PipelineStage for TraceRecordingStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "trace_recording"
     }
 
-    // 被阻止的调用也可能已经产生了外部效果；追踪记录必须如实反映实际结果
-    // （失败时还需记录 ToolError）。
+    /**
+     * 被阻止的调用也可能已经产生了外部效果；追踪记录必须如实反映实际结果
+     * （失败时还需记录 ToolError）。
+     */
     fn runs_after_block(&self) -> bool {
         true
     }
 
+    /// 为工具结果或错误记录追踪事件。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
         snapshot: &crate::agent::snapshot::AgentRunSnapshot,
     ) -> Result<()> {
         if let Some(ref result) = ctx.result {
-            // 始终记录 ToolResult —— 由 success 字段决定最终结果。
-            // 失败时额外记录 ToolError 以保留失败细节。
+            /*
+             * 始终记录 ToolResult —— 由 success 字段决定最终结果。
+             * 失败时额外记录 ToolError 以保留失败细节。
+             */
             snapshot
                 .record_event(crate::trace::RunEvent::ToolResult {
                     call_id: ctx.call_id.clone(),
@@ -1296,10 +1349,12 @@ pub struct PlanModeStage;
 
 #[async_trait]
 impl PipelineStage for PlanModeStage {
+    /// 返回该阶段的名称。
     fn name(&self) -> &str {
         "plan_mode"
     }
 
+    /// 计划模式下阻止非只读工具的执行。
     async fn run(
         &self,
         ctx: &mut ToolExecutionContext,
@@ -1329,12 +1384,13 @@ impl PipelineStage for PlanModeStage {
 }
 
 impl Default for ToolExecutionPipeline {
+    /// 默认使用标准流水线。
     fn default() -> Self {
         Self::default_pipeline()
     }
 }
 
-// ── Helpers ────────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────────
 
 /// 从工具参数中提取涉及的文件路径列表，用于“先读后写”策略等场景。
 fn extract_path_params(tool_name: &str, params: &ToolParameters) -> Vec<String> {
@@ -1382,6 +1438,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
 
+    /// 验证写类工具的识别。
     #[test]
     fn test_is_write_tool() {
         assert!(is_write_tool("apply_patch"));
@@ -1389,6 +1446,7 @@ mod tests {
         assert!(!is_write_tool("read_file"));
     }
 
+    /// 验证能从 write_file 参数中提取路径。
     #[test]
     fn test_extract_write_path_param() {
         let params = vec![("path".to_string(), Value::String("src/main.rs".to_string()))]
@@ -1400,6 +1458,7 @@ mod tests {
         );
     }
 
+    /// 验证能从 apply_patch 补丁中提取所有涉及的路径。
     #[cfg(feature = "files")]
     #[test]
     fn test_extract_apply_patch_paths() {
@@ -1416,27 +1475,35 @@ mod tests {
         );
     }
 
+    /// 交错输出流式事件的测试工具，用于验证并发流的顺序。
     struct InterleavingTool;
 
+    /// 返回“参数无效”失败结果的测试工具。
     struct InvalidResultTool;
 
+    /// 返回带输出的失败结果的测试工具。
     struct FailedOutputTool;
 
+    /// 只返回敏感错误信息、不带输出的测试工具。
     struct ErrorOnlyTool;
 
     impl Tool for ErrorOnlyTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "error_only"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "returns a sensitive error without tool output"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 返回一条包含敏感内容的错误结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1446,18 +1513,22 @@ mod tests {
     }
 
     impl Tool for FailedOutputTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "failed_output"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "returns an unsuccessful result with output"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 返回带敏感原始输出的永久失败结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1472,23 +1543,29 @@ mod tests {
         }
     }
 
+    /// 在流式路径上记录收到的调用资源守卫数量的测试工具。
     struct ResourceGuardStreamingTool {
+        /// 观察到的资源守卫数量。
         observed_guard_count: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl Tool for InvalidResultTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "invalid_result"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "returns a classified unsuccessful result"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 返回“缺少 query”的参数无效失败结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1501,24 +1578,29 @@ mod tests {
             })
         }
 
+        /// 声明需要执行权限。
         fn permissions(&self) -> Vec<echo_core::tools::permission::ToolPermission> {
             vec![echo_core::tools::permission::ToolPermission::Execute]
         }
     }
 
     impl Tool for InterleavingTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "interleaving"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "test stream interleaving"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 非流式路径：返回占位结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1526,6 +1608,7 @@ mod tests {
             Box::pin(async { Ok(ToolResult::success("unused")) })
         }
 
+        /// 按参数中的延迟分两次输出分块，最后发出完成事件。
         fn execute_stream_with_context<'a>(
             &'a self,
             params: ToolParameters,
@@ -1586,24 +1669,29 @@ mod tests {
             })
         }
 
+        /// 声明支持流式执行。
         fn supports_streaming(&self) -> bool {
             true
         }
     }
 
     impl Tool for ResourceGuardStreamingTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "resource_guard_stream"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "captures invocation resource guards on the streaming path"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 非流式回退路径：返回占位结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1611,10 +1699,12 @@ mod tests {
             Box::pin(async { Ok(ToolResult::success("fallback")) })
         }
 
+        /// 声明支持流式执行。
         fn supports_streaming(&self) -> bool {
             true
         }
 
+        /// 记录上下文中的资源守卫数量，并直接返回完成事件。
         fn execute_stream_with_context<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -1636,6 +1726,7 @@ mod tests {
         }
     }
 
+    /// 构造一个使用 InterleavingTool 并带流式发送端的执行上下文。
     fn streaming_context(
         call_id: &str,
         label: &str,
@@ -1678,6 +1769,7 @@ mod tests {
         }
     }
 
+    /// 构造一个已包含成功结果的 shell 调用执行上下文。
     fn completed_context(output: String) -> ToolExecutionContext {
         ToolExecutionContext {
             call_id: "call-output-budget".to_string(),
@@ -1705,6 +1797,7 @@ mod tests {
         }
     }
 
+    /// 验证权限钩子在主路径上如实追踪允许与拒绝。
     #[tokio::test]
     async fn permission_hooks_trace_real_allow_and_deny_on_the_main_path() -> Result<()> {
         use crate::skills::hooks::{HookAction, HookEvent, HookRule, HooksDefinition};
@@ -1782,6 +1875,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证工具输出不会凭空推断出文件或测试效果。
     #[tokio::test]
     async fn tool_outputs_do_not_invent_file_or_test_effects() -> Result<()> {
         use crate::trace::{InMemoryRunStore, RunEvent, RunStore};
@@ -1848,6 +1942,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证权限钩子的决策会在执行前被追踪。
     #[tokio::test]
     async fn permission_hook_decisions_are_traced_before_execution() -> Result<()> {
         use crate::trace::{InMemoryRunStore, RunEvent, RunStore};
@@ -1927,6 +2022,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证失败结果运行失败钩子而非成功钩子。
     #[tokio::test]
     async fn unsuccessful_result_runs_failure_hook_instead_of_success_hook() -> Result<()> {
         use crate::skills::hooks::{HookAction, HookEvent, HookRule, HooksDefinition};
@@ -1972,6 +2068,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证权限阶段会消费调用范围内的模式覆盖。
     #[cfg(feature = "human-loop")]
     #[tokio::test]
     async fn permission_stage_consumes_call_scoped_mode_override() -> Result<()> {
@@ -2000,6 +2097,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证被禁用调用的工具会在执行前被阻止。
     #[tokio::test]
     async fn invocation_disabled_tool_is_blocked_before_execution() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -2027,6 +2125,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证截断阶段在无 token 限制时也会溢出，且可通过读取产物恢复。
     #[cfg(feature = "files")]
     #[tokio::test]
     async fn truncation_stage_spills_without_token_limit_and_read_artifact_can_recover()
@@ -2116,6 +2215,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证溢出投影在工作目录之外使用产物读取器。
     #[tokio::test]
     async fn spill_projection_uses_artifact_reader_outside_working_dir() -> Result<()> {
         let working_dir =
@@ -2147,6 +2247,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证即使低于字节阈值，token 预算仍会触发溢出。
     #[tokio::test]
     async fn token_budget_spills_even_below_byte_threshold() -> Result<()> {
         let artifact_dir =
@@ -2179,6 +2280,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证截断阶段保留工具自身的截断标记。
     #[tokio::test]
     async fn truncation_stage_preserves_tool_level_truncation() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -2196,6 +2298,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证截断阶段对 UTF-8 安全。
     #[tokio::test]
     async fn truncation_stage_is_utf8_safe() -> Result<()> {
         let config = crate::agent::AgentConfig::new("test-model", "test-agent", "test")
@@ -2226,6 +2329,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证截断阶段记录内联输出的度量指标。
     #[tokio::test]
     async fn truncation_stage_records_inline_output_metrics() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -2252,6 +2356,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证溢出目录不可写时截断阶段会回退处理。
     #[tokio::test]
     async fn truncation_stage_falls_back_when_spill_directory_is_unwritable() -> Result<()> {
         let working_dir_file =
@@ -2287,6 +2392,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证默认流水线在输出预算处理之后才记录追踪。
     #[test]
     fn default_pipeline_records_trace_after_output_budgeting() {
         let pipeline = ToolExecutionPipeline::default_pipeline();
@@ -2296,6 +2402,7 @@ mod tests {
         assert!(matches!((truncation, trace), (Some(left), Some(right)) if left < right));
     }
 
+    /// 验证失败的工具结果仍保持为终态失败。
     #[tokio::test]
     async fn unsuccessful_tool_result_remains_a_terminal_failure() -> crate::error::Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -2329,6 +2436,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证流式流水线会转发调用资源守卫。
     #[tokio::test]
     async fn streaming_pipeline_forwards_invocation_resource_guards() -> crate::error::Result<()> {
         let observed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2367,11 +2475,13 @@ mod tests {
         Ok(())
     }
 
-    /// 并发运行两个单工具的 ExecuteStage 实例；本测试锁定“按流区分身份”，
-    /// 并验证终态事件确实反映了真实的完成顺序（执行事实）。这不是批处理契约
-    /// 测试：并发批处理路径（一轮内多次工具调用）按调用顺序发出结果，由
-    /// stream_channel.rs 中的 `concurrent_batch_results_follow_call_order`
-    /// 覆盖（F-RCT-04-P1-01）。
+    /**
+     * 并发运行两个单工具的 ExecuteStage 实例；本测试锁定“按流区分身份”，
+     * 并验证终态事件确实反映了真实的完成顺序（执行事实）。这不是批处理契约
+     * 测试：并发批处理路径（一轮内多次工具调用）按调用顺序发出结果，由
+     * stream_channel.rs 中的 `concurrent_batch_results_follow_call_order`
+     * 覆盖（F-RCT-04-P1-01）。
+     */
     #[tokio::test]
     async fn multiplexed_streams_preserve_identity_and_terminal_order() -> crate::error::Result<()>
     {
@@ -2467,14 +2577,20 @@ mod tests {
     /// 记录一次流水线运行中触发了哪些终态回调方法。
     #[derive(Default)]
     struct RecordingCallback {
+        /// on_tool_end 被调用的次数。
         tool_end_calls: std::sync::atomic::AtomicUsize,
+        /// on_tool_error 被调用的次数。
         tool_error_calls: std::sync::atomic::AtomicUsize,
+        /// on_tool_interrupted_with_id 被调用的次数。
         tool_interrupted_calls: std::sync::atomic::AtomicUsize,
+        /// 中断回调收到的输入参数。
         interrupted_inputs: std::sync::Mutex<Vec<Value>>,
+        /// 中断回调收到的错误文本。
         interrupted_errors: std::sync::Mutex<Vec<String>>,
     }
 
     impl echo_core::agent::AgentCallback for RecordingCallback {
+        /// 记录一次工具成功结束回调。
         fn on_tool_end<'a>(
             &'a self,
             _agent: &'a str,
@@ -2487,6 +2603,7 @@ mod tests {
             })
         }
 
+        /// 记录一次工具错误回调。
         fn on_tool_error<'a>(
             &'a self,
             _agent: &'a str,
@@ -2499,6 +2616,7 @@ mod tests {
             })
         }
 
+        /// 记录一次工具中断回调及其输入与错误。
         fn on_tool_interrupted_with_id<'a>(
             &'a self,
             _agent: &'a str,
@@ -2522,23 +2640,29 @@ mod tests {
         }
     }
 
+    /// 模拟被取消执行的测试工具：可返回取消失败结果或直接返回取消错误。
     struct InterruptedErrorTool {
+        /// 为 true 时返回失败结果，否则返回错误。
         returns_result: bool,
     }
 
     impl Tool for InterruptedErrorTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "interrupted_error"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "test stub for interrupted execution classification"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 按 returns_result 返回取消失败结果或取消错误。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2558,6 +2682,7 @@ mod tests {
         }
     }
 
+    /// 验证带类型的执行中断会保留输入，且不会重新分类已返回的结果。
     #[tokio::test]
     async fn typed_execution_interruption_preserves_input_without_reclassifying_returned_result()
     -> Result<()> {
@@ -2609,6 +2734,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 post-use 拒绝时，中断回调与追踪共享同一个终态原因。
     #[tokio::test]
     async fn post_use_rejection_keeps_interrupted_callback_and_trace_on_one_terminal_reason()
     -> Result<()> {
@@ -2737,25 +2863,32 @@ mod tests {
         Ok(())
     }
 
-    /// 确定性成功的工具，使流水线能够在不接触文件系统或 shell 的情况下
-    /// 演练成功路径下的 PostToolUse。
+    /**
+     * 确定性成功的工具，使流水线能够在不接触文件系统或 shell 的情况下
+     * 演练成功路径下的 PostToolUse。
+     */
     struct EffectTool;
 
+    /// 返回已确认的带类型效果（读、编辑、测试）的测试工具。
     struct TypedEffectTool;
 
     impl Tool for TypedEffectTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "shell"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "test stub returning confirmed typed effects"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 返回不透明输出并附带若干已确认的效果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2777,14 +2910,17 @@ mod tests {
         }
     }
 
+    /// 永不完成的 post-use 阶段，用于模拟卡住的钩子。
     struct PendingPostStage;
 
     #[async_trait::async_trait]
     impl PipelineStage for PendingPostStage {
+        /// 冒充 post_tool_use_hook 阶段名称。
         fn name(&self) -> &str {
             "post_tool_use_hook"
         }
 
+        /// 永远挂起，不返回。
         async fn run(
             &self,
             _ctx: &mut ToolExecutionContext,
@@ -2794,13 +2930,16 @@ mod tests {
         }
     }
 
+    /// 把输出方向内容清空的测试防护。
     struct EmptyOutputGuard;
 
     impl crate::guard::Guard for EmptyOutputGuard {
+        /// 返回防护名称。
         fn name(&self) -> &str {
             "empty_output"
         }
 
+        /// 输出方向转换为空内容，输入方向直接放行。
         fn check<'a>(
             &'a self,
             _content: &'a str,
@@ -2821,18 +2960,22 @@ mod tests {
     }
 
     impl Tool for EffectTool {
+        /// 返回工具名称。
         fn name(&self) -> &str {
             "shell"
         }
 
+        /// 返回工具描述。
         fn description(&self) -> &str {
             "test stub producing a successful effect result"
         }
 
+        /// 返回参数 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object"})
         }
 
+        /// 返回固定的成功结果。
         fn execute<'a>(
             &'a self,
             _parameters: ToolParameters,
@@ -2841,6 +2984,7 @@ mod tests {
         }
     }
 
+    /// 验证审计不会恢复已被防护清空的输出。
     #[tokio::test]
     async fn audit_does_not_restore_output_cleared_by_guard() -> Result<()> {
         let audit = Arc::new(crate::audit::InMemoryAuditLogger::new());
@@ -2881,6 +3025,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证输出防护会撤销防护前的产物访问能力。
     #[tokio::test]
     async fn output_guard_retires_pre_guard_artifact_capability() -> Result<()> {
         let agent = crate::agent::ReactAgentBuilder::new()
@@ -2911,6 +3056,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证带类型的工具效果被直接投影，而不依赖名称或输出推断。
     #[tokio::test]
     async fn typed_tool_effects_are_projected_without_name_or_output_inference() -> Result<()> {
         use crate::trace::{InMemoryRunStore, RunEvent, RunStore};
@@ -2950,6 +3096,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 post-use 阶段卡住时，已确认的效果仍会保留。
     #[tokio::test]
     async fn confirmed_effects_survive_stalled_post_use_stage() -> Result<()> {
         use crate::trace::{InMemoryRunStore, RunEvent, RunStore};
@@ -3006,6 +3153,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证失败的工具输出在交给调用方和审计前已被防护处理。
     #[tokio::test]
     async fn failed_tool_output_is_guarded_before_caller_and_audit() -> Result<()> {
         let audit = Arc::new(crate::audit::InMemoryAuditLogger::new());
@@ -3043,6 +3191,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证仅有错误的审计使用经过防护的诊断信息。
     #[tokio::test]
     async fn error_only_audit_uses_guarded_diagnostic() -> Result<()> {
         let audit = Arc::new(crate::audit::InMemoryAuditLogger::new());
@@ -3085,6 +3234,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行前被阻止的调用不会触发成功回调。
     #[tokio::test]
     async fn pre_execution_block_does_not_emit_success_callback() -> Result<()> {
         let callback = Arc::new(RecordingCallback::default());
@@ -3175,9 +3325,11 @@ mod tests {
         Ok(())
     }
 
-    /// #102：真实效果发生之后的 PostToolUse 阻止，不能使剩余的观察类阶段
-    /// （OutputGuard/Truncation/Trace/End）短路跳过。
-    /// 使用 hooks.rs:1428 中实现的“退出码 2 表示阻止”约定。
+    /**
+     * #102：真实效果发生之后的 PostToolUse 阻止，不能使剩余的观察类阶段
+     * （OutputGuard/Truncation/Trace/End）短路跳过。
+     * 使用 hooks.rs:1428 中实现的“退出码 2 表示阻止”约定。
+     */
     #[tokio::test]
     async fn post_hook_block_after_effect_still_records_full_observations() -> Result<()> {
         use crate::skills::hooks::{HookAction, HookEvent, HookRule, HooksDefinition};
@@ -3217,8 +3369,10 @@ mod tests {
             .build()?;
         let mut snapshot = crate::agent::snapshot::AgentRunSnapshot::from_agent(&agent);
         snapshot.trace_run_id = Some("post-block".to_string());
-        // 退出前先把钩子上下文读干净，避免 stdin 的写入与显式阻止信号发生
-        // 竞态，从而被误判成沙箱错误。
+        /*
+         * 退出前先把钩子上下文读干净，避免 stdin 的写入与显式阻止信号发生
+         * 竞态，从而被误判成沙箱错误。
+         */
         let (command, shell) = if cfg!(target_os = "windows") {
             (
                 "[Console]::In.ReadToEnd() | Out-Null; exit 2",

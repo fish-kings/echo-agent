@@ -1,21 +1,24 @@
-//! demo39_workflow.rs —— 图工作流引擎演示
-//!
-//! 展示 Graph + SharedState 的完整能力：
-//! 1. 线性管道（A → B → C）
-//! 2. 条件分支（Router 模式）
-//! 3. 循环迭代（Loop 模式）
-//! 4. 并行 fan-out / fan-in
-//! 5. Agent 节点集成
-//! 6. State snapshot / restore
-//!
-//! Contract test:
-//! ```bash
-//! cargo test --test example_contracts contract_demo39_workflow
-//! ```
+/*!
+ * demo39_workflow.rs —— 图工作流引擎演示
+ *
+ * 展示 Graph + SharedState 的完整能力：
+ * 1. 线性管道（A → B → C）
+ * 2. 条件分支（Router 模式）
+ * 3. 循环迭代（Loop 模式）
+ * 4. 并行 fan-out / fan-in
+ * 5. Agent 节点集成
+ * 6. 状态快照与恢复（State snapshot / restore）
+ *
+ * 契约测试：
+ * ```bash
+ * cargo test --test example_contracts contract_demo39_workflow
+ * ```
+ */
 
 use echo_agent::workflow::{GraphBuilder, SharedState};
 use serde::Deserialize;
 
+/// demo39 契约测试入口：依次运行 6 个图工作流演示。
 #[tokio::test]
 async fn contract_demo39_workflow() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()
@@ -48,7 +51,7 @@ async fn contract_demo39_workflow() -> echo_agent::error::Result<()> {
     separator("Part 5: Agent Node Integration");
     demo_agent_node().await?;
 
-    // ── Part 6: State snapshot & restore ────────────────────────────────────
+    // ── Part 6: 状态快照与恢复 ──────────────────────────────────────────
     separator("Part 6: State Snapshot & Restore");
     demo_snapshot().await?;
 
@@ -59,13 +62,14 @@ async fn contract_demo39_workflow() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 1: Linear Pipeline ─────────────────────────────────────────────────
+// ── Part 1: 线性管道 ────────────────────────────────────────────────────────
 
+/// 演示线性 ETL 管道：extract → transform → load。
 async fn demo_linear_pipeline() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("etl_pipeline")
         .add_function_node("extract", |state: &SharedState| {
             Box::pin(async move {
-                // Simulate data extraction
+                // 模拟数据抽取
                 let data = vec!["hello world", "RUST is great", "Echo Agent"];
                 let _ = state.set("raw_data", data);
                 let _ = state.set("stage", "extracted");
@@ -117,8 +121,9 @@ async fn demo_linear_pipeline() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 2: Conditional Branching ───────────────────────────────────────────
+// ── Part 2: 条件分支 ────────────────────────────────────────────────────────
 
+/// 演示条件分支：按工单优先级路由到不同处理节点。
 async fn demo_conditional() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("ticket_router")
         .add_function_node("classify", |state: &SharedState| {
@@ -191,8 +196,9 @@ async fn demo_conditional() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 3: Loop ────────────────────────────────────────────────────────────
+// ── Part 3: 循环 ────────────────────────────────────────────────────────────
 
+/// 演示循环迭代：反复精炼草稿直到质量分达标。
 async fn demo_loop() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("refinement_loop")
         .add_function_node("init", |state: &SharedState| {
@@ -208,7 +214,7 @@ async fn demo_loop() -> echo_agent::error::Result<()> {
                 let iter: i64 = state.get("iteration").unwrap_or(0);
                 let score: i64 = state.get("quality_score").unwrap_or(0);
 
-                // Simulate quality improvement
+                // 模拟质量提升
                 let new_score = score + 20;
                 let new_iter = iter + 1;
 
@@ -236,7 +242,7 @@ async fn demo_loop() -> echo_agent::error::Result<()> {
                 if score >= 90 {
                     "finalize".to_string()
                 } else {
-                    "refine".to_string() // loop back
+                    "refine".to_string() // 回到自身继续循环
                 }
             })
         })
@@ -264,8 +270,9 @@ async fn demo_loop() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 4: Parallel Fan-out / Fan-in ───────────────────────────────────────
+// ── Part 4: 并行 fan-out / fan-in ───────────────────────────────────────────
 
+/// 演示并行 fan-out / fan-in：多个分析节点并行执行后汇总。
 async fn demo_parallel() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("multi_analysis")
         .add_function_node("prepare", |state: &SharedState| {
@@ -353,10 +360,11 @@ async fn demo_parallel() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 5: Agent Node ──────────────────────────────────────────────────────
+// ── Part 5: Agent 节点 ──────────────────────────────────────────────────────
 
+/// 演示在工作流中集成 Agent 节点（使用 MockAgent）。
 async fn demo_agent_node() -> echo_agent::error::Result<()> {
-    // Use MockAgent to demonstrate without real LLM
+    // 使用 MockAgent 演示，无需真实 LLM
     let mock = echo_agent::testing::MockAgent::new("analyst")
         .with_response("The input data shows a positive trend with 3 key insights: growth in Q3, stable Q4, strong user engagement.");
 
@@ -400,21 +408,22 @@ async fn demo_agent_node() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 6: State Snapshot & Restore ────────────────────────────────────────
+// ── Part 6: 状态快照与恢复 ──────────────────────────────────────────────────
 
+/// 演示 SharedState 的快照、恢复与合并。
 async fn demo_snapshot() -> echo_agent::error::Result<()> {
-    // Run a graph partway
+    // 模拟图运行到一半
     let state = SharedState::new();
     let _ = state.set("counter", 0i64);
     let _ = state.set("label", "checkpoint demo");
 
-    // Simulate some work
+    // 模拟执行了一些工作
     let _ = state.set("counter", 42i64);
     let _ = state.push_message(echo_agent::llm::types::Message::user(
         "What is the meaning of life?".to_string(),
     ));
 
-    // Take snapshot
+    // 生成快照
     let snapshot = state.snapshot()?;
     println!("  Snapshot taken ({} bytes):", snapshot.len());
     println!(
@@ -427,7 +436,7 @@ async fn demo_snapshot() -> echo_agent::error::Result<()> {
         }
     );
 
-    // Restore from snapshot
+    // 从快照恢复
     let restored = SharedState::from_snapshot(&snapshot)?;
     println!("\n  Restored state:");
     println!(
@@ -440,10 +449,10 @@ async fn demo_snapshot() -> echo_agent::error::Result<()> {
     );
     println!("    messages: {}", restored.message_count());
 
-    // Demonstrate merge
+    // 演示合并
     let other = SharedState::new();
     let _ = other.set("extra", "merged value");
-    let _ = other.set("counter", 999i64); // should NOT overwrite
+    let _ = other.set("counter", 999i64); // 不应覆盖已有值
 
     let _ = restored.merge(&other);
     println!("\n  After merge (no overwrite):");
@@ -460,8 +469,9 @@ async fn demo_snapshot() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── 辅助函数 ────────────────────────────────────────────────────────────────
 
+/// 打印演示横幅。
 fn print_banner() {
     println!("{}", "=".repeat(64));
     println!("      Echo Agent x Graph Workflow Engine (demo39)");
@@ -470,11 +480,13 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线与小节标题。
 fn separator(title: &str) {
     println!("{}", "-".repeat(64));
     println!("{title}\n");
 }
 
+/// 从共享状态读取必需的键，缺失时返回错误。
 fn required_state<T>(state: &SharedState, key: &str) -> echo_agent::error::Result<T>
 where
     T: for<'de> Deserialize<'de>,

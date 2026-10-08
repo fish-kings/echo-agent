@@ -40,7 +40,10 @@ pub enum AttemptDecision {
     /// 应当开始第一次尝试。
     Start,
     /// 应当重试，并携带剩余可尝试的次数。
-    Retry { remaining: u32 },
+    Retry {
+        /// 剩余可尝试的次数。
+        remaining: u32,
+    },
     /// 已达到最大尝试次数，应当停止。
     Stop,
 }

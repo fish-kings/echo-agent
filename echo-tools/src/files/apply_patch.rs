@@ -1,4 +1,4 @@
-//! Transactional file editing using the canonical `*** Begin Patch` format.
+//! 使用规范 `*** Begin Patch` 格式的事务性文件编辑。
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
@@ -13,24 +13,34 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 
+/// 补丁起始标记。
 const BEGIN_PATCH: &str = "*** Begin Patch";
+/// 补丁结束标记。
 const END_PATCH: &str = "*** End Patch";
+/// 新增文件动作前缀。
 const ADD_FILE: &str = "*** Add File: ";
+/// 删除文件动作前缀。
 const DELETE_FILE: &str = "*** Delete File: ";
+/// 更新文件动作前缀。
 const UPDATE_FILE: &str = "*** Update File: ";
+/// 更新动作中的移动目标前缀。
 const MOVE_TO: &str = "*** Move to: ";
+/// 标记 hunk 必须匹配到文件末尾。
 const END_OF_FILE: &str = "*** End of File";
 
-/// Apply a multi-file patch relative to the active workspace.
+/// 相对当前工作区应用多文件补丁。
 pub struct ApplyPatchTool {
+    /// 可选的补丁根目录；未设置时使用上下文工作目录。
     base_dir: Option<PathBuf>,
 }
 
 impl ApplyPatchTool {
+    /// 创建以上下文工作目录为补丁根目录的工具。
     pub fn new() -> Self {
         Self { base_dir: None }
     }
 
+    /// 创建以指定目录为补丁根目录的工具。
     pub fn with_base_dir(base: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: Some(base.into()),
@@ -39,20 +49,24 @@ impl ApplyPatchTool {
 }
 
 impl Default for ApplyPatchTool {
+    /// 等同于 `Self::new()`。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Tool for ApplyPatchTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "apply_patch"
     }
 
+    /// 返回面向模型的工具描述。
     fn description(&self) -> &str {
         "Apply one transactional patch across files. The patch must start with '*** Begin Patch' and end with '*** End Patch'. Use '*** Add File: path', '*** Update File: path', '*** Delete File: path', optional '*** Move to: path', and @@ context hunks. Added lines start with +; removed lines with -; unchanged context lines with a space."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -71,18 +85,22 @@ impl Tool for ApplyPatchTool {
         })
     }
 
+    /// 返回工具所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read, ToolPermission::Write]
     }
 
+    /// 返回工具风险等级。
     fn risk_level(&self) -> ToolRiskLevel {
         ToolRiskLevel::Standard
     }
 
+    /// 返回是否允许与其它调用并行批量执行。
     fn allows_parallel_batch_execution(&self) -> bool {
         false
     }
 
+    /// 在给定工具上下文中执行工具。
     fn execute_with_context<'a>(
         &'a self,
         parameters: ToolParameters,
@@ -112,42 +130,62 @@ impl Tool for ApplyPatchTool {
     }
 }
 
+/// 解析后的单个文件动作。
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PatchAction {
+    /// 新增文件。
     Add {
+        /// 相对路径。
         path: String,
+        /// 文件完整内容。
         contents: String,
     },
+    /// 删除文件。
     Delete {
+        /// 相对路径。
         path: String,
     },
+    /// 更新文件，可选移动到新路径。
     Update {
+        /// 源文件相对路径。
         path: String,
+        /// 可选的移动目标相对路径。
         move_to: Option<String>,
+        /// 按顺序应用的更新块。
         chunks: Vec<UpdateChunk>,
     },
 }
 
+/// 更新动作中的一个 hunk。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct UpdateChunk {
+    /// `@@` 后的定位上下文行。
     context: Option<String>,
+    /// 需要匹配并替换的原始行。
     old_lines: Vec<String>,
+    /// 替换后的新行。
     new_lines: Vec<String>,
+    /// 是否必须匹配到文件末尾。
     end_of_file: bool,
 }
 
 impl UpdateChunk {
+    /// 判断该 hunk 是否包含任何增删或上下文行。
     fn has_lines(&self) -> bool {
         !self.old_lines.is_empty() || !self.new_lines.is_empty()
     }
 }
 
+/// 逐行解析补丁文本的解析器。
 struct PatchParser<'a> {
+    /// 去除行尾 `\r` 后的补丁行。
     lines: Vec<&'a str>,
+    /// 当前解析位置。
     index: usize,
 }
 
 impl<'a> PatchParser<'a> {
+    /// 将补丁文本拆分为行并创建解析器。
     fn new(patch: &'a str) -> Self {
         let mut lines = patch
             .split('\n')
@@ -159,6 +197,7 @@ impl<'a> PatchParser<'a> {
         Self { lines, index: 0 }
     }
 
+    /// 解析整个补丁，返回文件动作列表。
     fn parse(mut self) -> std::result::Result<Vec<PatchAction>, String> {
         if self.current_trimmed() != Some(BEGIN_PATCH) {
             return Err(format!("patch must start with '{BEGIN_PATCH}'"));
@@ -192,6 +231,7 @@ impl<'a> PatchParser<'a> {
         Ok(actions)
     }
 
+    /// 解析新增文件动作。
     fn parse_add(&mut self, path: &str) -> std::result::Result<PatchAction, String> {
         let path = validate_patch_path_text(path)?;
         self.index = self.index.saturating_add(1);
@@ -214,12 +254,14 @@ impl<'a> PatchParser<'a> {
         Ok(PatchAction::Add { path, contents })
     }
 
+    /// 解析删除文件动作。
     fn parse_delete(&mut self, path: &str) -> std::result::Result<PatchAction, String> {
         let path = validate_patch_path_text(path)?;
         self.index = self.index.saturating_add(1);
         Ok(PatchAction::Delete { path })
     }
 
+    /// 解析更新文件动作（含可选移动目标与 hunk）。
     fn parse_update(&mut self, path: &str) -> std::result::Result<PatchAction, String> {
         let path = validate_patch_path_text(path)?;
         self.index = self.index.saturating_add(1);
@@ -290,14 +332,17 @@ impl<'a> PatchParser<'a> {
         })
     }
 
+    /// 返回当前行。
     fn current(&self) -> Option<&'a str> {
         self.lines.get(self.index).copied()
     }
 
+    /// 返回去除首尾空白后的当前行。
     fn current_trimmed(&self) -> Option<&'a str> {
         self.current().map(str::trim)
     }
 
+    /// 生成带当前行号的错误信息。
     fn error(&self, message: impl AsRef<str>) -> String {
         format!(
             "invalid patch at line {}: {}",
@@ -307,6 +352,7 @@ impl<'a> PatchParser<'a> {
     }
 }
 
+/// 校验 hunk 非空。
 fn validate_chunk(chunk: &UpdateChunk, index: usize) -> std::result::Result<(), String> {
     if chunk.has_lines() {
         Ok(())
@@ -318,6 +364,7 @@ fn validate_chunk(chunk: &UpdateChunk, index: usize) -> std::result::Result<(), 
     }
 }
 
+/// 判断该行是否为文件动作或补丁结束标记。
 fn is_action_or_end(line: &str) -> bool {
     let line = line.trim();
     line == END_PATCH
@@ -326,6 +373,7 @@ fn is_action_or_end(line: &str) -> bool {
         || line.starts_with(UPDATE_FILE)
 }
 
+/// 校验补丁路径为非空相对路径，且不含 `..` 或根组件。
 fn validate_patch_path_text(path: &str) -> std::result::Result<String, String> {
     let path = path.trim();
     if path.is_empty() {
@@ -353,9 +401,11 @@ fn validate_patch_path_text(path: &str) -> std::result::Result<String, String> {
     Ok(path.to_string())
 }
 
-/// Return paths that must already exist for a patch to be valid.
-///
-/// The ReAct read-before-edit stage uses this without duplicating patch grammar.
+/**
+ * 返回补丁生效前必须已存在的路径。
+ *
+ * ReAct 的“先读后改”阶段使用此函数，从而无需重复实现补丁语法。
+ */
 pub fn existing_file_paths(patch: &str) -> std::result::Result<Vec<String>, String> {
     PatchParser::new(patch).parse().map(|actions| {
         actions
@@ -368,26 +418,36 @@ pub fn existing_file_paths(patch: &str) -> std::result::Result<Vec<String>, Stri
     })
 }
 
+/// 校验通过后计划执行的单个文件变更。
 #[derive(Clone)]
 enum PlannedMutation {
+    /// 写入文件（新建或覆盖）。
     Write {
+        /// 目标绝对路径。
         path: PathBuf,
+        /// 原始内容；新建文件时为 `None`。
         before: Option<Vec<u8>>,
+        /// 写入后的内容。
         after: Vec<u8>,
     },
+    /// 删除文件。
     Delete {
+        /// 目标绝对路径。
         path: PathBuf,
+        /// 删除前的原始内容，用于回滚。
         before: Vec<u8>,
     },
 }
 
 impl PlannedMutation {
+    /// 返回变更目标路径。
     fn path(&self) -> &Path {
         match self {
             Self::Write { path, .. } | Self::Delete { path, .. } => path,
         }
     }
 
+    /// 返回变更前的原始内容（若存在）。
     fn original(&self) -> Option<&[u8]> {
         match self {
             Self::Write { before, .. } => before.as_deref(),
@@ -396,12 +456,17 @@ impl PlannedMutation {
     }
 }
 
+/// 完整校验后的补丁执行计划。
 struct PatchPlan {
+    /// 按顺序执行的文件变更。
     mutations: Vec<PlannedMutation>,
+    /// 全部变更的 unified diff。
     unified_diff: String,
+    /// 涉及的文件动作数量。
     changed_files: usize,
 }
 
+/// 解析、校验并（非 dry-run 时）事务性地提交补丁。
 fn execute_patch(
     patch: &str,
     dry_run: bool,
@@ -468,6 +533,7 @@ fn execute_patch(
     }
 }
 
+/// 在已尝试的路径中找出磁盘内容确实已偏离原始状态的路径。
 fn confirmed_mutation_paths(mutations: &[PlannedMutation], attempted: &[PathBuf]) -> Vec<String> {
     let attempted = attempted.iter().cloned().collect::<HashSet<_>>();
     let mut seen = HashSet::new();
@@ -486,6 +552,7 @@ fn confirmed_mutation_paths(mutations: &[PlannedMutation], attempted: &[PathBuf]
         .collect()
 }
 
+/// 解析并规范化补丁根目录。
 fn resolve_root(
     base_dir: Option<&Path>,
     working_dir: Option<&Path>,
@@ -506,6 +573,7 @@ fn resolve_root(
     Ok(canonical)
 }
 
+/// 将补丁相对路径解析为根目录下的绝对路径，拒绝经符号链接逃逸出根目录。
 fn resolve_action_path(root: &Path, path: &str) -> std::result::Result<PathBuf, String> {
     validate_patch_path_text(path)?;
     let relative = Path::new(path)
@@ -543,6 +611,7 @@ fn resolve_action_path(root: &Path, path: &str) -> std::result::Result<PathBuf, 
     Ok(resolved)
 }
 
+/// 基于当前文件内容构建补丁执行计划并生成 diff。
 fn build_plan(actions: Vec<PatchAction>, root: &Path) -> std::result::Result<PatchPlan, String> {
     let mut claimed = HashSet::new();
     let mut mutations = Vec::new();
@@ -635,6 +704,7 @@ fn build_plan(actions: Vec<PatchAction>, root: &Path) -> std::result::Result<Pat
     })
 }
 
+/// 登记路径，拒绝同一补丁对同一路径执行多个动作。
 fn claim_path(
     claimed: &mut HashSet<PathBuf>,
     path: &Path,
@@ -649,6 +719,7 @@ fn claim_path(
     }
 }
 
+/// 读取必须存在的普通文件。
 fn read_existing_file(path: &Path, display: &str) -> std::result::Result<Vec<u8>, String> {
     let metadata =
         std::fs::metadata(path).map_err(|error| format!("cannot access '{display}': {error}"))?;
@@ -658,18 +729,24 @@ fn read_existing_file(path: &Path, display: &str) -> std::result::Result<Vec<u8>
     std::fs::read(path).map_err(|error| format!("cannot read '{display}': {error}"))
 }
 
+/// 将字节解码为 UTF-8 文本。
 fn decode_text(bytes: &[u8], display: &str) -> std::result::Result<String, String> {
     String::from_utf8(bytes.to_vec())
         .map_err(|_| format!("patch target is not valid UTF-8 text: '{display}'"))
 }
 
+/// 保留换行风格的文本文档表示。
 struct TextDocument {
+    /// 去除换行符后的行。
     lines: Vec<String>,
+    /// 原文是否以换行结尾。
     trailing_newline: bool,
+    /// 原文主要使用的换行符（`\n` 或 `\r\n`）。
     line_ending: &'static str,
 }
 
 impl TextDocument {
+    /// 解析文本并识别换行风格与末尾换行。
     fn parse(text: &str) -> Self {
         let crlf = text.matches("\r\n").count();
         let lf = text.matches('\n').count();
@@ -693,6 +770,7 @@ impl TextDocument {
         }
     }
 
+    /// 按原换行风格重新渲染文本。
     fn render(self) -> String {
         let mut text = self.lines.join(self.line_ending);
         if self.trailing_newline {
@@ -702,6 +780,7 @@ impl TextDocument {
     }
 }
 
+/// 将 hunk 依次应用到原文，返回修改后的文本。
 fn apply_chunks(
     path: &str,
     original: &str,
@@ -751,6 +830,7 @@ fn apply_chunks(
     Ok(document.render())
 }
 
+/// 从 `start` 起查找与 `needle` 完全相等的行。
 fn find_line(lines: &[String], needle: &str, start: usize) -> Option<usize> {
     lines
         .iter()
@@ -759,6 +839,7 @@ fn find_line(lines: &[String], needle: &str, start: usize) -> Option<usize> {
         .find_map(|(index, line)| (line == needle).then_some(index))
 }
 
+/// 从 `start` 起查找连续匹配 `needle` 的行序列起点。
 fn find_sequence(lines: &[String], needle: &[String], start: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(start.min(lines.len()));
@@ -770,6 +851,7 @@ fn find_sequence(lines: &[String], needle: &[String], start: usize) -> Option<us
         .find(|index| lines.get(*index..index.saturating_add(needle.len())) == Some(needle))
 }
 
+/// 生成单个文件的 unified diff 并追加到目标字符串。
 fn append_diff(target: &mut String, old_path: &str, new_path: &str, old: &str, new: &str) {
     if old == new && old_path == new_path {
         return;
@@ -787,6 +869,7 @@ fn append_diff(target: &mut String, old_path: &str, new_path: &str, old: &str, n
     }
 }
 
+/// 为将被修改的已有文件创建 Git 检查点。
 fn create_checkpoints(
     mutations: &[PlannedMutation],
 ) -> std::result::Result<Vec<(String, String)>, String> {
@@ -805,12 +888,17 @@ fn create_checkpoints(
     Ok(checkpoints)
 }
 
+/// 提交补丁失败时的详情。
 struct CommitFailure {
+    /// 导致提交失败的错误。
     error: String,
+    /// 回滚过程中产生的错误。
     rollback_errors: Vec<String>,
+    /// 已尝试修改的路径。
     attempted_paths: Vec<PathBuf>,
 }
 
+/// 依次应用计划中的变更；任一失败则回滚已应用的变更。
 fn commit_plan(
     mutations: &[PlannedMutation],
     root: &Path,
@@ -850,6 +938,7 @@ fn commit_plan(
     Ok(())
 }
 
+/// 提交前确认目标文件自校验以来未被修改。
 fn verify_originals_unchanged(mutations: &[PlannedMutation]) -> std::result::Result<(), String> {
     let mut seen = HashSet::new();
     for mutation in mutations {
@@ -881,6 +970,7 @@ fn verify_originals_unchanged(mutations: &[PlannedMutation]) -> std::result::Res
     Ok(())
 }
 
+/// 逆序回滚已应用的变更并删除新建目录，返回回滚错误。
 fn rollback_mutations(applied: &[PlannedMutation], created_directories: &[PathBuf]) -> Vec<String> {
     let mut errors = Vec::new();
     for mutation in applied.iter().rev() {
@@ -916,6 +1006,7 @@ fn rollback_mutations(applied: &[PlannedMutation], created_directories: &[PathBu
     errors
 }
 
+/// 返回写入 `path` 时将被新建的父目录（由外到内）。
 fn missing_parent_directories(path: &Path, root: &Path) -> Vec<PathBuf> {
     let mut missing = Vec::new();
     let mut current = path.parent();
@@ -930,6 +1021,7 @@ fn missing_parent_directories(path: &Path, root: &Path) -> Vec<PathBuf> {
     missing
 }
 
+/// 构造补丁执行结果，包含 diff、元数据、检查点与文件编辑效果。
 fn patch_result(plan: &PatchPlan, dry_run: bool, checkpoints: Vec<(String, String)>) -> ToolResult {
     let label = if dry_run { "Validated" } else { "Applied" };
     let mut result = ToolResult::success_with_kind(
@@ -965,6 +1057,7 @@ fn patch_result(plan: &PatchPlan, dry_run: bool, checkpoints: Vec<(String, Strin
 mod tests {
     use super::*;
 
+    /// 构造以指定目录为工作目录的测试上下文。
     fn context(root: &Path) -> echo_core::tools::ToolContext {
         echo_core::tools::ToolContext {
             working_dir: Some(root.to_path_buf()),
@@ -972,6 +1065,7 @@ mod tests {
         }
     }
 
+    /// 在指定目录下执行补丁。
     async fn run_patch(root: &Path, patch: &str) -> Result<ToolResult> {
         ApplyPatchTool::new()
             .execute_with_context(
@@ -981,6 +1075,7 @@ mod tests {
             .await
     }
 
+    /// 新增、更新、删除与移动应一次性生效，并正确处理 Unicode 内容。
     #[tokio::test]
     async fn applies_add_update_delete_move_with_unicode() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1032,6 +1127,7 @@ mod tests {
         Ok(())
     }
 
+    /// 上下文过期时所有文件均保持不变。
     #[tokio::test]
     async fn stale_context_leaves_every_file_unchanged() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1053,6 +1149,7 @@ mod tests {
         Ok(())
     }
 
+    /// 拒绝路径穿越以及新增已存在的文件。
     #[tokio::test]
     async fn rejects_path_traversal_and_existing_add_target() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1072,6 +1169,7 @@ mod tests {
         Ok(())
     }
 
+    /// 保留 CRLF 换行，并支持 dry-run。
     #[tokio::test]
     async fn preserves_crlf_and_supports_dry_run() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1102,6 +1200,7 @@ mod tests {
         Ok(())
     }
 
+    /// 部分回滚后，只上报已尝试且仍被改动的路径。
     #[test]
     fn partial_rollback_effects_only_name_attempted_paths_still_changed() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1130,6 +1229,7 @@ mod tests {
         Ok(())
     }
 
+    /// 必须已存在路径的提取与规范解析器共用同一语法。
     #[test]
     fn existing_paths_share_the_canonical_parser() -> std::result::Result<(), String> {
         let patch = "*** Begin Patch\n*** Add File: new.txt\n+x\n*** Update File: old.txt\n@@\n-a\n+b\n*** Delete File: stale.txt\n*** End Patch";

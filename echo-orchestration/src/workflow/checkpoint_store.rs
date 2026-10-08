@@ -1,18 +1,20 @@
-//! Checkpoint persistent storage
-//!
-//! Supports saving and restoring Graph execution state, implementing LangGraph-style interrupt/checkpoint mechanisms.
-//!
-//! ## Design
-//!
-//! - `CheckpointStore` trait: abstract storage interface
-//! - `MemoryCheckpointStore`: in-memory storage (default, non-persistent)
-//! - `FileCheckpointStore`: file storage (supports persistence)
-//!
-//! ## Use Cases
-//!
-//! - Long-running workflow pause/resume
-//! - Node interrupts requiring manual approval
-//! - Failure recovery and retry
+/*!
+检查点持久化存储
+
+支持保存和恢复 Graph 执行状态，实现 LangGraph 风格的中断/检查点机制。
+
+## 设计
+
+- `CheckpointStore` trait：抽象存储接口
+- `MemoryCheckpointStore`：内存存储（默认，不持久化）
+- `FileCheckpointStore`：文件存储（支持持久化）
+
+## 使用场景
+
+- 长时间运行工作流的暂停/恢复
+- 需要人工审批的节点中断
+- 故障恢复与重试
+*/
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -28,60 +30,63 @@ use echo_core::error::Result;
 
 // ── Checkpoint ────────────────────────────────────────────────────────────────
 
-/// Checkpoint - snapshot of graph execution state
-///
-/// Contains all information needed to resume execution:
-/// - Execution path and step count
-/// - Shared state snapshot
-/// - Pending node information
-///
-/// Supports time-travel debugging via `parent_checkpoint_id` lineage,
-/// human-readable `label`/`tags`, and `branch` forking.
+/**
+检查点——图执行状态的快照
+
+包含恢复执行所需的全部信息：
+- 执行路径与步数
+- 共享状态快照
+- 待执行节点信息
+
+通过 `parent_checkpoint_id` 血缘链支持时间旅行调试，
+并支持人类可读的 `label`/`tags` 以及 `branch` 分叉。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
-    /// Unique identifier
+    /// 唯一标识符
     pub id: String,
-    /// Graph name
+    /// 图名称
     pub graph_name: String,
-    /// Stable identity of the workflow execution that owns this checkpoint.
+    /// 拥有该检查点的工作流执行的稳定标识。
     pub workflow_run_id: String,
-    /// Hash of the compiled graph topology this checkpoint was created from.
+    /// 创建该检查点时所用已编译图拓扑的哈希值。
     pub graph_revision: String,
-    /// Monotonic checkpoint generation within the workflow run.
+    /// 工作流运行内单调递增的检查点代数。
     pub generation: u64,
-    /// Unique identity assigned by the Store to the winning resume attempt.
+    /// 由存储分配给胜出恢复尝试的唯一标识。
     pub resume_attempt_id: Option<String>,
-    /// Current node
+    /// 当前节点
     pub current_node: String,
-    /// State snapshot (JSON serialized)
+    /// 状态快照（JSON 序列化）
     pub state_snapshot: serde_json::Value,
-    /// Execution path
+    /// 执行路径
     pub path: Vec<String>,
-    /// Step count
+    /// 步数
     pub step_count: usize,
-    /// Creation time
+    /// 创建时间
     #[serde(with = "echo_core::utils::time::local_rfc3339")]
     pub created_at: DateTime<Utc>,
-    /// Exact continuation to execute after approval.
+    /// 审批通过后要执行的精确续接位置。
     pub continuation: WorkflowContinuation,
-    /// Interrupt type
+    /// 中断类型
     pub interrupt_type: InterruptType,
-    /// Parent checkpoint ID for lineage tracking.
-    /// `None` for the first checkpoint in a session.
+    /** 用于血缘追踪的父检查点 ID。
+    会话中的第一个检查点为 `None`。 */
     #[serde(default)]
     pub parent_checkpoint_id: Option<String>,
-    /// Human-readable label (e.g., "before risky operation", "branch:feature-x")
+    /// 人类可读的标签（例如 "before risky operation"、"branch:feature-x"）
     #[serde(default)]
     pub label: Option<String>,
-    /// Tags for filtering and discovery
+    /// 用于过滤和检索的标签
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Branch name if this checkpoint is a fork
+    /// 若该检查点为分叉，则为分支名称
     #[serde(default)]
     pub branch: Option<String>,
 }
 
 impl Checkpoint {
+    /// 由已序列化的状态快照构造检查点，其余字段取默认值。
     fn from_snapshot(
         id: String,
         graph_name: String,
@@ -112,7 +117,7 @@ impl Checkpoint {
         }
     }
 
-    /// Create a checkpoint and propagate state serialization failures.
+    /// 创建检查点，并向上传播状态序列化失败。
     pub fn try_new(
         graph_name: String,
         current_node: String,
@@ -137,7 +142,7 @@ impl Checkpoint {
         ))
     }
 
-    /// Create a new Checkpoint
+    /// 创建新的检查点（状态序列化失败时将错误信息写入快照）
     pub fn new(
         graph_name: String,
         current_node: String,
@@ -162,7 +167,7 @@ impl Checkpoint {
         )
     }
 
-    /// Bind this checkpoint to a compiled graph revision and continuation.
+    /// 将该检查点绑定到已编译的图版本及续接位置。
     pub fn bind_execution(
         mut self,
         graph_revision: impl Into<String>,
@@ -173,7 +178,7 @@ impl Checkpoint {
         self
     }
 
-    /// Continue the same workflow run with the next checkpoint generation.
+    /// 以下一检查点代数延续同一次工作流运行。
     pub fn continue_run(mut self, parent: &Checkpoint) -> Self {
         self.workflow_run_id = parent.workflow_run_id.clone();
         self.generation = parent.generation.saturating_add(1);
@@ -181,7 +186,7 @@ impl Checkpoint {
         self
     }
 
-    /// Create a new Checkpoint with explicit parent for lineage tracking.
+    /// 创建带有显式父检查点的新检查点，用于血缘追踪。
     #[allow(clippy::too_many_arguments)]
     pub fn with_parent(
         parent_id: impl Into<String>,
@@ -204,7 +209,7 @@ impl Checkpoint {
         cp
     }
 
-    /// Create a new branch checkpoint (fork off an existing checkpoint).
+    /// 创建新的分支检查点（从已有检查点分叉）。
     #[allow(clippy::too_many_arguments)]
     pub fn branch(
         parent_id: impl Into<String>,
@@ -229,19 +234,19 @@ impl Checkpoint {
         cp
     }
 
-    /// Set a human-readable label on this checkpoint.
+    /// 为该检查点设置人类可读的标签。
     pub fn with_label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
     }
 
-    /// Add tags to this checkpoint.
+    /// 为该检查点设置标签。
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
         self
     }
 
-    /// Restore SharedState from a Checkpoint
+    /// 从检查点恢复 SharedState
     pub fn restore_state(&self) -> Result<SharedState> {
         SharedState::from_json(&self.state_snapshot).map_err(|e| {
             echo_core::error::ReactError::Other(format!("Failed to restore state: {}", e))
@@ -249,45 +254,61 @@ impl Checkpoint {
     }
 }
 
-/// Typed execution cursor retained by a checkpoint.
+/// 检查点保存的类型化执行游标。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowContinuation {
-    /// Execute `current_node` next.
+    /// 下一步执行 `current_node`。
     Node,
-    /// Execute all targets from one input snapshot, then continue at `then`.
-    FanOut { targets: Vec<String>, then: String },
-    /// The workflow reached its terminal edge.
+    /// 基于同一输入快照执行所有目标节点，然后从 `then` 继续。
+    FanOut {
+        /// 需要并行执行的目标节点
+        targets: Vec<String>,
+        /// 所有目标完成后继续执行的节点
+        then: String,
+    },
+    /// 工作流已到达终止边。
     End,
 }
 
-/// Interrupt type
+/// 中断类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InterruptType {
-    /// Pause before entering a node
+    /// 进入节点前暂停
     BeforeNode,
-    /// Pause after node execution
+    /// 节点执行后暂停
     AfterNode,
 }
 
-/// Checkpoint info summary (used for list display)
+/// 检查点信息摘要（用于列表展示）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointInfo {
+    /// 检查点唯一标识符
     pub id: String,
+    /// 图名称
     pub graph_name: String,
+    /// 当前节点
     pub current_node: String,
+    /// 步数
     pub step_count: usize,
+    /// 创建时间
     #[serde(with = "echo_core::utils::time::local_rfc3339")]
     pub created_at: DateTime<Utc>,
+    /// 中断类型
     pub interrupt_type: InterruptType,
+    /// 父检查点 ID
     pub parent_checkpoint_id: Option<String>,
+    /// 人类可读的标签
     pub label: Option<String>,
+    /// 标签列表
     pub tags: Vec<String>,
+    /// 分支名称
     pub branch: Option<String>,
 }
 
 impl From<&Checkpoint> for CheckpointInfo {
+    /// 从完整检查点提取摘要信息。
     fn from(cp: &Checkpoint) -> Self {
         Self {
             id: cp.id.clone(),
@@ -304,21 +325,21 @@ impl From<&Checkpoint> for CheckpointInfo {
     }
 }
 
-/// Filter parameters for listing checkpoints
+/// 列出检查点时使用的过滤参数
 #[derive(Debug, Clone, Default)]
 pub struct CheckpointFilter {
-    /// Filter by graph name
+    /// 按图名称过滤
     pub graph_name: Option<String>,
-    /// Filter by branch name
+    /// 按分支名称过滤
     pub branch: Option<String>,
-    /// Filter by tag
+    /// 按标签过滤
     pub tag: Option<String>,
-    /// Limit number of results
+    /// 限制结果数量
     pub limit: Option<usize>,
 }
 
 impl CheckpointFilter {
-    /// Create a filter that matches a specific graph.
+    /// 创建匹配指定图的过滤器。
     pub fn by_graph(graph_name: impl Into<String>) -> Self {
         Self {
             graph_name: Some(graph_name.into()),
@@ -329,65 +350,70 @@ impl CheckpointFilter {
 
 // ── CheckpointStore Trait ──────────────────────────────────────────────────────
 
-/// Checkpoint storage interface
+/// 检查点存储接口
 #[async_trait]
 pub trait CheckpointStore: Send + Sync {
-    /// Save a Checkpoint
+    /// 保存检查点
     async fn save(&self, checkpoint: &Checkpoint) -> Result<()>;
 
-    /// Load a Checkpoint
+    /// 加载检查点
     async fn load(&self, id: &str) -> Result<Option<Checkpoint>>;
 
-    /// Atomically lease and return a checkpoint for one resume attempt.
-    ///
-    /// The lease must be settled with [`Self::ack_claim`] or
-    /// [`Self::requeue_claim`]. A claimed checkpoint remains visible to
-    /// `load`/`list` so a crash does not turn it into an invisible gap.
+    /**
+    原子地租用并返回一个检查点，供一次恢复尝试使用。
+
+    租约必须通过 [`Self::ack_claim`] 或 [`Self::requeue_claim`] 结算。
+    被领取的检查点对 `load`/`list` 仍然可见，因此崩溃不会使其变成不可见的空洞。
+    */
     async fn claim(&self, id: &str) -> Result<Option<Checkpoint>>;
 
-    /// Acknowledge a successfully completed resume attempt.
-    ///
-    /// Stores must override this operation. The default fails closed so a
-    /// remote or custom store cannot report settlement without committing it.
+    /**
+    确认一次已成功完成的恢复尝试。
+
+    存储实现必须覆盖此操作。默认实现以失败关闭，
+    使远程或自定义存储无法在未真正提交的情况下报告已结算。
+    */
     async fn ack_claim(&self, _id: &str, _attempt_id: &str) -> Result<()> {
         Err(echo_core::error::ReactError::Other(
             "Checkpoint store does not support claim acknowledgement".to_string(),
         ))
     }
 
-    /// Return a leased claim to the pending checkpoint set after a failure.
+    /// 失败后将已租用的领取归还到待处理检查点集合。
     async fn requeue_claim(&self, _id: &str, _attempt_id: &str) -> Result<()> {
         Err(echo_core::error::ReactError::Other(
             "Checkpoint store does not support claim requeue".to_string(),
         ))
     }
 
-    /// Renew an active claim for the exact resume attempt.
+    /// 为指定的恢复尝试续租其活跃领取。
     async fn renew_claim(&self, _id: &str, _attempt_id: &str) -> Result<()> {
         Err(echo_core::error::ReactError::Other(
             "Checkpoint store does not support claim renewal".to_string(),
         ))
     }
 
-    /// Interval at which the execution owner should renew an active claim.
-    ///
-    /// `None` means the store's claims do not expire. Stores that return an
-    /// interval must implement [`Self::renew_claim`].
+    /**
+    执行所有者应续租活跃领取的时间间隔。
+
+    `None` 表示该存储的领取不会过期。返回间隔的存储必须实现 [`Self::renew_claim`]。
+    */
     fn claim_heartbeat_interval(&self) -> Option<Duration> {
         None
     }
 
-    /// Whether claim, renew/requeue and acknowledgement form one complete
-    /// settlement contract. `Graph` checks this before acquiring a claim.
+    /** 领取、续租/归还与确认是否构成完整的结算契约。
+    `Graph` 在获取领取前会检查此项。 */
     fn supports_claim_settlement(&self) -> bool {
         false
     }
 
-    /// Save metadata only when the checkpoint generation is unchanged.
-    ///
-    /// Implementations with an atomic store should override this method. A
-    /// remote adapter that cannot provide one must reject the update instead
-    /// of falling back to a racy load-then-save sequence.
+    /**
+    仅在检查点代数未变化时保存元数据。
+
+    具备原子存储能力的实现应覆盖此方法。无法提供原子性的远程适配器
+    必须拒绝更新，而不是退化为存在竞态的先加载后保存流程。
+    */
     async fn save_if_generation(
         &self,
         checkpoint: &Checkpoint,
@@ -397,10 +423,10 @@ pub trait CheckpointStore: Send + Sync {
         Ok(false)
     }
 
-    /// List all Checkpoint info
+    /// 列出所有检查点信息
     async fn list(&self) -> Result<Vec<CheckpointInfo>>;
 
-    /// List checkpoints for a specific graph
+    /// 列出指定图的检查点
     async fn list_by_graph(&self, graph_name: &str) -> Result<Vec<CheckpointInfo>> {
         let all = self.list().await?;
         Ok(all
@@ -409,7 +435,7 @@ pub trait CheckpointStore: Send + Sync {
             .collect())
     }
 
-    /// List checkpoints matching a filter
+    /// 列出匹配过滤条件的检查点
     async fn list_filtered(&self, filter: &CheckpointFilter) -> Result<Vec<CheckpointInfo>> {
         let mut results = if let Some(ref graph_name) = filter.graph_name {
             self.list_by_graph(graph_name).await?
@@ -430,23 +456,27 @@ pub trait CheckpointStore: Send + Sync {
         Ok(results)
     }
 
-    /// Delete a Checkpoint
+    /// 删除检查点
     async fn delete(&self, id: &str) -> Result<()>;
 
-    /// Clear all Checkpoints
+    /// 清空所有检查点
     async fn clear(&self) -> Result<()>;
 }
 
-// ── Memory Checkpoint Store ────────────────────────────────────────────────────
+// ── 内存检查点存储 ────────────────────────────────────────────────────
 
-/// In-memory storage implementation (default, non-persistent)
+/// 内存存储实现（默认，不持久化）
 pub struct MemoryCheckpointStore {
+    /// 串行化所有存储操作的互斥锁
     operation_lock: Mutex<()>,
+    /// 待处理的检查点，按 ID 索引
     checkpoints: RwLock<HashMap<String, Checkpoint>>,
+    /// 活跃领取，按（检查点 ID，恢复尝试 ID）索引
     claims: RwLock<HashMap<(String, String), Checkpoint>>,
 }
 
 impl MemoryCheckpointStore {
+    /// 创建空的内存检查点存储。
     pub fn new() -> Self {
         Self {
             operation_lock: Mutex::new(()),
@@ -457,6 +487,7 @@ impl MemoryCheckpointStore {
 }
 
 impl Default for MemoryCheckpointStore {
+    /// 等同于 [`MemoryCheckpointStore::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -609,24 +640,32 @@ impl CheckpointStore for MemoryCheckpointStore {
     }
 }
 
-// ── File Checkpoint Store ──────────────────────────────────────────────────────
+// ── 文件检查点存储 ──────────────────────────────────────────────────────
 
+/// 持久化到磁盘的领取记录：检查点及其最近续租时间。
 #[derive(Serialize, Deserialize)]
 struct StoredCheckpointClaim {
+    /// 被领取的检查点
     checkpoint: Checkpoint,
+    /// 最近一次续租时间
     #[serde(with = "echo_core::utils::time::local_rfc3339")]
     renewed_at: DateTime<Utc>,
 }
 
-/// File storage implementation (supports persistence)
+/// 文件存储实现（支持持久化）
 pub struct FileCheckpointStore {
+    /// 检查点文件所在目录
     base_path: PathBuf,
+    /// 进程内串行化存储操作的互斥锁
     operation_lock: Arc<Mutex<()>>,
+    /// 领取租约时长，超时未续租的领取视为过期
     claim_lease: Duration,
+    /// 建议的领取续租心跳间隔
     claim_heartbeat_interval: Duration,
 }
 
 impl FileCheckpointStore {
+    /// 以指定目录创建文件检查点存储，使用默认的租约与心跳时长。
     pub fn new<P: Into<PathBuf>>(base_path: P) -> Self {
         Self {
             base_path: base_path.into(),
@@ -636,6 +675,7 @@ impl FileCheckpointStore {
         }
     }
 
+    /// 测试专用：自定义领取租约与心跳间隔（要求 0 < 心跳 < 租约）。
     #[cfg(test)]
     pub(crate) fn with_claim_timing(
         mut self,
@@ -655,11 +695,13 @@ impl FileCheckpointStore {
         Ok(self)
     }
 
+    /// 计算检查点文件路径。
     fn checkpoint_path(&self, id: &str) -> Result<PathBuf> {
         let file_name = format!("{id}.json");
         echo_core::utils::fs::join_path_segment(&self.base_path, &file_name).map_err(Into::into)
     }
 
+    /// 确保存储目录存在，不存在则创建。
     fn ensure_dir_exists(&self) -> Result<()> {
         if !self.base_path.exists() {
             std::fs::create_dir_all(&self.base_path).map_err(|e| {
@@ -873,11 +915,13 @@ impl CheckpointStore for FileCheckpointStore {
 }
 
 impl FileCheckpointStore {
+    /// 计算指定恢复尝试的领取文件路径。
     fn claim_path(&self, id: &str, attempt_id: &str) -> Result<PathBuf> {
         let claim_name = format!("{id}.claimed-{attempt_id}.claim");
         echo_core::utils::fs::join_path_segment(&self.base_path, &claim_name).map_err(Into::into)
     }
 
+    /// 获取跨进程的独占文件锁，返回的文件句柄在释放时解锁。
     async fn acquire_file_lock(&self) -> Result<std::fs::File> {
         self.ensure_dir_exists()?;
         let path = echo_core::utils::fs::join_path_segment(
@@ -910,12 +954,14 @@ impl FileCheckpointStore {
         })?
     }
 
+    /// 在已持有锁的前提下保存检查点。
     async fn save_unlocked(&self, checkpoint: &Checkpoint) -> Result<()> {
         self.ensure_dir_exists()?;
         let path = self.checkpoint_path(&checkpoint.id)?;
         Self::write_checkpoint(&path, checkpoint).await
     }
 
+    /// 原子地将检查点写入指定路径。
     async fn write_checkpoint(path: &std::path::Path, checkpoint: &Checkpoint) -> Result<()> {
         let json = serde_json::to_string_pretty(checkpoint).map_err(|e| {
             echo_core::error::ReactError::Other(format!("Failed to serialize checkpoint: {}", e))
@@ -931,6 +977,7 @@ impl FileCheckpointStore {
         Ok(())
     }
 
+    /// 原子地将领取记录（含续租时间）写入指定路径。
     async fn write_claim(
         path: &std::path::Path,
         checkpoint: &Checkpoint,
@@ -958,6 +1005,7 @@ impl FileCheckpointStore {
         Ok(())
     }
 
+    /// 在已持有锁的前提下加载检查点，必要时回收过期领取。
     async fn load_unlocked(&self, id: &str) -> Result<Option<Checkpoint>> {
         let path = self.checkpoint_path(id)?;
         if path.exists() {
@@ -967,9 +1015,8 @@ impl FileCheckpointStore {
             return Self::read_checkpoint(&path).await.map(Some);
         }
         if let Some((claim_path, _attempt_id)) = self.find_claim(id).await? {
-            // A leased checkpoint remains visible to recovery and diagnostics;
-            // it is not silently converted into "not found" while a resume is
-            // still in flight.
+            /* 已租用的检查点对恢复与诊断仍然可见；
+            在恢复尚在进行时，不会被悄悄转换为"未找到"。 */
             return Self::read_claim(&claim_path)
                 .await
                 .map(|(checkpoint, _)| Some(checkpoint));
@@ -977,6 +1024,7 @@ impl FileCheckpointStore {
         Ok(None)
     }
 
+    /// 在已持有锁的前提下通过重命名原子地领取检查点。
     async fn claim_unlocked(&self, id: &str) -> Result<Option<Checkpoint>> {
         self.ensure_dir_exists()?;
         let path = self.checkpoint_path(id)?;
@@ -1000,6 +1048,7 @@ impl FileCheckpointStore {
         Ok(Some(checkpoint))
     }
 
+    /// 查找指定检查点的活跃领取文件，返回路径及恢复尝试 ID。
     async fn find_claim(&self, id: &str) -> Result<Option<(PathBuf, String)>> {
         if !self.base_path.exists() {
             return Ok(None);
@@ -1022,6 +1071,7 @@ impl FileCheckpointStore {
         Ok(None)
     }
 
+    /// 若领取已超过租约时长，则将其归还为待处理检查点；返回是否发生回收。
     async fn recover_stale_claim_unlocked(&self, id: &str) -> Result<bool> {
         let path = self.checkpoint_path(id)?;
         if path.exists() {
@@ -1063,6 +1113,7 @@ impl FileCheckpointStore {
         }
     }
 
+    /// 读取并解析检查点文件。
     async fn read_checkpoint(path: &std::path::Path) -> Result<Checkpoint> {
         let json = tokio::fs::read_to_string(path).await.map_err(|e| {
             echo_core::error::ReactError::Other(format!("Failed to read checkpoint: {}", e))
@@ -1072,6 +1123,7 @@ impl FileCheckpointStore {
         })
     }
 
+    /// 读取领取文件，兼容旧格式（无续租时间）。
     async fn read_claim(path: &std::path::Path) -> Result<(Checkpoint, Option<DateTime<Utc>>)> {
         let json = tokio::fs::read_to_string(path).await.map_err(|error| {
             echo_core::error::ReactError::Other(format!("Failed to read checkpoint claim: {error}"))
@@ -1088,6 +1140,7 @@ impl FileCheckpointStore {
             })
     }
 
+    /// 在已持有锁的前提下列出所有检查点（含已领取的）。
     async fn list_unlocked(&self) -> Result<Vec<CheckpointInfo>> {
         self.ensure_dir_exists()?;
         let mut entries = tokio::fs::read_dir(&self.base_path).await.map_err(|e| {
@@ -1123,18 +1176,19 @@ impl FileCheckpointStore {
             }
         }
 
-        // Sort by creation time (newest first)
+        // 按创建时间排序（最新优先）
         infos.sort_by_key(|info| std::cmp::Reverse(info.created_at));
         Ok(infos)
     }
 }
 
-// ── Unit Tests ────────────────────────────────────────────────────────────────────
+// ── 单元测试 ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 未实现领取结算的测试存储，用于验证默认实现以失败关闭。
     struct UnsupportedSettlementStore;
 
     #[async_trait::async_trait]
@@ -1164,6 +1218,7 @@ mod tests {
         }
     }
 
+    /// 默认的领取结算实现应以失败关闭。
     #[tokio::test]
     async fn default_claim_settlement_fails_closed() {
         let store = UnsupportedSettlementStore;
@@ -1231,20 +1286,20 @@ mod tests {
 
         let id = cp.id.clone();
 
-        // Save
+        // 保存
         store.save(&cp).await.unwrap();
 
-        // Load
+        // 加载
         let loaded = store.load(&id).await.unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.graph_name, "graph");
 
-        // List
+        // 列出
         let list = store.list().await.unwrap();
         assert_eq!(list.len(), 1);
 
-        // Delete
+        // 删除
         store.delete(&id).await.unwrap();
         let loaded = store.load(&id).await.unwrap();
         assert!(loaded.is_none());
@@ -1285,7 +1340,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_store() {
-        // Use a temp path under the current directory
+        // 使用系统临时目录下的路径
         let temp_path = std::env::temp_dir().join(format!("echo_test_{}", uuid::Uuid::new_v4()));
         let store = FileCheckpointStore::new(&temp_path);
 
@@ -1303,26 +1358,26 @@ mod tests {
 
         let id = cp.id.clone();
 
-        // Save
+        // 保存
         store.save(&cp).await.unwrap();
 
-        // Load
+        // 加载
         let loaded = store.load(&id).await.unwrap();
         assert!(loaded.is_some());
         let loaded = loaded.unwrap();
         assert_eq!(loaded.graph_name, "test_graph");
         assert_eq!(loaded.current_node, "node_a");
 
-        // List
+        // 列出
         let list = store.list().await.unwrap();
         assert_eq!(list.len(), 1);
 
-        // Clear
+        // 清空
         store.clear().await.unwrap();
         let list = store.list().await.unwrap();
         assert!(list.is_empty());
 
-        // Cleanup
+        // 清理
         let _ = std::fs::remove_dir_all(&temp_path);
     }
 
@@ -1382,8 +1437,8 @@ mod tests {
             echo_core::error::ReactError::Other("claim has no attempt identity".to_string())
         })?;
 
-        // Backdate the original lease instead of relying on scheduler/fsync
-        // timing inside a 120ms window. Renewal must replace the expired time.
+        /* 直接回拨原租约时间，而不是依赖 120ms 窗口内的调度/fsync 时序。
+        续租必须替换掉已过期的时间。 */
         let expired_at = Utc::now()
             .checked_sub_signed(chrono::Duration::seconds(600))
             .ok_or_else(|| {

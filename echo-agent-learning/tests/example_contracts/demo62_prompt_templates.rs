@@ -1,20 +1,24 @@
-//! demo62_prompt_templates —— Prompt Template Manager 综合演示
-//!
-//! 展示 `PromptTemplateManager` 的核心能力：
-//!
-//! 1. 注册模板 + 变量替换 `{{name}}`
-//! 2. 默认值语法 `{{name:default}}`
-//! 3. 条件块 `{{#if var}}…{{#else}}…{{#endif}}`
-//! 4. 模板组合 / 继承（通过 render_template 嵌套渲染）
-//! 5. 线程安全共享
-//!
-//! Contract test: `contract_demo62_prompt_templates`.
+/*!
+demo62_prompt_templates —— Prompt Template Manager 综合演示
+
+展示 `PromptTemplateManager` 的核心能力：
+
+1. 注册模板 + 变量替换 `{{name}}`
+2. 默认值语法 `{{name:default}}`
+3. 条件块 `{{#if var}}…{{#else}}…{{#endif}}`
+4. 模板组合 / 继承（通过 render_template 嵌套渲染）
+5. 线程安全共享
+
+契约测试：`contract_demo62_prompt_templates`。
+*/
 
 use echo_agent::prelude::*;
 use std::sync::Arc;
 
-/// demo62 契约测试：依次演示 `PromptTemplateManager` 的基础变量替换、默认值语法、
-/// 条件块、模板组合与继承、以及线程安全共享能力。
+/**
+demo62 契约测试：依次演示 `PromptTemplateManager` 的基础变量替换、默认值语法、
+条件块、模板组合与继承、以及线程安全共享能力。
+*/
 #[tokio::test]
 async fn contract_demo62_prompt_templates() -> echo_agent::error::Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -121,8 +125,10 @@ fn demo_default_values() -> echo_agent::error::Result<()> {
 
 // ── Part 3: 条件块 ──────────────────────────────────────────────────────────
 
-/// 演示条件块语法 `{{#if var}}...{{#else}}...{{#endif}}`：简单条件、条件+else 分支
-/// 以及嵌套条件三种场景的渲染结果。
+/**
+演示条件块语法 `{{#if var}}...{{#else}}...{{#endif}}`：简单条件、条件+else 分支
+以及嵌套条件三种场景的渲染结果。
+*/
 fn demo_conditional_blocks() -> echo_agent::error::Result<()> {
     let manager = PromptTemplateManager::new();
 
@@ -178,8 +184,10 @@ fn demo_conditional_blocks() -> echo_agent::error::Result<()> {
 
 // ── Part 4: 模板组合 / 继承 ──────────────────────────────────────────────────
 
-/// 演示模板组合/继承：先渲染多个子模板片段，再通过 `render_template` 将其嵌入到
-/// 一个未注册的组合模板中一并渲染。
+/**
+演示模板组合/继承：先渲染多个子模板片段，再通过 `render_template` 将其嵌入到
+一个未注册的组合模板中一并渲染。
+*/
 fn demo_template_composition() -> echo_agent::error::Result<()> {
     let manager = PromptTemplateManager::new();
 
@@ -220,8 +228,10 @@ fn demo_template_composition() -> echo_agent::error::Result<()> {
 
 // ── Part 5: 线程安全共享 ────────────────────────────────────────────────────
 
-/// 演示 `Arc<PromptTemplateManager>` 的线程安全共享，以及 `contains` / `remove` /
-/// `template_names` / `render_or_raw` 等辅助 API 与未注册模板的错误处理。
+/**
+演示 `Arc<PromptTemplateManager>` 的线程安全共享，以及 `contains` / `remove` /
+`template_names` / `render_or_raw` 等辅助 API 与未注册模板的错误处理。
+*/
 fn demo_thread_safe_sharing() -> echo_agent::error::Result<()> {
     let manager = Arc::new(PromptTemplateManager::new());
     manager.register("shared", "Hello, {{name}}!");

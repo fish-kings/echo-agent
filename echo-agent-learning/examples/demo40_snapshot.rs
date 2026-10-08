@@ -1,13 +1,15 @@
-//! Agent 状态快照与回滚示例
-//!
-//! 演示：
-//! 1. 通过 Builder 启用自动快照
-//! 2. 多轮对话后查看快照列表
-//! 3. 手动回滚到之前的对话状态
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo40_snapshot
-//! ```
+/*!
+Agent 状态快照与回滚示例
+
+演示：
+1. 通过 Builder 启用自动快照
+2. 多轮对话后查看快照列表
+3. 手动回滚到之前的对话状态
+
+```bash
+cargo run -p echo-agent-learning --example demo40_snapshot
+```
+*/
 
 use echo_agent::prelude::*;
 

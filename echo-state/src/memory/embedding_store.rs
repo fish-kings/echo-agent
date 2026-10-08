@@ -1,34 +1,36 @@
-//! 向量增强 Store（EmbeddingStore）
-//!
-//! 在任意 [`Store`] 实现外包装一层向量索引，透传所有 KV 操作，
-//! 并通过 [`Store::search_with`] 提供语义/混合检索能力。
-//!
-//! ## 存储分层
-//!
-//! | 层 | 负责方 | 内容 |
-//! |----|--------|------|
-//! | 内容层 | `inner: Arc<dyn Store>` | 条目键值（KV 语义）|
-//! | 向量层 | 内存 `RwLock<VecIndex>` + 可选 JSON 文件 | 嵌入向量 |
-//!
-//! ## 快速上手
-//!
-//! ```rust,no_run
-//! use echo_core::error::Result;
-//! use echo_state::memory::{EmbeddingStore, FileStore, HttpEmbedder};
-//! use std::sync::Arc;
-//!
-//! # async fn example() -> Result<()> {
-//! let inner = Arc::new(FileStore::new("~/.echo-agent/store.json")?);
-//! let embedder = Arc::new(HttpEmbedder::from_env());
-//! let store = Arc::new(
-//!     EmbeddingStore::with_persistence(inner, embedder, "~/.echo-agent/store.vecs.json")?
-//! );
-//!
-//! // 将 `store` 注入你自己的 runtime 层，或通过 `echo_agent` façade 使用。
-//! let _ = store;
-//! # Ok(())
-//! # }
-//! ```
+/*!
+ * 向量增强 Store（EmbeddingStore）
+ *
+ * 在任意 [`Store`] 实现外包装一层向量索引，透传所有 KV 操作，
+ * 并通过 [`Store::search_with`] 提供语义/混合检索能力。
+ *
+ * ## 存储分层
+ *
+ * | 层 | 负责方 | 内容 |
+ * |----|--------|------|
+ * | 内容层 | `inner: Arc<dyn Store>` | 条目键值（KV 语义）|
+ * | 向量层 | 内存 `RwLock<VecIndex>` + 可选 JSON 文件 | 嵌入向量 |
+ *
+ * ## 快速上手
+ *
+ * ```rust,no_run
+ * use echo_core::error::Result;
+ * use echo_state::memory::{EmbeddingStore, FileStore, HttpEmbedder};
+ * use std::sync::Arc;
+ *
+ * # async fn example() -> Result<()> {
+ * let inner = Arc::new(FileStore::new("~/.echo-agent/store.json")?);
+ * let embedder = Arc::new(HttpEmbedder::from_env());
+ * let store = Arc::new(
+ *     EmbeddingStore::with_persistence(inner, embedder, "~/.echo-agent/store.vecs.json")?
+ * );
+ *
+ * // 将 `store` 注入你自己的 runtime 层，或通过 `echo_agent` façade 使用。
+ * let _ = store;
+ * # Ok(())
+ * # }
+ * ```
+ */
 
 use super::store::namespace_key;
 use crate::util::expand_tilde;
@@ -76,11 +78,13 @@ impl VecIndex {
 
 // ── EmbeddingStore ────────────────────────────────────────────────────────────
 
-/// 向量增强 Store：在任意 `Store` 外包装余弦相似度语义检索
-///
-/// > **注意**：此实现适用于**小规模**场景（数千条目以内）。向量索引
-/// > 全部加载到内存中，对于大规模检索场景，推荐使用专门的向量数据库
-/// > （如 Milvus、Qdrant、pgvector 等）。
+/**
+ * 向量增强 Store：在任意 `Store` 外包装余弦相似度语义检索
+ *
+ * > **注意**：此实现适用于**小规模**场景（数千条目以内）。向量索引
+ * > 全部加载到内存中，对于大规模检索场景，推荐使用专门的向量数据库
+ * > （如 Milvus、Qdrant、pgvector 等）。
+ */
 pub struct EmbeddingStore {
     /// 底层被包装的 KV Store，负责实际的内容存取。
     inner: Arc<dyn Store>,
@@ -90,9 +94,11 @@ pub struct EmbeddingStore {
     index: RwLock<VecIndex>,
     /// 向量索引持久化文件路径（为 `None` 时仅保存在内存中）。
     vec_path: Option<PathBuf>,
-    /// 语义检索时最多加载到内存进行比对的向量数量。
-    /// 超出此数量的向量会被跳过，避免 OOM。
-    /// 默认 10000。
+    /**
+     * 语义检索时最多加载到内存进行比对的向量数量。
+     * 超出此数量的向量会被跳过，避免 OOM。
+     * 默认 10000。
+     */
     max_candidates: usize,
 }
 
@@ -109,9 +115,11 @@ impl EmbeddingStore {
         }
     }
 
-    /// 创建 EmbeddingStore，向量索引持久化到指定 JSON 文件
-    ///
-    /// 若文件已存在则加载已有向量索引；不存在则从空索引开始（新条目写入时实时更新）。
+    /**
+     * 创建 EmbeddingStore，向量索引持久化到指定 JSON 文件
+     *
+     * 若文件已存在则加载已有向量索引；不存在则从空索引开始（新条目写入时实时更新）。
+     */
     pub fn with_persistence(
         inner: Arc<dyn Store>,
         embedder: Arc<dyn Embedder>,
@@ -150,18 +158,22 @@ impl EmbeddingStore {
         })
     }
 
-    /// 设置语义检索时最多加载到内存进行比对的向量数量（默认 10000）。
-    ///
-    /// 超出此数量的向量会被跳过，避免大规模场景下的 OOM 问题。
+    /**
+     * 设置语义检索时最多加载到内存进行比对的向量数量（默认 10000）。
+     *
+     * 超出此数量的向量会被跳过，避免大规模场景下的 OOM 问题。
+     */
     pub fn with_max_candidates(mut self, max: usize) -> Self {
         self.max_candidates = max;
         self
     }
 
-    /// 从 JSON Value 提取可嵌入文本
-    ///
-    /// 优先使用 `content` 字段（`remember` 工具写入格式），追加 `tags` 以丰富语义；
-    /// 否则将整个 Value 序列化为文本。
+    /**
+     * 从 JSON Value 提取可嵌入文本
+     *
+     * 优先使用 `content` 字段（`remember` 工具写入格式），追加 `tags` 以丰富语义；
+     * 否则将整个 Value 序列化为文本。
+     */
     fn extract_text(value: &Value) -> String {
         if let Value::Object(map) = value
             && let Some(content) = map.get("content").and_then(|v| v.as_str())
@@ -216,15 +228,19 @@ impl EmbeddingStore {
         Ok(())
     }
 
-    /// 将向量索引刷盘（仅对有持久化路径的实例有效）。
-    ///
-    /// 建议在批量写入后调用，以将内存中的向量变更持久化。
+    /**
+     * 将向量索引刷盘（仅对有持久化路径的实例有效）。
+     *
+     * 建议在批量写入后调用，以将内存中的向量变更持久化。
+     */
     pub async fn flush_vector_index(&self) -> Result<()> {
         self.flush_index().await
     }
 
-    /// 执行语义检索：计算查询文本的嵌入向量，与索引中的向量做余弦相似度
-    /// 比对并按分数排序；若嵌入计算失败或索引为空，则回退到关键词检索。
+    /**
+     * 执行语义检索：计算查询文本的嵌入向量，与索引中的向量做余弦相似度
+     * 比对并按分数排序；若嵌入计算失败或索引为空，则回退到关键词检索。
+     */
     async fn semantic_search_impl(
         &self,
         namespace: &[&str],
@@ -276,8 +292,10 @@ impl EmbeddingStore {
 }
 
 impl Drop for EmbeddingStore {
-    /// 尽力而为地在析构时刷盘，避免在未显式调用 `flush_vector_index()` 的
-    /// 情况下，向量索引的变更随 store 被 drop 而悄悄丢失。
+    /**
+     * 尽力而为地在析构时刷盘，避免在未显式调用 `flush_vector_index()` 的
+     * 情况下，向量索引的变更随 store 被 drop 而悄悄丢失。
+     */
     fn drop(&mut self) {
         /* P1-10：此前的实现直接调用 `handle.block_on(self.flush_index())`。
         如果 `drop` 运行在正在驱动某个持有该 store 的 future 的运行时执行器
@@ -298,8 +316,10 @@ impl Drop for EmbeddingStore {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return;
         };
-        // 分离任务：即发即弃。该任务按值持有 `data` 与 `path`，
-        // 因此在 `self` 被释放之后运行也是安全的。
+        /*
+         * 分离任务：即发即弃。该任务按值持有 `data` 与 `path`，
+         * 因此在 `self` 被释放之后运行也是安全的。
+         */
         handle.spawn(async move {
             let json = match serde_json::to_string(&data) {
                 Ok(j) => j,
@@ -357,9 +377,11 @@ impl Store for EmbeddingStore {
                     let ns_key = namespace_key(namespace);
                     debug!(ns = %ns_key, key = %key, dims = vec.len(), "📌 向量索引已更新");
                     self.index.write().await.insert(&ns_key, key, vec);
-                    // 批量刷盘：不在每次 put 时立即写盘，减少 IO 开销。
-                    // 调用者应定期调用 `flush_vector_index()` 或使用 `with_persistence`
-                    // 配合 `put_batch()` 来持久化向量索引。
+                    /*
+                     * 批量刷盘：不在每次 put 时立即写盘，减少 IO 开销。
+                     * 调用者应定期调用 `flush_vector_index()` 或使用 `with_persistence`
+                     * 配合 `put_batch()` 来持久化向量索引。
+                     */
                 }
                 Err(e) => {
                     warn!(key = %key, error = %e, "⚠️ 嵌入计算失败，该条目不加入向量索引");
@@ -369,6 +391,7 @@ impl Store for EmbeddingStore {
         })
     }
 
+    /// 读取条目：直接透传给底层 Store。
     fn get<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -377,6 +400,7 @@ impl Store for EmbeddingStore {
         Box::pin(async move { self.inner.get(namespace, key).await })
     }
 
+    /// 关键词检索：直接透传给底层 Store。
     fn search<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -386,6 +410,7 @@ impl Store for EmbeddingStore {
         Box::pin(async move { self.inner.search(namespace, query, limit).await })
     }
 
+    /// 删除条目：同时从向量索引中移除对应向量。
     fn delete<'a>(&'a self, namespace: &'a [&'a str], key: &'a str) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
             let found = self.inner.delete(namespace, key).await?;
@@ -398,6 +423,7 @@ impl Store for EmbeddingStore {
         })
     }
 
+    /// 列出命名空间：直接透传给底层 Store。
     fn list_namespaces<'a>(
         &'a self,
         prefix: Option<&'a [&'a str]>,
@@ -405,10 +431,12 @@ impl Store for EmbeddingStore {
         Box::pin(async move { self.inner.list_namespaces(prefix).await })
     }
 
+    /// 列出命名空间下的条目：直接透传给底层 Store。
     fn list<'a>(&'a self, namespace: &'a [&'a str]) -> BoxFuture<'a, Result<Vec<StoreItem>>> {
         Box::pin(async move { self.inner.list(namespace).await })
     }
 
+    /// 按检索模式执行关键词、语义或混合（RRF 融合）检索。
     fn search_with<'a>(
         &'a self,
         namespace: &'a [&'a str],
@@ -422,7 +450,7 @@ impl Store for EmbeddingStore {
                         .await
                 }
                 SearchMode::Hybrid { vector_weight } => {
-                    // Get both result lists independently
+                    // 分别独立获取两份结果列表
                     let semantic_items = self
                         .semantic_search_impl(namespace, query.text, query.limit)
                         .await?;
@@ -431,7 +459,7 @@ impl Store for EmbeddingStore {
                         .search(namespace, query.text, query.limit)
                         .await?;
 
-                    // Build rank maps: key -> 0-based position
+                    // 构建排名映射：key -> 从 0 开始的位置
                     let semantic_ranks: HashMap<&str, usize> = semantic_items
                         .iter()
                         .enumerate()
@@ -443,7 +471,7 @@ impl Store for EmbeddingStore {
                         .map(|(i, item)| (item.key.as_str(), i))
                         .collect();
 
-                    // Collect all unique keys
+                    // 收集所有不重复的 key
                     let all_keys: Vec<&str> = semantic_ranks
                         .keys()
                         .chain(keyword_ranks.keys())
@@ -452,7 +480,7 @@ impl Store for EmbeddingStore {
                         .into_iter()
                         .collect();
 
-                    // Score each key via RRF, pick best item from either list
+                    // 通过 RRF 为每个 key 打分，并从任一列表中选取条目
                     let mut items: Vec<StoreItem> = all_keys
                         .iter()
                         .filter_map(|&key| {
@@ -460,7 +488,7 @@ impl Store for EmbeddingStore {
                             let kr = keyword_ranks.get(key).copied().unwrap_or(usize::MAX);
                             let rrf = echo_core::memory::store::rrf_score(sr, kr, vector_weight);
 
-                            // Prefer the semantic item if available, otherwise keyword
+                            // 优先使用语义检索的条目，否则使用关键词检索的条目
                             let mut item = semantic_items
                                 .iter()
                                 .find(|i| i.key == key)
@@ -487,7 +515,7 @@ impl Store for EmbeddingStore {
 
 // ── 工具函数 ──────────────────────────────────────────────────────────────────
 
-/// Compute cosine similarity, rejecting corrupt or incompatible embeddings.
+/// 计算余弦相似度，拒绝损坏或维度不兼容的嵌入向量。
 fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32> {
     if a.len() != b.len() || a.is_empty() {
         return Err(MemoryError::SerializationError(format!(
@@ -524,6 +552,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32> {
     }
 }
 
+/// 递归地将 JSON Value 转换为以空格拼接的纯文本。
 fn value_to_text(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
@@ -548,12 +577,14 @@ mod tests {
     use crate::memory::store::InMemoryStore;
     use serde_json::json;
 
+    /// 构造基于内存 Store 与 Mock 嵌入器的测试用 EmbeddingStore。
     fn make_store() -> Result<EmbeddingStore> {
         let inner = Arc::new(InMemoryStore::new());
         let embedder = Arc::new(MockEmbedder::new(4)?);
         Ok(EmbeddingStore::new(inner, embedder))
     }
 
+    /// 写入后语义检索应返回带分数的结果。
     #[tokio::test]
     async fn test_put_and_semantic_search() -> Result<()> {
         let store = make_store()?;
@@ -574,6 +605,7 @@ mod tests {
         Ok(())
     }
 
+    /// 删除条目应同时从向量索引中移除。
     #[tokio::test]
     async fn test_delete_removes_from_index() -> Result<()> {
         let store = make_store()?;
@@ -592,6 +624,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证余弦相似度计算。
     #[tokio::test]
     async fn test_cosine_similarity() {
         let a = vec![1.0f32, 0.0, 0.0];
@@ -604,6 +637,7 @@ mod tests {
         assert!((sim2 - 0.0).abs() < 1e-5);
     }
 
+    /// 命名空间组件中的斜杠不应与嵌套命名空间混淆。
     #[tokio::test]
     async fn slash_in_namespace_component_does_not_alias_nested_namespace() -> Result<()> {
         let store = make_store()?;
@@ -623,6 +657,7 @@ mod tests {
         Ok(())
     }
 
+    /// compare_and_put 不受支持，且不应修改数据或索引。
     #[tokio::test]
     async fn compare_and_put_is_unsupported_without_mutating_payload_or_index() -> Result<()> {
         let store = make_store()?;

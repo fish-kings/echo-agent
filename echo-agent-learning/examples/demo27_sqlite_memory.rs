@@ -1,16 +1,18 @@
-//! demo27_sqlite_memory.rs —— SQLite 持久化记忆（FTS5 + 向量检索）演示
-//!
-//! 展示 SqliteStore 的完整能力：
-//! 1. 基本 CRUD 操作
-//! 2. FTS5 全文检索（BM25 排序）
-//! 3. 向量语义检索（余弦相似度）
-//! 4. 命名空间隔离
-//! 5. 与 Agent 集成
-//!
-//! 运行方式：
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo27_sqlite_memory --features sqlite
-//! ```
+/*!
+demo27_sqlite_memory.rs —— SQLite 持久化记忆（FTS5 + 向量检索）演示
+
+展示 SqliteStore 的完整能力：
+1. 基本 CRUD 操作
+2. FTS5 全文检索（BM25 排序）
+3. 向量语义检索（余弦相似度）
+4. 命名空间隔离
+5. 与 Agent 集成
+
+运行方式：
+```bash
+cargo run -p echo-agent-learning --example demo27_sqlite_memory --features sqlite
+```
+*/
 mod support;
 
 use echo_agent::memory::store::Store;
@@ -19,8 +21,10 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// 程序入口：依次演示 SqliteStore 的 CRUD、FTS5 检索、命名空间隔离、
-/// 向量语义检索、Agent 集成与跨实例持久化六个部分。
+/**
+程序入口：依次演示 SqliteStore 的 CRUD、FTS5 检索、命名空间隔离、
+向量语义检索、Agent 集成与跨实例持久化六个部分。
+*/
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -79,7 +83,7 @@ async fn main() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 1: CRUD ────────────────────────────────────────────────────────────
+// ── Part 1: 基本 CRUD ────────────────────────────────────────────────────────────
 
 /// Part 1 演示：验证 SqliteStore 的基本增删改查（put/get/delete）行为。
 async fn demo_crud(db_path: &Path) -> echo_agent::error::Result<()> {
@@ -170,7 +174,7 @@ async fn demo_crud(db_path: &Path) -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 2: FTS5 ────────────────────────────────────────────────────────────
+// ── Part 2: FTS5 全文检索 ────────────────────────────────────────────────────────────
 
 /// Part 2 演示：验证 FTS5 全文检索（基于 BM25 排序）能否正确命中相关记忆。
 async fn demo_fts5_search(db_path: &Path) -> echo_agent::error::Result<()> {
@@ -312,8 +316,10 @@ async fn demo_namespace_isolation(db_path: &Path) -> echo_agent::error::Result<(
 
 // ── Part 4: 向量语义检索 ────────────────────────────────────────────────────
 
-/// Part 4 演示：验证基于向量余弦相似度的语义检索，能够用跨语言查询命中中文记忆，
-/// 并与关键词检索的结果进行对比。
+/**
+Part 4 演示：验证基于向量余弦相似度的语义检索，能够用跨语言查询命中中文记忆，
+并与关键词检索的结果进行对比。
+*/
 async fn demo_semantic_search(db_path: &Path) -> echo_agent::error::Result<()> {
     let store = SqliteStore::with_embedder(db_path, load_verified_embedder_from_config().await?)?;
     let ns = &["demo27", "semantic"];
@@ -394,8 +400,10 @@ async fn demo_semantic_search(db_path: &Path) -> echo_agent::error::Result<()> {
 
 // ── Part 5: Agent 集成 ──────────────────────────────────────────────────────
 
-/// Part 5 演示：将 SqliteStore 作为长期记忆挂载到 Agent 上，验证 Agent
-/// 能结合预填充的记忆给出个性化回答。
+/**
+Part 5 演示：将 SqliteStore 作为长期记忆挂载到 Agent 上，验证 Agent
+能结合预填充的记忆给出个性化回答。
+*/
 async fn demo_agent_integration(db_path: &Path) -> echo_agent::error::Result<()> {
     let llm_config = require_configured_model(None)?;
     let model_name = llm_config.model.clone();
@@ -446,8 +454,10 @@ async fn demo_agent_integration(db_path: &Path) -> echo_agent::error::Result<()>
 
 // ── Part 6: 持久化验证 ──────────────────────────────────────────────────────
 
-/// Part 6 演示：验证数据在关闭并重新打开 SqliteStore 实例后仍然持久保存，
-/// 且 FTS5 索引也能跨实例正常检索。
+/**
+Part 6 演示：验证数据在关闭并重新打开 SqliteStore 实例后仍然持久保存，
+且 FTS5 索引也能跨实例正常检索。
+*/
 async fn demo_persistence(db_path: &Path) -> echo_agent::error::Result<()> {
     println!("  验证 SQLite 数据跨实例持久化\n");
 
@@ -464,7 +474,7 @@ async fn demo_persistence(db_path: &Path) -> echo_agent::error::Result<()> {
             )
             .await?;
         println!("  ✅ 实例 1: 写入 persist-key");
-        // store dropped here
+        // store 在此处被 drop
     }
 
     // 实例 2：重新打开数据库，验证数据还在

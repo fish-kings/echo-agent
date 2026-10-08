@@ -1,3 +1,10 @@
+/*!
+框架事件传输契约：事件信封（`EventEnvelope`）、强类型身份标识以及事件流包装与轨迹校验。
+
+本模块为原始 `AgentEvent` 流补充稳定身份、单调序号、父子关联、内容哈希与终止语义，
+并提供不依赖重新运行模型即可校验已捕获事件轨迹的工具函数。
+*/
+
 use super::AgentEvent;
 #[cfg(test)]
 use super::ToolInvocation;
@@ -9,26 +16,30 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fmt;
 
-/// Current schema version for the framework event transport contract.
+/// 框架事件传输契约当前的 schema 版本号。
 pub const AGENT_EVENT_SCHEMA_VERSION: u16 = 5;
 
+/// 生成经过校验、在线路上透明序列化的字符串身份类型的宏。
 macro_rules! identity_id {
     ($name:ident, $label:literal) => {
-        #[doc = concat!("Validated, wire-transparent `", stringify!($name), "` value.")]
-        ///
-        /// Identity types are deliberately not interchangeable:
-        ///
-        /// ```compile_fail
-        /// use echo_agent::agent::{RunId, TurnId};
-        /// let run_id = RunId::new("run-1")?;
-        /// let _turn_id: TurnId = run_id;
-        /// # Ok::<(), echo_agent::Error>(())
-        /// ```
+        #[doc = concat!("经过校验、线路透明的 `", stringify!($name), "` 值。")]
+        /**
+
+各身份类型刻意设计为互不可替换：
+
+```compile_fail
+use echo_agent::agent::{RunId, TurnId};
+let run_id = RunId::new("run-1")?;
+let _turn_id: TurnId = run_id;
+# Ok::<(), echo_agent::Error>(())
+```
+        */
         #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
         impl $name {
+            /// 创建身份值；若去除空白后为空则返回错误。
             pub fn new(value: impl Into<String>) -> Result<Self> {
                 let value = value.into();
                 if value.trim().is_empty() {
@@ -40,18 +51,21 @@ macro_rules! identity_id {
                 Ok(Self(value))
             }
 
+            /// 以字符串切片形式返回内部值。
             pub fn as_str(&self) -> &str {
                 &self.0
             }
         }
 
         impl fmt::Display for $name {
+            /// 直接输出内部字符串值。
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
                 formatter.write_str(&self.0)
             }
         }
 
         impl AsRef<str> for $name {
+            /// 以 `&str` 形式借用内部值。
             fn as_ref(&self) -> &str {
                 self.as_str()
             }
@@ -67,44 +81,59 @@ identity_id!(MessageId, "message_id");
 identity_id!(ExecutionId, "execution_id");
 identity_id!(EventId, "event_id");
 
-/// Stable invocation identity copied onto every emitted event.
+/// 复制到每个已发出事件上的稳定调用身份。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventIdentity {
-    /// Unique identity of one concrete event stream invocation.
+    /// 某一次具体事件流调用的唯一身份。
     pub stream_id: StreamId,
+    /// 所属会话身份（可选）。
     pub conversation_id: Option<ConversationId>,
-    /// Formal task run identity. Ordinary chat turns keep this as `None`.
+    /// 正式任务运行（run）身份；普通聊天轮次保持为 `None`。
     pub run_id: Option<RunId>,
+    /// 当前轮次（turn）身份。
     pub turn_id: TurnId,
-    /// Message that triggered this invocation when message and turn identities differ.
+    /// 当消息身份与轮次身份不同时，触发本次调用的消息身份。
     pub message_id: Option<MessageId>,
+    /// 执行（execution）身份（可选）。
     pub execution_id: Option<ExecutionId>,
-    /// Parent event for a child invocation, such as a delegated subagent.
+    /// 子调用（例如被委派的子 agent）的父事件。
     pub parent_event_id: Option<EventId>,
 }
 
-/// Versioned transport contract around an event payload.
-///
-/// `AgentEvent` remains the default payload so existing users can continue to
-/// refer to `EventEnvelope` without a type argument. Other framework event
-/// families reuse the same identity, ordering, hashing, and timestamp rules by
-/// supplying their own serializable payload.
+/**
+包裹事件负载的带版本传输契约。
+
+`AgentEvent` 仍是默认负载类型，因此现有使用者可以继续不带类型参数地引用
+`EventEnvelope`。其他框架事件族通过提供各自可序列化的负载，复用相同的身份、
+排序、哈希与时间戳规则。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope<T = AgentEvent> {
+    /// 事件传输契约的 schema 版本号。
     pub schema_version: u16,
+    /// 由身份与序号确定性生成的事件 ID。
     pub event_id: EventId,
-    /// Integrity digest for the parent link and payload occupying this logical slot.
+    /// 占据该逻辑槽位的父链接与负载的完整性摘要。
     pub content_hash: String,
-    /// Monotonic within one wrapped invocation/execution stream, starting at 1.
+    /// 在单个被包装的调用/执行流内单调递增，从 1 开始。
     pub sequence: u64,
+    /// 事件流身份。
     pub stream_id: StreamId,
+    /// 会话身份（可选）。
     pub conversation_id: Option<ConversationId>,
+    /// 正式运行身份（可选）。
     pub run_id: Option<RunId>,
+    /// 轮次身份。
     pub turn_id: TurnId,
+    /// 触发消息身份（可选）。
     pub message_id: Option<MessageId>,
+    /// 执行身份（可选）。
     pub execution_id: Option<ExecutionId>,
+    /// 父事件 ID（例如工具结果指向对应的工具调用事件）。
     pub parent_event_id: Option<EventId>,
+    /// 事件创建时间（UTC）。
     pub timestamp: DateTime<Utc>,
+    /// 事件负载。
     pub payload: T,
 }
 
@@ -112,7 +141,7 @@ impl<T> EventEnvelope<T>
 where
     T: Serialize,
 {
-    /// Construct one event when a caller must report failure before a stream exists.
+    /// 在事件流尚不存在、调用方又必须上报失败时，构造单个事件。
     pub fn new(
         identity: &EventIdentity,
         sequence: u64,
@@ -145,6 +174,7 @@ where
     }
 }
 
+/// 基于父事件链接与规范化 JSON 负载计算 `sha256:` 前缀的内容哈希。
 fn event_content_hash<T>(parent_event_id: Option<&EventId>, payload: &T) -> Result<String>
 where
     T: Serialize,
@@ -164,6 +194,7 @@ where
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
+/// 由 schema 版本、身份字段与序号确定性派生事件 ID（`evt_` 前缀）。
 fn stable_event_id(identity: &EventIdentity, sequence: u64) -> EventId {
     let mut hasher = Sha256::new();
     hasher.update(AGENT_EVENT_SCHEMA_VERSION.to_be_bytes());
@@ -192,6 +223,7 @@ fn stable_event_id(identity: &EventIdentity, sequence: u64) -> EventId {
 }
 
 impl EventIdentity {
+    /// 以流 ID 与轮次 ID 创建最小身份，其余可选字段为空。
     pub fn new(stream_id: impl Into<String>, turn_id: impl Into<String>) -> Result<Self> {
         let identity = Self {
             stream_id: StreamId::new(stream_id)?,
@@ -206,14 +238,14 @@ impl EventIdentity {
         Ok(identity)
     }
 
+    /// 校验必填的流 ID 与轮次 ID 非空。
     pub fn validate(&self) -> Result<()> {
         StreamId::new(self.stream_id.as_str())?;
         TurnId::new(self.turn_id.as_str())?;
         Ok(())
     }
 
-    /// Construct identity for a formal run whose first turn and execution use
-    /// the same externally assigned value.
+    /// 为正式运行构造身份，其首个轮次与执行复用同一外部分配的值。
     pub fn for_run(run_id: impl Into<String>) -> Result<Self> {
         let run_id = run_id.into();
         Ok(Self {
@@ -227,8 +259,7 @@ impl EventIdentity {
         })
     }
 
-    /// Construct identity for an interactive chat turn while preserving the
-    /// optional formal run and triggering message identities separately.
+    /// 为交互式聊天轮次构造身份，同时分别保留可选的正式运行身份与触发消息身份。
     pub fn for_chat(
         conversation_id: Option<String>,
         turn_id: impl Into<String>,
@@ -246,40 +277,47 @@ impl EventIdentity {
         })
     }
 
+    /// 设置执行身份并返回自身。
     pub fn with_execution_id(mut self, execution_id: impl Into<String>) -> Result<Self> {
         self.execution_id = Some(ExecutionId::new(execution_id)?);
         Ok(self)
     }
 
+    /// 设置会话身份并返回自身。
     pub fn with_conversation_id(mut self, conversation_id: impl Into<String>) -> Result<Self> {
         self.conversation_id = Some(ConversationId::new(conversation_id)?);
         Ok(self)
     }
 
+    /// 设置正式运行身份并返回自身。
     pub fn with_run_id(mut self, run_id: impl Into<String>) -> Result<Self> {
         self.run_id = Some(RunId::new(run_id)?);
         Ok(self)
     }
 
+    /// 设置触发消息身份并返回自身。
     pub fn with_message_id(mut self, message_id: impl Into<String>) -> Result<Self> {
         self.message_id = Some(MessageId::new(message_id)?);
         Ok(self)
     }
 
+    /// 设置父事件 ID 并返回自身。
     pub fn with_parent_event_id(mut self, parent_event_id: impl Into<String>) -> Result<Self> {
         self.parent_event_id = Some(EventId::new(parent_event_id)?);
         Ok(self)
     }
 
-    /// Derive transport identity from one value-scoped agent invocation.
+    /// 从单次值作用域的 agent 调用派生传输身份。
     pub fn from_invocation(invocation: &super::AgentInvocationContext) -> Result<Self> {
         Self::from_runtime_context(invocation.runtime.as_ref())
     }
 
-    /// Derive transport identity directly from an external runtime context.
-    ///
-    /// Dispatch coordinators use this before the child Agent invocation exists
-    /// so start, inner-stream, and terminal events share one stream identity.
+    /**
+    直接从外部运行时上下文派生传输身份。
+
+    调度协调器会在子 Agent 调用创建之前使用此方法，使开始事件、内部流事件与
+    终止事件共享同一个流身份。
+    */
     pub fn from_runtime_context(
         runtime: Option<&crate::tools::ExternalRunContext>,
     ) -> Result<Self> {
@@ -312,11 +350,12 @@ impl EventIdentity {
     }
 }
 
-/// Wrap a raw event stream with stable identity, ordering, correlation, and terminal semantics.
-///
-/// Tool result/progress events point to their corresponding `ToolCall` event.
-/// Raw stream errors and streams that end without a terminal payload are
-/// normalized into exactly one terminal `AgentEvent::Error` envelope.
+/**
+为原始事件流包装稳定身份、顺序、关联关系与终止语义。
+
+工具结果/进度事件会指向其对应的 `ToolCall` 事件。原始流错误以及未产生终止负载
+就结束的流，都会被规范化为恰好一个终止性的 `AgentEvent::Error` 信封。
+*/
 pub fn envelope_event_stream<'a>(
     stream: BoxStream<'a, Result<AgentEvent>>,
     identity: EventIdentity,
@@ -324,10 +363,11 @@ pub fn envelope_event_stream<'a>(
     envelope_event_stream_after(stream, identity, 0)
 }
 
-/// Resume envelope sequencing after the last durably persisted sequence.
-///
-/// Combined with deterministic `event_id` generation, this lets persistence
-/// adapters reject duplicate side-effect completion events idempotently.
+/**
+从最后一个已持久化的序号之后继续进行信封编号。
+
+结合确定性的 `event_id` 生成，持久化适配器可以幂等地拒绝重复的副作用完成事件。
+*/
 pub fn envelope_event_stream_after<'a>(
     mut stream: BoxStream<'a, Result<AgentEvent>>,
     identity: EventIdentity,
@@ -417,8 +457,7 @@ pub fn envelope_event_stream_after<'a>(
     Box::pin(wrapped)
 }
 
-/// Validate payload-neutral envelope identity, ordering, hash, and parent-link
-/// invariants without interpreting event-family-specific terminal semantics.
+/// 校验与负载无关的信封身份、顺序、哈希及父链接不变量，不解释特定事件族的终止语义。
 pub fn validate_envelope_trajectory<T>(events: &[EventEnvelope<T>]) -> Vec<String>
 where
     T: Serialize,
@@ -499,7 +538,7 @@ where
     violations
 }
 
-/// Validate a captured Agent event trajectory without re-running a model.
+/// 在不重新运行模型的情况下校验已捕获的 Agent 事件轨迹。
 pub fn validate_event_trajectory(events: &[EventEnvelope]) -> Vec<String> {
     let mut violations = validate_envelope_trajectory(events);
     if events.is_empty() {
@@ -560,16 +599,19 @@ pub fn validate_event_trajectory(events: &[EventEnvelope]) -> Vec<String> {
     violations
 }
 
+/// 事件信封与标识类型的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use futures::stream;
 
+    /// 测试用的自定义事件负载。
     #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
     struct TestPayload {
         label: String,
     }
 
+    /// 构造测试用的固定事件身份。
     fn identity() -> EventIdentity {
         EventIdentity {
             stream_id: StreamId("stream-1".to_string()),
@@ -582,6 +624,7 @@ mod tests {
         }
     }
 
+    /// 验证事件按序编号，且工具结果关联到对应的工具调用事件。
     #[tokio::test]
     async fn sequences_events_and_correlates_tool_lifecycle() -> Result<()> {
         let raw = stream::iter(vec![
@@ -626,6 +669,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证内容哈希与工具元数据的插入顺序无关。
     #[test]
     fn content_hash_is_independent_of_tool_metadata_insertion_order() -> Result<()> {
         let mut forward = crate::tools::ToolResult::success("done");
@@ -662,6 +706,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证序列化往返后的轨迹能按规范化嵌套元数据重新计算出相同哈希。
     #[test]
     fn serialized_trajectory_recomputes_canonical_nested_metadata_hashes() -> Result<()> {
         let tool_call = EventEnvelope::new(
@@ -712,6 +757,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证缺失终止事件、重复终止事件与流错误均被规范化为单一终止事件。
     #[tokio::test]
     async fn normalizes_missing_and_duplicate_terminals() -> Result<()> {
         let missing = stream::iter(vec![Ok(AgentEvent::Token("partial".to_string()))]);
@@ -761,6 +807,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证从已持久化序号之后恢复编号，且事件 ID 稳定。
     #[tokio::test]
     async fn resumes_after_persisted_sequence_with_stable_ids() -> Result<()> {
         let first = EventEnvelope::new(
@@ -792,6 +839,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证业务身份相同但流不同的事件 ID 不会冲突。
     #[test]
     fn independent_streams_with_same_business_identity_do_not_collide() -> Result<()> {
         let first_identity = identity();
@@ -813,6 +861,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证信封序列化包含 schema 版本与负载类型标签。
     #[test]
     fn serializes_versioned_contract() -> Result<()> {
         let envelope = EventEnvelope::new(
@@ -837,6 +886,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证成功、取消、错误及带人工确认/预算前缀的规范轨迹均能通过校验。
     #[tokio::test]
     async fn validates_canonical_success_cancel_error_and_hitl_budget_prefixes() -> Result<()> {
         for raw in [
@@ -871,6 +921,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证轨迹校验器能报告序号、身份、父链接与终止事件的偏差。
     #[test]
     fn trajectory_validator_reports_sequence_identity_parent_and_terminal_drift() -> Result<()> {
         let mut first = EventEnvelope::new(
@@ -897,6 +948,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证空白身份与零序号会被拒绝。
     #[test]
     fn rejects_blank_identity_and_zero_sequence() {
         let mut blank = identity();
@@ -905,6 +957,7 @@ mod tests {
         assert!(EventEnvelope::new(&identity(), 0, None, AgentEvent::Cancelled).is_err());
     }
 
+    /// 验证泛型信封复用身份、哈希与序号校验规则。
     #[test]
     fn generic_envelope_reuses_identity_hash_and_sequence_validation() -> Result<()> {
         let first = EventEnvelope::new(
@@ -933,6 +986,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证从运行时上下文派生的身份保留嵌套父事件。
     #[test]
     fn runtime_identity_preserves_nested_parent_event() -> Result<()> {
         let runtime = crate::tools::ExternalRunContext {
@@ -952,6 +1006,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证轨迹校验会拒绝被篡改的事件 ID 与内容哈希。
     #[test]
     fn trajectory_rejects_tampered_slot_and_content() -> Result<()> {
         let mut slot = EventEnvelope::new(
@@ -976,6 +1031,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证恢复序号已耗尽时返回错误。
     #[tokio::test]
     async fn rejects_exhausted_resume_sequence() {
         let events = envelope_event_stream_after(

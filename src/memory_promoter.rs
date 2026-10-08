@@ -257,6 +257,7 @@ fn tool_digest(text: &str) -> Option<String> {
 /// 检查文本中是否包含表示重要事实的信号词。
 fn contains_signal_word(text: &str) -> bool {
     let lower = text.to_lowercase();
+    // 表示决策、偏好等重要事实的信号词列表
     const SIGNALS: &[&str] = &[
         "decided",
         "decision",

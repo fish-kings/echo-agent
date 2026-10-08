@@ -1,8 +1,9 @@
-//! Git worktree management for parallel subagent isolation.
-//!
-//! When multiple subagents work on the same repository, each gets its own
-//! worktree to avoid file conflicts. Worktrees share the same .git object
-//! store, so they're lightweight.
+/*!
+ * 用于并行子代理隔离的 Git worktree 管理。
+ *
+ * 当多个子代理在同一仓库中工作时，每个子代理都拥有独立的 worktree，
+ * 以避免文件冲突。各 worktree 共享同一个 .git 对象库，因此开销很小。
+ */
 
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
@@ -15,41 +16,49 @@ use echo_core::tools::ToolContext;
 
 use crate::process::BoundedProcessOutput;
 
+/// 标记 worktree 由 echo-agent 创建并管理的元数据文件名。
 const MANAGED_MARKER: &str = "echo-agent-managed";
+/// 单条 git 命令的超时时间。
 const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+/// git 命令输出的最大捕获字节数（1 MiB）。
 const MAX_GIT_OUTPUT_BYTES: usize = 1024 * 1024;
 
+/// 当前检出位置的引用，用于合并失败后恢复原检出状态。
 enum CheckoutRef {
+    /// 检出在某个分支上（分支名）。
     Branch(String),
+    /// 处于分离 HEAD 状态（提交哈希）。
     Commit(String),
 }
 
-/// Configuration for a new worktree.
+/// 新建 worktree 的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeConfig {
-    /// Branch name for the worktree (created if not exists)
+    /// worktree 使用的分支名（不存在时自动创建）
     pub branch: String,
-    /// Base branch/commit to create from (default: HEAD)
+    /// 创建时基于的分支/提交（默认：HEAD）
     pub base: Option<String>,
-    /// Optional path suffix for the worktree directory
+    /// worktree 目录的可选路径后缀
     pub path_suffix: Option<String>,
 }
 
-/// A managed git worktree.
+/// 一个受管理的 git worktree。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagedWorktree {
-    /// Path to the worktree directory
+    /// worktree 目录路径
     pub path: PathBuf,
-    /// Branch name
+    /// 分支名
     pub branch: String,
-    /// Whether this worktree was created by us (for cleanup tracking)
+    /// 该 worktree 是否由本程序创建（用于清理追踪）
     pub managed: bool,
 }
 
-/// Create a new git worktree for isolated parallel work.
-///
-/// Returns the worktree path. The caller is responsible for cleanup via
-/// `remove_worktree()` when done.
+/**
+ * 创建新的 git worktree，用于隔离的并行工作。
+ *
+ * 返回 worktree 信息。调用方在使用完毕后需负责通过
+ * `remove_worktree()` 进行清理。
+ */
 pub async fn create_worktree(
     repo_path: &Path,
     config: &WorktreeConfig,
@@ -57,6 +66,7 @@ pub async fn create_worktree(
     create_worktree_with_context(repo_path, config, &ToolContext::default()).await
 }
 
+/// 使用指定工具上下文创建受管理的 git worktree，并写入归属标记文件。
 pub async fn create_worktree_with_context(
     repo_path: &Path,
     config: &WorktreeConfig,
@@ -64,7 +74,7 @@ pub async fn create_worktree_with_context(
 ) -> Result<ManagedWorktree, String> {
     let git_root = find_git_root(repo_path, context).await?;
 
-    // Generate worktree path
+    // 生成 worktree 路径
     let worktrees_root = git_root.join(".worktrees");
     let worktree_dir = if let Some(ref suffix) = config.path_suffix {
         echo_core::utils::fs::join_path_segment(&worktrees_root, suffix)
@@ -76,13 +86,13 @@ pub async fn create_worktree_with_context(
         git_root.join(".worktrees").join(&branch_safe)
     };
 
-    // Create .worktrees directory if needed
+    // 按需创建 .worktrees 目录
     if let Some(parent) = worktree_dir.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create worktrees directory: {e}"))?;
     }
 
-    // Build git worktree add command
+    // 构建 git worktree add 命令
     let mut args = vec!["worktree".to_string(), "add".to_string()];
     if let Some(ref base) = config.base {
         args.extend([
@@ -104,7 +114,7 @@ pub async fn create_worktree_with_context(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // If branch already exists, try without -b
+        // 若分支已存在，则去掉 -b 重试
         if stderr.contains("already exists") {
             let output2 = run_git(
                 &git_root,
@@ -145,11 +155,12 @@ pub async fn create_worktree_with_context(
     })
 }
 
-/// Remove a managed worktree and clean up.
+/// 移除受管理的 worktree 并完成清理。
 pub async fn remove_worktree(repo_path: &Path, worktree: &ManagedWorktree) -> Result<(), String> {
     remove_worktree_with_context(repo_path, worktree, &ToolContext::default()).await
 }
 
+/// 使用指定工具上下文移除受管理的 worktree；存在未提交改动时拒绝移除。
 pub async fn remove_worktree_with_context(
     repo_path: &Path,
     worktree: &ManagedWorktree,
@@ -195,11 +206,12 @@ pub async fn remove_worktree_with_context(
     Ok(())
 }
 
-/// List all worktrees in the repository.
+/// 列出仓库中的所有 worktree。
 pub async fn list_worktrees(repo_path: &Path) -> Result<Vec<ManagedWorktree>, String> {
     list_worktrees_with_context(repo_path, &ToolContext::default()).await
 }
 
+/// 使用指定工具上下文列出仓库中的所有 worktree，并识别其是否受管理。
 pub async fn list_worktrees_with_context(
     repo_path: &Path,
     context: &ToolContext,
@@ -235,7 +247,7 @@ pub async fn list_worktrees_with_context(
             });
         }
     }
-    // Handle last entry
+    // 处理最后一个条目
     if let Some(path) = current_path {
         let managed = worktree_git_path(&path, MANAGED_MARKER, context)
             .await
@@ -250,7 +262,7 @@ pub async fn list_worktrees_with_context(
     Ok(worktrees)
 }
 
-/// Merge changes from a worktree branch back to the base branch.
+/// 将 worktree 分支上的改动合并回目标分支。
 pub async fn merge_worktree(
     repo_path: &Path,
     worktree: &ManagedWorktree,
@@ -259,6 +271,11 @@ pub async fn merge_worktree(
     merge_worktree_with_context(repo_path, worktree, target_branch, &ToolContext::default()).await
 }
 
+/**
+ * 使用指定工具上下文将 worktree 分支合并到目标分支。
+ *
+ * 合并失败时会中止合并并恢复原检出位置。
+ */
 pub async fn merge_worktree_with_context(
     repo_path: &Path,
     worktree: &ManagedWorktree,
@@ -330,6 +347,7 @@ pub async fn merge_worktree_with_context(
     Ok(format!("Merged {} into {}", worktree.branch, target_branch))
 }
 
+/// 校验 worktree 确实由 echo-agent 管理且位于 .worktrees 下，返回其规范化路径。
 async fn verify_managed_worktree(
     git_root: &Path,
     worktree: &ManagedWorktree,
@@ -366,6 +384,7 @@ async fn verify_managed_worktree(
     Ok(canonical_worktree)
 }
 
+/// 确保目标检出没有未提交的改动。
 async fn ensure_clean_checkout(git_root: &Path, context: &ToolContext) -> Result<(), String> {
     let status = run_git(
         git_root,
@@ -383,6 +402,7 @@ async fn ensure_clean_checkout(git_root: &Path, context: &ToolContext) -> Result
     }
 }
 
+/// 若存在进行中的合并（MERGE_HEAD），则执行 `git merge --abort`。
 async fn abort_merge_if_active(
     git_root: &Path,
     merge_error: &str,
@@ -413,6 +433,7 @@ async fn abort_merge_if_active(
     }
 }
 
+/// 解析 worktree 内指定 git 元数据文件的绝对路径。
 async fn worktree_git_path(
     worktree_path: &Path,
     name: &str,
@@ -435,6 +456,7 @@ async fn worktree_git_path(
     Ok(PathBuf::from(path.trim()))
 }
 
+/// 获取当前检出位置（分支或分离 HEAD 提交）。
 async fn current_checkout(git_root: &Path, context: &ToolContext) -> Result<CheckoutRef, String> {
     let branch = run_git(
         git_root,
@@ -456,6 +478,7 @@ async fn current_checkout(git_root: &Path, context: &ToolContext) -> Result<Chec
         .map_err(|error| format!("Detached HEAD is not UTF-8: {error}"))
 }
 
+/// 恢复到之前记录的检出位置。
 async fn restore_checkout(
     git_root: &Path,
     checkout: &CheckoutRef,
@@ -473,6 +496,7 @@ async fn restore_checkout(
     }
 }
 
+/// 查找给定路径所在 git 仓库的根目录。
 async fn find_git_root(path: &Path, context: &ToolContext) -> Result<PathBuf, String> {
     let output = run_git(path, &["rev-parse", "--show-toplevel"], context).await?;
 
@@ -485,6 +509,7 @@ async fn find_git_root(path: &Path, context: &ToolContext) -> Result<PathBuf, St
     }
 }
 
+/// 在指定目录下以受限（超时、输出上限）方式运行 git 命令。
 async fn run_git<S: AsRef<OsStr>>(
     working_dir: &Path,
     args: &[S],
@@ -503,6 +528,7 @@ async fn run_git<S: AsRef<OsStr>>(
     .map_err(|error| error.to_string())
 }
 
+/// 从命令输出中提取错误信息，输出被截断时附加提示。
 fn command_error(output: &BoundedProcessOutput) -> String {
     let mut error = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.truncated {
@@ -515,6 +541,7 @@ fn command_error(output: &BoundedProcessOutput) -> String {
 mod tests {
     use super::*;
 
+    /// 测试辅助：同步运行 git 命令并返回标准输出。
     fn run_git(repo: &Path, args: &[&str]) -> Result<String, String> {
         let output = Command::new("git")
             .args(args)
@@ -527,6 +554,7 @@ mod tests {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    /// 测试辅助：创建带有初始提交的临时仓库。
     fn test_repo() -> Result<tempfile::TempDir, String> {
         let dir = tempfile::tempdir().map_err(|error| error.to_string())?;
         run_git(dir.path(), &["init", "-b", "main"])?;
@@ -542,6 +570,7 @@ mod tests {
         Ok(dir)
     }
 
+    /// 测试能在当前 crate 目录找到 git 根目录。
     #[tokio::test]
     async fn test_find_git_root() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -549,14 +578,16 @@ mod tests {
         assert!(root.is_ok());
     }
 
+    /// 测试在非仓库目录查找 git 根目录不会 panic。
     #[tokio::test]
     async fn test_find_git_root_non_repo() {
         let path = Path::new("/tmp");
         let root = find_git_root(path, &ToolContext::default()).await;
-        // May or may not fail depending on whether /tmp is in a git repo
+        // 是否失败取决于 /tmp 是否位于某个 git 仓库中
         let _ = root;
     }
 
+    /// 测试非受管理的 worktree 不允许被移除。
     #[tokio::test]
     async fn unmanaged_worktree_is_not_removable() -> Result<(), String> {
         let repo = test_repo()?;
@@ -582,6 +613,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试合并冲突时会中止合并并恢复原分支。
     #[tokio::test]
     async fn merge_conflict_aborts_and_restores_original_branch() -> Result<(), String> {
         let repo = test_repo()?;
@@ -627,6 +659,7 @@ mod tests {
         Ok(())
     }
 
+    /// 测试合并会拒绝伪造的受管理标记以及存在未提交改动的检出。
     #[tokio::test]
     async fn merge_rejects_forged_managed_flag_and_dirty_checkout() -> Result<(), String> {
         let repo = test_repo()?;

@@ -1,14 +1,16 @@
-//! demo60: Data Quality & Statistics — 数据质量评估与统计分析
-//!
-//! 演示数据质量和统计工具：
-//! 1. MissingValueAnalysisTool — 缺失值分析与插补建议
-//! 2. OutlierDetectionTool — IQR / Z-score 异常值检测
-//! 3. ConsistencyCheckTool — 数据一致性校验
-//! 4. ExploratoryStatisticsTool — 描述性分布摘要
-//!
-//! 需要 `data` 和 `statistics` features。
-//!
-//! Contract test: `contract_demo60_data_quality` (requires `data` and `statistics`).
+/*!
+demo60: Data Quality & Statistics — 数据质量评估与统计分析
+
+演示数据质量和统计工具：
+1. MissingValueAnalysisTool — 缺失值分析与插补建议
+2. OutlierDetectionTool — IQR / Z-score 异常值检测
+3. ConsistencyCheckTool — 数据一致性校验
+4. ExploratoryStatisticsTool — 描述性分布摘要
+
+需要 `data` 和 `statistics` features。
+
+契约测试：`contract_demo60_data_quality`（需要 `data` 和 `statistics`）。
+*/
 
 use echo_agent::error::Result;
 use echo_agent::tools::Tool;
@@ -16,7 +18,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 
-/// Helper: build ToolParameters and execute a tool, returning the text output.
+/// 辅助函数：构建 ToolParameters 并执行工具，返回文本输出。
 async fn run_tool(
     tool: &dyn Tool,
     params: serde_json::Value,
@@ -31,9 +33,9 @@ async fn run_tool(
         .map_err(|e| format!("{e}"))
 }
 
-/// Pretty-print JSON text output (indented for readability).
+/// 美化打印 JSON 文本输出（缩进以便阅读）。
 fn print_json_preview(text: &str, max_lines: usize) {
-    // Try to parse as JSON for pretty-printing
+    // 尝试按 JSON 解析以便美化打印
     let display = match serde_json::from_str::<serde_json::Value>(text) {
         Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_else(|_| text.to_string()),
         Err(_) => text.to_string(),
@@ -49,6 +51,7 @@ fn print_json_preview(text: &str, max_lines: usize) {
     println!();
 }
 
+/// demo60 契约测试：依次演示缺失值分析、异常值检测、一致性检查与描述统计。
 #[tokio::test]
 async fn contract_demo60_data_quality() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -175,10 +178,10 @@ name,age,salary,department,rating
     println!("  计算分位数、偏度(skewness)和超额峰度(kurtosis)，不做统计推断：\n");
     print_json_preview(&output, 40);
 
-    // ── Cleanup ───────────────────────────────────────────────────────────
+    // ── 清理 ───────────────────────────────────────────────────────────
     fs::remove_file(csv_path).ok();
 
-    // ── Summary ───────────────────────────────────────────────────────────
+    // ── 总结 ───────────────────────────────────────────────────────────
     println!("───────────────────────────────────────────────────────");
     println!("工具一览");
     println!("───────────────────────────────────────────────────────\n");

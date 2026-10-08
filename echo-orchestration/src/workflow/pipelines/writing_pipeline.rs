@@ -1,65 +1,65 @@
-//! Writing pipeline — outline -> draft -> review -> revise (with quality loop)
-//!
-//! A 4-stage graph workflow that uses a `SharedAgent` to produce written
-//! content. The pipeline includes a conditional loop: after the review stage,
-//! if the quality score is below the configured threshold, the pipeline loops
-//! back to revise (up to `max_revisions` iterations).
-//!
-//! # Example
-//!
-//! ```ignore
-//! // 示例:从 echo_agent 入口调用本 pipeline。本 doctest 标为 ignore,因为
-//! // echo_orchestration 不能反向依赖 echo_agent(会循环依赖);真正的编译
-//! // 验证在 echo_agent 的测试中通过 path 依赖覆盖。
-//! use echo_agent::workflow::pipelines::writing_pipeline::{
-//!     WritingPipelineConfig, run_writing_pipeline,
-//! };
-//! use echo_agent::workflow::SharedAgent;
-//! use echo_agent::testing::MockAgent;
-//!
-//! # async fn example() -> echo_core::error::Result<()> {
-//! let agent = MockAgent::new("writer")
-//!     .with_response("High-quality article about AI agents.");
-//!
-//! let config = WritingPipelineConfig {
-//!     topic: "The rise of AI agents".to_string(),
-//!     audience: "technical professionals".to_string(),
-//!     format: "blog post".to_string(),
-//!     max_revisions: 2,
-//!     quality_threshold: 80,
-//! };
-//!
-//! let result = run_writing_pipeline(&agent.into(), config).await?;
-//! println!("Final output: {}", result.state.get::<String>("final_output").unwrap_or_default());
-//! # Ok(())
-//! # }
-//! ```
+/*!
+写作流水线——大纲 -> 草稿 -> 评审 -> 修订（带质量循环）
+
+使用 `SharedAgent` 生成书面内容的四阶段图工作流。流水线包含一个条件循环：
+评审阶段之后，若质量分低于配置阈值，则回到修订阶段（最多 `max_revisions` 次）。
+
+# 示例
+
+```ignore
+// 示例:从 echo_agent 入口调用本 pipeline。本 doctest 标为 ignore,因为
+// echo_orchestration 不能反向依赖 echo_agent(会循环依赖);真正的编译
+// 验证在 echo_agent 的测试中通过 path 依赖覆盖。
+use echo_agent::workflow::pipelines::writing_pipeline::{
+    WritingPipelineConfig, run_writing_pipeline,
+};
+use echo_agent::workflow::SharedAgent;
+use echo_agent::testing::MockAgent;
+
+# async fn example() -> echo_core::error::Result<()> {
+let agent = MockAgent::new("writer")
+    .with_response("High-quality article about AI agents.");
+
+let config = WritingPipelineConfig {
+    topic: "The rise of AI agents".to_string(),
+    audience: "technical professionals".to_string(),
+    format: "blog post".to_string(),
+    max_revisions: 2,
+    quality_threshold: 80,
+};
+
+let result = run_writing_pipeline(&agent.into(), config).await?;
+println!("Final output: {}", result.state.get::<String>("final_output").unwrap_or_default());
+# Ok(())
+# }
+```
+*/
 
 use crate::workflow::SharedAgent;
 use crate::workflow::graph::{Graph, GraphBuilder, GraphResult};
 use crate::workflow::state::SharedState;
 use echo_core::error::Result;
 
-// ── Configuration ──────────────────────────────────────────────────────────────
+// ── 配置 ──────────────────────────────────────────────────────────────
 
-/// Configuration for the writing pipeline.
+/// 写作流水线的配置。
 #[derive(Debug, Clone)]
 pub struct WritingPipelineConfig {
-    /// Topic or subject of the writing.
+    /// 写作的主题。
     pub topic: String,
-    /// Target audience for the content.
+    /// 内容的目标读者。
     pub audience: String,
-    /// Desired format (e.g. "blog post", "essay", "report", "white paper").
+    /// 期望的体裁（例如 "blog post"、"essay"、"report"、"white paper"）。
     pub format: String,
-    /// Maximum number of revision iterations (review -> revise loops).
+    /// 最大修订迭代次数（评审 -> 修订 循环）。
     pub max_revisions: u32,
-    /// Quality score threshold (0-100). If the review score is below this,
-    /// the pipeline loops back to revise. When the threshold is met or
-    /// max_revisions is exhausted, the pipeline proceeds to finalize.
+    /** 质量分阈值（0-100）。评审分低于该值时流水线回到修订阶段；
+    达到阈值或用尽 max_revisions 后，流水线进入定稿阶段。 */
     pub quality_threshold: u32,
 }
 
 impl Default for WritingPipelineConfig {
+    /// 主题为空，其余字段取默认值。
     fn default() -> Self {
         Self {
             topic: String::new(),
@@ -72,7 +72,7 @@ impl Default for WritingPipelineConfig {
 }
 
 impl WritingPipelineConfig {
-    /// Create a config with the topic and default values for other fields.
+    /// 以指定主题创建配置，其余字段取默认值。
     pub fn new(topic: impl Into<String>) -> Self {
         Self {
             topic: topic.into(),
@@ -83,39 +83,41 @@ impl WritingPipelineConfig {
         }
     }
 
-    /// Set the target audience.
+    /// 设置目标读者。
     pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
         self.audience = audience.into();
         self
     }
 
-    /// Set the output format.
+    /// 设置输出体裁。
     pub fn with_format(mut self, format: impl Into<String>) -> Self {
         self.format = format.into();
         self
     }
 
-    /// Set the maximum number of revision iterations.
+    /// 设置最大修订迭代次数。
     pub fn with_max_revisions(mut self, max: u32) -> Self {
         self.max_revisions = max;
         self
     }
 
-    /// Set the quality threshold score.
+    /// 设置质量分阈值。
     pub fn with_quality_threshold(mut self, threshold: u32) -> Self {
         self.quality_threshold = threshold;
         self
     }
 }
 
-// ── Quality Score Extraction ───────────────────────────────────────────────────
+// ── 质量分提取 ───────────────────────────────────────────────────
 
-/// Extract the quality score from the review text.
-///
-/// Searches for the pattern `QUALITY_SCORE: <number>` at the start of lines.
-/// Falls back to a heuristic scan if the exact pattern is not found.
+/**
+从评审文本中提取质量分。
+
+在行首查找 `QUALITY_SCORE: <number>` 模式；
+若未找到精确模式，则回退到启发式扫描。
+*/
 fn extract_quality_score(review_text: &str) -> u32 {
-    // Primary: look for "QUALITY_SCORE: <number>" pattern
+    // 首选：查找 "QUALITY_SCORE: <number>" 模式
     for line in review_text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("QUALITY_SCORE:") {
@@ -123,7 +125,7 @@ fn extract_quality_score(review_text: &str) -> u32 {
             if let Ok(score) = rest.parse::<u32>() {
                 return score.min(100);
             }
-            // Try extracting just the leading digits
+            // 尝试仅提取开头的数字
             let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if let Ok(score) = digits.parse::<u32>() {
                 return score.min(100);
@@ -131,7 +133,7 @@ fn extract_quality_score(review_text: &str) -> u32 {
         }
     }
 
-    // Fallback heuristic: look for "Score: <number>" pattern
+    // 启发式回退：查找 "Score: <number>" 模式
     for line in review_text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("Score:")
@@ -141,7 +143,7 @@ fn extract_quality_score(review_text: &str) -> u32 {
         }
     }
 
-    // Default: assume moderate quality (60) if no score is found
+    // 默认：若未找到分数，按中等质量（60）处理
     tracing::warn!(
         pipeline = "writing",
         "Could not extract quality score from review text; defaulting to 60"
@@ -149,28 +151,30 @@ fn extract_quality_score(review_text: &str) -> u32 {
     60
 }
 
-// ── Pipeline Stages ────────────────────────────────────────────────────────────
+// ── 流水线阶段 ────────────────────────────────────────────────────────────
 
-/// Build the writing graph.
-///
-/// Constructs a pipeline with a conditional loop:
-///
-/// ```text
-/// init -> outline -> draft -> review -> evaluate ─┬─► finalize (quality >= threshold or max_revisions)
-///                                                  │
-///                                                  └─► revise → increment → review (loop back)
-/// ```
-///
-/// All configuration values and prompt templates are injected into state
-/// via the `init` node, so downstream closures only read from state.
+/**
+构建写作图。
+
+构造一个带条件循环的流水线：
+
+```text
+init -> outline -> draft -> review -> evaluate ─┬─► finalize (quality >= threshold or max_revisions)
+                                                 │
+                                                 └─► revise → increment → review (loop back)
+```
+
+所有配置值和提示词模板都通过 `init` 节点注入状态，
+因此下游闭包只需从状态中读取。
+*/
 fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
     let agent_clone = agent.clone();
 
     let graph = GraphBuilder::new("writing_pipeline")
-        // ── Init: store config values and prompt templates in state ──
+        // ── 初始化：将配置值和提示词模板存入状态 ──
         .add_function_node("init", |state: &SharedState| {
             Box::pin(async move {
-                // Config values are pre-set in state by run_writing_pipeline().
+                // 配置值已由 run_writing_pipeline() 预先写入状态。
                 let topic: String = state.get("topic").unwrap_or_default();
                 let audience: String = state
                     .get("audience")
@@ -179,7 +183,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
                     .get("format")
                     .unwrap_or_else(|| "blog post".to_string());
 
-                // Store prompt templates for downstream nodes
+                // 为下游节点存储提示词模板
                 let _ = state.set(
                     "tpl_outline",
                     format!(
@@ -234,7 +238,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
                 Ok(())
             })
         })
-        // ── Stage 1: Outline ──
+        // ── 阶段 1：大纲 ──
         .add_function_node("outline_prompt", |state: &SharedState| {
             Box::pin(async move {
                 let tpl: String = state.get("tpl_outline").unwrap_or_default();
@@ -247,9 +251,9 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
             agent_clone.clone(),
             "outline_prompt",
             "outline",
-            false, // chat mode
+            false, // 对话模式
         )
-        // ── Stage 2: Draft ──
+        // ── 阶段 2：草稿 ──
         .add_function_node("draft_prompt", |state: &SharedState| {
             Box::pin(async move {
                 let tpl: String = state.get("tpl_draft").unwrap_or_default();
@@ -269,7 +273,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
             "draft",
             false,
         )
-        // ── Stage 3: Review ──
+        // ── 阶段 3：评审 ──
         .add_function_node("review_prompt", |state: &SharedState| {
             Box::pin(async move {
                 let tpl: String = state.get("tpl_review").unwrap_or_default();
@@ -286,7 +290,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
             "review",
             false,
         )
-        // ── Evaluate quality from review ──
+        // ── 根据评审评估质量 ──
         .add_function_node("evaluate_quality", |state: &SharedState| {
             Box::pin(async move {
                 let review_text: String = state.get("review").unwrap_or_default();
@@ -303,7 +307,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
                 Ok(())
             })
         })
-        // ── Stage 4: Revise (reached via conditional loop) ──
+        // ── 阶段 4：修订（经条件循环到达）──
         .add_function_node("revise_prompt", |state: &SharedState| {
             Box::pin(async move {
                 let tpl: String = state.get("tpl_revise").unwrap_or_default();
@@ -321,10 +325,10 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
             "revise",
             agent_clone.clone(),
             "revise_prompt",
-            "draft", // overwrite draft with revised version
+            "draft", // 用修订版本覆盖草稿
             false,
         )
-        // ── Increment revision counter ──
+        // ── 递增修订计数 ──
         .add_function_node("increment_revision", |state: &SharedState| {
             Box::pin(async move {
                 let count: i64 = state.get("revision_count").unwrap_or(0);
@@ -338,7 +342,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
                 Ok(())
             })
         })
-        // ── Stage 5: Finalize ──
+        // ── 阶段 5：定稿 ──
         .add_function_node("finalize_prompt", |state: &SharedState| {
             Box::pin(async move {
                 let tpl: String = state.get("tpl_finalize").unwrap_or_default();
@@ -355,8 +359,10 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
             "final_output",
             false,
         )
-        // ── Edges ──
-        // Linear path: init -> outline -> draft -> review -> evaluate_quality
+        /*
+        ── 边 ──
+        线性路径：init -> outline -> draft -> review -> evaluate_quality
+        */
         .set_entry("init")
         .add_edge("init", "outline_prompt")
         .add_edge("outline_prompt", "outline")
@@ -365,7 +371,7 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
         .add_edge("draft", "review_prompt")
         .add_edge("review_prompt", "review")
         .add_edge("review", "evaluate_quality")
-        // Conditional branch: evaluate_quality -> finalize or revise
+        // 条件分支：evaluate_quality -> finalize 或 revise
         .add_conditional_edge("evaluate_quality", |state: &SharedState| {
             Box::pin(async move {
                 let quality_score: i64 = state.get("quality_score").unwrap_or(0);
@@ -402,11 +408,11 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
                 }
             })
         })
-        // Revise loop: revise -> increment_revision -> re-review
+        // 修订循环：revise -> increment_revision -> 重新评审
         .add_edge("revise_prompt", "revise")
         .add_edge("revise", "increment_revision")
         .add_edge("increment_revision", "review_prompt")
-        // Finalize path
+        // 定稿路径
         .add_edge("finalize_prompt", "finalize")
         .set_finish("finalize")
         .build()?;
@@ -414,17 +420,19 @@ fn build_writing_graph(agent: &SharedAgent) -> Result<Graph> {
     Ok(graph)
 }
 
-// ── Pipeline Execution ─────────────────────────────────────────────────────────
+// ── 流水线执行 ─────────────────────────────────────────────────────────
 
-/// Run the writing pipeline.
-///
-/// Returns a [`GraphResult`] containing the final [`SharedState`] with keys:
-/// - `outline` — content outline
-/// - `draft` — current draft (may be revised multiple times)
-/// - `review` — latest review feedback with quality score
-/// - `quality_score` — numeric quality score (0-100)
-/// - `revision_count` — number of revision iterations performed
-/// - `final_output` — the polished final content
+/**
+运行写作流水线。
+
+返回的 [`GraphResult`] 包含最终的 [`SharedState`]，其中的键有：
+- `outline` —— 内容大纲
+- `draft` —— 当前草稿（可能经过多次修订）
+- `review` —— 最新一次评审反馈（含质量分）
+- `quality_score` —— 数值质量分（0-100）
+- `revision_count` —— 已执行的修订迭代次数
+- `final_output` —— 润色后的最终内容
+*/
 pub async fn run_writing_pipeline(
     agent: &SharedAgent,
     config: WritingPipelineConfig,
@@ -442,8 +450,8 @@ pub async fn run_writing_pipeline(
         "Starting writing pipeline"
     );
 
-    // Store config values in state before graph execution starts.
-    // The init node reads these to build prompt templates.
+    /* 在图执行开始前将配置值存入状态。
+    init 节点会读取这些值来构建提示词模板。 */
     let _ = state.set("topic", config.topic);
     let _ = state.set("audience", config.audience);
     let _ = state.set("format", config.format);
@@ -463,19 +471,23 @@ pub async fn run_writing_pipeline(
     Ok(result)
 }
 
-// ── Unit Tests ─────────────────────────────────────────────────────────────────
+// ── 单元测试 ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::workflow::shared_agent;
 
+    /// 始终返回固定响应的写作模拟 Agent。
     struct WriterMock {
+        /// Agent 名称
         name: String,
+        /// 每次执行返回的固定响应
         response: String,
     }
 
     impl WriterMock {
+        /// 以名称和固定响应创建模拟 Agent。
         fn new(name: &str, response: &str) -> Self {
             Self {
                 name: name.to_string(),
@@ -550,7 +562,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_writing_pipeline_no_loop() {
-        // Review returns high quality score — should skip revision loop
+        // 评审返回高质量分——应跳过修订循环
         let agent = shared_agent(WriterMock::new(
             "writer",
             "QUALITY_SCORE: 95\nExcellent writing quality.",
@@ -566,9 +578,9 @@ mod tests {
 
         let result = run_writing_pipeline(&agent, config).await.unwrap();
 
-        // Should reach finalize without revision loop
+        // 应在不经过修订循环的情况下到达定稿
         assert!(result.path.contains(&"finalize".to_string()));
-        // revision_count should remain 0
+        // revision_count 应保持为 0
         let rev_count: i64 = result.state.get("revision_count").unwrap_or(0);
         assert_eq!(rev_count, 0);
         assert!(result.state.contains("final_output"));
@@ -576,7 +588,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_writing_pipeline_with_loop() {
-        // Review returns low quality score — should trigger revision loop
+        // 评审返回低质量分——应触发修订循环
         let agent = shared_agent(WriterMock::new(
             "writer",
             "QUALITY_SCORE: 50\nNeeds significant improvement.",
@@ -592,9 +604,9 @@ mod tests {
 
         let result = run_writing_pipeline(&agent, config).await.unwrap();
 
-        // Should reach finalize after revision loops
+        // 应在修订循环后到达定稿
         assert!(result.path.contains(&"finalize".to_string()));
-        // Due to mock returning the same score, revision_count should hit max_revisions
+        // 由于模拟始终返回相同分数，revision_count 应达到 max_revisions
         let rev_count: i64 = result.state.get("revision_count").unwrap_or(0);
         assert_eq!(rev_count, 2);
     }

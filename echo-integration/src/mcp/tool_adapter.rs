@@ -11,10 +11,12 @@ use echo_core::tools::{
     ToolResultKind, ToolRiskLevel, ToolSideEffect, permission::ToolPermission,
 };
 
-/// 将 MCP 工具适配为框架的 `Tool` trait
-///
-/// 使 MCP 服务端提供的工具可以无缝注册到 `ToolManager`，
-/// 由 ReAct Agent 像使用内置工具一样调用。
+/**
+将 MCP 工具适配为框架的 `Tool` trait
+
+使 MCP 服务端提供的工具可以无缝注册到 `ToolManager`，
+由 ReAct Agent 像使用内置工具一样调用。
+*/
 pub struct McpToolAdapter {
     client: Arc<McpClient>,
     tool: McpTool,
@@ -53,9 +55,11 @@ impl McpToolAdapter {
         }
     }
 
-    /// 使用带有规范化所有者信息的服务端标识来适配工具。
-    /// 直连服务端沿用历史命名投影；插件服务端则使用稳定的命名空间，
-    /// 使不同插件下相同的本地名称也能共存。
+    /**
+    使用带有规范化所有者信息的服务端标识来适配工具。
+    直连服务端沿用历史命名投影；插件服务端则使用稳定的命名空间，
+    使不同插件下相同的本地名称也能共存。
+    */
     pub fn with_server_identity(
         client: Arc<McpClient>,
         tool: McpTool,
@@ -86,11 +90,13 @@ impl McpToolAdapter {
         }
     }
 
-    /// 用宿主应用自行做出的判断，覆盖保守的 MCP 能力分类。
-    ///
-    /// MCP 服务端的 annotations 只是建议性的协议元数据，不能直接转换为该值。
-    /// 应用只有在通过本地配置或其他可信策略源确认某工具确为只读之后，
-    /// 才能将其能力降级为只读。
+    /**
+    用宿主应用自行做出的判断，覆盖保守的 MCP 能力分类。
+
+    MCP 服务端的 annotations 只是建议性的协议元数据，不能直接转换为该值。
+    应用只有在通过本地配置或其他可信策略源确认某工具确为只读之后，
+    才能将其能力降级为只读。
+    */
     pub fn with_local_capabilities(mut self, capabilities: ToolCapabilities) -> Self {
         self.local_capabilities = capabilities;
         self
@@ -139,8 +145,10 @@ impl McpToolAdapter {
     }
 }
 
-/// 清理工具名称片段：仅保留 ASCII 字母数字及 `_`/`-`，其余字符替换为 `_`；
-/// 若结果为空则返回 `"unnamed"`。
+/**
+清理工具名称片段：仅保留 ASCII 字母数字及 `_`/`-`，其余字符替换为 `_`；
+若结果为空则返回 `"unnamed"`。
+*/
 fn sanitize_tool_name_part(value: &str) -> String {
     let sanitized: String = value
         .chars()
@@ -237,9 +245,11 @@ impl Tool for McpToolAdapter {
 
             let text = McpClient::content_to_text(&result.content);
 
-            // 将 MCP 规范中的 `structuredContent` 保留为结构化的 `data`
-            // （调用方可直接渲染而无需重新解析文本），并将 `isError`
-            // 映射为结构化错误类型。文本视图仍保留为供 LLM 阅读的可读拼接结果。
+            /*
+            将 MCP 规范中的 `structuredContent` 保留为结构化的 `data`
+            （调用方可直接渲染而无需重新解析文本），并将 `isError`
+            映射为结构化错误类型。文本视图仍保留为供 LLM 阅读的可读拼接结果。
+            */
             if result.is_error {
                 let failure = self.reported_failure();
                 let mut tr = ToolResult::failure(failure.category, text).with_failure(failure);
@@ -262,8 +272,10 @@ impl Tool for McpToolAdapter {
                 ToolResult::success(text)
             };
 
-            // 将非标准扩展字段体现在文本视图中，避免 MCP 服务端的
-            // 额外数据被静默丢弃。
+            /*
+            将非标准扩展字段体现在文本视图中，避免 MCP 服务端的
+            额外数据被静默丢弃。
+            */
             if !result.extra.is_empty() {
                 let extra_str = serde_json::to_string_pretty(&result.extra).unwrap_or_default();
                 tr.output.push_str(&format!("\n\n附加字段:\n{extra_str}"));

@@ -1,8 +1,9 @@
-//! LSP Manager — manages multiple language server processes.
-//!
-//! The `LspManager` owns a collection of `StdioLspClient` instances,
-//! one per configured language. It handles starting, stopping, and
-//! routing requests to the appropriate server based on file extension.
+/*!
+ * LSP 管理器——管理多个语言服务器进程。
+ *
+ * `LspManager` 持有一组 `StdioLspClient` 实例，每种已配置语言对应一个。
+ * 它负责启动、停止服务器，并根据文件扩展名将请求路由到对应的服务器。
+ */
 
 use echo_core::lsp::{LspClient, LspServerConfig, LspServerStatus};
 use std::collections::HashMap;
@@ -14,29 +15,32 @@ use super::client::{LspLifecycle, StdioLspClient};
 use super::config::LspConfig;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// 全局递增的管理器代次计数器，用于区分不同管理器的生命周期。
 static NEXT_MANAGER_GENERATION: AtomicU64 = AtomicU64::new(1);
 
-/// Manages multiple language server processes.
-///
-/// Each language gets its own `StdioLspClient` instance. The manager
-/// routes requests to the appropriate server based on file extension.
+/**
+ * 管理多个语言服务器进程。
+ *
+ * 每种语言拥有独立的 `StdioLspClient` 实例。管理器根据文件扩展名
+ * 将请求路由到对应的服务器。
+ */
 pub struct LspManager {
-    /// Active clients, keyed by language name.
+    /// 活跃客户端，以语言名为键。
     clients: HashMap<String, Arc<RwLock<StdioLspClient>>>,
-    /// Last known status survives removal of an owned client.
+    /// 最近已知状态，在所属客户端被移除后仍然保留。
     settled: HashMap<String, LspServerStatus>,
-    /// Configuration for each language.
+    /// 各语言的配置。
     configs: HashMap<String, LspServerConfig>,
-    /// Extension → language mapping.
+    /// 扩展名 → 语言 的映射。
     extension_map: HashMap<String, String>,
-    /// Project root URI (e.g., `file:///path/to/project`).
+    /// 项目根目录 URI（例如 `file:///path/to/project`）。
     project_root_uri: Option<String>,
-    /// Shared close fence for all clients derived from this manager.
+    /// 由该管理器派生的所有客户端共享的关闭栅栏。
     lifecycle: Arc<LspLifecycle>,
 }
 
 impl LspManager {
-    /// Create a new empty manager.
+    /// 创建一个空的管理器。
     pub fn new() -> Self {
         let generation = NEXT_MANAGER_GENERATION
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -53,7 +57,7 @@ impl LspManager {
         }
     }
 
-    /// Load configuration from an `LspConfig`.
+    /// 从 `LspConfig` 加载配置（仅在没有运行中的服务器时允许）。
     pub fn load_config(&mut self, config: &LspConfig) -> Result<(), String> {
         if !self.lifecycle.is_live(self.lifecycle.generation) {
             return Err("LSP manager is closed".to_string());
@@ -70,7 +74,7 @@ impl LspManager {
         Ok(())
     }
 
-    /// Replace the complete configuration after awaiting teardown of old children.
+    /// 等待旧子进程全部关闭后，整体替换配置。
     pub async fn reload_config(&mut self, config: &LspConfig) -> Result<(), String> {
         if !self.lifecycle.is_live(self.lifecycle.generation) {
             return Err("LSP manager is closed".to_string());
@@ -85,6 +89,7 @@ impl LspManager {
         Ok(())
     }
 
+    /// 根据当前配置重建扩展名映射（自动补全前导 `.`）。
     fn rebuild_extensions(&mut self) {
         self.extension_map.clear();
         for (lang, server_config) in &self.configs {
@@ -99,13 +104,13 @@ impl LspManager {
         }
     }
 
-    /// Set the project root directory.
+    /// 设置项目根目录。
     pub fn set_project_root(&mut self, root: &Path) {
         let uri = format!("file://{}", root.display());
         self.project_root_uri = Some(uri);
     }
 
-    /// Start a language server for the given language.
+    /// 为指定语言启动语言服务器。
     pub async fn start_server(&mut self, language: &str) -> Result<(), String> {
         if !self.lifecycle.is_live(self.lifecycle.generation) {
             return Err("LSP manager is closed".to_string());
@@ -116,10 +121,11 @@ impl LspManager {
             .cloned()
             .ok_or_else(|| format!("No configuration for language: {language}"))?;
 
-        // Replacing a language entry must first close the previous client.
-        // Otherwise a retained derived handle would remain live after the
-        // manager map points at the replacement and could spawn an unowned
-        // child.
+        /*
+         * 替换某语言条目前必须先关闭之前的客户端。
+         * 否则在管理器映射指向新客户端之后，被保留的派生句柄仍会保持有效，
+         * 并可能启动一个无主的子进程。
+         */
         if self.clients.contains_key(language) {
             self.stop_server(language).await?;
         }
@@ -133,7 +139,7 @@ impl LspManager {
             client.set_restart_count(status.restart_count);
         }
 
-        // Initialize with project root
+        // 使用项目根目录进行初始化
         let root_uri = self.project_root_uri.as_deref().unwrap_or("file:///");
 
         let result = tokio::time::timeout(
@@ -146,8 +152,10 @@ impl LspManager {
             result.map_err(|e| format!("Failed to initialize {language} server: {e}"))
         });
         if let Err(error) = result {
-            // A timed-out initialize future is cancelled, so settle its child
-            // and I/O tasks before publishing the failed status.
+            /*
+             * 超时的 initialize future 已被取消，因此在发布失败状态前，
+             * 需先终结其子进程与 I/O 任务。
+             */
             let _ = client.shutdown().await;
             let mut status = client.status();
             status.running = false;
@@ -167,7 +175,7 @@ impl LspManager {
         Ok(())
     }
 
-    /// Stop a language server.
+    /// 停止语言服务器。
     pub async fn stop_server(&mut self, language: &str) -> Result<(), String> {
         if let Some(client) = self.clients.remove(language) {
             let mut client = client.write().await;
@@ -189,7 +197,7 @@ impl LspManager {
         Ok(())
     }
 
-    /// Restart a language server.
+    /// 重启语言服务器（受 `max_restarts` 限制）。
     pub async fn restart_server(&mut self, language: &str) -> Result<(), String> {
         if !self.lifecycle.is_live(self.lifecycle.generation) {
             return Err("LSP manager is closed".to_string());
@@ -218,7 +226,7 @@ impl LspManager {
         self.start_server(language).await
     }
 
-    /// Get a client for the given file path (based on extension).
+    /// 根据文件路径（扩展名）获取已初始化的客户端。
     pub async fn get_client_for_file(
         &self,
         file_path: &str,
@@ -239,7 +247,7 @@ impl LspManager {
         Some((language.clone(), client.clone()))
     }
 
-    /// Get a client for a specific language.
+    /// 获取指定语言的客户端。
     pub fn get_client(&self, language: &str) -> Option<Arc<RwLock<StdioLspClient>>> {
         if !self.lifecycle.is_live(self.lifecycle.generation) {
             return None;
@@ -247,12 +255,12 @@ impl LspManager {
         self.clients.get(language).cloned()
     }
 
-    /// List all configured languages.
+    /// 列出所有已配置的语言。
     pub fn configured_languages(&self) -> Vec<&str> {
         self.configs.keys().map(|s| s.as_str()).collect()
     }
 
-    /// List all running servers.
+    /// 列出所有正在运行的服务器。
     pub fn running_servers(&self) -> Vec<&str> {
         self.clients
             .iter()
@@ -266,6 +274,7 @@ impl LspManager {
             .collect()
     }
 
+    /// 构造指定语言的空白（未运行）状态。
     fn empty_status(&self, language: &str) -> LspServerStatus {
         LspServerStatus {
             language: language.to_string(),
@@ -277,17 +286,17 @@ impl LspManager {
         }
     }
 
-    /// Get status of all servers.
+    /// 获取所有服务器的状态。
     pub async fn status_all(&self) -> Vec<LspServerStatus> {
         let mut statuses = Vec::new();
 
-        // Running servers
+        // 运行中的服务器
         for client in self.clients.values() {
             let client = client.read().await;
             statuses.push(client.status());
         }
 
-        // Configured but not running
+        // 已配置但未运行
         for lang in self.configs.keys() {
             if !self.clients.contains_key(lang) {
                 statuses.push(
@@ -302,10 +311,12 @@ impl LspManager {
         statuses
     }
 
-    /// Shutdown all servers.
+    /// 关闭所有服务器。
     pub async fn shutdown_all(&mut self) {
-        // Close the fence first. Handles retained by SDK callers then become
-        // stale immediately, even while child teardown awaits I/O.
+        /*
+         * 先关闭栅栏。这样即使子进程关闭仍在等待 I/O，
+         * SDK 调用方保留的句柄也会立即失效。
+         */
         self.lifecycle.close();
         let languages: Vec<String> = self.clients.keys().cloned().collect();
         for lang in languages {
@@ -315,6 +326,7 @@ impl LspManager {
 }
 
 impl Default for LspManager {
+    /// 等价于 [`LspManager::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -325,6 +337,7 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// 用 Python 编写的模拟 LSP 服务器脚本，按模式参数模拟各种故障。
     const MOCK_LSP: &str = r#"
 import json, os, sys, time
 mode = sys.argv[1]
@@ -370,6 +383,7 @@ while True:
         break
 "#;
 
+    /// 构造运行模拟 LSP 脚本的服务器配置。
     fn mock_config(language: &str, mode: &str, max_restarts: u32) -> LspServerConfig {
         LspServerConfig {
             language: language.to_string(),
@@ -387,6 +401,7 @@ while True:
         }
     }
 
+    /// 等待指定语言的服务器进入未运行状态并返回其状态。
     async fn wait_for_exit(
         manager: &LspManager,
         language: &str,
@@ -409,6 +424,7 @@ while True:
         .map_err(|_| "language server did not reach EOF".to_string())
     }
 
+    /// EOF 会清空运行时状态，重启次数耗尽后仍保留错误。
     #[tokio::test]
     async fn eof_clears_runtime_and_restart_exhaustion_preserves_error() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -459,6 +475,7 @@ while True:
         Ok(())
     }
 
+    /// 写入失败在 stdout 未 EOF 时也会终结状态与待响应请求。
     #[tokio::test]
     async fn writer_failure_settles_status_and_pending_without_stdout_eof() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -529,6 +546,7 @@ while True:
         Ok(())
     }
 
+    /// 畸形或缺失 Content-Length 头时终结运行时。
     #[tokio::test]
     async fn malformed_or_missing_content_length_settles_runtime() -> Result<(), String> {
         for (mode, expected) in [
@@ -564,6 +582,7 @@ while True:
         Ok(())
     }
 
+    /// 正常停止不会凭空产生传输错误。
     #[tokio::test]
     async fn clean_stop_does_not_invent_a_transport_error() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -591,6 +610,7 @@ while True:
         Ok(())
     }
 
+    /// 服务器关闭 stdout 时待响应请求会被终结。
     #[tokio::test]
     async fn pending_request_settles_when_server_closes_stdout() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -632,6 +652,7 @@ while True:
         Ok(())
     }
 
+    /// 重载配置会等待旧进程关闭并替换路由。
     #[tokio::test]
     async fn reload_waits_for_old_owner_and_replaces_routes() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -685,6 +706,7 @@ while True:
         Ok(())
     }
 
+    /// 启动失败与重复启动都会留下真实的状态。
     #[tokio::test]
     async fn failed_start_and_repeated_start_leave_honest_status() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -747,6 +769,7 @@ while True:
         Ok(())
     }
 
+    /// 构造一个命令不存在、必然启动失败的测试配置。
     fn test_config(language: &str) -> LspServerConfig {
         LspServerConfig {
             language: language.to_string(),
@@ -759,6 +782,7 @@ while True:
         }
     }
 
+    /// 管理器关闭后，保留的客户端句柄失效。
     #[tokio::test]
     async fn retained_client_is_stale_after_manager_shutdown() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -792,6 +816,7 @@ while True:
         Ok(())
     }
 
+    /// 替换语言客户端会关闭被保留的旧句柄。
     #[tokio::test]
     async fn replacing_language_client_closes_retained_handle() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -835,6 +860,7 @@ while True:
         Ok(())
     }
 
+    /// 加载 YAML 配置。
     #[test]
     fn test_load_config() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -861,6 +887,7 @@ languages:
         Ok(())
     }
 
+    /// 扩展名映射到语言。
     #[test]
     fn test_extension_mapping() -> Result<(), String> {
         let mut manager = LspManager::new();
@@ -883,6 +910,7 @@ languages:
         Ok(())
     }
 
+    /// 可选的真实 LSP 冒烟测试：在临时项目中启动本机已安装的语言服务器。
     #[tokio::test]
     #[ignore = "opt-in live LSP smoke test; set ECHO_AGENT_LSP_SMOKE=1"]
     async fn live_installed_servers_initialize_on_real_project_fixture() -> Result<(), String> {

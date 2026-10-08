@@ -1,15 +1,18 @@
-//! demo34_workflow_stream —— Workflow 流式输出
-//!
-//! 演示 `Graph::run_stream()` 方法，逐节点发出 `WorkflowEvent`，
-//! 支持 NodeStart / NodeEnd / Token / Completed 等实时事件。
-//!
-//! ```bash
-//! cargo test --all-features --locked contract_demo34_workflow_stream -- --nocapture
-//! ```
+/*!
+demo34_workflow_stream —— Workflow 流式输出
+
+演示 `Graph::run_stream()` 方法，逐节点发出 `WorkflowEvent`，
+支持 NodeStart / NodeEnd / Token / Completed 等实时事件。
+
+```bash
+cargo test --all-features --locked contract_demo34_workflow_stream -- --nocapture
+```
+*/
 
 use echo_agent::prelude::*;
 use futures::StreamExt;
 
+/// 契约测试：依次运行线性、并行 fan-out 与条件分支三种图的流式执行。
 #[tokio::test]
 async fn contract_demo34_workflow_stream() -> echo_agent::error::Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -34,6 +37,7 @@ async fn contract_demo34_workflow_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 演示线性管道 fetch → process → report 的流式执行。
 async fn demo_linear_stream() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("etl_stream")
         .add_function_node("fetch", |state: &SharedState| {
@@ -73,6 +77,7 @@ async fn demo_linear_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 演示并行 fan-out 管道 start → [analyze, count] → merge 的流式执行。
 async fn demo_parallel_stream() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("parallel_stream")
         .add_function_node("start", |state: &SharedState| {
@@ -121,6 +126,7 @@ async fn demo_parallel_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 演示条件分支图 check → yes|no 的流式执行。
 async fn demo_conditional_stream() -> echo_agent::error::Result<()> {
     let graph = GraphBuilder::new("cond_stream")
         .add_function_node("check", |_state: &SharedState| {
@@ -166,6 +172,7 @@ async fn demo_conditional_stream() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 将单个 `WorkflowEvent` 格式化打印到标准输出。
 fn print_event(event: &WorkflowEvent) {
     match event {
         WorkflowEvent::NodeStart {

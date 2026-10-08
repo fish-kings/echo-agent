@@ -48,6 +48,7 @@ pub enum ExtensionLeaseError {
 }
 
 impl std::fmt::Display for ExtensionLeaseError {
+    /// 将租约错误格式化为可读的错误信息。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::AdmissionClosed => write!(formatter, "extension admission is closed"),
@@ -194,6 +195,7 @@ impl ExtensionInvocationLease {
 }
 
 impl Drop for ExtensionInvocationLease {
+    /// 租约被丢弃时执行失败关闭（fail-closed）的结算。
     fn drop(&mut self) {
         /* 失败关闭（fail-closed）：一个未结算的租约（崩溃或被中止的
          * 代理任务）会被结算为已取消，这样就不会有等待者被挂起。
@@ -242,6 +244,7 @@ impl ExtensionInvocationAuthority {
         Self::build(max_concurrency.max(1))
     }
 
+    /// 以给定的并发上限构建调用权威（调用方需保证其为正数）。
     fn build(max_concurrency: usize) -> Arc<Self> {
         Arc::new(Self {
             admission: AtomicBool::new(true),
@@ -424,14 +427,17 @@ impl ExtensionInvocationAuthority {
     }
 }
 
+/// 扩展调用权威的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 构造给定并发上限的调用权威。
     fn authority(concurrency: usize) -> Arc<ExtensionInvocationAuthority> {
         ExtensionInvocationAuthority::new(concurrency).expect("positive concurrency")
     }
 
+    /// 验证并发上限为零时会被拒绝。
     #[test]
     fn zero_concurrency_is_rejected() {
         assert_eq!(
@@ -440,6 +446,7 @@ mod tests {
         );
     }
 
+    /// 验证并发许可被强制执行，且超限时快速失败。
     #[tokio::test]
     async fn concurrency_permits_are_enforced_and_fail_fast() {
         let authority = authority(2);
@@ -462,6 +469,7 @@ mod tests {
         );
     }
 
+    /// 验证结算恰好发生一次，迟到的结算会被拒绝。
     #[tokio::test]
     async fn settlement_is_exactly_once_and_late_settlements_are_rejected() {
         let authority = authority(4);
@@ -478,6 +486,7 @@ mod tests {
         assert_eq!(authority.in_flight(), 0);
     }
 
+    /// 验证独占租约发生冲突时直接报错而非等待。
     #[tokio::test]
     async fn exclusive_leases_conflict_instead_of_waiting() {
         let authority = authority(4);
@@ -500,6 +509,7 @@ mod tests {
         assert!(authority.lease(Some(key), CancellationToken::new()).is_ok());
     }
 
+    /// 验证框架层取消会传播到租约的取消令牌。
     #[tokio::test]
     async fn framework_cancellation_propagates_to_the_lease_token() {
         let authority = authority(2);
@@ -511,6 +521,7 @@ mod tests {
         drop(lease);
     }
 
+    /// 验证丢弃未结算的租约会以取消状态失败关闭。
     #[tokio::test]
     async fn dropping_an_unsettled_lease_fails_closed_as_cancelled() {
         let authority = authority(2);
@@ -528,6 +539,7 @@ mod tests {
         assert_eq!(authority.in_flight(), 0);
     }
 
+    /// 验证依次执行关闭、取消、排空后所有资源都被释放。
     #[tokio::test]
     async fn close_then_cancel_then_drain_releases_everything() {
         let authority = authority(4);
@@ -554,6 +566,7 @@ mod tests {
         assert_eq!(authority.in_flight(), 0);
     }
 
+    /// 验证排空会报告从未释放的租约。
     #[tokio::test]
     async fn drain_reports_leases_that_never_release() {
         let authority = ExtensionInvocationAuthority::new_saturating(4);
@@ -572,6 +585,7 @@ mod tests {
         assert_eq!(remaining, 1);
     }
 
+    /// 验证 `wait_settled` 能观察到拆除阶段的结算。
     #[tokio::test]
     async fn wait_settled_observes_teardown_settlement() {
         let authority = authority(2);

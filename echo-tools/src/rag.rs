@@ -1,9 +1,11 @@
-//! RAG (Retrieval-Augmented Generation) tools
-//!
-//! Provides document chunking, vector indexing, and semantic retrieval capabilities:
-//! - rag_index: chunk documents and build vector index
-//! - rag_search: semantic search over indexed documents
-//! - rag_chunk_document: document chunking preview (without indexing)
+/*!
+ * RAG（检索增强生成）工具
+ *
+ * 提供文档分块、向量索引和语义检索能力：
+ * - rag_index：对文档分块并构建向量索引
+ * - rag_search：在已索引文档上进行语义搜索
+ * - rag_chunk_document：文档分块预览（不建立索引）
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -14,38 +16,44 @@ use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
-// ── Shared vector store ───────────────────────────────────────────────────
+// ── 共享向量存储 ───────────────────────────────────────────────────
 
-/// Document chunk
+/// 文档分块
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct DocumentChunk {
+    /// 分块唯一标识
     id: String,
+    /// 分块文本内容
     content: String,
+    /// 分块的向量表示
     embedding: Vec<f32>,
-    /// Document source identifier (optional)
+    /// 文档来源标识（可选）
     source: Option<String>,
-    /// Chunk index (position within the document)
+    /// 分块序号（在文档中的位置）
     chunk_index: usize,
-    /// Total number of chunks
+    /// 分块总数
     total_chunks: usize,
 }
 
-/// Maximum number of chunks to retain in memory (prevent unbounded growth)
+/// 内存中保留的最大分块数（防止无限增长）
 const MAX_CHUNKS: usize = 10_000;
 
-/// In-memory vector store
+/// 内存向量存储
 struct VectorStore {
+    /// 已存储的分块
     chunks: Vec<DocumentChunk>,
 }
 
 impl VectorStore {
+    /// 创建空的向量存储
     fn new() -> Self {
         Self { chunks: Vec::new() }
     }
 
+    /// 添加分块；超出上限时淘汰最旧的分块，返回被淘汰的数量
     fn add_chunks(&mut self, mut chunks: Vec<DocumentChunk>) -> usize {
         self.chunks.append(&mut chunks);
-        // Evict oldest chunks when exceeding the limit
+        // 超出上限时淘汰最旧的分块
         if self.chunks.len() > MAX_CHUNKS {
             let excess = self.chunks.len() - MAX_CHUNKS;
             self.chunks.drain(0..excess);
@@ -55,6 +63,7 @@ impl VectorStore {
         }
     }
 
+    /// 按余弦相似度检索最相近的 top_k 个分块
     fn search(&self, query_embedding: &[f32], top_k: usize) -> Vec<(f32, DocumentChunk)> {
         let mut scored: Vec<(f32, DocumentChunk)> = self
             .chunks
@@ -71,13 +80,15 @@ impl VectorStore {
     }
 }
 
-/// Instance-scoped vector store shared by a configured index/search pair.
+/// 实例级向量存储，由配置好的一对索引/搜索工具共享。
 #[derive(Clone)]
 pub struct RagStore {
+    /// 受读写锁保护的底层向量存储
     inner: Arc<RwLock<VectorStore>>,
 }
 
 impl RagStore {
+    /// 创建空的 RAG 存储
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(VectorStore::new())),
@@ -86,12 +97,13 @@ impl RagStore {
 }
 
 impl Default for RagStore {
+    /// 等价于 `new()`
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Cosine similarity
+/// 余弦相似度
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -106,7 +118,7 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }
 }
 
-/// Paragraph-aware text chunking
+/// 感知段落的文本分块
 fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     if chunk_size == 0 || overlap >= chunk_size {
         return Vec::new();
@@ -133,9 +145,9 @@ fn chunk_text(text: &str, chunk_size: usize, overlap: usize) -> Vec<String> {
     chunks
 }
 
-// ── Embedding helper ────────────────────────────────────────────────────────────────
+// ── 嵌入辅助函数 ────────────────────────────────────────────────────────────────
 
-/// Generate embeddings for a batch of texts
+/// 为一批文本生成向量
 async fn generate_embeddings(
     embedder: &dyn echo_core::memory::Embedder,
     texts: &[String],
@@ -156,34 +168,42 @@ async fn generate_embeddings(
     Ok(embeddings)
 }
 
-// ── rag_index tool ──────────────────────────────────────────────────────────
+// ── rag_index 工具 ──────────────────────────────────────────────────────────
 
+/// 对文档分块并建立向量索引的 rag_index 工具
 pub struct RagIndexTool {
+    /// 用于生成向量的嵌入器
     embedder: Arc<dyn echo_core::memory::Embedder>,
+    /// 共享的向量存储
     store: RagStore,
 }
 
 impl RagIndexTool {
+    /// 使用嵌入器和共享存储创建工具
     pub fn new(embedder: Arc<dyn echo_core::memory::Embedder>, store: RagStore) -> Self {
         Self { embedder, store }
     }
 }
 
 impl Tool for RagIndexTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "rag_index"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read, ToolPermission::Write]
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Chunk documents and build a vector index for semantic retrieval. \
          Requires EMBEDDING_API_KEY env var (or compatible OPENAI_API_KEY / EMBEDDING_APIKEY). \
          Default chunk size 1000 chars, overlap 100 chars."
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -209,6 +229,7 @@ impl Tool for RagIndexTool {
         })
     }
 
+    /// 执行工具
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let content = parameters
@@ -249,7 +270,7 @@ impl Tool for RagIndexTool {
                 ));
             }
 
-            // Generate embeddings
+            // 生成向量
             let embeddings = match generate_embeddings(self.embedder.as_ref(), &texts).await {
                 Ok(e) => e,
                 Err(e) => {
@@ -260,7 +281,7 @@ impl Tool for RagIndexTool {
                 }
             };
 
-            // Build chunks and store
+            // 构建分块并存储
             let chunks: Vec<DocumentChunk> = texts
                 .into_iter()
                 .zip(embeddings)
@@ -292,33 +313,41 @@ impl Tool for RagIndexTool {
     }
 }
 
-// ── rag_search tool ─────────────────────────────────────────────────────────
+// ── rag_search 工具 ─────────────────────────────────────────────────────────
 
+/// 在已索引文档上做语义检索的 rag_search 工具
 pub struct RagSearchTool {
+    /// 用于生成向量的嵌入器
     embedder: Arc<dyn echo_core::memory::Embedder>,
+    /// 共享的向量存储
     store: RagStore,
 }
 
 impl RagSearchTool {
+    /// 使用嵌入器和共享存储创建工具
     pub fn new(embedder: Arc<dyn echo_core::memory::Embedder>, store: RagStore) -> Self {
         Self { embedder, store }
     }
 }
 
 impl Tool for RagSearchTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "rag_search"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Semantic search over indexed documents, returning top_k most relevant chunks with similarity scores. \
          Requires prior rag_index to build the index."
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -336,6 +365,7 @@ impl Tool for RagSearchTool {
         })
     }
 
+    /// 执行工具
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -348,7 +378,7 @@ impl Tool for RagSearchTool {
                 .and_then(|v| v.as_u64())
                 .unwrap_or(5) as usize;
 
-            // Generate query embedding
+            // 生成查询向量
             let query_embedding =
                 match generate_embeddings(self.embedder.as_ref(), &[query.to_string()]).await {
                     Ok(e) => match e.into_iter().next() {
@@ -367,7 +397,7 @@ impl Tool for RagSearchTool {
                     }
                 };
 
-            // Search
+            // 检索
             let results = self
                 .store
                 .inner
@@ -407,23 +437,28 @@ impl Tool for RagSearchTool {
     }
 }
 
-// ── rag_chunk_document tool ─────────────────────────────────────────────────
+// ── rag_chunk_document 工具 ─────────────────────────────────────────────────
 
+/// 预览文档分块结果（不建立索引）的 rag_chunk_document 工具
 pub struct RagChunkDocumentTool;
 
 impl Tool for RagChunkDocumentTool {
+    /// 工具名称
     fn name(&self) -> &str {
         "rag_chunk_document"
     }
 
+    /// 工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 工具描述
     fn description(&self) -> &str {
         "Preview document chunking results (does not build an index). Use to inspect chunking strategy and tune parameters."
     }
 
+    /// 参数 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -445,6 +480,7 @@ impl Tool for RagChunkDocumentTool {
         })
     }
 
+    /// 执行工具
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let content = parameters

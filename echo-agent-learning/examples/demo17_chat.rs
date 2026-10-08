@@ -1,17 +1,19 @@
-//! demo17_chat.rs —— 多轮对话模式（chat / chat_stream）综合演示
-//!
-//! 展示 Agent 的多轮对话能力：
-//! 1. chat() —— 保留历史上下文的对话
-//! 2. chat_stream() —— 流式多轮对话
-//! 3. reset() —— 清除上下文开始新会话
-//!
-//! RuntimeStateStore 可恢复对话上下文；任务计划由版本化任务图持有，
-//! 不从 AgentCheckpoint.current_plan 恢复。
-//!
-//! 运行方式：
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo17_chat
-//! ```
+/*!
+ * demo17_chat.rs —— 多轮对话模式（chat / chat_stream）综合演示
+ *
+ * 展示 Agent 的多轮对话能力：
+ * 1. chat() —— 保留历史上下文的对话
+ * 2. chat_stream() —— 流式多轮对话
+ * 3. reset() —— 清除上下文开始新会话
+ *
+ * RuntimeStateStore 可恢复对话上下文；任务计划由版本化任务图持有，
+ * 不从 AgentCheckpoint.current_plan 恢复。
+ *
+ * 运行方式：
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo17_chat
+ * ```
+ */
 
 // 演示函数按需在 main() 中启用；未启用的部分保留为参考，允许暂时未用。
 #![allow(dead_code)]
@@ -22,21 +24,25 @@ use echo_agent::tool;
 use futures::StreamExt;
 use std::io::Write;
 
+/// 工具：计算两数之和。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 工具：计算两数之差。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 工具：计算两数之积。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 示例入口：按需运行各多轮对话演示部分。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -49,20 +55,20 @@ async fn main() -> echo_agent::error::Result<()> {
 
     print_banner();
 
-    // separator("Part 1: chat() — 基础多轮对话（上下文记忆）");
-    // demo_basic_chat().await?;
-    //
-    // separator("Part 2: chat() + 工具调用 — 多轮数学推理");
-    // demo_chat_with_tools().await?;
-    //
-    // separator("Part 3: chat_stream() — 流式多轮对话");
-    // demo_chat_stream().await?;
+    /* separator("Part 1: chat() — 基础多轮对话（上下文记忆）");
+       demo_basic_chat().await?;
+
+       separator("Part 2: chat() + 工具调用 — 多轮数学推理");
+       demo_chat_with_tools().await?;
+
+       separator("Part 3: chat_stream() — 流式多轮对话");
+       demo_chat_stream().await?; */
 
     separator("Part 4: execute() vs chat() 行为对比");
     demo_execute_vs_chat().await?;
 
-    // separator("Part 5: reset() 会话生命周期");
-    // demo_reset_lifecycle().await?;
+    /* separator("Part 5: reset() 会话生命周期");
+       demo_reset_lifecycle().await?; */
 
     println!("\n{}", "═".repeat(62));
     println!("  demo17 完成");
@@ -73,6 +79,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: 基础多轮对话 ──────────────────────────────────────────────────────
 
+/// Part 1：演示 chat() 在多轮之间保留上下文。
 async fn demo_basic_chat() -> echo_agent::error::Result<()> {
     println!("  同一个 agent 实例连续调用 chat()，每轮都能看到之前的对话\n");
 
@@ -102,6 +109,7 @@ async fn demo_basic_chat() -> echo_agent::error::Result<()> {
 
 // ── Part 2: chat() + 工具调用 ─────────────────────────────────────────────────
 
+/// Part 2：演示 chat() 结合工具调用进行多轮数学推理。
 async fn demo_chat_with_tools() -> echo_agent::error::Result<()> {
     println!("  多轮数学推理：Agent 记住前一轮的计算结果\n");
 
@@ -131,6 +139,7 @@ async fn demo_chat_with_tools() -> echo_agent::error::Result<()> {
 
 // ── Part 3: chat_stream() ─────────────────────────────────────────────────────
 
+/// Part 3：演示 chat_stream() 流式多轮对话。
 async fn demo_chat_stream() -> echo_agent::error::Result<()> {
     println!("  使用 chat_stream() 进行流式多轮对话\n");
 
@@ -172,6 +181,7 @@ async fn demo_chat_stream() -> echo_agent::error::Result<()> {
 
 // ── Part 4: execute() vs chat() 对比 ─────────────────────────────────────────
 
+/// Part 4：对比 execute()（每次独立）与 chat()（保留历史）的行为。
 async fn demo_execute_vs_chat() -> echo_agent::error::Result<()> {
     println!("  对比 execute() 和 chat() 的行为差异\n");
 
@@ -212,6 +222,7 @@ async fn demo_execute_vs_chat() -> echo_agent::error::Result<()> {
 
 // ── Part 5: reset() 会话生命周期 ────────────────────────────────────────────
 
+/// Part 5：演示 reset() 清除上下文后开启新会话。
 async fn demo_reset_lifecycle() -> echo_agent::error::Result<()> {
     println!("  reset() 清除上下文，开启新会话\n");
 
@@ -248,6 +259,7 @@ async fn demo_reset_lifecycle() -> echo_agent::error::Result<()> {
 
 // ── 辅助 ──────────────────────────────────────────────────────────────────────
 
+/// 打印演示横幅。
 fn print_banner() {
     println!("{}", "═".repeat(62));
     println!("      Echo Agent × 多轮对话模式 (demo17)");
@@ -255,6 +267,7 @@ fn print_banner() {
     println!();
 }
 
+/// 打印分隔线与小节标题。
 fn separator(title: &str) {
     println!("{}", "─".repeat(62));
     println!("{title}\n");

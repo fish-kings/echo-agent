@@ -1,13 +1,13 @@
-//! Shared extension invocation runtime regression (supreme plan 06, todo
-//! `build-shared-extension-runtime`).
-//!
-//! The tests drive the protocol-neutral
-//! [`echo_agent::acp::ExtensionInvocationAuthority`] with a controllable
-//! fake bridge transport: the fake acquires leases exactly like the SDK-host
-//! bridge does (lease → send → await with deadline → settle exactly once),
-//! so concurrency permits, deadline settlement, cancellation propagation,
-//! late-response discard, re-entry conflicts and the close ordering are all
-//! observed against the real lifecycle implementation.
+/*!
+共享扩展调用运行时回归测试（supreme plan 06，todo
+`build-shared-extension-runtime`）。
+
+这些测试使用一个可控的伪桥接传输来驱动与协议无关的
+[`echo_agent::acp::ExtensionInvocationAuthority`]：伪桥接获取租约的方式与
+SDK 宿主桥接完全一致（租约 → 发送 → 带截止时间等待 → 恰好结算一次），
+因此并发许可、截止时间结算、取消传播、迟到响应丢弃、重入冲突以及关闭顺序
+都是针对真实的生命周期实现观察得到的。
+*/
 
 #![cfg(feature = "acp")]
 
@@ -26,29 +26,35 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// One fake reverse invocation driven like the real bridge drives it: lease,
-/// await the transport with a deadline, settle exactly once, then observe
-/// late outcomes. `TransportBehavior` controls what the fake SDK side does.
+/**
+一次伪造的反向调用，驱动方式与真实桥接一致：获取租约、带截止时间等待传输、
+恰好结算一次，然后观察迟到的结果。`TransportBehavior` 控制伪 SDK 端的行为。
+*/
 struct FakeBridge {
+    /// 被测的扩展调用权威，所有租约都从这里获取。
     authority: Arc<ExtensionInvocationAuthority>,
 }
 
+/// 伪 SDK 端对一次反向调用的响应方式。
 enum TransportBehavior {
-    /// Answer after the given delay.
+    /// 在给定延迟后应答。
     AnswerAfter(Duration),
-    /// Never answer; the deadline or cancellation settles the lease.
+    /// 永不应答；由截止时间或取消来结算租约。
     Silent,
 }
 
 impl FakeBridge {
+    /// 基于给定的调用权威创建一个共享的伪桥接。
     fn new(authority: Arc<ExtensionInvocationAuthority>) -> Arc<Self> {
         Arc::new(Self { authority })
     }
 
-    /// Drive one non-streaming invocation to completion and return the
-    /// settlement the caller observed, mirroring the bridge's select!.
-    /// Consumes the bridge handle so the future is `'static` and can be
-    /// spawned like a real proxy task.
+    /**
+    驱动一次非流式调用直到完成，并返回调用方观察到的结算结果，
+    与桥接中的 select! 逻辑保持一致。
+    该方法会消耗桥接句柄，使返回的 future 为 `'static`，
+    从而可以像真实的代理任务一样被 spawn。
+    */
     async fn invoke(
         self: Arc<Self>,
         exclusive_key: Option<&'static str>,
@@ -76,7 +82,7 @@ impl FakeBridge {
                 ExtensionSettlement::Answered
             }
             () = cancellation.cancelled() => {
-                // The bridge sends the cancel notice, then settles locally.
+                // 桥接先发送取消通知，然后在本地结算。
                 lease.settle(ExtensionSettlement::Cancelled);
                 ExtensionSettlement::Cancelled
             }
@@ -88,6 +94,7 @@ impl FakeBridge {
     }
 }
 
+/// 以给定并发上限构建调用权威；并发数必须为正。
 fn authority(concurrency: usize) -> Arc<ExtensionInvocationAuthority> {
     match ExtensionInvocationAuthority::new(concurrency) {
         Ok(authority) => authority,
@@ -95,6 +102,7 @@ fn authority(concurrency: usize) -> Arc<ExtensionInvocationAuthority> {
     }
 }
 
+/// 并发调用共享许可，许可耗尽时新的租约立即失败而不是等待。
 #[tokio::test]
 async fn concurrent_invocations_share_permits_and_fail_fast_when_exhausted() {
     let bridge = FakeBridge::new(authority(2));
@@ -110,14 +118,14 @@ async fn concurrent_invocations_share_permits_and_fail_fast_when_exhausted() {
         TransportBehavior::Silent,
         Duration::from_secs(30),
     ));
-    // Wait until both invocations hold their permits.
+    // 等待两个调用都持有各自的许可。
     while bridge.authority.in_flight() < 2 {
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let third = bridge.authority.lease(None, CancellationToken::new());
     assert_eq!(third.err(), Some(ExtensionLeaseError::ConcurrencyLimit));
     assert_eq!(bridge.authority.in_flight(), 2);
-    // Releasing the two silent leases (via cancellation) frees the permits.
+    // 通过取消释放两个静默租约，从而归还许可。
     let cancel_all = bridge.authority.cancel_all();
     assert_eq!(cancel_all, 2);
     let (first, second) = tokio::join!(first, second);
@@ -127,10 +135,11 @@ async fn concurrent_invocations_share_permits_and_fail_fast_when_exhausted() {
     assert_eq!(remaining, 0);
 }
 
+/// 截止时间到达时结算为超时，之后迟到的应答会被丢弃。
 #[tokio::test]
 async fn deadline_settles_timeout_and_late_answers_are_discarded() {
     let bridge = FakeBridge::new(authority(4));
-    // The fake SDK stays silent; the 25ms deadline must settle a timeout.
+    // 伪 SDK 保持静默；25ms 的截止时间必须结算为超时。
     let observed = bridge
         .clone()
         .invoke(
@@ -141,7 +150,7 @@ async fn deadline_settles_timeout_and_late_answers_are_discarded() {
         )
         .await;
     assert_eq!(observed, ExtensionSettlement::TimedOut);
-    // A late answer arriving after settlement must not overwrite it.
+    // 结算之后到达的迟到应答不得覆盖已有结算。
     let mut lease = match bridge.authority.lease(None, CancellationToken::new()) {
         Ok(lease) => lease,
         Err(error) => panic!("permit freed after timeout: {error}"),
@@ -152,6 +161,7 @@ async fn deadline_settles_timeout_and_late_answers_are_discarded() {
     drop(lease);
 }
 
+/// 框架侧取消会在截止时间之前把调用结算为已取消。
 #[tokio::test]
 async fn framework_cancellation_settles_cancelled_before_the_deadline() {
     let bridge = FakeBridge::new(authority(2));
@@ -162,7 +172,7 @@ async fn framework_cancellation_settles_cancelled_before_the_deadline() {
         TransportBehavior::Silent,
         Duration::from_secs(30),
     );
-    // The owning run cancels long before the deadline.
+    // 所属的运行在截止时间之前很早就取消了。
     tokio::time::sleep(Duration::from_millis(10)).await;
     framework.cancel();
     let observed = invocation.await;
@@ -171,6 +181,7 @@ async fn framework_cancellation_settles_cancelled_before_the_deadline() {
     assert_eq!(remaining, 0);
 }
 
+/// 对同一独占键的重入立即返回冲突错误，而不是等待。
 #[tokio::test]
 async fn exclusive_reentry_returns_conflict_without_waiting() {
     let authority = authority(4);
@@ -185,7 +196,7 @@ async fn exclusive_reentry_returns_conflict_without_waiting() {
         Some(ExtensionLeaseError::ExclusiveConflict),
         "re-entrant exclusive mutation must be a typed conflict, not a wait"
     );
-    // Independent registrations keep working while one holds its lease.
+    // 某个注册项持有租约期间，其它独立注册项仍可正常工作。
     assert!(
         authority
             .lease(
@@ -198,6 +209,7 @@ async fn exclusive_reentry_returns_conflict_without_waiting() {
     assert!(authority.lease(Some(key), CancellationToken::new()).is_ok());
 }
 
+/// 拆除流程按顺序执行：先关闭准入，再取消在途调用，最后排空。
 #[tokio::test]
 async fn teardown_closes_admission_then_cancels_then_drains_in_order() {
     let bridge = FakeBridge::new(authority(4));
@@ -210,7 +222,7 @@ async fn teardown_closes_admission_then_cancels_then_drains_in_order() {
     while bridge.authority.in_flight() < 1 {
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
-    // Close order from the adapter close chain: admission, cancel, drain.
+    // 与适配器关闭链一致的关闭顺序：准入、取消、排空。
     bridge.authority.close_admission();
     assert_eq!(
         bridge.authority.lease(None, CancellationToken::new()).err(),
@@ -226,9 +238,11 @@ async fn teardown_closes_admission_then_cancels_then_drains_in_order() {
     );
 }
 
-// ── Connection-level wiring ─────────────────────────────────────────────────
+// ── 连接级接线 ─────────────────────────────────────────────────────────
 
+/// 测试用的空 Agent：立即返回最终答案，并统计流式轮次数。
 struct NullAgent {
+    /// 已执行的流式轮次计数。
     turns: Arc<AtomicUsize>,
 }
 
@@ -267,6 +281,7 @@ impl echo_agent::agent::Agent for NullAgent {
     }
 }
 
+/// 构建一组使用 [`NullAgent`] 会话工厂的连接服务。
 fn test_services() -> Arc<AcpConnectionServices> {
     let turns = Arc::new(AtomicUsize::new(0));
     let factory = move |_context: AcpSessionContext| {
@@ -279,8 +294,10 @@ fn test_services() -> Arc<AcpConnectionServices> {
     Arc::new(AcpConnectionServices::new(registry, config))
 }
 
-/// The shared connection services expose exactly one extension authority and
-/// the unified close chain drains it with every other connection state.
+/**
+共享连接服务只暴露唯一一个扩展调用权威，
+并由统一关闭链将其与其它所有连接状态一起排空。
+*/
 #[tokio::test]
 async fn connection_services_own_one_extension_authority_and_close_drains_it() -> Result<()> {
     let services = test_services();
@@ -293,8 +310,8 @@ async fn connection_services_own_one_extension_authority_and_close_drains_it() -
     };
     assert_eq!(authority.in_flight(), 1);
 
-    // The unified close chain: admission first, then in-flight cancellation,
-    // then a bounded drain before Sessions close.
+    /* 统一关闭链：先关闭准入，再取消在途调用，
+    然后在关闭 Session 之前进行有界排空。 */
     services.close_admission();
     authority.close_admission();
     authority.cancel_all();
@@ -310,6 +327,7 @@ async fn connection_services_own_one_extension_authority_and_close_drains_it() -
     Ok(())
 }
 
+/// 连接关闭超时时保留未结算的扩展租约，以便后续重试关闭。
 #[tokio::test]
 async fn connection_close_retains_unsettled_extension_for_retry() -> Result<()> {
     let services = test_services();
@@ -326,10 +344,11 @@ async fn connection_close_retains_unsettled_extension_for_retry() -> Result<()> 
     Ok(())
 }
 
-/// A prompt-driven run keeps using the same Session/Run authority while an
-/// extension lease runs next to it; the run settles via the framework
-/// receipt, the lease settles via its own lifecycle, and neither settles the
-/// other (design §12.1: one Run authority, one invocation authority).
+/**
+由 prompt 驱动的运行在旁边有扩展租约执行时，仍使用同一个 Session/Run 权威；
+运行通过框架回执结算，租约通过自身生命周期结算，二者互不代为结算
+（设计 §12.1：一个 Run 权威，一个调用权威）。
+*/
 #[tokio::test]
 async fn extension_leases_coexist_with_framework_runs_without_second_terminal() -> Result<()> {
     let services = test_services();
@@ -385,8 +404,9 @@ async fn extension_leases_coexist_with_framework_runs_without_second_terminal() 
     Ok(())
 }
 
-// Silence the unused helper warning when EventEnvelope is only referenced in
-// doc position on some feature combinations.
+/* 在某些 feature 组合下 EventEnvelope 只在文档位置被引用，
+此辅助函数用于消除未使用警告。 */
+/// 仅用于引用 `EventEnvelope` 类型的见证函数。
 #[allow(dead_code)]
 fn _envelope_type_witness() -> Option<EventEnvelope> {
     None

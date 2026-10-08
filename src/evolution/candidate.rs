@@ -97,6 +97,7 @@ impl CandidateOperationJournal {
     /// 打开(或创建)指定路径下的候选操作日志,并绑定该路径对应的串行化锁。
     fn open(path: &Path) -> Result<Self> {
         let journal = Arc::new(FileEventJournal::open(path, FileDurability::SyncData)?);
+        // 进程内按日志路径共享的串行化锁表（弱引用，避免泄漏）。
         static SERIALS: OnceLock<Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>> =
             OnceLock::new();
         let mut serials = SERIALS
@@ -608,8 +609,10 @@ impl SkillCandidateDetector {
         Ok(report)
     }
 
-    /// 校验日志、Store 与 ChangeLog 三者记录的权属标识是否一致,
-    /// 返回当前已确立的权属标识(若尚未确立则为 `None`)。
+    /**
+    校验日志、Store 与 ChangeLog 三者记录的权属标识是否一致,
+    返回当前已确立的权属标识(若尚未确立则为 `None`)。
+    */
     async fn validate_candidate_authorities(
         &self,
         typed_store: &TypedMemoryStore,

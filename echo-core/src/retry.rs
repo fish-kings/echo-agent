@@ -1,26 +1,28 @@
-//! Unified retry policy
-//!
-//! Provides [`RetryPolicy`] configuration and the [`with_retry`] execution wrapper,
-//! for unified use by all external calls: LLM / MCP / A2A / Sandbox, etc.
-//!
-//! # Example
-//!
-//! ```rust,no_run
-//! use echo_core::retry::{RetryPolicy, with_retry};
-//! use std::time::Duration;
-//!
-//! # async fn example() -> Result<String, String> {
-//! let policy = RetryPolicy::new(3, Duration::from_millis(500))
-//!     .max_delay(Duration::from_secs(30))
-//!     .jitter(true);
-//!
-//! let result = with_retry(&policy, || async {
-//!     // Potentially-failing async operation
-//!     Ok::<_, String>("success".to_string())
-//! }).await;
-//! # result
-//! # }
-//! ```
+/*!
+统一重试策略
+
+提供 [`RetryPolicy`] 配置与 [`with_retry`] 执行包装器，
+供 LLM / MCP / A2A / Sandbox 等所有外部调用统一使用。
+
+# 示例
+
+```rust,no_run
+use echo_core::retry::{RetryPolicy, with_retry};
+use std::time::Duration;
+
+# async fn example() -> Result<String, String> {
+let policy = RetryPolicy::new(3, Duration::from_millis(500))
+    .max_delay(Duration::from_secs(30))
+    .jitter(true);
+
+let result = with_retry(&policy, || async {
+    // 可能失败的异步操作
+    Ok::<_, String>("success".to_string())
+}).await;
+# result
+# }
+```
+*/
 
 use rand::Rng;
 use std::fmt;
@@ -28,23 +30,25 @@ use std::future::Future;
 use std::time::Duration;
 use tracing::{debug, warn};
 
-/// Unified retry policy configuration
-///
-/// All external calls (LLM / MCP / A2A / Sandbox) should control retry behavior via this policy.
+/**
+统一重试策略配置
+
+所有外部调用（LLM / MCP / A2A / Sandbox）都应通过该策略控制重试行为。
+*/
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
-    /// Maximum number of retries (0 = no retry, single attempt only)
+    /// 最大重试次数（0 表示不重试，仅执行一次）
     pub max_retries: u32,
-    /// Initial wait duration (base for exponential backoff)
+    /// 初始等待时长（指数退避的基数）
     pub base_delay: Duration,
-    /// Maximum wait duration cap
+    /// 等待时长上限
     pub max_delay: Duration,
-    /// Whether to add random jitter (prevents thundering herd with multiple clients retrying simultaneously)
+    /// 是否添加随机抖动（防止多个客户端同时重试造成惊群效应）
     pub jitter: bool,
 }
 
 impl RetryPolicy {
-    /// Create a retry policy with a retry count and base backoff delay.
+    /// 使用重试次数和基础退避延迟创建重试策略。
     pub fn new(max_retries: u32, base_delay: Duration) -> Self {
         Self {
             max_retries,
@@ -54,19 +58,19 @@ impl RetryPolicy {
         }
     }
 
-    /// Set the maximum delay allowed after exponential backoff.
+    /// 设置指数退避后允许的最大延迟。
     pub fn max_delay(mut self, delay: Duration) -> Self {
         self.max_delay = delay;
         self
     }
 
-    /// Enable or disable randomized jitter for retry delays.
+    /// 启用或禁用重试延迟的随机抖动。
     pub fn jitter(mut self, enabled: bool) -> Self {
         self.jitter = enabled;
         self
     }
 
-    /// No retry (single attempt only).
+    /// 不重试（仅执行一次）。
     pub fn no_retry() -> Self {
         Self {
             max_retries: 0,
@@ -76,16 +80,18 @@ impl RetryPolicy {
         }
     }
 
-    /// Calculate the wait duration for retry attempt `attempt` (0-indexed: attempt 1 = first retry).
-    ///
-    /// Note: attempt=0 means the first execution (no delay), returns Duration::ZERO.
+    /**
+    计算第 `attempt` 次重试的等待时长（从 0 计数：attempt 1 = 第一次重试）。
+
+    注意：attempt=0 表示首次执行（无延迟），返回 Duration::ZERO。
+    */
     pub fn delay_for(&self, attempt: u32) -> Duration {
         // 首次执行无延迟
         if attempt == 0 {
             return Duration::ZERO;
         }
-        // Cap exponent at 10 to avoid overflow: base_delay * 2^10 = 1024x base_delay.
-        // With a typical base_delay of 500ms, the max pre-capped delay is ~512s.
+        /* 指数上限为 10 以避免溢出：base_delay * 2^10 = 1024 倍 base_delay。
+        以典型的 500ms base_delay 计算，截断前最大延迟约为 512s。 */
         let exp = (attempt - 1).min(10);
         let delay = self.base_delay.saturating_mul(2u32.saturating_pow(exp));
         let capped = delay.min(self.max_delay);
@@ -102,6 +108,7 @@ impl RetryPolicy {
 }
 
 impl Default for RetryPolicy {
+    /// 默认策略：最多重试 3 次，基础延迟 500ms，上限 30s，启用抖动。
     fn default() -> Self {
         Self {
             max_retries: 3,
@@ -112,25 +119,27 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Execute an async operation with the given retry policy.
-///
-/// `is_retryable` determines whether an error is worth retrying; returns `false` to abort immediately.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_core::retry::{RetryPolicy, with_retry_if};
-/// use std::time::Duration;
-///
-/// # async fn example() {
-/// let policy = RetryPolicy::default();
-/// let result = with_retry_if(
-///     &policy,
-///     || async { Err::<(), String>("temporary error".into()) },
-///     |e| e.contains("temporary"),
-/// ).await;
-/// # }
-/// ```
+/**
+使用给定的重试策略执行异步操作。
+
+`is_retryable` 决定某个错误是否值得重试；返回 `false` 时立即中止。
+
+# 示例
+
+```rust,no_run
+use echo_core::retry::{RetryPolicy, with_retry_if};
+use std::time::Duration;
+
+# async fn example() {
+let policy = RetryPolicy::default();
+let result = with_retry_if(
+    &policy,
+    || async { Err::<(), String>("temporary error".into()) },
+    |e| e.contains("temporary"),
+).await;
+# }
+```
+*/
 pub async fn with_retry_if<F, Fut, T, E, P>(
     policy: &RetryPolicy,
     mut op: F,
@@ -171,7 +180,7 @@ where
     }
 }
 
-/// Execute an async operation with the given retry policy (all errors are considered retryable).
+/// 使用给定的重试策略执行异步操作（所有错误均视为可重试）。
 pub async fn with_retry<F, Fut, T, E>(policy: &RetryPolicy, op: F) -> Result<T, E>
 where
     F: FnMut() -> Fut,
@@ -181,12 +190,14 @@ where
     with_retry_if(policy, op, |_| true).await
 }
 
+/// 重试策略与重试执行的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// 验证 `RetryPolicy` 的默认值。
     #[test]
     fn test_retry_policy_defaults() {
         let policy = RetryPolicy::default();
@@ -194,6 +205,7 @@ mod tests {
         assert!(policy.jitter);
     }
 
+    /// 验证延迟按指数退避增长。
     #[test]
     fn test_delay_exponential_backoff() {
         let policy = RetryPolicy::new(5, Duration::from_millis(100))
@@ -206,6 +218,7 @@ mod tests {
         assert_eq!(policy.delay_for(4), Duration::from_millis(800));
     }
 
+    /// 验证延迟不超过上限。
     #[test]
     fn test_delay_capped() {
         let policy = RetryPolicy::new(5, Duration::from_secs(5))
@@ -217,12 +230,14 @@ mod tests {
         assert_eq!(policy.delay_for(3), Duration::from_secs(10));
     }
 
+    /// 验证不重试策略。
     #[test]
     fn test_no_retry() {
         let policy = RetryPolicy::no_retry();
         assert_eq!(policy.max_retries, 0);
     }
 
+    /// 验证首次即成功时直接返回。
     #[tokio::test]
     async fn test_with_retry_success_on_first() {
         let policy = RetryPolicy::no_retry();
@@ -230,6 +245,7 @@ mod tests {
         assert_eq!(result.unwrap(), 42);
     }
 
+    /// 验证若干次失败后最终成功。
     #[tokio::test]
     async fn test_with_retry_success_after_failures() {
         let counter = Arc::new(AtomicU32::new(0));
@@ -253,6 +269,7 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
+    /// 验证全部失败时返回错误，且共执行 1 + 重试次数 次。
     #[tokio::test]
     async fn test_with_retry_all_failures() {
         let policy = RetryPolicy::new(2, Duration::from_millis(1)).jitter(false);
@@ -269,9 +286,10 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 3); // 1 + 2 retries
+        assert_eq!(counter.load(Ordering::SeqCst), 3); // 1 次执行 + 2 次重试
     }
 
+    /// 验证不可重试的错误不会被重试。
     #[tokio::test]
     async fn test_with_retry_if_non_retryable() {
         let policy = RetryPolicy::new(3, Duration::from_millis(1));
@@ -292,6 +310,6 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert_eq!(counter.load(Ordering::SeqCst), 1); // no retries for fatal
+        assert_eq!(counter.load(Ordering::SeqCst), 1); // fatal 错误不重试
     }
 }

@@ -335,7 +335,7 @@ mod tests {
             "test-session".to_string(),
             "test-agent".to_string(),
         );
-        // Bridge should be creatable without panicking
+        // 桥接器应能在不 panic 的情况下被创建
         assert_eq!(bridge.session_id, "test-session");
         assert_eq!(bridge.agent_name, "test-agent");
     }
@@ -361,9 +361,9 @@ mod tests {
             "agent-1".to_string(),
         );
 
-        // Three-stage task lifecycle: created (graph entry) → started
-        // (scheduler pick) → completed (terminal, with status). The former
-        // on_timeout/on_cancelled are now on_after_execute(status).
+        /* 任务三阶段生命周期：created（进入任务图）→ started（被调度器选中）
+        → completed（终态，携带状态）。原先的 on_timeout/on_cancelled
+        现已统一为 on_after_execute(status)。 */
         bridge.on_created("task-1", "Build project").await;
         bridge.on_before_execute("task-1", "Build project").await;
         bridge
@@ -377,7 +377,7 @@ mod tests {
         bridge
             .on_failure("task-1", "Build project", "compile error")
             .await;
-        // Verify timeout/cancelled reach consumers as TaskCompleted status.
+        // 验证超时/取消以 TaskCompleted 状态送达消费者。
         bridge
             .on_after_execute(
                 "task-1",
@@ -405,10 +405,9 @@ mod tests {
             "agent-1".to_string(),
         );
 
-        // These should not panic even with an empty registry.
-        // SubagentStop is the single convergence point for all terminal
-        // states (completed/failed/cancelled/timed_out) — no separate
-        // on_cancelled anymore.
+        /* 即使注册表为空，这些调用也不应 panic。
+        SubagentStop 是所有终态（completed/failed/cancelled/timed_out）的
+        唯一汇聚点——不再有单独的 on_cancelled。 */
         bridge
             .on_before_dispatch("researcher", "sync", "Find papers")
             .await;
@@ -421,8 +420,7 @@ mod tests {
             )
             .await;
         bridge.on_failure("researcher", "timeout").await;
-        // Verify cancelled is delivered as a SubagentStop status, not a
-        // separate event.
+        // 验证取消以 SubagentStop 状态送达，而非单独的事件。
         bridge
             .on_after_dispatch(
                 "researcher",

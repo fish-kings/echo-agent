@@ -1,10 +1,11 @@
-//! Process-wide admission and ordering for blocking file operations.
-//!
-//! File-backed async traits submit owned closures here instead of calling
-//! `std::fs` on a Tokio runtime thread. Once admitted, an operation is owned by
-//! an internal task and completes even when its caller is dropped. Operations
-//! with the same key execute in submission order; unrelated keys may execute
-//! concurrently within the process-wide bound.
+/*!
+阻塞式文件操作的进程级准入控制与排序。
+
+基于文件的异步 trait 会把自有闭包提交到这里，而不是在 Tokio 运行时线程上
+直接调用 `std::fs`。一旦准入成功，操作即由内部任务持有，即使调用方被 drop
+也会执行完毕。相同 key 的操作按提交顺序执行；互不相关的 key 可在进程级
+上限内并发执行。
+*/
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -13,15 +14,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 use futures::future::{BoxFuture, FutureExt, Shared, ready};
 use tokio::sync::{Semaphore, oneshot};
 
-/// Maximum number of file operations accepted but not yet settled.
+/// 已接受但尚未结束的文件操作的最大数量。
 pub const PROCESS_FILE_OPERATION_CAPACITY: usize = 64;
-/// Maximum number of closures simultaneously occupying blocking threads.
+/// 同时占用阻塞线程的闭包的最大数量。
 pub const PROCESS_FILE_OPERATION_CONCURRENCY: usize = 8;
 
+/// 进程级准入信号量，限制在途（已接受未结束）操作数。
 static ADMISSION: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(PROCESS_FILE_OPERATION_CAPACITY)));
+/// 进程级执行信号量，限制同时运行的阻塞闭包数。
 static EXECUTION: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(PROCESS_FILE_OPERATION_CONCURRENCY)));
+/// 进程级的操作持有者运行时，保证操作不随调用方运行时关闭而中断。
 static PROCESS_OWNER: LazyLock<Result<tokio::runtime::Runtime, std::io::Error>> =
     LazyLock::new(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -29,40 +33,49 @@ static PROCESS_OWNER: LazyLock<Result<tokio::runtime::Runtime, std::io::Error>> 
             .thread_name("echo-file-owner")
             .build()
     });
+/// 每个 key 当前队尾操作的注册表，用于实现同 key 顺序执行。
 static KEY_TAILS: LazyLock<Mutex<HashMap<BlockingFileOperationKey, KeyTail>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// 可被多个等待者共享的完成信号 future。
 type SharedCompletion = Shared<BoxFuture<'static, ()>>;
 
+/// 某个 key 的队尾记录。
 struct KeyTail {
+    /// 队尾操作的代数（单调递增），用于判断是否可以清除该记录。
     generation: u64,
+    /// 队尾操作完成时触发的共享信号。
     completion: SharedCompletion,
 }
 
-/// Typed scope for a blocking file operation.
+/// 阻塞式文件操作的带类型作用域。
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum BlockingFileOperationScope {
-    /// Operations against one independently ordered record.
+    /// 针对单条独立排序记录的操作。
     Entity(String),
-    /// Operations against a store-wide projection or scan.
+    /// 针对整个存储范围的投影或扫描操作。
     Collection(String),
 }
 
-/// Collision-free ordering key for a file-backed store operation.
+/// 基于文件的存储操作所用的无冲突排序 key。
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BlockingFileOperationKey {
+    /// 调用方所属的命名空间（例如某个存储类型）。
     namespace: String,
+    /// 规范化后的存储根目录。
     canonical_root: PathBuf,
+    /// 操作的作用域。
     scope: BlockingFileOperationScope,
 }
 
 impl BlockingFileOperationKey {
-    /// Build a key from independently hashed components.
-    ///
-    /// `canonical_root` must already be canonical or otherwise identity-stable.
-    /// This constructor does not touch the filesystem because it is called from
-    /// async admission paths. Passing aliases for one directory would create
-    /// separate ordering domains.
+    /**
+    由各自独立参与哈希的组成部分构造一个 key。
+
+    `canonical_root` 必须已是规范路径，或以其他方式保证身份稳定。
+    由于本构造函数会在异步准入路径上被调用，因此不会访问文件系统。
+    若为同一目录传入不同别名，将产生彼此独立的排序域。
+    */
     pub fn new(
         namespace: impl Into<String>,
         canonical_root: impl Into<PathBuf>,
@@ -76,33 +89,42 @@ impl BlockingFileOperationKey {
     }
 }
 
-/// Infrastructure failure outside the submitted file closure.
+/// 提交的文件闭包之外的基础设施故障。
 #[derive(Debug, thiserror::Error)]
 pub enum BlockingFileOperationError {
+    /// 准入信号量已关闭。
     #[error("blocking file operation admission is closed")]
     AdmissionClosed,
+    /// 执行信号量已关闭。
     #[error("blocking file operation execution is closed")]
     ExecutionClosed,
+    /// 阻塞任务失败（例如闭包 panic），携带错误描述。
     #[error("blocking file operation task failed: {0}")]
     Join(String),
+    /// 持有者任务在发布结果前就已结束。
     #[error("blocking file operation owner ended before publishing its result")]
     OwnerClosed,
+    /// key 注册表的互斥锁已中毒。
     #[error("blocking file operation key registry is poisoned")]
     RegistryPoisoned,
+    /// 当前不处于活跃的 Tokio 运行时中。
     #[error("blocking file operation requires an active Tokio runtime")]
     RuntimeUnavailable,
+    /// 进程级操作持有者运行时构建失败，携带错误描述。
     #[error("process file operation owner is unavailable: {0}")]
     ProcessOwnerUnavailable(String),
+    /// 某个 key 的代数计数已耗尽。
     #[error("blocking file operation key generation is exhausted")]
     KeyGenerationExhausted,
 }
 
-/// Run an owned blocking file closure under one process-wide bound.
-///
-/// The future may wait for admission. After admission succeeds, no cancellation
-/// point exists before the owner task is spawned. Dropping the returned future
-/// after that point only drops the result receiver; the closure, key ordering,
-/// and permits remain owned until settlement.
+/**
+在进程级上限约束下运行一个自有的阻塞式文件闭包。
+
+该 future 可能需要等待准入。准入成功后、持有者任务被 spawn 之前不存在
+取消点。在此之后 drop 返回的 future 只会丢弃结果接收端；闭包、key 排序
+以及许可证都会一直被持有，直到操作结束。
+*/
 pub async fn run_keyed_file_operation<T, F>(
     key: BlockingFileOperationKey,
     operation: F,
@@ -145,6 +167,7 @@ where
         .map_err(|_| BlockingFileOperationError::OwnerClosed)?
 }
 
+/// 将操作登记为该 key 的新队尾，返回前一个队尾的完成信号、本操作的完成发送端及代数。
 fn enqueue_key(
     key: &BlockingFileOperationKey,
 ) -> Result<(SharedCompletion, oneshot::Sender<()>, u64), BlockingFileOperationError> {
@@ -172,6 +195,7 @@ fn enqueue_key(
     Ok((previous, completion_tx, generation))
 }
 
+/// 操作结束后，若该 key 的队尾仍是本操作，则将其从注册表中移除。
 fn finish_key(key: &BlockingFileOperationKey, generation: u64) {
     let Ok(mut tails) = KEY_TAILS.lock() else {
         return;
@@ -190,8 +214,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
+    /// 串行化异步测试，避免共享的进程级信号量互相干扰。
     static ASYNC_TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+    /// 构造一个测试用的实体作用域 key。
     fn entity_key(scope: impl Into<String>) -> BlockingFileOperationKey {
         BlockingFileOperationKey::new(
             "blocking-test",
@@ -482,7 +508,7 @@ mod tests {
         let _serial = ASYNC_TEST_SERIAL.lock().await;
         let key = entity_key("panic-release");
         let failed = run_keyed_file_operation(key.clone(), || -> () {
-            // Fault injection verifies that the owner settles a panicked blocking closure.
+            // 故障注入：验证持有者能够正确收尾一个发生 panic 的阻塞闭包。
             std::panic::resume_unwind(Box::new("injected file operation panic"));
         })
         .await;

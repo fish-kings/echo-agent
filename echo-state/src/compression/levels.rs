@@ -1,11 +1,13 @@
-//! Multi-level adaptive compression.
-//!
-//! Levels from cheapest to most expensive:
-//! L1 Snip: Remove large tool outputs (>N tokens)
-//! L2 Micro: Truncate tool outputs to keep first/last N lines
-//! L3 Context Collapse: Summarize older message groups (non-LLM, rule-based)
-//! L4 Auto Compact: Full LLM summarization (handled externally)
-//! L5 Reactive: Emergency — keep only system prompt + last 3 messages
+/*!
+ * 多级自适应压缩。
+ *
+ * 各级别按开销从低到高排列：
+ * L1 Snip：移除过大的工具输出（超过 N 个 token）
+ * L2 Micro：截断工具输出，只保留首尾 N 行
+ * L3 Context Collapse：概括较早的消息组（不依赖 LLM，基于规则）
+ * L4 Auto Compact：完整的 LLM 摘要（由外部处理）
+ * L5 Reactive：紧急模式——只保留系统提示词 + 最后 3 条消息
+ */
 
 use crate::compression::CompressionCheckpoint;
 use echo_core::llm::LlmClient;
@@ -16,41 +18,46 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Truncate by Unicode scalar values; never byte-slice external content.
+/// 按 Unicode 标量值截断；绝不对外部内容做字节切片。
 fn safe_truncate(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
+/// 多级自适应压缩的配置（各级触发阈值与保留参数）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveCompressionConfig {
-    /// Token threshold to trigger L1 (snip large outputs)
+    /// 触发 L1（剪除大输出）的 token 阈值
     pub l1_snip_threshold_tokens: usize,
-    /// Max tokens per tool output before snipping
+    /// 单个工具输出在被剪除前允许的最大 token 数
     pub l1_max_output_tokens: usize,
-    /// Whether L1 also folds consecutive tool results into summaries.
-    /// When true, runs after snipping to collapse long runs of tool messages.
+    /**
+     * L1 是否同时把连续的工具结果折叠为摘要。
+     * 为 true 时，在剪除之后运行，用于压缩连续的长串工具消息。
+     */
     #[serde(default = "default_true")]
     pub l1_fold_consecutive_tools: bool,
-    /// When folding consecutive tool results, keep the latest N and collapse older ones.
+    /// 折叠连续工具结果时，保留最新的 N 条，折叠更早的部分。
     #[serde(default = "default_l1_fold_keep_latest")]
     pub l1_fold_keep_latest: usize,
-    /// Token threshold to trigger L2 (truncate)
+    /// 触发 L2（截断）的 token 阈值
     pub l2_micro_threshold_tokens: usize,
-    /// Lines to keep from start/end of truncated outputs
+    /// 截断输出时首尾各保留的行数
     pub l2_keep_lines: usize,
-    /// Token threshold to trigger L3 (context collapse)
+    /// 触发 L3（上下文折叠）的 token 阈值
     pub l3_collapse_threshold_tokens: usize,
-    /// Number of recent messages to keep intact during collapse
+    /// 折叠时完整保留的最近消息数
     pub l3_keep_recent: usize,
-    /// Token threshold to trigger L4 (LLM summarization)
+    /// 触发 L4（LLM 摘要）的 token 阈值
     pub l4_compact_threshold_tokens: usize,
-    /// Number of recent messages to keep during LLM compact
+    /// LLM 压缩时保留的最近消息数
     pub l4_keep_recent: usize,
 }
 
+/// serde 默认值：返回 `true`。
 fn default_true() -> bool {
     true
 }
+/// serde 默认值：L1 折叠时保留最新的 2 条工具结果。
 fn default_l1_fold_keep_latest() -> usize {
     2
 }
@@ -72,58 +79,66 @@ impl Default for AdaptiveCompressionConfig {
     }
 }
 
-/// Auto-tune compression thresholds based on the model's context window size.
-///
-/// Thresholds are set as percentages of the context window:
-/// - L1 (Snip): 60%
-/// - L2 (Micro): 75%
-/// - L3 (Collapse): 85%
-/// - L4 (Compact): 90%
-///
-/// L5 (Reactive) is not tuned — it triggers at 2× the L4 threshold regardless.
-///
-/// # Example
-///
-/// ```rust
-/// use echo_state::compression::levels::{AdaptiveCompressionConfig, tune_for_model};
-///
-/// let mut config = AdaptiveCompressionConfig::default();
-/// tune_for_model(&mut config, 200_000); // Claude's context window
-/// // Now L1=120K, L2=150K, L3=170K, L4=180K
-/// ```
+/**
+ * 根据模型的上下文窗口大小自动调整压缩阈值。
+ *
+ * 各阈值按上下文窗口的百分比设置：
+ * - L1（Snip）：60%
+ * - L2（Micro）：75%
+ * - L3（Collapse）：85%
+ * - L4（Compact）：90%
+ *
+ * L5（Reactive）不参与调整——无论如何都在 L4 阈值的 2 倍处触发。
+ *
+ * # 示例
+ *
+ * ```rust
+ * use echo_state::compression::levels::{AdaptiveCompressionConfig, tune_for_model};
+ *
+ * let mut config = AdaptiveCompressionConfig::default();
+ * tune_for_model(&mut config, 200_000); // Claude's context window
+ * // Now L1=120K, L2=150K, L3=170K, L4=180K
+ * ```
+ */
 pub fn tune_for_model(config: &mut AdaptiveCompressionConfig, context_window: usize) {
     let w = context_window;
     config.l1_snip_threshold_tokens = w.saturating_mul(60) / 100;
     config.l2_micro_threshold_tokens = w.saturating_mul(75) / 100;
     config.l3_collapse_threshold_tokens = w.saturating_mul(85) / 100;
     config.l4_compact_threshold_tokens = w.saturating_mul(90) / 100;
-    // L5 triggers at tokens > target * 2, so it's automatically adapted
+    // L5 在 tokens > target * 2 时触发，因此会自动适配
 }
 
-/// Result of adaptive compression showing which levels were applied.
+/// 自适应压缩的结果，记录实际应用了哪些级别。
 #[derive(Debug, Clone)]
 pub struct AdaptiveCompressionResult {
+    /// 已应用的级别标签（如 `L1:Snip`、`L3:Collapse`）
     pub levels_applied: Vec<String>,
+    /// 压缩前的 token 数
     pub tokens_before: usize,
+    /// 压缩后的 token 数（估算）
     pub tokens_after: usize,
 }
 
-/// Adaptive multi-level compressor.
-///
-/// Applies compression levels in order from cheapest to most expensive,
-/// stopping when the token count is below the target threshold.
-///
-/// L4 (LLM summarization) is only available when an LLM client is configured
-/// via [`with_llm()`](Self::with_llm). Without it, L4 is skipped and L5
-/// (emergency) activates when needed.
+/**
+ * 自适应多级压缩器。
+ *
+ * 按开销从低到高依次应用各压缩级别，token 数降到目标阈值以下即停止。
+ *
+ * 只有通过 [`with_llm()`](Self::with_llm) 配置了 LLM 客户端时，L4（LLM 摘要）才可用。
+ * 未配置时跳过 L4，必要时直接启用 L5（紧急模式）。
+ */
 pub struct AdaptiveCompressor {
+    /// 压缩配置
     config: AdaptiveCompressionConfig,
+    /// 用于计算 token 数的分词器
     tokenizer: Arc<dyn Tokenizer>,
-    /// Optional LLM client for L4 auto-compact.
+    /// 可选的 LLM 客户端，用于 L4 自动压缩。
     llm: Option<Arc<dyn LlmClient>>,
 }
 
 impl AdaptiveCompressor {
+    /// 使用给定配置创建压缩器，默认使用启发式分词器且不配置 LLM。
     pub fn new(config: AdaptiveCompressionConfig) -> Self {
         Self {
             config,
@@ -132,26 +147,30 @@ impl AdaptiveCompressor {
         }
     }
 
-    /// Set an LLM client to enable L4 auto-compact (full LLM summarization).
-    ///
-    /// Without an LLM client, the adaptive pipeline skips L4 and falls
-    /// through to L5 (emergency) when tokens remain above threshold after L3.
+    /**
+     * 设置 LLM 客户端以启用 L4 自动压缩（完整的 LLM 摘要）。
+     *
+     * 没有 LLM 客户端时，自适应流水线会跳过 L4；若 L3 之后 token 仍超过阈值，
+     * 则直接进入 L5（紧急模式）。
+     */
     pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
         self.llm = Some(llm);
         self
     }
 
-    /// Set the tokenizer used by the low-level in-place API.
+    /// 设置低层原地压缩 API 所用的分词器。
     pub fn with_tokenizer(mut self, tokenizer: Arc<dyn Tokenizer>) -> Self {
         self.tokenizer = tokenizer;
         self
     }
 
-    /// Compress messages adaptively in place.
-    ///
-    /// This is the low-level API that mutates `messages` directly.
-    /// For integration with [`ContextManager`](super::ContextManager),
-    /// use the [`ContextCompressor`](super::ContextCompressor) trait implementation instead.
+    /**
+     * 原地对消息进行自适应压缩。
+     *
+     * 这是直接修改 `messages` 的低层 API。
+     * 如需与 [`ContextManager`](super::ContextManager) 集成，
+     * 请改用 [`ContextCompressor`](super::ContextCompressor) trait 实现。
+     */
     pub fn compress_in_place(
         &self,
         messages: &mut Vec<Message>,
@@ -163,7 +182,7 @@ impl AdaptiveCompressor {
         result
     }
 
-    /// Internal: compress and track evicted messages.
+    /// 内部方法：执行压缩并记录被逐出的消息。
     fn compress_with_evicted(
         &self,
         messages: &mut Vec<Message>,
@@ -175,7 +194,7 @@ impl AdaptiveCompressor {
         let mut tokens = current_tokens;
         let mut all_evicted = Vec::new();
 
-        // L1: Snip large tool outputs
+        // L1：剪除过大的工具输出
         if tokens > self.config.l1_snip_threshold_tokens && tokens > target_tokens {
             let snipped = self.apply_l1_snip(messages);
             tokens = tokens.saturating_sub(snipped);
@@ -183,7 +202,7 @@ impl AdaptiveCompressor {
                 levels_applied.push("L1:Snip".to_string());
             }
 
-            // L1 also folds consecutive tool results (runs after snipping)
+            // L1 同时折叠连续的工具结果（在剪除之后运行）
             if self.config.l1_fold_consecutive_tools {
                 let (folded_tokens, folded_evicted) = self.apply_l1_fold_tools(messages);
                 tokens = tokens.saturating_sub(folded_tokens);
@@ -196,7 +215,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L2: Micro — truncate tool outputs
+        // L2：Micro——截断工具输出
         if tokens > self.config.l2_micro_threshold_tokens && tokens > target_tokens {
             let truncated = self.apply_l2_micro(messages);
             tokens = tokens.saturating_sub(truncated);
@@ -205,7 +224,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L3: Context Collapse — remove older messages, keep recent
+        // L3：上下文折叠——移除较早消息，保留最近消息
         if tokens > self.config.l3_collapse_threshold_tokens && tokens > target_tokens {
             let (collapsed, evicted) = self.apply_l3_collapse(messages);
             tokens = tokens.saturating_sub(collapsed);
@@ -215,7 +234,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L5: Reactive — emergency (L4 requires LLM, handled externally)
+        // L5：Reactive——紧急模式（L4 需要 LLM，由外部处理）
         if tokens > target_tokens.saturating_mul(2)
             && tokens > self.config.l4_compact_threshold_tokens
         {
@@ -237,10 +256,12 @@ impl AdaptiveCompressor {
         )
     }
 
-    /// Async compression pipeline including L4 (LLM summarization).
-    ///
-    /// Runs L1 → L2 → L3 → L4 (if LLM configured) → L5.
-    /// This is the full pipeline used by the [`ContextCompressor`] trait.
+    /**
+     * 包含 L4（LLM 摘要）的异步压缩流水线。
+     *
+     * 依次运行 L1 → L2 → L3 → L4（如已配置 LLM）→ L5。
+     * 这是 [`ContextCompressor`] trait 使用的完整流水线。
+     */
     async fn compress_async(
         &self,
         messages: &mut Vec<Message>,
@@ -255,7 +276,7 @@ impl AdaptiveCompressor {
         let mut all_evicted = Vec::new();
         let mut l4_summary: Option<String> = None;
 
-        // L1: Snip large tool outputs + fold consecutive tools
+        // L1：剪除过大的工具输出 + 折叠连续工具结果
         if tokens > self.config.l1_snip_threshold_tokens && tokens > target_tokens {
             let snipped = self.apply_l1_snip(messages);
             tokens = tokens.saturating_sub(snipped);
@@ -274,7 +295,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L2: Micro — truncate tool outputs
+        // L2：Micro——截断工具输出
         if tokens > self.config.l2_micro_threshold_tokens && tokens > target_tokens {
             let truncated = self.apply_l2_micro(messages);
             tokens = tokens.saturating_sub(truncated);
@@ -283,7 +304,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L3: Context Collapse — remove older messages, keep recent
+        // L3：上下文折叠——移除较早消息，保留最近消息
         if tokens > self.config.l3_collapse_threshold_tokens && tokens > target_tokens {
             let (collapsed, evicted) = self.apply_l3_collapse(messages);
             tokens = tokens.saturating_sub(collapsed);
@@ -293,7 +314,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L4: Auto Compact — LLM summarization (only if LLM client is configured)
+        // L4：自动压缩——LLM 摘要（仅在配置了 LLM 客户端时）
         if tokens > self.config.l4_compact_threshold_tokens
             && tokens > target_tokens
             && let Some(llm) = &self.llm
@@ -309,7 +330,7 @@ impl AdaptiveCompressor {
             }
         }
 
-        // L5: Reactive — emergency
+        // L5：Reactive——紧急模式
         if tokens > target_tokens.saturating_mul(2)
             && tokens > self.config.l4_compact_threshold_tokens
         {
@@ -332,7 +353,7 @@ impl AdaptiveCompressor {
         )
     }
 
-    /// L1: Remove tool outputs that exceed max_output_tokens.
+    /// L1：剪除超过 max_output_tokens 的工具输出。
     fn apply_l1_snip(&self, messages: &mut [Message]) -> usize {
         let mut saved: usize = 0;
         let max_tokens = self.config.l1_max_output_tokens;
@@ -344,7 +365,7 @@ impl AdaptiveCompressor {
             let text = msg.content.as_text_ref().unwrap_or("");
             let tokens = self.tokenizer.count_tokens(text);
             if tokens > max_tokens {
-                let char_limit = max_tokens.saturating_mul(4); // ~4 chars per token
+                let char_limit = max_tokens.saturating_mul(4); // 约每 token 4 个字符
                 let truncated = format!(
                     "{}\n...[output truncated: {} tokens, kept first {}]...",
                     safe_truncate(text, char_limit),
@@ -358,8 +379,10 @@ impl AdaptiveCompressor {
         saved
     }
 
-    /// L1 Fold: Compact older tool result payloads while preserving every result envelope.
-    /// Returns (tokens_saved, evicted_messages).
+    /**
+     * L1 折叠：压缩较早的工具结果内容，同时保留每一条结果消息本身。
+     * 返回 (tokens_saved, evicted_messages)。
+     */
     fn apply_l1_fold_tools(&self, messages: &mut [Message]) -> (usize, Vec<Message>) {
         let keep = self.config.l1_fold_keep_latest;
         let mut saved: usize = 0;
@@ -371,7 +394,7 @@ impl AdaptiveCompressor {
                 i += 1;
                 continue;
             }
-            // Find the run of consecutive tool messages
+            // 找出连续的工具消息区间
             let start = i;
             while i < messages.len() && messages[i].role == Role::Tool {
                 i += 1;
@@ -398,7 +421,7 @@ impl AdaptiveCompressor {
         (saved, evicted)
     }
 
-    /// L2: Truncate tool outputs to keep first/last N lines.
+    /// L2：截断工具输出，只保留首尾各 N 行。
     fn apply_l2_micro(&self, messages: &mut [Message]) -> usize {
         let mut saved = 0;
         let keep = self.config.l2_keep_lines;
@@ -442,15 +465,17 @@ impl AdaptiveCompressor {
         saved
     }
 
-    /// L3: Remove older messages, keeping only recent N.
-    /// Returns (tokens_saved, evicted_messages).
+    /**
+     * L3：移除较早的消息，只保留最近 N 条。
+     * 返回 (tokens_saved, evicted_messages)。
+     */
     fn apply_l3_collapse(&self, messages: &mut Vec<Message>) -> (usize, Vec<Message>) {
         let keep = self.config.l3_keep_recent;
         if messages.len() <= keep + 1 {
             return (0, vec![]);
         }
 
-        // Keep system messages + last N messages
+        // 保留系统消息 + 最后 N 条消息
         let system_msgs: Vec<Message> = messages
             .iter()
             .filter(|m| m.role == Role::System)
@@ -472,7 +497,7 @@ impl AdaptiveCompressor {
             })
             .sum();
 
-        // Add a summary message about what was removed
+        // 添加一条说明已移除内容的摘要消息
         let summary = format!(
             "[Context compressed: {} older messages removed to save space]",
             removed.len()
@@ -485,11 +510,13 @@ impl AdaptiveCompressor {
         (saved, removed)
     }
 
-    /// L4: Auto Compact — LLM summarization of older messages.
-    /// Returns (tokens_saved, evicted_messages, summary_option).
-    ///
-    /// Tries structured JSON output first; falls back to natural language on failure.
-    /// On LLM failure, returns (0, vec![], None) so the pipeline falls through to L5.
+    /**
+     * L4：自动压缩——用 LLM 概括较早的消息。
+     * 返回 (tokens_saved, evicted_messages, summary_option)。
+     *
+     * 优先尝试结构化 JSON 输出，失败时回退为自然语言摘要。
+     * LLM 调用失败时返回 (0, vec![], None)，使流水线继续进入 L5。
+     */
     async fn apply_l4_compact(
         &self,
         messages: &mut Vec<Message>,
@@ -499,7 +526,7 @@ impl AdaptiveCompressor {
     ) -> (usize, Vec<Message>, Option<String>) {
         let keep = self.config.l4_keep_recent;
 
-        // Split into system / old / recent
+        // 拆分为系统消息 / 较早消息 / 最近消息
         let system_msgs: Vec<Message> = messages
             .iter()
             .filter(|m| m.role == Role::System)
@@ -519,7 +546,7 @@ impl AdaptiveCompressor {
         let to_summarize = &non_system[..split_at];
         let to_keep = &non_system[split_at..];
 
-        // Try structured output first if provider supports it
+        // 若提供方支持，优先尝试结构化输出
         let summary = if llm.capabilities().structured_output {
             let prompt =
                 crate::compression::compressor::structured_summary_prompt(to_summarize, focus);
@@ -544,13 +571,13 @@ impl AdaptiveCompressor {
                     if let Some(parsed) = super::StructuredSummary::from_llm_response(&text) {
                         parsed.to_json()
                     } else {
-                        // JSON parse failed — use raw text
+                        // JSON 解析失败——直接使用原始文本
                         text
                     }
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "L4 structured summary failed, falling back to natural language");
-                    // Fall through
+                    // 继续走后续回退逻辑
                     String::new()
                 }
             }
@@ -558,7 +585,7 @@ impl AdaptiveCompressor {
             String::new()
         };
 
-        // Natural language fallback
+        // 自然语言回退
         let summary = if summary.is_empty() {
             let prompt = crate::compression::compressor::default_summary_prompt_with_focus(
                 to_summarize,
@@ -590,7 +617,7 @@ impl AdaptiveCompressor {
             summary
         };
 
-        // Calculate tokens saved
+        // 计算节省的 token 数
         let evicted_tokens: usize = to_summarize
             .iter()
             .map(|m| {
@@ -603,7 +630,7 @@ impl AdaptiveCompressor {
 
         let evicted = to_summarize.to_vec();
 
-        // Rebuild messages: system + summary + recent
+        // 重建消息：系统消息 + 摘要 + 最近消息
         let summary_clone = summary.clone();
         let mut new_messages = system_msgs;
         new_messages.push(Message::system(format!("[对话历史摘要]\n{}", summary)));
@@ -613,8 +640,10 @@ impl AdaptiveCompressor {
         (saved, evicted, Some(summary_clone))
     }
 
-    /// L5: Emergency — keep only system prompt + last 3 messages.
-    /// Returns (tokens_saved, evicted_messages).
+    /**
+     * L5：紧急模式——只保留系统提示词 + 最后 3 条消息。
+     * 返回 (tokens_saved, evicted_messages)。
+     */
     fn apply_l5_reactive(&self, messages: &mut Vec<Message>) -> (usize, Vec<Message>) {
         let system_msgs: Vec<Message> = messages
             .iter()
@@ -631,7 +660,7 @@ impl AdaptiveCompressor {
             })
             .sum();
 
-        // Collect evicted: everything that is not system and not in recent (last 3 non-system)
+        // 收集被逐出的消息：所有非系统且不在最近区间（最后 3 条非系统消息）内的消息
         let non_system: Vec<Message> = messages
             .iter()
             .filter(|m| m.role != Role::System)
@@ -663,13 +692,15 @@ impl AdaptiveCompressor {
     }
 }
 
-// ── ContextCompressor trait implementation ──────────────────────────────────────
+// ── ContextCompressor trait 实现 ──────────────────────────────────────
 
 impl super::ContextCompressor for AdaptiveCompressor {
+    /// 压缩器名称。
     fn name(&self) -> &str {
         "Adaptive"
     }
 
+    /// 通过完整异步流水线（含 L4）压缩输入消息，并生成压缩检查点。
     fn compress(
         &self,
         input: super::CompressionInput,
@@ -688,7 +719,7 @@ impl super::ContextCompressor for AdaptiveCompressor {
                 .clone()
                 .or(input.current_query.clone());
 
-            // Estimate current token count from the input messages
+            // 根据输入消息估算当前 token 数
             let current_tokens: usize = messages
                 .iter()
                 .filter_map(|m| m.content.as_text())
@@ -734,6 +765,7 @@ impl super::ContextCompressor for AdaptiveCompressor {
 mod tests {
     use super::*;
 
+    /// 构造指定角色与文本的测试消息。
     fn make_msg(role: Role, text: &str) -> Message {
         Message {
             role,
@@ -774,7 +806,7 @@ mod tests {
         ];
         let result = compressor.compress_in_place(&mut messages, 1000, 100);
         assert!(result.levels_applied.contains(&"L3:Collapse".to_string()));
-        // System message should be preserved
+        // 系统消息应被保留
         assert!(messages.iter().any(|m| m.role == Role::System));
     }
 
@@ -816,14 +848,13 @@ mod tests {
             l1_snip_threshold_tokens: 0,
             ..Default::default()
         });
-        // Create a tool message with CJK content that would cause char_limit
-        // to fall in the middle of a multi-byte character
-        let cjk_text = "你".repeat(100); // 100 CJK chars = 300 bytes
+        /* 构造一条含 CJK 内容的工具消息，使 char_limit 落在多字节字符中间 */
+        let cjk_text = "你".repeat(100); // 100 个 CJK 字符 = 300 字节
         let mut messages = vec![make_msg(Role::Tool, &cjk_text)];
-        // Should not panic
+        // 不应 panic
         let result = compressor.compress_in_place(&mut messages, 500, 50);
         assert!(result.levels_applied.contains(&"L1:Snip".to_string()));
-        // Verify the truncated content is valid UTF-8
+        // 验证截断后的内容是合法 UTF-8
         let text = messages[0].content.as_text_ref().unwrap();
         assert!(text.starts_with("你"));
     }
@@ -831,8 +862,8 @@ mod tests {
     #[test]
     fn test_l1_fold_consecutive_tools() {
         let compressor = AdaptiveCompressor::new(AdaptiveCompressionConfig {
-            l1_snip_threshold_tokens: 0, // Always trigger L1
-            l1_max_output_tokens: 99999, // Don't snip, only fold
+            l1_snip_threshold_tokens: 0, // 总是触发 L1
+            l1_max_output_tokens: 99999, // 不剪除，只折叠
             l1_fold_consecutive_tools: true,
             l1_fold_keep_latest: 2,
             ..Default::default()
@@ -847,10 +878,10 @@ mod tests {
             make_msg(Role::Tool, "result5"),
             make_msg(Role::Assistant, "done"),
         ];
-        // 5 tool messages with keep=2 should fold 3
+        // 5 条工具消息且 keep=2 时应折叠 3 条
         let result = compressor.compress_in_place(&mut messages, 500, 50);
         assert!(result.levels_applied.contains(&"L1:Fold".to_string()));
-        // Every result envelope remains contiguous; only the older payloads are compacted.
+        // 每条结果消息仍保持连续；只有较早的内容被压缩。
         assert_eq!(messages.len(), 7);
         let folded = messages
             .iter()
@@ -870,7 +901,7 @@ mod tests {
         let compressor = AdaptiveCompressor::new(AdaptiveCompressionConfig {
             l1_snip_threshold_tokens: 0,
             l1_max_output_tokens: 99999,
-            l1_fold_consecutive_tools: false, // Disabled
+            l1_fold_consecutive_tools: false, // 已禁用
             ..Default::default()
         });
         let mut messages = vec![
@@ -880,7 +911,7 @@ mod tests {
         ];
         let result = compressor.compress_in_place(&mut messages, 500, 50);
         assert!(!result.levels_applied.contains(&"L1:Fold".to_string()));
-        assert_eq!(messages.len(), 3); // No folding
+        assert_eq!(messages.len(), 3); // 未折叠
     }
 
     #[tokio::test]
@@ -888,15 +919,15 @@ mod tests {
         use crate::compression::ContextManager;
 
         let config = AdaptiveCompressionConfig {
-            l1_snip_threshold_tokens: 0, // Always trigger L1
+            l1_snip_threshold_tokens: 0, // 总是触发 L1
             l1_max_output_tokens: 5,
-            l3_collapse_threshold_tokens: 0, // Always trigger L3 when over target
+            l3_collapse_threshold_tokens: 0, // 超过目标时总是触发 L3
             l3_keep_recent: 2,
             ..Default::default()
         };
         let compressor = AdaptiveCompressor::new(config);
 
-        // Use AdaptiveCompressor through ContextManager via ContextCompressor trait
+        // 通过 ContextCompressor trait 在 ContextManager 中使用 AdaptiveCompressor
         let mut ctx = ContextManager::builder(128).compressor(compressor).build();
 
         ctx.push(Message::system("system prompt".to_string()));
@@ -905,10 +936,9 @@ mod tests {
             ctx.push(Message::assistant(format!("answer {i} ").repeat(12)));
         }
 
-        // prepare() should trigger auto-compression via the ContextCompressor trait
+        // prepare() 应通过 ContextCompressor trait 触发自动压缩
         let result = ctx.prepare(None).await.unwrap();
-        // Compression should have been triggered since we have many messages
-        // and the token limit is very low (50)
+        /* 消息很多且 token 上限很低（50），因此应当触发压缩 */
         assert!(
             result.compressed.is_some(),
             "compression should have been triggered"
@@ -925,7 +955,7 @@ mod tests {
         use super::super::{CompressionInput, CompressionOutput, ContextCompressor};
 
         let config = AdaptiveCompressionConfig {
-            l3_collapse_threshold_tokens: 0, // Always trigger L3
+            l3_collapse_threshold_tokens: 0, // 总是触发 L3
             l3_keep_recent: 2,
             ..Default::default()
         };
@@ -942,7 +972,7 @@ mod tests {
 
         let input = CompressionInput {
             messages,
-            token_limit: 0, // force compression
+            token_limit: 0, // 强制压缩
             current_query: None,
             focus_instructions: None,
             cancel_token: None,
@@ -950,7 +980,7 @@ mod tests {
         };
 
         let output: CompressionOutput = compressor.compress(input).await.unwrap();
-        // L3 should have evicted older messages
+        // L3 应已逐出较早的消息
         assert!(
             !output.evicted.is_empty(),
             "L3 should produce evicted messages"
@@ -959,7 +989,7 @@ mod tests {
             output.messages.len() < 6,
             "output should have fewer messages"
         );
-        // System message should be preserved
+        // 系统消息应被保留
         assert!(output.messages.iter().any(|m| m.role == Role::System));
     }
 }

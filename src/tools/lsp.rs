@@ -33,16 +33,19 @@ impl LspDiagnosticsTool {
 }
 
 impl Tool for LspDiagnosticsTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "lsp_diagnostics"
     }
 
+    /// 返回提供给模型的工具描述。
     fn description(&self) -> &str {
         "Get diagnostics (errors, warnings, hints) for a file from the language server. \
          The file must be open in a language server. Returns a list of diagnostics \
          with severity, line numbers, and messages."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -56,6 +59,7 @@ impl Tool for LspDiagnosticsTool {
         })
     }
 
+    /// 执行工具调用。
     fn execute<'a>(&'a self, params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = match params.get("file_path").and_then(|v| v.as_str()) {
@@ -110,6 +114,7 @@ impl Tool for LspDiagnosticsTool {
         })
     }
 
+    /// 该工具为只读工具。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
@@ -131,15 +136,18 @@ impl LspGotoDefinitionTool {
 }
 
 impl Tool for LspGotoDefinitionTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "lsp_goto_definition"
     }
 
+    /// 返回提供给模型的工具描述。
     fn description(&self) -> &str {
         "Find the definition of a symbol (function, class, variable) at a given position \
          in a file. Returns the file path and line number of the definition."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -152,6 +160,7 @@ impl Tool for LspGotoDefinitionTool {
         })
     }
 
+    /// 执行工具调用。
     fn execute<'a>(&'a self, params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = match params.get("file_path").and_then(|v| v.as_str()) {
@@ -209,6 +218,7 @@ impl Tool for LspGotoDefinitionTool {
         })
     }
 
+    /// 该工具为只读工具。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
@@ -230,15 +240,18 @@ impl LspFindReferencesTool {
 }
 
 impl Tool for LspFindReferencesTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "lsp_find_references"
     }
 
+    /// 返回提供给模型的工具描述。
     fn description(&self) -> &str {
         "Find all references to a symbol (function, class, variable) across the codebase. \
          Returns file paths and line numbers of all usages."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -251,6 +264,7 @@ impl Tool for LspFindReferencesTool {
         })
     }
 
+    /// 执行工具调用。
     fn execute<'a>(&'a self, params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = match params.get("file_path").and_then(|v| v.as_str()) {
@@ -308,6 +322,7 @@ impl Tool for LspFindReferencesTool {
         })
     }
 
+    /// 该工具为只读工具。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
@@ -329,15 +344,18 @@ impl LspHoverTool {
 }
 
 impl Tool for LspHoverTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "lsp_hover"
     }
 
+    /// 返回提供给模型的工具描述。
     fn description(&self) -> &str {
         "Get hover information for a symbol at a given position. \
          Returns type information, documentation, and signatures."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
@@ -350,6 +368,7 @@ impl Tool for LspHoverTool {
         })
     }
 
+    /// 执行工具调用。
     fn execute<'a>(&'a self, params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = match params.get("file_path").and_then(|v| v.as_str()) {
@@ -391,6 +410,7 @@ impl Tool for LspHoverTool {
         })
     }
 
+    /// 该工具为只读工具。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }
@@ -412,19 +432,23 @@ impl LspStatusTool {
 }
 
 impl Tool for LspStatusTool {
+    /// 返回工具名称。
     fn name(&self) -> &str {
         "lsp_status"
     }
 
+    /// 返回提供给模型的工具描述。
     fn description(&self) -> &str {
         "Show the status of all configured and running language servers. \
          Displays which servers are active, their PID, and any errors."
     }
 
+    /// 返回工具参数的 JSON Schema。
     fn parameters(&self) -> Value {
         json!({ "type": "object", "properties": {} })
     }
 
+    /// 执行工具调用。
     fn execute<'a>(&'a self, _params: ToolParameters) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             let manager = self.lsp_manager.read().await;
@@ -461,6 +485,7 @@ impl Tool for LspStatusTool {
         })
     }
 
+    /// 该工具为只读工具。
     fn risk_level(&self) -> echo_core::tools::ToolRiskLevel {
         echo_core::tools::ToolRiskLevel::ReadOnly
     }

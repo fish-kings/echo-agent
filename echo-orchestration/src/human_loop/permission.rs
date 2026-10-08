@@ -1,45 +1,47 @@
-//! 权限请求抽象 (PermissionRequest)
-//!
-//! 提供权限请求的统一抽象，支持不同 UI 实现（CLI、Web、桌面等）。
-//!
-//! ## 设计原则
-//!
-//! - **UI 无关**: 核心逻辑与 UI 分离，支持多端适配
-//! - **结构化**: 提供丰富的上下文信息，便于 UI 渲染
-//! - **可扩展**: 支持建议、风险等级、批量操作等高级特性
-//!
-//! ## 使用示例
-//!
-//! ```rust,no_run
-//! use async_trait::async_trait;
-//! use echo_core::error::Result;
-//! use echo_orchestration::human_loop::{
-//!     PermissionRequest, PermissionRequestHandler, PermissionResponse, RiskLevel, Suggestion,
-//! };
-//!
-//! struct AllowAllHandler;
-//!
-//! #[async_trait]
-//! impl PermissionRequestHandler for AllowAllHandler {
-//!     async fn handle(&self, _request: PermissionRequest) -> Result<PermissionResponse> {
-//!         Ok(PermissionResponse::allowed())
-//!     }
-//! }
-//!
-//! # async fn example(handler: &dyn PermissionRequestHandler) -> Result<()> {
-//! // 创建权限请求
-//! let request = PermissionRequest::new("Bash", serde_json::json!({"command": "rm -rf"}))
-//!     .with_risk_level(RiskLevel::High)
-//!     .with_suggestion(Suggestion::allow_once())
-//!     .with_suggestion(Suggestion::deny_always("危险操作"));
-//!
-//! // 处理请求
-//! let response = handler.handle(request).await?;
-//! # Ok(())
-//! # }
-//! # let handler = AllowAllHandler;
-//! # let _ = example(&handler);
-//! ```
+/*!
+权限请求抽象 (PermissionRequest)
+
+提供权限请求的统一抽象，支持不同 UI 实现（CLI、Web、桌面等）。
+
+## 设计原则
+
+- **UI 无关**: 核心逻辑与 UI 分离，支持多端适配
+- **结构化**: 提供丰富的上下文信息，便于 UI 渲染
+- **可扩展**: 支持建议、风险等级、批量操作等高级特性
+
+## 使用示例
+
+```rust,no_run
+use async_trait::async_trait;
+use echo_core::error::Result;
+use echo_orchestration::human_loop::{
+    PermissionRequest, PermissionRequestHandler, PermissionResponse, RiskLevel, Suggestion,
+};
+
+struct AllowAllHandler;
+
+#[async_trait]
+impl PermissionRequestHandler for AllowAllHandler {
+    async fn handle(&self, _request: PermissionRequest) -> Result<PermissionResponse> {
+        Ok(PermissionResponse::allowed())
+    }
+}
+
+# async fn example(handler: &dyn PermissionRequestHandler) -> Result<()> {
+// 创建权限请求
+let request = PermissionRequest::new("Bash", serde_json::json!({"command": "rm -rf"}))
+    .with_risk_level(RiskLevel::High)
+    .with_suggestion(Suggestion::allow_once())
+    .with_suggestion(Suggestion::deny_always("危险操作"));
+
+// 处理请求
+let response = handler.handle(request).await?;
+# Ok(())
+# }
+# let handler = AllowAllHandler;
+# let _ = example(&handler);
+```
+*/
 
 use async_trait::async_trait;
 use echo_core::tools::ToolRiskLevel;
@@ -114,6 +116,7 @@ impl RiskLevel {
 }
 
 impl std::fmt::Display for RiskLevel {
+    /// 以中文描述格式化风险等级
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RiskLevel::Low => write!(f, "低风险"),
@@ -124,21 +127,22 @@ impl std::fmt::Display for RiskLevel {
     }
 }
 
-/// Bridge the compile-time [`ToolRiskLevel`] into the runtime [`RiskLevel`].
-///
-/// | `ToolRiskLevel`   | → `RiskLevel` |
-/// |-------------------|---------------|
-/// | `ReadOnly`        | `Low`         |
-/// | `Standard` (default) | `Medium`   |
-/// | `Dangerous`       | `High`        |
-///
-/// Note: `ToolRiskLevel` is a hint declared at tool definition time via
-/// `#[tool]` or `Tool::risk_level()`. At runtime, the framework typically
-/// recomputes risk from the tool's `ToolPermission` set via
-/// [`RiskLevel::from_permissions`], which can yield `Critical` for tools
-/// with the `Sensitive` permission — a level that `ToolRiskLevel` has no
-/// direct equivalent for.
+/**
+将编译期的 [`ToolRiskLevel`] 桥接为运行时的 [`RiskLevel`]。
+
+| `ToolRiskLevel`   | → `RiskLevel` |
+|-------------------|---------------|
+| `ReadOnly`        | `Low`         |
+| `Standard`（默认） | `Medium`     |
+| `Dangerous`       | `High`        |
+
+注意：`ToolRiskLevel` 是在工具定义时通过 `#[tool]` 或 `Tool::risk_level()`
+声明的提示信息。运行时框架通常会通过 [`RiskLevel::from_permissions`]
+根据工具的 `ToolPermission` 集合重新计算风险等级；对于带有 `Sensitive`
+权限的工具，该方法可能得出 `Critical`，而 `ToolRiskLevel` 没有与之直接对应的等级。
+*/
 impl From<ToolRiskLevel> for RiskLevel {
+    /// 按上表映射工具声明的风险等级
     fn from(level: ToolRiskLevel) -> Self {
         match level {
             ToolRiskLevel::ReadOnly => RiskLevel::Low,
@@ -165,9 +169,15 @@ pub enum SuggestedAction {
     /// 始终拒绝（持久化规则）
     DenyAlways,
     /// 修改输入后执行
-    ModifyInput { updated_input: Value },
+    ModifyInput {
+        /// 修改后的工具输入参数
+        updated_input: Value,
+    },
     /// 自定义响应
-    Custom { response: String },
+    Custom {
+        /// 自定义响应内容
+        response: String,
+    },
 }
 
 /// 建议选项（供用户选择的选项）
@@ -296,7 +306,7 @@ pub struct PermissionRequest {
     /// Agent 名称
     #[serde(default)]
     pub agent_name: Option<String>,
-    /// Maximum time to wait for the user response.
+    /// 等待用户响应的最长时间
     #[serde(default)]
     pub timeout: Option<Duration>,
 }
@@ -388,6 +398,7 @@ impl PermissionRequest {
         self
     }
 
+    /// 设置等待用户响应的超时时间
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -399,6 +410,7 @@ impl PermissionRequest {
         self
     }
 
+    /// 转换为通用的人机交互审批请求（`HumanLoopRequest`）
     pub(crate) fn into_human_loop_request(self) -> super::HumanLoopRequest {
         super::HumanLoopRequest {
             request_id: self.request_id,
@@ -493,9 +505,15 @@ pub enum PermissionResponseDecision {
     /// 允许执行
     Allowed,
     /// 拒绝执行
-    Denied { reason: Option<String> },
+    Denied {
+        /// 拒绝原因（可选）
+        reason: Option<String>,
+    },
     /// 需要更多信息
-    NeedMoreInfo { question: String },
+    NeedMoreInfo {
+        /// 需要向用户追问的问题
+        question: String,
+    },
 }
 
 impl PermissionResponse {
@@ -521,10 +539,12 @@ impl PermissionResponse {
         }
     }
 
-    /// 从建议操作创建响应
-    ///
-    /// `tool_name` 和 `args` 用于构建正确的规则匹配器（matcher），
-    /// 而不是错误地使用 suggestion label 作为匹配模式。
+    /**
+    从建议操作创建响应
+
+    `tool_name` 和 `args` 用于构建正确的规则匹配器（matcher），
+    而不是错误地使用 suggestion label 作为匹配模式。
+    */
     pub fn from_suggestion(suggestion: &Suggestion, tool_name: &str, args: &Value) -> Self {
         // 构建基于 tool_name 和 args 的匹配模式
         let matcher = Self::build_matcher(tool_name, args);
@@ -597,14 +617,23 @@ impl PermissionResponse {
 pub enum PermissionUpdate {
     /// 添加规则
     AddRule {
+        /// 规则匹配模式
         matcher: String,
+        /// 规则行为（如 `allow`、`deny`）
         behavior: String,
+        /// 规则来源（如 `session`、`userSettings`）
         source: String,
     },
     /// 移除规则
-    RemoveRule { matcher: String },
+    RemoveRule {
+        /// 要移除的规则匹配模式
+        matcher: String,
+    },
     /// 设置权限模式
-    SetMode { mode: PermissionMode },
+    SetMode {
+        /// 新的权限模式
+        mode: PermissionMode,
+    },
 }
 
 impl PermissionUpdate {
@@ -636,23 +665,27 @@ impl PermissionUpdate {
     }
 }
 
-// ── PermissionRequestHandler Trait ─────────────────────────────────────────────
+// ── PermissionRequestHandler trait ─────────────────────────────────────────────
 
-/// 权限请求处理器 trait
-///
-/// 实现此 trait 可自定义权限请求的 UI 处理逻辑。
-/// 内置实现：
-/// - `DefaultPermissionRequestHandler`: 使用 HumanLoopProvider
-/// - `ConsolePermissionRequestHandler`: 命令行交互
+/**
+权限请求处理器 trait
+
+实现此 trait 可自定义权限请求的 UI 处理逻辑。
+内置实现：
+- `DefaultPermissionRequestHandler`: 使用 HumanLoopProvider
+- `ConsolePermissionRequestHandler`: 命令行交互
+*/
 #[async_trait]
 pub trait PermissionRequestHandler: Send + Sync {
-    /// 处理权限请求
-    ///
-    /// # Arguments
-    /// * `request` - 权限请求
-    ///
-    /// # Returns
-    /// * `PermissionResponse` - 用户的决策
+    /**
+    处理权限请求
+
+    # 参数
+    * `request` - 权限请求
+
+    # 返回
+    * `PermissionResponse` - 用户的决策
+    */
     async fn handle(&self, request: PermissionRequest) -> Result<PermissionResponse>;
 
     /// 批量处理权限请求（默认实现：逐个处理）
@@ -667,11 +700,13 @@ pub trait PermissionRequestHandler: Send + Sync {
         Ok(responses)
     }
 
-    /// 是否为空占位处理器（Null Handler）。
-    ///
-    /// 默认返回 `false`。`NullPermissionRequestHandler` 覆盖为 `true`。
-    /// 用于 `PermissionService` 判断是否已配置真实处理器，
-    /// 避免使用 `type_name_of_val` 等脆弱的字符串匹配。
+    /**
+    是否为空占位处理器（Null Handler）。
+
+    默认返回 `false`。`NullPermissionRequestHandler` 覆盖为 `true`。
+    用于 `PermissionService` 判断是否已配置真实处理器，
+    避免使用 `type_name_of_val` 等脆弱的字符串匹配。
+    */
     fn is_null_handler(&self) -> bool {
         false
     }
@@ -681,10 +716,12 @@ pub trait PermissionRequestHandler: Send + Sync {
 
 /// 默认权限请求处理器（使用 HumanLoopProvider）
 pub struct DefaultPermissionRequestHandler<P: super::HumanLoopProvider> {
+    /// 实际负责与用户交互的人机交互提供者
     provider: Arc<P>,
 }
 
 impl<P: super::HumanLoopProvider> DefaultPermissionRequestHandler<P> {
+    /// 使用给定的 HumanLoopProvider 创建处理器
     pub fn new(provider: Arc<P>) -> Self {
         Self { provider }
     }
@@ -694,6 +731,7 @@ impl<P: super::HumanLoopProvider> DefaultPermissionRequestHandler<P> {
 impl<P: super::HumanLoopProvider + 'static> PermissionRequestHandler
     for DefaultPermissionRequestHandler<P>
 {
+    /// 将权限请求转交给 HumanLoopProvider，并把其响应映射为权限响应
     async fn handle(&self, request: PermissionRequest) -> Result<PermissionResponse> {
         use super::HumanLoopResponse;
 
@@ -729,6 +767,7 @@ impl<P: super::HumanLoopProvider + 'static> PermissionRequestHandler
     }
 }
 
+/// 根据审批范围构造允许类权限响应
 fn permission_response_with_scope(
     _tool_name: &str,
     _tool_input: &Value,
@@ -759,6 +798,7 @@ fn permission_response_with_scope(
 mod tests {
     use super::*;
 
+    /// 验证根据权限集合推断风险等级
     #[test]
     fn test_risk_level_from_permissions() {
         assert_eq!(
@@ -779,6 +819,7 @@ mod tests {
         );
     }
 
+    /// 验证仅高风险及以上需要用户确认
     #[test]
     fn test_risk_level_requires_confirmation() {
         assert!(!RiskLevel::Low.requires_confirmation());
@@ -787,6 +828,7 @@ mod tests {
         assert!(RiskLevel::Critical.requires_confirmation());
     }
 
+    /// 验证“允许本次”建议的默认字段
     #[test]
     fn test_suggestion_create() {
         let s = Suggestion::allow_once();
@@ -795,6 +837,7 @@ mod tests {
         assert_eq!(s.shortcut, Some("y".to_string()));
     }
 
+    /// 验证新建权限请求的默认值
     #[test]
     fn test_permission_request_new() {
         let req = PermissionRequest::new("Bash", serde_json::json!({"command": "ls"}));
@@ -802,6 +845,7 @@ mod tests {
         assert_eq!(req.risk_level, RiskLevel::Low);
     }
 
+    /// 验证设置权限时同步更新风险等级
     #[test]
     fn test_permission_request_with_permissions() {
         let req = PermissionRequest::new("Bash", serde_json::json!({"command": "rm"}))
@@ -811,6 +855,7 @@ mod tests {
         assert_eq!(req.required_permissions.len(), 1);
     }
 
+    /// 验证危险等级下首个建议为拒绝
     #[test]
     fn test_permission_request_risk_based_suggestions() {
         let req = PermissionRequest::new("Bash", serde_json::json!({}))
@@ -825,12 +870,14 @@ mod tests {
         ));
     }
 
+    /// 验证允许响应的决策
     #[test]
     fn test_permission_response_allowed() {
         let resp = PermissionResponse::allowed();
         assert!(matches!(resp.decision, PermissionResponseDecision::Allowed));
     }
 
+    /// 验证拒绝响应的决策
     #[test]
     fn test_permission_response_denied() {
         let resp = PermissionResponse::denied(Some("test reason".to_string()));
@@ -840,6 +887,7 @@ mod tests {
         ));
     }
 
+    /// 验证从允许/拒绝建议构造响应
     #[test]
     fn test_permission_response_from_suggestion() {
         let s = Suggestion::allow_once();
@@ -854,6 +902,7 @@ mod tests {
         ));
     }
 
+    /// 验证会话级允许只设置审批范围而不产生规则更新
     #[test]
     fn test_permission_response_from_suggestion_matcher() {
         let s = Suggestion::allow_for_session();
@@ -867,6 +916,7 @@ mod tests {
         assert_eq!(resp.approval_scope, Some(ApprovalScope::Session));
     }
 
+    /// 验证规则更新构造器生成的变体与行为
     #[test]
     fn test_permission_update_create() {
         let update = PermissionUpdate::add_session_rule("Bash".to_string());
@@ -876,6 +926,7 @@ mod tests {
         assert!(matches!(update, PermissionUpdate::AddRule { behavior, .. } if behavior == "deny"));
     }
 
+    /// 验证权限请求序列化往返
     #[test]
     fn test_permission_request_serialization() {
         let req = PermissionRequest::new("Bash", serde_json::json!({"cmd": "ls"}))
@@ -889,6 +940,7 @@ mod tests {
         assert_eq!(parsed.risk_level, RiskLevel::High);
     }
 
+    /// 验证转换为 HumanLoopRequest 时保留全部上下文
     #[test]
     fn permission_request_conversion_preserves_all_context() {
         let request = PermissionRequest::new("Bash", serde_json::json!({"command": "pwd"}))

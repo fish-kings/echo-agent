@@ -1,28 +1,30 @@
-//! Framework-level integration tests.
-//!
-//! These live in the `tests/` crate (no `#[cfg(test)]`) and exercise real
-//! production code paths. They focus on pure (no live LLM), high-value areas:
-//! token-calibration convergence (P5) and the shell-safety classifier shared
-//! by spawn_task / prompt_exec (S1/S6).
-//!
-//! Tests that need a mock LLM driving the full ReAct loop require the
-//! `testing` feature plus a snapshot-level `LlmClient` field (tracked
-//! separately as a larger refactor).
+/*!
+框架级集成测试。
 
-/// The calibrated tokenizer must converge its factor toward the true ratio
-/// when fed real usage. Guards the P5 wiring (factor must move off 1.0).
+这些测试位于 `tests/` crate 中（不使用 `#[cfg(test)]`），覆盖真实的生产代码路径。
+它们聚焦于纯逻辑（不依赖真实 LLM）且价值较高的领域：
+token 校准收敛（P5），以及 spawn_task / prompt_exec 共享的 shell 安全分类器（S1/S6）。
+
+需要用 mock LLM 驱动完整 ReAct 循环的测试，需要 `testing` feature
+以及快照级别的 `LlmClient` 字段（作为一项更大的重构单独跟踪）。
+*/
+
+/**
+校准分词器在接收真实用量后，其校准因子必须向真实比例收敛。
+用于守护 P5 的接线（因子必须偏离 1.0）。
+*/
 #[tokio::test]
 async fn calibrated_tokenizer_converges_on_feedback() {
     use echo_agent::tokenizer::{CalibratedTokenizer, HeuristicTokenizer, Tokenizer};
     use std::sync::Arc;
 
     let base = Arc::new(HeuristicTokenizer);
-    let calibrated = CalibratedTokenizer::with_alpha(base.clone(), 1.0); // instant update
+    let calibrated = CalibratedTokenizer::with_alpha(base.clone(), 1.0); // 立即更新
 
     let text = "hello world this is a calibration test";
     let estimated = base.count_tokens(text);
 
-    // Simulate the real model reporting 2x the heuristic estimate.
+    // 模拟真实模型报告的用量为启发式估算值的 2 倍。
     calibrated.calibrate(estimated, (estimated * 2) as u32);
 
     assert!(
@@ -33,22 +35,24 @@ async fn calibrated_tokenizer_converges_on_feedback() {
     assert_eq!(calibrated.count_tokens(text), estimated * 2);
 }
 
-/// The shell-safety classifier (shared by spawn_task and prompt_exec) must
-/// reject shell metacharacters and dangerous commands. Guards S1/S6.
+/**
+shell 安全分类器（由 spawn_task 和 prompt_exec 共享）必须拒绝
+shell 元字符和危险命令。用于守护 S1/S6。
+*/
 #[test]
 fn shell_safety_rejects_metacharacters() {
     #[cfg(feature = "shell")]
     {
         use echo_tools::shell::{CommandSafety, validate_command_safety};
 
-        // A pipe / semicolon is an injection vector → rejected.
+        // 管道 / 分号是注入途径 → 拒绝。
         let dangerous = validate_command_safety("ls; rm -rf /");
         assert!(
             matches!(dangerous, CommandSafety::Dangerous(_)),
             "metacharacter command must be rejected"
         );
 
-        // A whitelisted read-only command is safe.
+        // 白名单中的只读命令是安全的。
         let safe = validate_command_safety("ls -la");
         assert!(
             matches!(safe, CommandSafety::Safe),

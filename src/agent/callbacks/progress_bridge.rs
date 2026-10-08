@@ -1,8 +1,9 @@
-//! ProgressBridge — connects Agent callbacks to TaskEventBus.
-//!
-//! Translates `AgentCallback` events (on_iteration, on_tool_start, etc.)
-//! into `TaskEvent::Progress` emissions, allowing background task tracking
-//! to observe agent execution in real time.
+/*!
+ * ProgressBridge —— 将 Agent 回调连接到 TaskEventBus。
+ *
+ * 把 `AgentCallback` 事件（on_iteration、on_tool_start 等）转换为
+ * `TaskEvent::Progress` 事件发出，使后台任务跟踪能够实时观察 Agent 的执行过程。
+ */
 
 use crate::agent::{AgentCallback, StepType};
 use crate::error::ReactError;
@@ -14,34 +15,42 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
-/// Bridges agent execution callbacks to a [`TaskEventBus`] as progress events.
-///
-/// Attach this as a callback before starting execution, then call [`disable()`](Self::disable)
-/// and remove it via [`remove_callbacks_by_type_name`](crate::agent::ReactAgent::remove_callbacks_by_type_name)
-/// when execution completes.
-///
-/// # Progress Estimation
-///
-/// When `max_iterations` is known, progress is calculated linearly.
-/// When unknown (0), a diminishing curve is used that asymptotically
-/// approaches 95% — ensuring the task never reports "complete" until
-/// `on_final_answer` fires.
+/**
+ * 将 Agent 执行回调桥接为 [`TaskEventBus`] 上的进度事件。
+ *
+ * 在开始执行前将其注册为回调；执行完成后先调用 [`disable()`](Self::disable)，
+ * 再通过 [`remove_callbacks_by_type_name`](crate::agent::ReactAgent::remove_callbacks_by_type_name) 移除。
+ *
+ * # 进度估算
+ *
+ * 当 `max_iterations` 已知时，按线性方式计算进度。
+ * 当未知（为 0）时，使用渐近逼近 95% 的递减曲线——确保在 `on_final_answer`
+ * 触发之前任务永远不会报告“已完成”。
+ */
 pub struct ProgressBridge {
+    /// 要上报进度的任务 ID。
     task_id: String,
+    /// 用于发出进度事件的事件总线。
     event_bus: Arc<TaskEventBus>,
+    /// 预期的最大迭代次数（0 表示未知）。
     max_iterations: usize,
+    /// 任务开始时间，用于估算剩余时间。
     task_start: Instant,
+    /// 当前迭代序号。
     current_iteration: AtomicUsize,
+    /// 是否仍在发出进度事件。
     enabled: AtomicBool,
 }
 
 impl ProgressBridge {
-    /// Create a new progress bridge.
-    ///
-    /// # Parameters
-    /// - `task_id`: The task ID to emit progress events for
-    /// - `event_bus`: The event bus to emit progress events on
-    /// - `max_iterations`: Maximum expected iterations (0 = unknown, use diminishing curve)
+    /**
+     * 创建新的进度桥接器。
+     *
+     * # 参数
+     * - `task_id`：要为其发出进度事件的任务 ID
+     * - `event_bus`：用于发出进度事件的事件总线
+     * - `max_iterations`：预期的最大迭代次数（0 表示未知，使用递减曲线）
+     */
     pub fn new(task_id: String, event_bus: Arc<TaskEventBus>, max_iterations: usize) -> Self {
         Self {
             task_id,
@@ -53,23 +62,26 @@ impl ProgressBridge {
         }
     }
 
-    /// Stop emitting progress events without removing the callback.
-    ///
-    /// Useful when execution completes but the callback hasn't been
-    /// removed yet — prevents stale progress events.
+    /**
+     * 停止发出进度事件，但不移除回调。
+     *
+     * 适用于执行已完成而回调尚未移除的情况——防止发出过期的进度事件。
+     */
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
 
-    /// Task ID this bridge reports progress for.
+    /// 返回此桥接器上报进度所对应的任务 ID。
     pub fn task_id(&self) -> &str {
         &self.task_id
     }
 
+    /// 判断当前是否仍启用进度上报。
     fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::SeqCst)
     }
 
+    /// 构造 `TaskProgress` 并在启用时发送到事件总线。
     fn emit_progress(&self, pct: f64, phase: &str, message: Option<String>) {
         if !self.is_enabled() {
             return;
@@ -91,6 +103,7 @@ impl ProgressBridge {
         });
     }
 
+    /// 根据已耗时与当前百分比线性估算剩余秒数。
     fn estimate_eta(&self, pct: f64) -> Option<u64> {
         if pct <= 0.0 || pct >= 100.0 {
             return None;
@@ -103,14 +116,17 @@ impl ProgressBridge {
 }
 
 impl AgentCallback for ProgressBridge {
+    /// 返回回调类型名，用于按类型移除回调。
     fn callback_kind(&self) -> Option<&'static str> {
         Some("ProgressBridge")
     }
 
+    /// 以任务 ID 作为回调标识。
     fn callback_id(&self) -> Option<&str> {
         Some(&self.task_id)
     }
 
+    /// 记录当前迭代并上报“thinking”阶段进度。
     fn on_iteration<'a>(
         &'a self,
         _agent: &'a str,
@@ -128,6 +144,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 思考开始时不上报进度。
     fn on_think_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -136,6 +153,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 思考结束时若计划调用工具，则上报规划进度。
     fn on_think_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -164,6 +182,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 工具开始执行时上报以工具名为阶段的进度。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -182,6 +201,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 工具执行结束时不上报进度。
     fn on_tool_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -191,6 +211,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 工具出错时上报“error”阶段进度。
     fn on_tool_error<'a>(
         &'a self,
         _agent: &'a str,
@@ -209,6 +230,7 @@ impl AgentCallback for ProgressBridge {
         Box::pin(async {})
     }
 
+    /// 产生最终答案时上报 100% 完成。
     fn on_final_answer<'a>(
         &'a self,
         _agent: &'a str,

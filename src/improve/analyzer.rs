@@ -1,30 +1,30 @@
-//! Pattern detection and improvement suggestion generation from run traces.
+//! 基于运行轨迹（run trace）的模式检测与改进建议生成。
 
 use crate::eval::{EvalCase, TrajectoryReplay};
 use crate::improve::{CritiqueIssue, ImprovementSuggestion, RunCritique};
 use crate::trace::{Run, RunEvent, RunStatus};
 use std::collections::HashMap;
 
-/// Analyzes completed runs to detect patterns and generate suggestions.
+/// 分析已完成的运行记录，检测问题模式并生成改进建议。
 pub struct Analyzer;
 
 impl Analyzer {
-    /// Analyze a single run and produce a critique.
+    /// 分析单次运行并生成评析结果。
     pub fn analyze(run: &Run) -> RunCritique {
         let success = matches!(run.status, RunStatus::Completed);
         let mut critique = RunCritique::new(&run.run_id, success);
 
-        // Detect issues
+        // 检测问题
         critique.issues.extend(Self::detect_write_without_read(run));
         critique.issues.extend(Self::detect_excessive_retries(run));
         critique
             .issues
             .extend(Self::detect_excessive_tool_calls(run));
 
-        // Generate suggestions from issues
+        // 根据问题生成建议
         critique.suggestions = Self::generate_suggestions(&critique.issues, run);
 
-        // Compute score
+        // 计算得分
         let error_count = critique.issues.len();
         let total_events = run.events.len().max(1);
         critique.score = 1.0 - (error_count as f64 / total_events as f64).min(1.0);
@@ -32,14 +32,14 @@ impl Analyzer {
         critique
     }
 
-    /// Analyze multiple runs and detect cross-run patterns.
+    /// 分析多次运行并检测跨运行的模式。
     pub fn analyze_batch(runs: &[Run]) -> Vec<RunCritique> {
         runs.iter().map(Self::analyze).collect()
     }
 
-    // ── Issue detectors ────────────────────────────────────────────
+    // ── 问题检测器 ────────────────────────────────────────────
 
-    /// Detect confirmed file edits without a preceding successful read of that path.
+    /// 检测在未先成功读取该路径的情况下就已确认的文件编辑。
     fn detect_write_without_read(run: &Run) -> Vec<CritiqueIssue> {
         let writes_without_read = TrajectoryReplay::new(run.clone())
             .detect_write_without_read()
@@ -55,7 +55,7 @@ impl Analyzer {
         }
     }
 
-    /// Detect tools that were called, failed, and retried multiple times.
+    /// 检测被调用、失败并多次重试的工具。
     fn detect_excessive_retries(run: &Run) -> Vec<CritiqueIssue> {
         let mut tool_errors: HashMap<&str, usize> = HashMap::new();
         let skipped = crate::trace::skipped_tool_call_ids(&run.events);
@@ -76,7 +76,7 @@ impl Analyzer {
             .collect()
     }
 
-    /// Detect runs with an unusually high number of tool calls.
+    /// 检测工具调用次数异常偏高的运行。
     fn detect_excessive_tool_calls(run: &Run) -> Vec<CritiqueIssue> {
         let skipped = crate::trace::skipped_tool_call_ids(&run.events);
         let total = run
@@ -93,9 +93,9 @@ impl Analyzer {
         }
     }
 
-    // ── Suggestion generators ──────────────────────────────────────
+    // ── 建议生成器 ──────────────────────────────────────
 
-    /// Generate improvement suggestions from detected issues.
+    /// 根据检测到的问题生成改进建议。
     fn generate_suggestions(issues: &[CritiqueIssue], _run: &Run) -> Vec<ImprovementSuggestion> {
         let mut suggestions = Vec::new();
 
@@ -164,6 +164,7 @@ mod tests {
     use crate::trace::{RunStatus, RunTimings, TokenUsage};
     use chrono::Utc;
 
+    /// 构造测试用的运行记录。
     fn make_run(events: Vec<RunEvent>, status: RunStatus) -> Run {
         Run {
             run_id: "test".into(),
@@ -186,6 +187,7 @@ mod tests {
         }
     }
 
+    /// 未读先写应产生问题及提示词/策略建议。
     #[test]
     fn test_detect_write_without_read() {
         let run = make_run(
@@ -233,6 +235,7 @@ mod tests {
         );
     }
 
+    /// 失败的读取或读取其它路径不能抑制对已确认编辑的评析。
     #[test]
     fn failed_or_different_path_reads_do_not_suppress_confirmed_edit_critique() {
         let run = make_run(
@@ -270,6 +273,7 @@ mod tests {
         );
     }
 
+    /// 被跳过的调用不应驱动执行类评析。
     #[test]
     fn skipped_invocations_do_not_drive_execution_critiques() {
         let mut events = Vec::new();
@@ -304,6 +308,7 @@ mod tests {
         )));
     }
 
+    /// 同一工具失败超过两次应被识别为过度重试。
     #[test]
     fn test_detect_excessive_retries() {
         let run = make_run(
@@ -359,6 +364,7 @@ mod tests {
         );
     }
 
+    /// 正常运行不应产生任何问题。
     #[test]
     fn test_clean_run() {
         let run = make_run(

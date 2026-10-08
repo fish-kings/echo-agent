@@ -48,8 +48,10 @@ impl Skill for FileSystemSkill {
         "Local filesystem capability with transactional patch editing, file reading, search, diff, and directory listing"
     }
 
-    /// 构造该技能提供的全部工具实例（读取、补丁写入、目录列表、搜索、diff 等），
-    /// 若设置了 `base_dir`，则每个工具都会以该目录作为操作限制范围。
+    /**
+    构造该技能提供的全部工具实例（读取、补丁写入、目录列表、搜索、diff 等），
+    若设置了 `base_dir`，则每个工具都会以该目录作为操作限制范围。
+    */
     fn tools(&self) -> Vec<Box<dyn Tool>> {
         let base = self.base_dir.clone();
         vec![

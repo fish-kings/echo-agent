@@ -209,9 +209,9 @@ pub enum HookAction {
         #[serde(default = "default_hook_timeout")]
         timeout: u64,
     },
-    /// 不经过 LLM，直接激活一个技能。
-    /// 匹配成功时，hook 引擎会调用 `ReactAgent::activate_skill(skill)`。
-    /// `reason` 会作为系统提示展示给模型，说明激活原因。
+    /** 不经过 LLM，直接激活一个技能。
+    匹配成功时，hook 引擎会调用 `ReactAgent::activate_skill(skill)`。
+    `reason` 会作为系统提示展示给模型，说明激活原因。 */
     #[serde(rename = "activate_skill")]
     ActivateSkill {
         /// 要激活的技能名称（必须匹配一个已发现的技能）。
@@ -223,9 +223,9 @@ pub enum HookAction {
 }
 
 impl HookAction {
-    /// 校验该 hook 动作，对不安全/无效的配置返回错误。
-    ///
-    /// 在 hook 注册期间调用，用于尽早发现配置错误。
+    /** 校验该 hook 动作，对不安全/无效的配置返回错误。
+
+    在 hook 注册期间调用，用于尽早发现配置错误。 */
     pub fn validate(&self) -> Result<(), String> {
         match self {
             HookAction::Command {
@@ -520,8 +520,9 @@ tokio::task_local! {
 
 // ── Hook 注册表 ──────────────────────────────────────────────────────────
 
-/// 汇总所有来源（技能与用户配置）的 hook 注册表。
-// 手动实现 Clone，以保证类型擦除的运行时回调在克隆快照中仍然保留。
+/** 汇总所有来源（技能与用户配置）的 hook 注册表。
+
+手动实现 Clone，以保证类型擦除的运行时回调在克隆快照中仍然保留。 */
 #[derive(Default)]
 pub struct HookRegistry {
     /// 来源 -> hooks 定义 的映射。
@@ -538,8 +539,8 @@ pub struct HookRegistry {
     programmatic: Vec<ProgrammaticHookEntry>,
 }
 
-/// 一个已注册的编程式 hook：一个具名闭包，加上它订阅的事件列表
-/// （空列表表示订阅所有事件）。
+/** 一个已注册的编程式 hook：一个具名闭包，加上它订阅的事件列表
+（空列表表示订阅所有事件）。 */
 #[derive(Clone)]
 struct ProgrammaticHookEntry {
     /// hook 名称，用于去重和排序。
@@ -551,6 +552,7 @@ struct ProgrammaticHookEntry {
 }
 
 impl Clone for HookRegistry {
+    /// 克隆注册表快照，同时保留所有类型擦除的运行时回调（沙箱、HTTP 客户端、执行器等）。
     fn clone(&self) -> Self {
         Self {
             sources: self.sources.clone(),
@@ -710,9 +712,9 @@ impl HookRegistry {
         self.sources.remove(source).is_some()
     }
 
-    /// 按名称注册（或替换）一个编程式 hook。`events` 限定该执行器关注的事件范围；
-    /// 空切片表示订阅所有事件。编程式 hook 会在所有数据驱动来源之后按名称顺序运行，
-    /// 合并与短路语义与数据驱动规则相同。
+    /** 按名称注册（或替换）一个编程式 hook。`events` 限定该执行器关注的事件范围；
+    空切片表示订阅所有事件。编程式 hook 会在所有数据驱动来源之后按名称顺序运行，
+    合并与短路语义与数据驱动规则相同。 */
     pub fn set_programmatic_hook(
         &mut self,
         name: &str,
@@ -808,8 +810,8 @@ impl HookRegistry {
         }
     }
 
-    /// 按确定的优先级顺序排列 hook 来源：用户配置最先，其次是按名称排序的插件，
-    /// 最后是按名称排序的技能。
+    /** 按确定的优先级顺序排列 hook 来源：用户配置最先，其次是按名称排序的插件，
+    最后是按名称排序的技能。 */
     fn sorted_sources(&self) -> Vec<&HookSource> {
         let mut sources: Vec<&HookSource> = self.sources.keys().collect();
         sources.sort_by(|a, b| match (a, b) {
@@ -936,8 +938,8 @@ impl HookRegistry {
             }
         }
 
-        // 编程式 hook 在所有数据驱动来源之后按名称顺序运行，采用相同的合并/短路
-        // 语义。空的事件订阅表示关注所有事件。
+        /* 编程式 hook 在所有数据驱动来源之后按名称顺序运行，采用相同的合并/短路
+        语义。空的事件订阅表示关注所有事件。 */
         for entry in &self.programmatic {
             if !entry.events.is_empty() && !entry.events.contains(&event) {
                 continue;
@@ -1027,16 +1029,23 @@ fn matches_tool_name(matcher: &str, tool_name: &str) -> bool {
     false
 }
 
-// ── Action Execution ───────────────────────────────────────────────────
+// ── 动作执行 ───────────────────────────────────────────────────
 
+/// 执行单个 hook 动作时所需的运行时依赖集合（借用自注册表）。
 struct HookActionRuntime<'a> {
+    /// 插件数据目录；仅插件来源的 hook 才会设置，用于注入插件相关环境变量。
     plugin_data_dir: Option<&'a str>,
+    /// 可选的沙箱执行器；存在时命令 hook 在沙箱中运行。
     sandbox: Option<&'a Arc<dyn SandboxExecutor>>,
+    /// 可选的共享 HTTP 客户端，供 HTTP hook 复用连接。
     http_client: Option<&'a reqwest::Client>,
+    /// 可选的 MCP 工具执行回调，供 McpTool hook 使用。
     mcp_executor: Option<&'a McpExecutorFn>,
+    /// 可选的子 agent 执行回调，供 Subagent hook 使用。
     subagent_executor: Option<&'a SubagentExecutorFn>,
 }
 
+/// 根据动作类型分发并执行单个 hook 动作，返回该动作产生的 [`HookResult`]。
 async fn execute_action(
     action: &HookAction,
     source_dir: &str,
@@ -1096,11 +1105,10 @@ async fn execute_action(
                     );
                 }
             }
-            // Permission decisions are reduced across every matching source.
-            // In particular, an early allow/ask must not hide a later deny.
-            // A deny still sets `block` above and therefore stops execution
-            // after the highest-priority decision has been observed; callers
-            // can still request an explicit propagation stop with `continue`.
+            /* 权限决策会在所有匹配来源之间进行归约。
+            尤其是较早出现的 allow/ask 不能掩盖之后出现的 deny。
+            deny 仍会在上面设置 `block`，因此会在观察到最高优先级决策后停止执行；
+            调用方仍可通过 `continue` 显式请求停止传播。 */
             result
         }
         HookAction::Http {
@@ -1221,8 +1229,9 @@ async fn execute_action(
     }
 }
 
-// -- Command hook execution --
+// -- 命令 hook 执行 --
 
+/// 执行命令类型的 hook：优先走沙箱，否则直接派生本地进程，并解析其输出。
 async fn execute_command_hook(
     command: &str,
     shell: Option<&str>,
@@ -1232,14 +1241,14 @@ async fn execute_command_hook(
     context: &HookContext,
     sandbox: Option<&Arc<dyn SandboxExecutor>>,
 ) -> HookResult {
-    // Build JSON context for stdin (include hook_event_name for compatibility)
+    // 构建通过 stdin 传入的 JSON 上下文（为兼容性附带 hook_event_name）
     let mut stdin_value = serde_json::to_value(context).unwrap_or_default();
     stdin_value["hook_event_name"] = json!(context.event.as_str());
     let stdin_json = stdin_value;
 
     let timeout = Duration::from_secs(timeout_secs);
 
-    // -- Sandbox execution path --
+    // -- 沙箱执行路径 --
     if let Some(manager) = sandbox {
         let (program, args) = build_hook_shell_command(command, shell);
         let mut sandbox_cmd = SandboxCommand::program(&program, args).with_timeout(timeout);
@@ -1248,7 +1257,7 @@ async fn execute_command_hook(
             sandbox_cmd = sandbox_cmd.with_working_dir(source_dir);
         }
 
-        // Use minimal environment
+        // 使用最小化环境变量
         let mut env = minimal_hook_env_with_context(
             source_dir,
             &context.session_id,
@@ -1260,7 +1269,7 @@ async fn execute_command_hook(
             sandbox_cmd = sandbox_cmd.with_env(k, v);
         }
 
-        // Pipe stdin JSON
+        // 通过 stdin 传入 JSON
         if let Ok(json_str) = serde_json::to_string(&stdin_json) {
             sandbox_cmd = sandbox_cmd.with_stdin(json_str);
         }
@@ -1289,7 +1298,7 @@ async fn execute_command_hook(
         };
     }
 
-    // -- Fallback: direct process execution (no sandbox) --
+    // -- 回退路径：直接执行进程（无沙箱）--
     let (program, args) = build_hook_shell_command(command, shell);
     let mut cmd = tokio::process::Command::new(&program);
     for arg in &args {
@@ -1305,7 +1314,7 @@ async fn execute_command_hook(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    // Preserve the user's trusted local environment and add stable hook fields.
+    // 保留用户可信的本地环境，并追加稳定的 hook 字段。
     let mut env = minimal_hook_env_with_context(
         source_dir,
         &context.session_id,
@@ -1376,8 +1385,9 @@ async fn execute_command_hook(
     }
 }
 
-// -- HTTP hook execution --
+// -- HTTP hook 执行 --
 
+/// 执行 HTTP 类型的 hook：以 JSON 形式发送上下文，并将成功响应体按 hook 输出解析。
 async fn execute_http_hook(
     url: &str,
     method: Option<&str>,
@@ -1427,33 +1437,34 @@ async fn execute_http_hook(
     }
 }
 
-// ── Output Parsing ─────────────────────────────────────────────────────
+// ── 输出解析 ─────────────────────────────────────────────────────
 
-/// Parse JSON output from a hook command.
-///
-/// Hooks can return JSON to control execution:
-/// ```json
-/// {
-///   "decision": "block",
-///   "reason": "Unsafe command detected",
-///   "continue": false,
-///   "permission_decision": "allow" | "deny" | "ask",
-///   "permission_suggestions": ["Allow", "Deny"],
-///   "continue_reason": "Check if tests pass",
-///   "injected_context": "Remember to use bun",
-///   "metadata": {}
-/// }
-/// ```
+/** 解析 hook 命令的 JSON 输出。
+
+Hook 可以返回 JSON 来控制执行：
+```json
+{
+  "decision": "block",
+  "reason": "Unsafe command detected",
+  "continue": false,
+  "permission_decision": "allow" | "deny" | "ask",
+  "permission_suggestions": ["Allow", "Deny"],
+  "continue_reason": "Check if tests pass",
+  "injected_context": "Remember to use bun",
+  "metadata": {}
+}
+```
+*/
 fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
     let mut result = HookResult::default();
 
-    // Exit code semantics (aligned with Claude Code convention):
-    //  exit 0: pass (no block intent)
-    //  exit 1: no block (hook produced output but no explicit block)
-    //  exit 2: block (explicit block signal)
-    //  other non-zero: warning, no block
+    /* 退出码语义（与 Claude Code 约定保持一致）：
+     exit 0：通过（无阻止意图）
+     exit 1：不阻止（hook 产生了输出但没有显式阻止）
+     exit 2：阻止（显式阻止信号）
+     其他非零值：告警，不阻止 */
     match exit_code {
-        0 | 1 => {} // no implicit block
+        0 | 1 => {} // 不做隐式阻止
         2 => {
             result.block = true;
             let reason = stderr.trim();
@@ -1464,7 +1475,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             });
         }
         _ => {
-            // Other non-zero: log warning, don't block
+            // 其他非零值：记录告警，不阻止
             warn!(
                 exit_code = exit_code,
                 "Hook exited with unexpected code, treating as warning (not block)"
@@ -1481,7 +1492,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
         }
     }
 
-    // Try to parse JSON output
+    // 尝试解析 JSON 输出
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
         return result;
@@ -1493,7 +1504,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             result.messages.push(truncate_hook_message(message));
         }
 
-        // Parse decision field
+        // 解析 decision 字段
         if let Some(decision) = json.get("decision").and_then(|v| v.as_str()) {
             match decision {
                 "block" => {
@@ -1510,8 +1521,8 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             }
         }
 
-        // Portable Codex/Claude hook output fields. embedding application keeps its native flat
-        // fields below, while accepting these nested fields for plugin reuse.
+        /* 可移植的 Codex/Claude hook 输出字段。嵌入式应用保留下方原生的扁平字段，
+        同时接受这些嵌套字段以便复用插件。 */
         if let Some(decision) = hook_specific
             .get("permissionDecision")
             .and_then(Value::as_str)
@@ -1551,7 +1562,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             }
         }
 
-        // Parse permission_decision field
+        // 解析 permission_decision 字段
         if let Some(perm_decision) = json.get("permission_decision").and_then(|v| v.as_str()) {
             match perm_decision {
                 "allow" => {
@@ -1581,9 +1592,8 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             }
         }
 
-        // Parse the canonical call-scoped permission mode override. Hooks are
-        // user-installed local extensions; shared/managed deployments can still
-        // disable BypassPermissions through PermissionService::bypass_disabled.
+        /* 解析标准的、作用于单次调用的权限模式覆盖。Hook 是用户安装的本地扩展；
+        共享/托管部署仍可通过 PermissionService::bypass_disabled 禁用 BypassPermissions。 */
         if let Some(mode) = json
             .get("permission_mode_override")
             .and_then(|v| v.as_str())
@@ -1612,7 +1622,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             result.updated_input = Some(updated.clone());
         }
 
-        // Parse lifecycle-specific fields
+        // 解析生命周期相关字段
         if let Some(reason) = json.get("continue_reason").and_then(|v| v.as_str()) {
             result.continue_reason = Some(truncate_hook_message(reason));
         }
@@ -1625,7 +1635,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             result.injected_context = Some(truncate_hook_message(ctx));
         }
 
-        // Parse retry field (PermissionDenied hooks)
+        // 解析 retry 字段（用于 PermissionDenied hook）
         if json.get("retry") == Some(&Value::Bool(true)) {
             result.retry = true;
         }
@@ -1636,12 +1646,12 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
             result.metadata = Some(meta.clone());
         }
     } else if exit_code == 0 {
-        // Non-JSON stdout on exit 0: treat as injected context
+        // 退出码为 0 且 stdout 不是 JSON：视为注入的上下文
         result.injected_context = Some(truncate_hook_message(trimmed));
     }
 
-    // Exit code 2 is an out-of-band blocking signal. Structured stdout may add
-    // context, but it must not downgrade that process-level decision.
+    /* 退出码 2 是带外（out-of-band）阻止信号。结构化的 stdout 可以追加上下文，
+    但不得降级这一进程级决策。 */
     if exit_code == 2 {
         result.block = true;
         let reason = stderr.trim();
@@ -1655,6 +1665,7 @@ fn parse_hook_output(stdout: &str, stderr: &str, exit_code: i32) -> HookResult {
     result
 }
 
+/// 为插件来源的 hook 注入插件根目录和插件数据目录相关的环境变量。
 fn add_plugin_hook_env(
     env: &mut HashMap<String, String>,
     source_dir: &str,
@@ -1671,13 +1682,16 @@ fn add_plugin_hook_env(
     }
 }
 
+/// 构造一个仅携带（截断后）说明消息的 [`HookResult`]，用于报告执行问题。
 fn hook_execution_message(message: String) -> HookResult {
     let mut result = HookResult::default();
     result.messages.push(truncate_hook_message(&message));
     result
 }
 
+/// 将 hook 消息截断到最多 10000 个字符，超出部分以 `...` 结尾。
 fn truncate_hook_message(message: &str) -> String {
+    // 单条 hook 消息允许的最大字符数
     const MAX_CHARS: usize = 10_000;
     let mut text = message.chars().take(MAX_CHARS).collect::<String>();
     if message.chars().count() > MAX_CHARS {
@@ -1686,8 +1700,9 @@ fn truncate_hook_message(message: &str) -> String {
     text
 }
 
-// ── Shell Command Builder ──────────────────────────────────────────────
+// ── Shell 命令构建 ──────────────────────────────────────────────
 
+/// 根据 shell 类型和平台构建执行 hook 命令所用的程序名与参数列表。
 fn build_hook_shell_command(command: &str, shell: Option<&str>) -> (String, Vec<String>) {
     let shell_type = shell.unwrap_or("bash");
 
@@ -1743,6 +1758,7 @@ fn build_hook_shell_command(command: &str, shell: Option<&str>) -> (String, Vec<
     }
 }
 
+/// 通过执行 `<cmd> --version` 检测某个命令是否可用。
 fn which_exists(cmd: &str) -> bool {
     std::process::Command::new(cmd)
         .arg("--version")
@@ -1752,8 +1768,9 @@ fn which_exists(cmd: &str) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-// ── Result Merging ─────────────────────────────────────────────────────
+// ── 结果合并 ─────────────────────────────────────────────────────
 
+/// 将单个 hook 的结果合并进累积结果，按各字段的归约规则处理。
 fn merge_result(combined: &mut HookResult, incoming: HookResult) {
     let carries_permission_decision = incoming.permission_decision.is_some();
     if incoming.block {
@@ -1764,33 +1781,31 @@ fn merge_result(combined: &mut HookResult, incoming: HookResult) {
         combined.updated_input = incoming.updated_input;
     }
     combined.messages.extend(incoming.messages);
-    // An external command/HTTP/programmatic hook may return both a permission
-    // decision and `continue: false`. Permission safety is reduced across all
-    // matching sources, so allow/ask/require-approval cannot use that stop bit
-    // to hide a later deny. Results without a permission decision retain the
-    // ordinary stop-propagation contract.
+    /* 外部命令/HTTP/程序化 hook 可能同时返回权限决策和 `continue: false`。
+    权限安全性会在所有匹配来源之间归约，因此 allow/ask/require-approval
+    不能借助该停止位掩盖之后的 deny。不带权限决策的结果仍遵循普通的停止传播约定。 */
     if incoming.stop_propagation && !carries_permission_decision {
         combined.stop_propagation = true;
     }
 
-    // Permission decision with priority: deny > ask > require_approval > allow
+    // 权限决策优先级：deny > ask > require_approval > allow
     if let Some(new_decision) = incoming.permission_decision {
         let should_replace = match (&combined.permission_decision, &new_decision) {
-            // If we already have deny, keep it
+            // 已有 deny 时保持不变
             (Some(PermissionDecision::Deny { .. }), _) => false,
-            // New decision is deny -- always take it
+            // 新决策为 deny —— 总是采用
             (_, PermissionDecision::Deny { .. }) => true,
-            // If we already have ask, keep it (ask > allow)
+            // 已有 ask 时保持不变（ask > allow）
             (Some(PermissionDecision::Ask { .. }), _) => false,
-            // New decision is ask -- take it over allow
+            // 新决策为 ask —— 覆盖 allow
             (_, PermissionDecision::Ask { .. }) => true,
-            // If we already have RequireApproval, keep it
+            // 已有 RequireApproval 时保持不变
             (Some(PermissionDecision::RequireApproval), _) => false,
-            // New decision is RequireApproval -- take it over allow
+            // 新决策为 RequireApproval —— 覆盖 allow
             (_, PermissionDecision::RequireApproval) => true,
-            // Both are allow -- either is fine
+            // 两者都是 allow —— 任取其一即可
             (Some(PermissionDecision::Allow), PermissionDecision::Allow) => false,
-            // No existing decision -- take the new one
+            // 尚无决策 —— 采用新决策
             (None, _) => true,
         };
         if should_replace {
@@ -1798,17 +1813,17 @@ fn merge_result(combined: &mut HookResult, incoming: HookResult) {
         }
     }
 
-    // permission_mode_override: last non-none wins
+    // permission_mode_override：最后一个非 None 值生效
     if incoming.permission_mode_override.is_some() {
         combined.permission_mode_override = incoming.permission_mode_override;
     }
 
-    // continue_reason: non-None overrides None
+    // continue_reason：非 None 值覆盖 None
     if incoming.continue_reason.is_some() {
         combined.continue_reason = incoming.continue_reason;
     }
 
-    // injected_context: concatenate with newline
+    // injected_context：以换行符拼接
     if let Some(ctx) = incoming.injected_context {
         combined.injected_context = Some(match combined.injected_context.take() {
             Some(existing) => format!("{}\n{}", existing, ctx),
@@ -1816,19 +1831,18 @@ fn merge_result(combined: &mut HookResult, incoming: HookResult) {
         });
     }
 
-    // retry: OR semantics (any true → combined true)
+    // retry：或语义（任一为 true 则合并结果为 true）
     if incoming.retry {
         combined.retry = true;
     }
 
-    // activate_skill: first-wins (the first non-None activation request is kept;
-    // subsequent activate_skill results from other hooks are ignored to avoid
-    // conflicting multi-skill activation).
+    /* activate_skill：先到先得（保留第一个非 None 的激活请求；
+    忽略其他 hook 后续返回的 activate_skill，以避免多个技能激活相互冲突）。 */
     if combined.activate_skill.is_none() {
         combined.activate_skill = incoming.activate_skill;
     }
 
-    // metadata: deep merge
+    // metadata：深度合并
     if let Some(meta) = incoming.metadata {
         combined.metadata = Some(match combined.metadata.take() {
             Some(existing) => {
@@ -1845,14 +1859,16 @@ fn merge_result(combined: &mut HookResult, incoming: HookResult) {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────
+// ── 测试 ──────────────────────────────────────────────────────────────
 
+// 单元测试：hook 事件、匹配、解析、合并与注册表执行。
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // -- HookEvent tests --
+    // -- HookEvent 测试 --
 
+    /// 验证 `is_tool_event` 对工具类事件返回 true、对其他事件返回 false。
     #[test]
     fn test_hook_event_is_tool_event() {
         assert!(HookEvent::PreToolUse.is_tool_event());
@@ -1866,6 +1882,7 @@ mod tests {
         assert!(!HookEvent::StopFailure.is_tool_event());
     }
 
+    /// 验证 `supports_matcher` 对各事件的判断结果。
     #[test]
     fn test_hook_event_supports_matcher() {
         assert!(HookEvent::PreToolUse.supports_matcher());
@@ -1878,6 +1895,7 @@ mod tests {
         assert!(!HookEvent::StopFailure.supports_matcher());
     }
 
+    /// 验证 `HookEvent` 的序列化与反序列化往返一致。
     #[test]
     fn test_hook_event_serde() {
         let event = HookEvent::PreToolUse;
@@ -1892,8 +1910,9 @@ mod tests {
         assert_eq!(parsed, HookEvent::PostToolUseFailure);
     }
 
-    // -- HookContext tests --
+    // -- HookContext 测试 --
 
+    /// 验证 PreToolUse 上下文构造携带工具名与输入。
     #[test]
     fn test_hook_context_for_pre_tool_use() {
         let ctx =
@@ -1905,6 +1924,7 @@ mod tests {
         assert!(ctx.matcher.is_none());
     }
 
+    /// 验证 SessionStart 上下文的构造。
     #[test]
     fn test_hook_context_for_session_start() {
         let ctx = HookContext::for_session_start("startup", "sess-1", "agent");
@@ -1913,6 +1933,7 @@ mod tests {
         assert!(ctx.tool_name.is_none());
     }
 
+    /// 验证 Stop 上下文的构造。
     #[test]
     fn test_hook_context_for_stop() {
         let ctx = HookContext::for_stop(None, "sess-1", "agent", false);
@@ -1921,6 +1942,7 @@ mod tests {
         assert!(ctx.tool_name.is_none());
     }
 
+    /// 验证 Notification 上下文的构造。
     #[test]
     fn test_hook_context_for_notification() {
         let ctx = HookContext::for_notification("permission_prompt", "sess-1", "agent");
@@ -1928,6 +1950,7 @@ mod tests {
         assert_eq!(ctx.matcher.as_deref(), Some("permission_prompt"));
     }
 
+    /// 验证 `HookContext` 能正确序列化为 JSON。
     #[test]
     fn test_hook_context_serialization() {
         let ctx =
@@ -1935,13 +1958,14 @@ mod tests {
         let json_str = serde_json::to_string(&ctx).unwrap();
         assert!(json_str.contains("\"event\":\"PreToolUse\""));
         assert!(json_str.contains("\"tool_name\":\"Bash\""));
-        // None fields should be omitted
+        // 值为 None 的字段应被省略
         assert!(!json_str.contains("\"tool_output\""));
         assert!(!json_str.contains("\"matcher\""));
     }
 
-    // -- matches_hook tests --
+    // -- matches_hook 测试 --
 
+    /// 验证通配符 matcher 匹配任意工具。
     #[test]
     fn test_matches_hook_wildcard() {
         let ctx = HookContext::for_pre_tool_use("Bash", &json!({}), "", "");
@@ -1949,6 +1973,7 @@ mod tests {
         assert!(matches_hook("", &ctx));
     }
 
+    /// 验证工具名精确匹配。
     #[test]
     fn test_matches_hook_tool_name_exact() {
         let ctx = HookContext::for_pre_tool_use("Bash", &json!({}), "", "");
@@ -1956,6 +1981,7 @@ mod tests {
         assert!(!matches_hook("Read", &ctx));
     }
 
+    /// 验证以 `|` 分隔的多个工具名匹配。
     #[test]
     fn test_matches_hook_tool_name_pipe_separated() {
         let ctx = HookContext::for_pre_tool_use("Edit", &json!({}), "", "");
@@ -1964,12 +1990,14 @@ mod tests {
         assert!(!matches_hook("Bash|Read", &ctx));
     }
 
+    /// 验证工具名前缀（glob）匹配。
     #[test]
     fn test_matches_hook_tool_name_prefix() {
         let ctx = HookContext::for_pre_tool_use("Bash(git:*)", &json!({}), "", "");
         assert!(matches_hook("Bash", &ctx));
     }
 
+    /// 验证生命周期事件的 matcher 匹配。
     #[test]
     fn test_matches_hook_lifecycle_matcher() {
         let ctx = HookContext::for_session_start("startup", "", "");
@@ -1977,27 +2005,31 @@ mod tests {
         assert!(!matches_hook("resume", &ctx));
     }
 
+    /// 验证生命周期事件以 `|` 分隔的多值匹配。
     #[test]
     fn test_matches_hook_lifecycle_pipe_separated() {
         let ctx = HookContext::for_session_start("resume", "", "");
         assert!(matches_hook("startup|resume", &ctx));
     }
 
+    /// 验证生命周期事件的 glob 匹配。
     #[test]
     fn test_matches_hook_lifecycle_glob() {
         let ctx = HookContext::for_notification("permission_prompt", "", "");
         assert!(matches_hook("permission*", &ctx));
     }
 
+    /// 验证不支持 matcher 的事件总是匹配。
     #[test]
     fn test_matches_hook_no_matcher_event() {
         let ctx = HookContext::for_stop(None, "", "", false);
-        // Stop doesn't support matcher, so only "*" and "" match
+        // Stop 不支持 matcher，因此只有 "*" 和 "" 能匹配
         assert!(matches_hook("*", &ctx));
         assert!(matches_hook("", &ctx));
         assert!(!matches_hook("something", &ctx));
     }
 
+    /// 验证 SubagentStart 事件按子代理名匹配。
     #[test]
     fn test_matches_hook_subagent_start() {
         let ctx = HookContext::for_subagent_start("coder", "sync", "implement X", "", "");
@@ -2005,10 +2037,11 @@ mod tests {
         assert!(matches_hook("*", &ctx));
         assert!(matches_hook("", &ctx));
         assert!(!matches_hook("planner", &ctx));
-        // Pipe-separated alternatives
+        // 以 `|` 分隔的多个候选
         assert!(matches_hook("planner|coder|reviewer", &ctx));
     }
 
+    /// 验证 SubagentStop 事件按子代理名匹配。
     #[test]
     fn test_matches_hook_subagent_stop() {
         let ctx = HookContext::for_subagent_stop(
@@ -2023,6 +2056,7 @@ mod tests {
         assert!(!matches_hook("planner", &ctx));
     }
 
+    /// 验证 TaskCreated 事件的匹配。
     #[test]
     fn test_matches_hook_task_created() {
         let ctx = HookContext::for_task_created("t-1", "build API", "", "");
@@ -2031,6 +2065,7 @@ mod tests {
         assert!(!matches_hook("deploy", &ctx));
     }
 
+    /// 验证 TaskCompleted 事件的匹配。
     #[test]
     fn test_matches_hook_task_completed() {
         let ctx = HookContext::for_task_completed(
@@ -2045,6 +2080,7 @@ mod tests {
         assert!(!matches_hook("deploy", &ctx));
     }
 
+    /// 验证子代理事件的 glob 匹配。
     #[test]
     fn test_matches_hook_subagent_glob() {
         let ctx = HookContext::for_subagent_start("code-reviewer", "sync", "review", "", "");
@@ -2052,14 +2088,16 @@ mod tests {
         assert!(!matches_hook("test*", &ctx));
     }
 
-    // -- HooksDefinition tests --
+    // -- HooksDefinition 测试 --
 
+    /// 验证默认的 `HooksDefinition` 为空。
     #[test]
     fn test_hooks_definition_empty() {
         let def = HooksDefinition::default();
         assert!(def.is_empty());
     }
 
+    /// 验证 `add_rules` 能向定义中添加规则。
     #[test]
     fn test_hooks_definition_add_rules() {
         let mut def = HooksDefinition::default();
@@ -2077,11 +2115,11 @@ mod tests {
         assert_eq!(def.rules_for(HookEvent::PostToolUse).len(), 0);
     }
 
+    /// 验证插件 hook 以独立的插件来源注册。
     #[test]
     fn test_register_plugin_hooks_distinct_source() {
-        // P0-2: plugin hooks must register under HookSource::Plugin, not be
-        // collapsed into HookSource::Skill. Verify the source identity shows up
-        // distinctly in list_sources.
+        /* P0-2：插件 hook 必须注册在 HookSource::Plugin 下，而不能被并入
+        HookSource::Skill。验证该来源标识在 list_sources 中独立出现。 */
         let mut registry = HookRegistry::new();
         let mut def = HooksDefinition::default();
         def.add_rules(
@@ -2102,7 +2140,7 @@ mod tests {
         );
 
         let sources = registry.list_sources();
-        // Should appear as plugin:data-analysis-pack, never as skill:plugin:...
+        // 应显示为 plugin:data-analysis-pack，绝不能是 skill:plugin:...
         assert!(
             sources
                 .iter()
@@ -2117,10 +2155,11 @@ mod tests {
         );
     }
 
+    /// 验证插件 hook 注册时丢弃无效动作并保留有效动作。
     #[test]
     fn test_register_plugin_hooks_drops_invalid_actions() {
-        // P0-2: an invalid action is dropped, valid siblings survive, and the
-        // plugin is still registered under the plugin source.
+        /* P0-2：无效动作被丢弃，有效的同级动作保留，
+        且插件仍注册在插件来源下。 */
         let mut registry = HookRegistry::new();
         let mut def = HooksDefinition::default();
         def.add_rules(
@@ -2128,11 +2167,11 @@ mod tests {
             vec![HookRule {
                 matcher: "*".into(),
                 hooks: vec![
-                    // valid
+                    // 有效
                     HookAction::Prompt {
                         prompt: "keep".into(),
                     },
-                    // invalid: empty command
+                    // 无效：命令为空
                     HookAction::Command {
                         command: String::new(),
                         shell: None,
@@ -2152,6 +2191,7 @@ mod tests {
         );
     }
 
+    /// 验证注册空的插件 hook 定义不产生任何效果。
     #[test]
     fn test_register_plugin_hooks_empty_noop() {
         let mut registry = HookRegistry::new();
@@ -2159,6 +2199,7 @@ mod tests {
         assert!(registry.is_empty(), "empty definition must not register");
     }
 
+    /// 验证两个 `HooksDefinition` 的合并结果。
     #[test]
     fn test_hooks_definition_merge() {
         let mut def1 = HooksDefinition::default();
@@ -2197,6 +2238,7 @@ mod tests {
         assert_eq!(def1.rules_for(HookEvent::SessionStart).len(), 1);
     }
 
+    /// 验证从 YAML 反序列化 hooks 定义。
     #[test]
     fn test_hooks_definition_deserialize_yaml() {
         let yaml = r#"
@@ -2227,6 +2269,7 @@ SessionStart:
         assert_eq!(def.rules_for(HookEvent::SessionStart).len(), 1);
     }
 
+    /// 验证反序列化包含 HTTP 动作的 hooks 定义。
     #[test]
     fn test_hooks_definition_deserialize_with_http_action() {
         let yaml = r#"
@@ -2245,6 +2288,7 @@ PostToolUse:
         );
     }
 
+    /// 验证反序列化包含 MCP 工具动作的 hooks 定义。
     #[test]
     fn test_hooks_definition_deserialize_with_mcp_tool_action() {
         let yaml = r#"
@@ -2265,8 +2309,9 @@ Notification:
         );
     }
 
-    // -- HookResult tests --
+    // -- HookResult 测试 --
 
+    /// 验证 allow 结果的构造。
     #[test]
     fn test_hook_result_allow() {
         let result = HookResult::allow();
@@ -2274,6 +2319,7 @@ Notification:
         assert!(result.permission_decision.unwrap().is_allowed());
     }
 
+    /// 验证 deny 结果的构造。
     #[test]
     fn test_hook_result_deny() {
         let result = HookResult::deny("test reason".to_string());
@@ -2282,6 +2328,7 @@ Notification:
         assert!(result.block);
     }
 
+    /// 验证 ask 结果的构造。
     #[test]
     fn test_hook_result_ask() {
         let result = HookResult::ask(vec!["Option A".to_string()]);
@@ -2289,6 +2336,7 @@ Notification:
         assert!(result.permission_decision.unwrap().requires_approval());
     }
 
+    /// 验证 `should_continue` 的判断逻辑。
     #[test]
     fn test_hook_result_should_continue() {
         let mut result = HookResult::default();
@@ -2297,14 +2345,16 @@ Notification:
         assert!(result.should_continue());
     }
 
-    // -- parse_hook_output tests --
+    // -- parse_hook_output 测试 --
 
+    /// 验证空输出解析为默认结果。
     #[test]
     fn test_parse_hook_output_empty() {
         let result = parse_hook_output("", "", 0);
         assert!(!result.block);
     }
 
+    /// 验证解析 block 决策输出。
     #[test]
     fn test_parse_hook_output_block() {
         let result = parse_hook_output(r#"{"decision": "block", "reason": "unsafe"}"#, "", 0);
@@ -2312,22 +2362,25 @@ Notification:
         assert_eq!(result.block_reason, Some("unsafe".into()));
     }
 
+    /// 验证解析 allow 决策输出。
     #[test]
     fn test_parse_hook_output_allow() {
         let result = parse_hook_output(r#"{"decision": "allow"}"#, "", 1);
         assert!(!result.block);
     }
 
+    /// 验证退出码 1 不会阻止执行。
     #[test]
     fn test_parse_hook_output_nonzero_exit_code_1_no_block() {
-        // exit 1 = no block (hook produced output but no block intent)
+        // exit 1 = 不阻止（hook 产生了输出但无阻止意图）
         let result = parse_hook_output("", "", 1);
         assert!(!result.block);
     }
 
+    /// 验证退出码 2 会阻止执行。
     #[test]
     fn test_parse_hook_output_exit_code_2_block() {
-        // exit 2 = explicit block signal
+        // exit 2 = 显式阻止信号
         let result = parse_hook_output("", "", 2);
         assert!(result.block);
         assert_eq!(
@@ -2336,6 +2389,7 @@ Notification:
         );
     }
 
+    /// 验证退出码 2 时使用 stderr 作为阻止原因。
     #[test]
     fn test_parse_hook_output_exit_code_2_uses_stderr_reason() {
         let result = parse_hook_output("", "Blocked by policy", 2);
@@ -2343,6 +2397,7 @@ Notification:
         assert_eq!(result.block_reason.as_deref(), Some("Blocked by policy"));
     }
 
+    /// 验证退出码 2 的阻止不能被 stdout 输出降级。
     #[test]
     fn test_parse_hook_output_exit_code_2_cannot_be_downgraded() {
         let result = parse_hook_output(
@@ -2354,27 +2409,31 @@ Notification:
         assert_eq!(result.block_reason.as_deref(), Some("Blocked by process"));
     }
 
+    /// 验证其他退出码不会阻止执行。
     #[test]
     fn test_parse_hook_output_exit_code_other_no_block() {
-        // Other non-zero = warning, no block
+        // 其他非零值 = 告警，不阻止
         let result = parse_hook_output("", "", 3);
         assert!(!result.block);
         let result = parse_hook_output("", "", 127);
         assert!(!result.block);
     }
 
+    /// 验证解析 retry 字段。
     #[test]
     fn test_parse_hook_output_retry_field() {
         let result = parse_hook_output(r#"{"retry": true}"#, "", 0);
         assert!(result.retry);
     }
 
+    /// 验证 retry 默认为 false。
     #[test]
     fn test_parse_hook_output_retry_false_by_default() {
         let result = parse_hook_output("", "", 0);
         assert!(!result.retry);
     }
 
+    /// 验证解析 updated_input 字段。
     #[test]
     fn test_parse_hook_output_updated_input() {
         let result = parse_hook_output(r#"{"updatedInput": {"command": "safe-command"}}"#, "", 0);
@@ -2385,6 +2444,7 @@ Notification:
         );
     }
 
+    /// 验证能解析可移植格式的嵌套字段（hookSpecificOutput 等）。
     #[test]
     fn test_parse_hook_output_accepts_portable_nested_fields() {
         let result = parse_hook_output(
@@ -2403,6 +2463,7 @@ Notification:
         assert_eq!(result.messages, vec!["audit"]);
     }
 
+    /// 验证能解析 PermissionRequest 事件的决策输出。
     #[test]
     fn test_parse_hook_output_accepts_permission_request_decision() {
         let result = parse_hook_output(
@@ -2418,6 +2479,7 @@ Notification:
         );
     }
 
+    /// 验证解析 continue_reason 字段。
     #[test]
     fn test_parse_hook_output_continue_reason() {
         let result =
@@ -2428,6 +2490,7 @@ Notification:
         );
     }
 
+    /// 验证解析 injected_context 字段。
     #[test]
     fn test_parse_hook_output_injected_context() {
         let result = parse_hook_output(r#"{"injected_context": "Remember to use bun"}"#, "", 0);
@@ -2437,6 +2500,7 @@ Notification:
         );
     }
 
+    /// 验证非 JSON 输出被视为注入上下文。
     #[test]
     fn test_parse_hook_output_non_json_as_context() {
         let result = parse_hook_output("Remember: use bun, not npm", "", 0);
@@ -2446,6 +2510,7 @@ Notification:
         );
     }
 
+    /// 验证解析 permission_decision 为 allow。
     #[test]
     fn test_parse_hook_output_permission_decision_allow() {
         let result = parse_hook_output(r#"{"permission_decision": "allow"}"#, "", 0);
@@ -2453,6 +2518,7 @@ Notification:
         assert!(result.permission_decision.unwrap().is_allowed());
     }
 
+    /// 验证解析 permission_decision 为 deny。
     #[test]
     fn test_parse_hook_output_permission_decision_deny() {
         let result = parse_hook_output(
@@ -2464,6 +2530,7 @@ Notification:
         assert!(result.permission_decision.unwrap().is_denied());
     }
 
+    /// 验证解析权限模式覆盖字段。
     #[test]
     fn test_parse_hook_output_permission_mode_override() {
         for (wire_value, expected) in [
@@ -2482,14 +2549,16 @@ Notification:
         }
     }
 
+    /// 验证忽略旧版的 permission_mode 字段。
     #[test]
     fn test_parse_hook_output_ignores_legacy_permission_mode() {
         let result = parse_hook_output(r#"{"permission_mode": "auto"}"#, "", 0);
         assert_eq!(result.permission_mode_override, None);
     }
 
-    // -- merge_result tests --
+    // -- merge_result 测试 --
 
+    /// 验证合并权限决策时 deny 优先级最高。
     #[test]
     fn test_merge_result_permission_priority_deny_wins() {
         let mut combined = HookResult {
@@ -2532,6 +2601,7 @@ Notification:
         ));
     }
 
+    /// 验证权限 hook 在 allow/ask 短路前先跨来源归并决策。
     #[tokio::test]
     async fn permission_hooks_reduce_across_sources_before_allow_or_ask_short_circuit() {
         let mut registry = HookRegistry::new();
@@ -2569,6 +2639,7 @@ Notification:
         assert_eq!(result.block_reason.as_deref(), Some("deny decision"));
     }
 
+    /// 验证 continue=false 的权限输出不能掩盖后续的 deny。
     #[test]
     fn permission_output_stop_cannot_hide_later_deny() {
         let mut combined = HookResult::default();
@@ -2599,6 +2670,7 @@ Notification:
         assert!(non_permission.stop_propagation);
     }
 
+    /// 验证命令型权限 hook 的停止不能掩盖后续来源的 deny。
     #[tokio::test]
     async fn command_permission_stop_cannot_hide_later_source_deny() {
         #[cfg(target_os = "windows")]
@@ -2656,6 +2728,7 @@ Notification:
         assert!(result.block);
     }
 
+    /// 验证合并 continue_reason。
     #[test]
     fn test_merge_result_continue_reason() {
         let mut combined = HookResult::default();
@@ -2668,7 +2741,7 @@ Notification:
         );
         assert_eq!(combined.continue_reason, Some("Check tests".to_string()));
 
-        // Later non-None overrides
+        // 后出现的非 None 值覆盖之前的值
         merge_result(
             &mut combined,
             HookResult {
@@ -2682,6 +2755,7 @@ Notification:
         );
     }
 
+    /// 验证合并时 injected_context 被拼接。
     #[test]
     fn test_merge_result_injected_context_concatenates() {
         let mut combined = HookResult::default();
@@ -2704,6 +2778,7 @@ Notification:
         assert_eq!(combined.injected_context, Some("First\nSecond".to_string()));
     }
 
+    /// 验证合并时 metadata 深度合并。
     #[test]
     fn test_merge_result_metadata_deep_merge() {
         let mut combined = HookResult {
@@ -2723,6 +2798,7 @@ Notification:
         assert_eq!(meta["c"], 4);
     }
 
+    /// 验证权限模式覆盖在合并时以最后一个为准。
     #[test]
     fn test_merge_result_permission_mode_override_last_wins() {
         let mut combined = HookResult {
@@ -2754,6 +2830,7 @@ Notification:
         );
     }
 
+    /// 验证 retry 合并采用“或”语义。
     #[test]
     fn test_merge_result_retry_or_semantics() {
         let mut combined = HookResult::default();
@@ -2768,7 +2845,7 @@ Notification:
         );
         assert!(combined.retry);
 
-        // Once true, stays true even if incoming is false
+        // 一旦为 true，即使后续传入 false 也保持 true
         merge_result(
             &mut combined,
             HookResult {
@@ -2779,14 +2856,16 @@ Notification:
         assert!(combined.retry);
     }
 
-    // -- HookRegistry tests --
+    // -- HookRegistry 测试 --
 
+    /// 验证新建的注册表为空。
     #[test]
     fn test_hook_registry_empty() {
         let registry = HookRegistry::new();
         assert!(registry.is_empty());
     }
 
+    /// 验证注册 skill hooks。
     #[test]
     fn test_hook_registry_register_skill() {
         let mut registry = HookRegistry::new();
@@ -2804,6 +2883,7 @@ Notification:
         assert!(!registry.is_empty());
     }
 
+    /// 验证注册用户配置 hooks。
     #[test]
     fn test_hook_registry_register_user_hooks() {
         let mut registry = HookRegistry::new();
@@ -2823,8 +2903,10 @@ Notification:
         assert!(!registry.has_hooks_for(HookEvent::PreToolUse));
     }
 
+    /// 验证所有 hook 来源都会过滤无效动作，并支持 dry-run。
     #[test]
     fn all_hook_sources_filter_invalid_actions_and_support_dry_run() {
+        /// 构造包含有效与无效动作的测试用 hooks 定义。
         fn definition() -> HooksDefinition {
             HooksDefinition {
                 rules: HashMap::from([(
@@ -2872,6 +2954,7 @@ Notification:
         );
     }
 
+    /// 验证注销 skill hooks。
     #[test]
     fn test_hook_registry_unregister() {
         let mut registry = HookRegistry::new();
@@ -2893,6 +2976,7 @@ Notification:
         assert!(registry.is_empty());
     }
 
+    /// 验证无匹配规则时返回默认结果。
     #[tokio::test]
     async fn test_hook_registry_no_match() {
         let mut registry = HookRegistry::new();
@@ -2912,6 +2996,7 @@ Notification:
         assert!(result.messages.is_empty());
     }
 
+    /// 验证 prompt 型 hook 匹配时注入消息。
     #[tokio::test]
     async fn test_hook_registry_prompt_match() {
         let mut registry = HookRegistry::new();
@@ -2934,6 +3019,7 @@ Notification:
         assert_eq!(result.messages[0], "Verify the command is safe");
     }
 
+    /// 验证命令型 hook 的执行。
     #[tokio::test]
     async fn test_hook_registry_command_execution() {
         if cfg!(target_os = "windows") {
@@ -2960,6 +3046,7 @@ Notification:
         assert!(!result.block);
     }
 
+    /// 验证插件命令 hook 能收到可移植的插件根目录与数据目录环境变量。
     #[tokio::test]
     async fn plugin_command_hook_receives_portable_root_and_data_env() {
         if cfg!(target_os = "windows") {
@@ -3005,6 +3092,7 @@ Notification:
         );
     }
 
+    /// 验证子代理 hook 通过已注册的执行器分发。
     #[tokio::test]
     async fn subagent_hook_dispatches_through_registered_executor() {
         let mut registry = HookRegistry::new();
@@ -3035,6 +3123,7 @@ Notification:
         );
     }
 
+    /// 验证生命周期事件 hooks 的执行。
     #[tokio::test]
     async fn test_hook_registry_lifecycle_hooks() {
         let mut registry = HookRegistry::new();
@@ -3055,12 +3144,13 @@ Notification:
         assert_eq!(result.messages.len(), 1);
         assert_eq!(result.messages[0], "Welcome!");
 
-        // Non-matching matcher
+        // 不匹配的 matcher
         let ctx = HookContext::for_session_start("resume", "sess-1", "agent");
         let result = registry.run_lifecycle_hooks(&ctx).await;
         assert!(result.messages.is_empty());
     }
 
+    /// 验证 Stop hook 返回 continue 时的行为。
     #[tokio::test]
     async fn test_hook_registry_stop_hook_with_continue() {
         let mut registry = HookRegistry::new();
@@ -3083,11 +3173,12 @@ Notification:
         assert_eq!(result.continue_reason, Some("Run tests first".to_string()));
     }
 
+    /// 验证用户配置 hooks 的优先级。
     #[tokio::test]
     async fn test_hook_registry_user_config_priority() {
         let mut registry = HookRegistry::new();
 
-        // Register skill hook first
+        // 先注册技能 hook
         let mut skill_def = HooksDefinition::default();
         skill_def.add_rules(
             HookEvent::PreToolUse,
@@ -3100,7 +3191,7 @@ Notification:
         );
         registry.register("z-skill", "/tmp", skill_def);
 
-        // Register user config
+        // 注册用户配置
         let mut user_def = HooksDefinition::default();
         user_def.add_rules(
             HookEvent::PreToolUse,
@@ -3114,10 +3205,11 @@ Notification:
         registry.register_user_hooks(user_def);
 
         let result = registry.run_pre_tool_use("Bash", &json!({}), "").await;
-        // User config runs first, then skill
+        // 用户配置先执行，然后才是技能
         assert_eq!(result.messages, vec!["from-user", "from-skill"]);
     }
 
+    /// 验证 hooks 按 skill 名的确定顺序执行。
     #[tokio::test]
     async fn test_hook_registry_runs_in_deterministic_skill_name_order() {
         let mut registry = HookRegistry::new();
@@ -3151,6 +3243,7 @@ Notification:
         assert_eq!(result.messages, vec!["from-a", "from-z"]);
     }
 
+    /// 验证命令型 hook 能收到 session id。
     #[tokio::test]
     async fn test_hook_command_receives_session_id() {
         if cfg!(target_os = "windows") {
@@ -3181,6 +3274,7 @@ Notification:
         );
     }
 
+    /// 验证工具名的 glob 匹配。
     #[test]
     fn test_matches_tool_name_glob() {
         assert!(matches_tool_name("Bash(*)", "Bash(git:*)"));
@@ -3190,8 +3284,9 @@ Notification:
         assert!(!matches_tool_name("Write", "Bash(git:*)"));
     }
 
-    // -- HookAction serde tests --
+    // -- HookAction 序列化/反序列化测试 --
 
+    /// 验证 HTTP 动作的反序列化。
     #[test]
     fn test_hook_action_http_deserialize() {
         let json = r#"{"type":"http","url":"https://example.com","timeout":5}"#;
@@ -3201,6 +3296,7 @@ Notification:
         );
     }
 
+    /// 验证 MCP 工具动作的反序列化。
     #[test]
     fn test_hook_action_mcp_tool_deserialize() {
         let json = r#"{"type":"mcp_tool","server":"slack","tool":"send_message","arguments":{"channel":"test"}}"#;
@@ -3210,6 +3306,7 @@ Notification:
         );
     }
 
+    /// 验证子代理动作的反序列化。
     #[test]
     fn test_hook_action_subagent_deserialize() -> Result<(), String> {
         let json = r#"{"type":"subagent","name":"reviewer","task":"Review the change"}"#;
@@ -3220,8 +3317,9 @@ Notification:
         Ok(())
     }
 
-    // -- HookAction validation tests --
+    // -- HookAction 校验测试 --
 
+    /// 验证合法命令动作通过校验。
     #[test]
     fn test_hook_action_validate_command_ok() {
         let action = HookAction::Command {
@@ -3232,6 +3330,7 @@ Notification:
         assert!(action.validate().is_ok());
     }
 
+    /// 验证空命令动作校验失败。
     #[test]
     fn test_hook_action_validate_command_empty() {
         let action = HookAction::Command {
@@ -3242,6 +3341,7 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证命令动作超时超过上限时校验失败。
     #[test]
     fn test_hook_action_validate_command_timeout_exceeds_max() {
         let action = HookAction::Command {
@@ -3252,12 +3352,14 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证空 prompt 动作校验失败。
     #[test]
     fn test_hook_action_validate_prompt_empty() {
         let action = HookAction::Prompt { prompt: "".into() };
         assert!(action.validate().is_err());
     }
 
+    /// 验证非法权限决策校验失败。
     #[test]
     fn test_hook_action_validate_permission_invalid() {
         let action = HookAction::Permission {
@@ -3268,6 +3370,7 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证合法权限决策通过校验。
     #[test]
     fn test_hook_action_validate_permission_valid() {
         for dec in &["allow", "deny", "ask"] {
@@ -3284,6 +3387,7 @@ Notification:
         }
     }
 
+    /// 验证 HTTP 动作 URL 为空时校验失败。
     #[test]
     fn test_hook_action_validate_http_empty_url() {
         let action = HookAction::Http {
@@ -3295,6 +3399,7 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证 HTTP 动作超时超过上限时校验失败。
     #[test]
     fn test_hook_action_validate_http_timeout_exceeds_max() {
         let action = HookAction::Http {
@@ -3306,6 +3411,7 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证 HTTP hook 允许本地明文地址、拒绝远程明文地址。
     #[test]
     fn http_hooks_allow_local_cleartext_but_reject_remote_cleartext() {
         for url in [
@@ -3337,6 +3443,7 @@ Notification:
         assert!(remote.validate().is_err());
     }
 
+    /// 验证 MCP hook 允许用户配置的工具名。
     #[tokio::test]
     async fn mcp_hooks_allow_user_configured_tool_names() {
         let mut registry = HookRegistry::new();
@@ -3367,6 +3474,7 @@ Notification:
         assert_eq!(result.messages, vec!["local-dev:bash"]);
     }
 
+    /// 验证 MCP 动作服务器名为空时校验失败。
     #[test]
     fn test_hook_action_validate_mcp_empty_server() {
         let action = HookAction::McpTool {
@@ -3378,6 +3486,7 @@ Notification:
         assert!(action.validate().is_err());
     }
 
+    /// 验证 MCP 动作超时超过上限时校验失败。
     #[test]
     fn test_hook_action_validate_mcp_timeout_exceeds_max() {
         let action = HookAction::McpTool {
@@ -3389,8 +3498,9 @@ Notification:
         assert!(action.validate().is_err());
     }
 
-    // ── ActivateSkill tests ──
+    // ── ActivateSkill 测试 ──
 
+    /// 验证 ActivateSkill 动作的 skill 名为空时校验失败。
     #[test]
     fn validate_rejects_empty_skill_name() {
         let a = HookAction::ActivateSkill {
@@ -3400,6 +3510,7 @@ Notification:
         assert!(a.validate().is_err());
     }
 
+    /// 验证 ActivateSkill 动作的 skill 名非空时通过校验。
     #[test]
     fn validate_accepts_nonempty() {
         let a = HookAction::ActivateSkill {
@@ -3409,6 +3520,7 @@ Notification:
         assert!(a.validate().is_ok());
     }
 
+    /// 验证合并时保留第一个 activate_skill。
     #[test]
     fn merge_takes_first_activate_skill() {
         let mut combined = HookResult::default();
@@ -3422,6 +3534,7 @@ Notification:
         );
     }
 
+    /// 验证从无到有合并 activate_skill。
     #[test]
     fn merge_activate_skill_from_none() {
         let mut combined = HookResult::default();

@@ -1,18 +1,20 @@
-//! demo59: Code Search — 基于 ripgrep 的跨项目代码搜索
-//!
-//! 演示 `CodeSearchTool` 的多种搜索模式：
-//! 1. 基础正则搜索
-//! 2. Glob 过滤（--glob '*.rs'）
-//! 3. 文件类型过滤（--type rust）
-//! 4. 上下文行（-C N）
-//! 5. 大小写不敏感 + 固定字符串
-//!
-//! 注意：最佳体验需要安装 ripgrep (`rg`)。若未安装，工具会自动回退到
-//! 内置的符号搜索（支持 Rust / Python / JS / Go / Java / C++ 符号）。
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo59_code_search --features files
-//! ```
+/*!
+demo59: Code Search — 基于 ripgrep 的跨项目代码搜索
+
+演示 `CodeSearchTool` 的多种搜索模式：
+1. 基础正则搜索
+2. Glob 过滤（--glob '*.rs'）
+3. 文件类型过滤（--type rust）
+4. 上下文行（-C N）
+5. 大小写不敏感 + 固定字符串
+
+注意：最佳体验需要安装 ripgrep (`rg`)。若未安装，工具会自动回退到
+内置的符号搜索（支持 Rust / Python / JS / Go / Java / C++ 符号）。
+
+```bash
+cargo run -p echo-agent-learning --example demo59_code_search --features files
+```
+*/
 
 use echo_agent::tools::Tool;
 use echo_agent::tools::files::code_search::CodeSearchTool;
@@ -20,7 +22,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Helper: build a `ToolParameters` map from JSON, then execute the tool.
+/// 辅助函数：从 JSON 构建 `ToolParameters` 映射，然后执行工具。
 async fn run_search(tool: &CodeSearchTool, params: serde_json::Value) -> String {
     let map: HashMap<String, serde_json::Value> = match params {
         serde_json::Value::Object(m) => m.into_iter().collect(),
@@ -32,7 +34,7 @@ async fn run_search(tool: &CodeSearchTool, params: serde_json::Value) -> String 
     }
 }
 
-/// Print a truncated preview of search output.
+/// 打印搜索输出的截断预览。
 fn print_preview(output: &str, max_lines: usize) {
     let lines: Vec<&str> = output.lines().collect();
     for (i, line) in lines.iter().enumerate() {
@@ -45,6 +47,7 @@ fn print_preview(output: &str, max_lines: usize) {
     println!();
 }
 
+/// 程序入口：在 echo-agent 仓库内依次演示正则、Glob、文件类型、上下文行与固定字符串等搜索模式。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()
@@ -55,7 +58,7 @@ async fn main() -> echo_agent::error::Result<()> {
     println!("    demo59: Code Search — ripgrep 代码搜索");
     println!("═══════════════════════════════════════════════════════\n");
 
-    // Search within the echo-agent repo itself.
+    // 在 echo-agent 仓库自身范围内搜索。
     let search_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap_or_else(|| Path::new("."));
@@ -172,7 +175,7 @@ async fn main() -> echo_agent::error::Result<()> {
     println!("  示例参数:");
     println!(r#"    {{"query": "ReactAgent", "symbol_type": "struct", "glob": "*.rs"}}"#);
 
-    // ── Summary ─────────────────────────────────────────────────────────
+    // ── 总结 ─────────────────────────────────────────────────────────
     println!("\n───────────────────────────────────────────────────────");
     println!("参数速查表");
     println!("───────────────────────────────────────────────────────\n");

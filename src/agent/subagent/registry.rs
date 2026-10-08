@@ -215,8 +215,10 @@ impl SubagentRegistry {
         self.register_shared(def, Arc::from(agent)).await;
     }
 
-    /// 注册一个共享的、预先构建好的 Agent，不会再包一层额外的执行容器。
-    /// 这是 Team 以及“Agent 即工具”风格集成所使用的编程式组合路径。
+    /**
+     * 注册一个共享的、预先构建好的 Agent，不会再包一层额外的执行容器。
+     * 这是 Team 以及“Agent 即工具”风格集成所使用的编程式组合路径。
+     */
     pub async fn register_shared(&self, def: SubagentDefinition, agent: Arc<dyn Agent>) {
         let name = def.name.clone();
         info!(subagent = %name, mode = %def.execution_mode, "Registering subagent");
@@ -239,16 +241,20 @@ impl SubagentRegistry {
             .emit(super::events::SubagentEvent::Registered { name: name.clone() });
     }
 
-    /// 同步方式注册 —— 使用 `try_write` 以避免 `block_on` 导致的死锁。
-    ///
-    /// 用于同步上下文（例如 builder 模式、`main()`）。
-    /// 若锁被占用，则退化为记录一条警告日志。
+    /**
+     * 同步方式注册 —— 使用 `try_write` 以避免 `block_on` 导致的死锁。
+     *
+     * 用于同步上下文（例如 builder 模式、`main()`）。
+     * 若锁被占用，则退化为记录一条警告日志。
+     */
     pub fn register_sync(&self, def: SubagentDefinition, agent: Box<dyn Agent>) -> bool {
         self.register_shared_sync(def, Arc::from(agent))
     }
 
-    /// [`register_shared`](Self::register_shared) 的同步版本。
-    /// 当注册表被占用时返回 `false`，而不是阻塞等待。
+    /**
+     * [`register_shared`](Self::register_shared) 的同步版本。
+     * 当注册表被占用时返回 `false`，而不是阻塞等待。
+     */
     pub fn register_shared_sync(&self, def: SubagentDefinition, agent: Arc<dyn Agent>) -> bool {
         let name = def.name.clone();
 
@@ -332,10 +338,12 @@ impl SubagentRegistry {
         true
     }
 
-    /// [`register_definition`](Self::register_definition) 的同步版本。
-    ///
-    /// 使用 `try_write` 避免在无法 await 该注册表的同步上下文中因 `block_on`
-    /// 而导致死锁。锁竞争时记录警告日志并返回 `false`。
+    /**
+     * [`register_definition`](Self::register_definition) 的同步版本。
+     *
+     * 使用 `try_write` 避免在无法 await 该注册表的同步上下文中因 `block_on`
+     * 而导致死锁。锁竞争时记录警告日志并返回 `false`。
+     */
     pub fn register_definition_sync(&self, def: SubagentDefinition) -> bool {
         let name = def.name.clone();
         match self.state.try_write() {
@@ -464,9 +472,11 @@ impl SubagentRegistry {
         }
     }
 
-    /// 当 `name` 注册了工厂时，创建一个全新的 Agent。
-    ///
-    /// 与 `get_agent` 不同，此方法从不更新或复用缓存的 Agent。
+    /**
+     * 当 `name` 注册了工厂时，创建一个全新的 Agent。
+     *
+     * 与 `get_agent` 不同，此方法从不更新或复用缓存的 Agent。
+     */
     pub async fn create_fresh_agent(&self, name: &str) -> Result<Option<Arc<dyn Agent>>> {
         let factory = {
             let state = self.state.read().await;
@@ -553,11 +563,13 @@ impl Clone for SubagentRegistry {
     }
 }
 
+/// 子 Agent 注册表的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::MockAgent;
 
+    /// 验证注册后可按名称获取。
     #[tokio::test]
     async fn test_register_and_get() {
         let registry = SubagentRegistry::new();
@@ -572,6 +584,7 @@ mod tests {
         assert!(registered.has_instance);
     }
 
+    /// 验证共享注册会保留 Agent 身份。
     #[tokio::test]
     async fn shared_registration_preserves_agent_identity() -> Result<()> {
         let registry = SubagentRegistry::new();
@@ -590,6 +603,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证移除注册项。
     #[tokio::test]
     async fn test_remove() {
         let registry = SubagentRegistry::new();
@@ -603,6 +617,7 @@ mod tests {
         assert!(!registry.contains("subagent").await);
     }
 
+    /// 验证列出可用子 Agent。
     #[tokio::test]
     async fn test_list_available() {
         let registry = SubagentRegistry::new();
@@ -621,6 +636,7 @@ mod tests {
         assert_eq!(available.len(), 2);
     }
 
+    /// 验证按标签筛选子 Agent。
     #[tokio::test]
     async fn test_list_by_tag() {
         let registry = SubagentRegistry::new();
@@ -642,6 +658,7 @@ mod tests {
         assert_eq!(research[0].name, "researcher");
     }
 
+    /// 验证获取 Agent 实例。
     #[tokio::test]
     async fn test_get_agent() {
         let registry = SubagentRegistry::new();
@@ -654,6 +671,7 @@ mod tests {
         assert!(handle.is_some());
     }
 
+    /// 验证列出 Agent 名称。
     #[tokio::test]
     async fn test_agent_names() {
         let registry = SubagentRegistry::new();
@@ -670,6 +688,7 @@ mod tests {
         assert_eq!(names, vec!["x"]);
     }
 
+    /// 验证仅注册定义时不会被宣告为可执行。
     #[tokio::test]
     async fn test_register_definition_only_is_not_advertised_as_executable() {
         let registry = SubagentRegistry::new();
@@ -697,6 +716,7 @@ mod tests {
         assert!(registry.get_agent("plugin_agent").await.is_none());
     }
 
+    /// 验证先注册定义再提升为实例。
     #[tokio::test]
     async fn test_register_definition_then_promote_to_instance() {
         /* 之后在同一名称下调用 register() 会提供实例并覆盖该定义——
@@ -719,6 +739,7 @@ mod tests {
         assert_eq!(registered.definition.description, "Hydrated");
     }
 
+    /// 验证无锁竞争时同步注册定义可成功插入。
     #[test]
     fn test_register_definition_sync_inserts_under_uncontended_locks() {
         let registry = SubagentRegistry::new();
@@ -732,6 +753,7 @@ mod tests {
         );
     }
 
+    /// 验证被取消的工厂尝试不会阻止后续解析。
     #[tokio::test]
     async fn cancelled_factory_attempt_allows_next_resolution() -> Result<()> {
         let registry = SubagentRegistry::new();
@@ -793,6 +815,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证工厂结果会在另一次创建开始之前发布。
     #[tokio::test]
     async fn factory_result_is_published_before_another_creation_can_start() -> Result<()> {
         let registry = SubagentRegistry::new();
@@ -916,6 +939,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证失败的工厂尝试不会污染注册项。
     #[tokio::test]
     async fn failed_factory_attempt_does_not_poison_registration() -> Result<()> {
         let registry = SubagentRegistry::new();
@@ -953,6 +977,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证过期的工厂结果不会替换新的注册项。
     #[tokio::test]
     async fn stale_factory_result_does_not_replace_new_registration() -> Result<()> {
         let registry = SubagentRegistry::new();
@@ -1018,6 +1043,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证通过工厂实例化 Agent。
     #[tokio::test]
     async fn test_factory_instantiation() {
         let registry = SubagentRegistry::new();

@@ -1,86 +1,80 @@
-//! Generic turn driver for one finite Agent invocation.
-//!
-//! # Purpose
-//!
-//! This is the framework-side extraction of the driver pattern that EKO
-//! currently implements per-surface (`drive_chat` for interactive turns and
-//! `drive_run_async` for headless task runs). It drives exactly one finite
-//! Agent invocation: wrap the raw event stream with the versioned
-//! [`EventEnvelope`] transport, forward every envelope to one [`EventSink`],
-//! enforce the exactly-one-terminal contract, and return a typed
-//! [`TurnReceipt`] with separate execution and delivery results. Chat,
-//! execute/headless, and task-driven callers
-//! differ only in the request fields and the sink; the loop, terminal
-//! mapping, and accounting are shared.
-//!
-//! # Industry basis
-//!
-//! - OpenAI Codex `Thread -> Turn -> Item`: a turn is a finite unit with one
-//!   typed terminal; progress is delivered as stable-identity events and the
-//!   final `turn/completed` carries the converged state.
-//! - Claude Code subagents: the caller receives a structured result rather
-//!   than inferring success from "the stream returned".
-//!
-//! # Layering decision
-//!
-//! Driving an Agent stream, envelope sequencing, terminal mapping, and usage
-//! accounting are framework concerns that any consumer needs; product policy
-//! (chat journals, TaskRuntime runs, foreground admission, continuation)
-//! stays in the application and composes this driver. The application's own
-//! `TurnOutcome`/driver loop migrates onto this primitive in planned
-//! follow-up work, which deletes the duplicated loop at that point.
-//!
-//! # Example
-//!
-//! ```
-//! use echo_core::agent::{Agent, EventIdentity};
-//! use echo_orchestration::runtime::turn_driver::{
-//!     AgentTurnDriver, EventSink, SinkControl, TurnDeliveryOutcome, TurnMode, TurnRequest,
-//! };
-//!
-//! # struct MyAgent;
-//! # impl Agent for MyAgent {
-//! #     fn name(&self) -> &str { "my-agent" }
-//! #     fn model_name(&self) -> &str { "test-model" }
-//! #     fn system_prompt(&self) -> &str { "" }
-//! #     fn execute<'a>(&'a self, _task: &'a str)
-//! #         -> futures::future::BoxFuture<'a, echo_core::error::Result<String>> {
-//! #         Box::pin(async { Ok("done".to_string()) })
-//! #     }
-//! #     fn execute_stream<'a>(&'a self, _task: &'a str) -> futures::future::BoxFuture<
-//! #         'a,
-//! #         echo_core::error::Result<
-//! #             futures::stream::BoxStream<'a, echo_core::error::Result<echo_core::agent::AgentEvent>>,
-//! #         >,
-//! #     > {
-//! #         Box::pin(async {
-//! #             use futures::StreamExt;
-//! #             Ok(futures::stream::iter([Ok(echo_core::agent::AgentEvent::FinalAnswer(
-//! #                 "done".to_string(),
-//! #             ))])
-//! #             .boxed())
-//! #         })
-//! #     }
-//! # }
-//! # struct PrintSink;
-//! # #[async_trait::async_trait]
-//! # impl EventSink for PrintSink {
-//! #     async fn on_event(&self, _envelope: echo_core::agent::EventEnvelope)
-//! #         -> echo_core::error::Result<SinkControl> {
-//! #         Ok(SinkControl::Continue)
-//! #     }
-//! # }
-//! # async fn run() -> echo_core::error::Result<()> {
-//! let agent = MyAgent;
-//! let identity = EventIdentity::new("stream-1", "turn-1")?;
-//! let request = TurnRequest::new(identity, "hello").mode(TurnMode::Execute);
-//! let receipt = AgentTurnDriver.drive(&agent, request, &PrintSink).await;
-//! assert_eq!(receipt.outcome.status(), "completed");
-//! assert_eq!(receipt.delivery, TurnDeliveryOutcome::Delivered);
-//! assert_eq!(receipt.final_answer.as_deref(), Some("done"));
-//! # Ok(())
-//! # }
-//! ```
+/*!
+面向单次有限 Agent 调用的通用轮次驱动器。
+
+# 目的
+
+这是从框架侧抽取出的驱动器模式，EKO 目前在各个入口分别实现了它
+（交互式轮次使用 `drive_chat`，无头任务运行使用 `drive_run_async`）。
+它只驱动一次有限的 Agent 调用：用带版本的 [`EventEnvelope`] 传输层包装原始事件流，
+把每个信封转发给唯一的 [`EventSink`]，强制执行"恰好一个终态"契约，
+并返回一个类型化的 [`TurnReceipt`]，其中执行结果与投递结果相互独立。
+聊天、执行/无头以及任务驱动的调用方只在请求字段和 sink 上有所不同；
+循环、终态映射与用量统计都是共享的。
+
+# 业界依据
+
+- OpenAI Codex 的 `Thread -> Turn -> Item`：一个轮次是具有唯一类型化终态的有限单元；
+  进度以稳定身份的事件形式投递，最终的 `turn/completed` 携带收敛后的状态。
+- Claude Code 子代理：调用方收到结构化结果，而不是从"流已返回"推断成功。
+
+# 分层决策
+
+驱动 Agent 流、信封排序、终态映射和用量统计属于任何消费者都需要的框架关注点；
+产品策略（聊天日志、TaskRuntime 运行、前台准入、续跑）留在应用层并组合本驱动器。
+应用自身的 `TurnOutcome`/驱动循环将在后续计划的工作中迁移到这一原语上，
+届时会删除重复的循环。
+
+# 示例
+
+```
+use echo_core::agent::{Agent, EventIdentity};
+use echo_orchestration::runtime::turn_driver::{
+    AgentTurnDriver, EventSink, SinkControl, TurnDeliveryOutcome, TurnMode, TurnRequest,
+};
+
+# struct MyAgent;
+# impl Agent for MyAgent {
+#     fn name(&self) -> &str { "my-agent" }
+#     fn model_name(&self) -> &str { "test-model" }
+#     fn system_prompt(&self) -> &str { "" }
+#     fn execute<'a>(&'a self, _task: &'a str)
+#         -> futures::future::BoxFuture<'a, echo_core::error::Result<String>> {
+#         Box::pin(async { Ok("done".to_string()) })
+#     }
+#     fn execute_stream<'a>(&'a self, _task: &'a str) -> futures::future::BoxFuture<
+#         'a,
+#         echo_core::error::Result<
+#             futures::stream::BoxStream<'a, echo_core::error::Result<echo_core::agent::AgentEvent>>,
+#         >,
+#     > {
+#         Box::pin(async {
+#             use futures::StreamExt;
+#             Ok(futures::stream::iter([Ok(echo_core::agent::AgentEvent::FinalAnswer(
+#                 "done".to_string(),
+#             ))])
+#             .boxed())
+#         })
+#     }
+# }
+# struct PrintSink;
+# #[async_trait::async_trait]
+# impl EventSink for PrintSink {
+#     async fn on_event(&self, _envelope: echo_core::agent::EventEnvelope)
+#         -> echo_core::error::Result<SinkControl> {
+#         Ok(SinkControl::Continue)
+#     }
+# }
+# async fn run() -> echo_core::error::Result<()> {
+let agent = MyAgent;
+let identity = EventIdentity::new("stream-1", "turn-1")?;
+let request = TurnRequest::new(identity, "hello").mode(TurnMode::Execute);
+let receipt = AgentTurnDriver.drive(&agent, request, &PrintSink).await;
+assert_eq!(receipt.outcome.status(), "completed");
+assert_eq!(receipt.delivery, TurnDeliveryOutcome::Delivered);
+assert_eq!(receipt.final_answer.as_deref(), Some("done"));
+# Ok(())
+# }
+*/
 
 use async_trait::async_trait;
 use echo_core::agent::{
@@ -92,58 +86,68 @@ use echo_core::llm::Message;
 use futures::StreamExt;
 use std::time::{Duration, Instant};
 
-/// Which Agent stream flavor the turn drives.
+/// 本轮驱动的 Agent 流类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TurnMode {
-    /// Multi-turn conversation stream (`chat_stream_with_cancel`).
+    /// 多轮对话流（`chat_stream_with_cancel`）。
     #[default]
     Chat,
-    /// Fresh-context execution stream (`execute_stream_with_cancel`).
+    /// 全新上下文的执行流（`execute_stream_with_cancel`）。
     Execute,
 }
 
-/// One finite Agent invocation to drive.
+/// 待驱动的一次有限 Agent 调用。
 #[derive(Debug, Clone)]
 pub struct TurnRequest {
-    /// Text or structured multimodal input.
+    /// 文本或结构化的多模态输入。
     pub input: TurnInput,
-    /// Transport identity stamped onto every emitted envelope.
+    /// 打在每个发出信封上的传输身份。
     pub identity: EventIdentity,
-    /// Chat vs execute stream flavor.
+    /// 聊天流或执行流类型。
     pub mode: TurnMode,
-    /// Cooperative cancellation for the invocation. `None` starts an
-    /// independent scope that the sink can still close by returning `false`.
+    /** 本次调用的协作式取消令牌。`None` 时会启动一个独立作用域，
+    sink 仍可通过返回 `false` 关闭它。 */
     pub cancel: Option<CancellationToken>,
-    /// Last durably persisted envelope sequence; the wrapped stream resumes
-    /// sequencing at `last_persisted_sequence + 1`.
+    /** 最后一个已持久化的信封序号；包装后的流从
+    `last_persisted_sequence + 1` 开始继续编号。 */
     pub last_persisted_sequence: u64,
-    /// Value-scoped run, tool visibility, working-directory, and history
-    /// metadata. Structured message callers use the invocation-aware Agent API.
+    /** 按值作用域的运行、工具可见性、工作目录与历史元数据。
+    结构化消息调用方使用感知调用上下文的 Agent API。 */
     pub invocation: Option<AgentInvocationContext>,
+    /// 初始输入生命周期的发布端（通过 `with_input_receipt` 附加）。
     input_publisher: Option<TurnInputLifecycle>,
 }
 
-/// Lifecycle state for one initial input accepted by [`AgentTurnDriver`].
-///
-/// `Accepted` is published by the driver after request/identity validation and
-/// immediately before it calls the Agent stream API. A concrete Agent publishes
-/// `Drained` after its input has entered model context. It is never inferred
-/// from an output envelope, EOF, or a terminal event. The terminal state
-/// records the owning turn outcome and whether the input reached the drain
-/// boundary.
+/**
+[`AgentTurnDriver`] 接受的一条初始输入的生命周期状态。
+
+`Accepted` 由驱动器在请求/身份校验通过后、调用 Agent 流 API 之前立即发布。
+具体的 Agent 在其输入进入模型上下文后发布 `Drained`。
+它绝不会从输出信封、EOF 或终态事件中推断得出。
+终态记录所属轮次的结果，以及输入是否到达了排空边界。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnInputState {
+    /// 已创建，尚未被驱动器接受。
     Pending,
+    /// 驱动器已完成校验并即将调用 Agent 流 API。
     Accepted,
+    /// 输入已进入模型上下文。
     Drained,
+    /// 所属轮次已结算。
     TurnSettled {
+        /// 所属轮次的终态结果。
         outcome: AgentSteerTurnOutcome,
+        /// 输入在结算前是否已到达排空边界。
         drained: bool,
     },
 }
 
+/// 输入生命周期的共享内部状态。
 struct TurnInputLifecycleInner {
+    /// 生命周期状态的广播发送端。
     state: tokio::sync::watch::Sender<TurnInputState>,
+    /// 是否已结算，保证终态只发布一次。
     settled: std::sync::atomic::AtomicBool,
 }
 
@@ -159,8 +163,10 @@ impl std::fmt::Debug for TurnInputLifecycleInner {
     }
 }
 
+/// 初始输入生命周期的发布端句柄，可克隆共享。
 #[derive(Clone)]
 struct TurnInputLifecycle {
+    /// 共享内部状态。
     inner: std::sync::Arc<TurnInputLifecycleInner>,
 }
 
@@ -173,14 +179,17 @@ impl std::fmt::Debug for TurnInputLifecycle {
     }
 }
 
-/// Lossless receipt for one initial turn input.
+/// 一条初始轮次输入的无损回执。
 #[derive(Debug, Clone)]
 pub struct TurnInputReceipt {
+    /// 所属轮次的标识。
     turn_id: String,
+    /// 生命周期状态的接收端。
     state: tokio::sync::watch::Receiver<TurnInputState>,
 }
 
 impl TurnInputReceipt {
+    /// 创建处于 `Pending` 状态的回执及其配对的生命周期发布端。
     fn new(turn_id: String) -> (Self, TurnInputLifecycle) {
         let (state, receiver) = tokio::sync::watch::channel(TurnInputState::Pending);
         let inner = std::sync::Arc::new(TurnInputLifecycleInner {
@@ -196,12 +205,12 @@ impl TurnInputReceipt {
         )
     }
 
-    /// Stable identity of the turn that owns this input.
+    /// 拥有该输入的轮次的稳定标识。
     pub fn turn_id(&self) -> &str {
         &self.turn_id
     }
 
-    /// Snapshot the latest lifecycle state without waiting.
+    /// 不等待，直接获取最新生命周期状态的快照。
     pub fn state(&self) -> TurnInputState {
         if self.state.has_changed().is_err() {
             return self.synthesize_closed_terminal();
@@ -209,6 +218,7 @@ impl TurnInputReceipt {
         self.state.borrow().clone()
     }
 
+    /// 发布端已关闭时合成终态：保留已有终态，否则视为 `Dropped`。
     fn synthesize_closed_terminal(&self) -> TurnInputState {
         let current = self.state.borrow().clone();
         match current {
@@ -220,7 +230,7 @@ impl TurnInputReceipt {
         }
     }
 
-    /// Wait until the Agent accepts the input or settles the turn first.
+    /// 等待 Agent 接受输入，或轮次先行结算。
     pub async fn wait_for_accepted(&mut self) -> TurnInputState {
         loop {
             let state = self.state();
@@ -233,7 +243,7 @@ impl TurnInputReceipt {
         }
     }
 
-    /// Wait until the input reaches the driver's real drain boundary.
+    /// 等待输入到达驱动器真实的排空边界。
     pub async fn wait_for_drained(&mut self) -> TurnInputState {
         loop {
             let state = self.state();
@@ -246,7 +256,7 @@ impl TurnInputReceipt {
         }
     }
 
-    /// Wait for the owning turn's typed terminal outcome.
+    /// 等待所属轮次的类型化终态结果。
     pub async fn wait_for_turn_settled(&mut self) -> TurnInputState {
         loop {
             let state = self.state();
@@ -261,6 +271,7 @@ impl TurnInputReceipt {
 }
 
 impl TurnInputLifecycle {
+    /// 将状态从 `Pending` 推进到 `Accepted`。
     fn mark_accepted(&self) {
         self.inner.state.send_if_modified(|state| {
             if matches!(state, TurnInputState::Pending) {
@@ -272,6 +283,7 @@ impl TurnInputLifecycle {
         });
     }
 
+    /// 将状态从 `Pending`/`Accepted` 推进到 `Drained`。
     fn mark_drained(&self) {
         self.inner.state.send_if_modified(|state| {
             if matches!(state, TurnInputState::Pending | TurnInputState::Accepted) {
@@ -283,6 +295,7 @@ impl TurnInputLifecycle {
         });
     }
 
+    /// 以给定结果结算轮次；只有第一次调用生效。
     fn settle(&self, outcome: AgentSteerTurnOutcome) {
         if self
             .inner
@@ -298,6 +311,7 @@ impl TurnInputLifecycle {
 }
 
 impl Drop for TurnInputLifecycle {
+    /// 最后一个句柄被丢弃时，若尚未结算则以 `Dropped` 结算。
     fn drop(&mut self) {
         if std::sync::Arc::strong_count(&self.inner) == 1 {
             self.settle(AgentSteerTurnOutcome::Dropped);
@@ -306,19 +320,23 @@ impl Drop for TurnInputLifecycle {
 }
 
 impl echo_core::agent::AgentInputLifecycle for TurnInputLifecycle {
+    /// 委托给内部的 `mark_drained`。
     fn mark_drained(&self) {
         TurnInputLifecycle::mark_drained(self);
     }
 }
 
-/// Input accepted by one driven turn.
+/// 一次驱动轮次所接受的输入。
 #[derive(Debug, Clone)]
 pub enum TurnInput {
+    /// 纯文本输入。
     Text(String),
+    /// 结构化（可含多模态内容）的消息输入。
     Message(Message),
 }
 
 impl TurnRequest {
+    /// 以文本输入创建请求，默认聊天模式。
     pub fn new(identity: EventIdentity, message: impl Into<String>) -> Self {
         Self {
             input: TurnInput::Text(message.into()),
@@ -331,6 +349,7 @@ impl TurnRequest {
         }
     }
 
+    /// 以结构化消息创建请求，默认聊天模式。
     pub fn from_message(identity: EventIdentity, message: Message) -> Self {
         Self {
             input: TurnInput::Message(message),
@@ -343,30 +362,36 @@ impl TurnRequest {
         }
     }
 
+    /// 设置流类型（聊天或执行）。
     pub fn mode(mut self, mode: TurnMode) -> Self {
         self.mode = mode;
         self
     }
 
+    /// 设置协作式取消令牌。
     pub fn cancel(mut self, cancel: CancellationToken) -> Self {
         self.cancel = Some(cancel);
         self
     }
 
+    /// 设置最后一个已持久化的信封序号，用于续接编号。
     pub fn last_persisted_sequence(mut self, sequence: u64) -> Self {
         self.last_persisted_sequence = sequence;
         self
     }
 
+    /// 设置调用上下文元数据。
     pub fn invocation(mut self, invocation: AgentInvocationContext) -> Self {
         self.invocation = Some(invocation);
         self
     }
 
-    /// Attach a lossless lifecycle receipt to this initial input.
-    ///
-    /// The returned receipt starts in `Pending`; the same driver publishes
-    /// `Accepted`, `Drained`, and `TurnSettled` from the real execution path.
+    /**
+    为这条初始输入附加一个无损生命周期回执。
+
+    返回的回执初始为 `Pending`；同一个驱动器会在真实执行路径上
+    依次发布 `Accepted`、`Drained` 和 `TurnSettled`。
+    */
     pub fn with_input_receipt(mut self) -> (Self, TurnInputReceipt) {
         let (receipt, lifecycle) = TurnInputReceipt::new(self.identity.turn_id.to_string());
         self.input_publisher = Some(lifecycle);
@@ -374,36 +399,42 @@ impl TurnRequest {
     }
 }
 
-/// Typed terminal for one driven turn.
-///
-/// The envelope transport guarantees exactly one terminal Agent event; this
-/// value carries that fact back to the caller so success is never inferred
-/// from "the stream returned".
+/**
+一次驱动轮次的类型化终态。
+
+信封传输层保证恰好有一个 Agent 终态事件；该值把这一事实带回给调用方，
+从而绝不会从"流已返回"推断成功。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
+    /// 轮次以最终答案正常完成。
     Completed,
+    /// 轮次被取消。
     Cancelled,
+    /// 轮次以类型化失败结束。
     Failed(AgentFailure),
 }
 
-/// Delivery result for envelopes emitted by one driven turn.
-///
-/// This is deliberately orthogonal to [`TurnOutcome`]. The Agent producer
-/// owns execution settlement, while the sink owns whether the observed
-/// envelopes were accepted by a journal, projection, or observer.
+/**
+一次驱动轮次所发出信封的投递结果。
+
+它有意与 [`TurnOutcome`] 正交。Agent 生产方负责执行结算，
+而 sink 负责判定观察到的信封是否被日志、投影或观察者接受。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnDeliveryOutcome {
-    /// No envelope reached the sink.
+    /// 没有任何信封到达 sink。
     NotAttempted,
-    /// Every envelope observed so far was accepted by the sink.
+    /// 迄今观察到的每个信封都已被 sink 接受。
     Delivered,
-    /// The sink explicitly stopped accepting envelopes.
+    /// sink 显式停止接受信封。
     Closed,
-    /// The sink rejected or failed while delivering an envelope.
+    /// sink 在投递信封时拒绝或失败。
     Failed(AgentFailure),
 }
 
 impl TurnOutcome {
+    /// 用于投影的稳定状态字符串（`completed`/`cancelled`/`failed`）。
     pub fn status(&self) -> &'static str {
         match self {
             Self::Completed => "completed",
@@ -412,12 +443,12 @@ impl TurnOutcome {
         }
     }
 
-    /// Map an [`AgentEvent`] payload to its typed outcome, if it is terminal.
-    ///
-    /// Non-terminal events return `None`. An `Error` whose terminal kind is
-    /// cancellation maps to [`Self::Cancelled`], mirroring the framework's
-    /// typed failure contract. Custom sinks can use this to project terminal
-    /// envelopes the same way the driver does.
+    /**
+    若 [`AgentEvent`] 负载是终态，则将其映射为类型化结果。
+
+    非终态事件返回 `None`。终态类型为取消的 `Error` 映射为 [`Self::Cancelled`]，
+    与框架的类型化失败契约保持一致。自定义 sink 可用它以与驱动器相同的方式投影终态信封。
+    */
     pub fn classify(event: &AgentEvent) -> Option<Self> {
         match event {
             AgentEvent::FinalAnswer(_) => Some(Self::Completed),
@@ -434,36 +465,36 @@ impl TurnOutcome {
     }
 }
 
-/// Bounded control-plane receipt for one driven turn.
+/// 一次驱动轮次的有界控制面回执。
 #[derive(Debug, Clone)]
 pub struct TurnReceipt {
-    /// Turn identity from the request identity.
+    /// 来自请求身份的轮次标识。
     pub turn_id: TurnId,
-    /// Typed terminal outcome; always set by the driver.
+    /// 类型化终态结果；总是由驱动器设置。
     pub outcome: TurnOutcome,
-    /// Whether the observed envelopes were accepted by the event sink.
+    /// 观察到的信封是否被事件 sink 接受。
     pub delivery: TurnDeliveryOutcome,
-    /// Final answer text when the turn completed with one.
+    /// 轮次以最终答案完成时的答案文本。
     pub final_answer: Option<String>,
-    /// Message identity carried by the final-answer envelope observed by the driver.
+    /// 驱动器观察到的最终答案信封所携带的消息标识。
     pub final_message_id: Option<MessageId>,
-    /// Provider-reported prompt tokens accumulated over the turn.
+    /// 本轮累计的、由提供方上报的提示词 token 数。
     pub prompt_tokens: u64,
-    /// Provider-reported completion tokens accumulated over the turn.
+    /// 本轮累计的、由提供方上报的补全 token 数。
     pub completion_tokens: u64,
-    /// Number of provider calls that reported usage.
+    /// 上报了用量的提供方调用次数。
     pub llm_calls: u64,
-    /// Number of explicit context-compaction boundaries emitted by the Agent.
+    /// Agent 发出的显式上下文压缩边界次数。
     pub compaction_count: u64,
-    /// Last envelope sequence observed by the driver. This does not imply a
-    /// failing sink committed the same sequence.
+    /** 驱动器观察到的最后一个信封序号。
+    这并不意味着失败的 sink 也提交了相同的序号。 */
     pub last_event_sequence: u64,
-    /// Wall-clock turn duration.
+    /// 轮次的挂钟耗时。
     pub elapsed: Duration,
 }
 
 impl TurnReceipt {
-    /// Return the stable usage facts carried by this completed turn.
+    /// 返回该已完成轮次所携带的稳定用量事实。
     pub fn usage(&self) -> ExecutionUsage {
         ExecutionUsage {
             duration_ms: Some(u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX)),
@@ -473,13 +504,13 @@ impl TurnReceipt {
         }
     }
 
-    /// Stable status string for projections (`completed`/`cancelled`/`failed`).
+    /// 用于投影的稳定状态字符串（`completed`/`cancelled`/`failed`）。
     pub fn status(&self) -> &'static str {
         self.outcome.status()
     }
 
-    /// Construct a typed failure receipt when execution cannot start or a
-    /// caller must report a failure before a stream exists.
+    /** 当执行无法启动，或调用方需要在流存在之前报告失败时，
+    构造一个类型化的失败回执。 */
     pub fn failed(
         turn_id: impl Into<String>,
         failure: AgentFailure,
@@ -499,8 +530,8 @@ impl TurnReceipt {
         })
     }
 
-    /// Construct a typed cancellation receipt when execution is stopped
-    /// before a stream can produce its normal terminal event.
+    /** 当执行在流产生正常终态事件之前被停止时，
+    构造一个类型化的取消回执。 */
     pub fn cancelled(turn_id: impl Into<String>) -> echo_core::error::Result<Self> {
         Ok(Self {
             turn_id: TurnId::new(turn_id)?,
@@ -517,6 +548,7 @@ impl TurnReceipt {
         })
     }
 
+    /// 构造不含最终答案与用量的失败回执。
     fn failure_receipt(
         turn_id: TurnId,
         failure: AgentFailure,
@@ -533,6 +565,7 @@ impl TurnReceipt {
         )
     }
 
+    /// 以给定终态和投递结果构造不含最终答案与用量的回执。
     fn terminal_receipt(
         turn_id: TurnId,
         outcome: TurnOutcome,
@@ -556,25 +589,30 @@ impl TurnReceipt {
     }
 }
 
-/// Per-consumer event handler for one driven turn.
-///
-/// `on_event` receives every envelope in order, including the terminal one.
-/// `Closed` is an intentional consumer disconnect; `Err` is a delivery or
-/// persistence failure recorded separately from a producer terminal already
-/// observed by the driver.
+/**
+sink 处理一个信封后返回的控制信号。
+
+`on_event` 会按顺序收到每个信封，包括终态信封。
+`Closed` 表示消费者有意断开；`Err` 表示投递或持久化失败，
+它与驱动器已观察到的生产方终态分开记录。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkControl {
+    /// 继续接收后续信封。
     Continue,
+    /// 消费者有意断开，驱动器将取消本轮。
     Closed,
 }
 
+/// 单个驱动轮次的逐消费者事件处理器。
 #[async_trait]
 pub trait EventSink: Send + Sync {
-    /// Take ownership of one envelope after the driver has completed its
-    /// accounting, allowing product adapters to retain or forward it losslessly.
+    /** 在驱动器完成统计之后取得一个信封的所有权，
+    使产品适配器能够无损地保留或转发它。 */
     async fn on_event(&self, envelope: EventEnvelope) -> echo_core::error::Result<SinkControl>;
 }
 
+/// 取调用上下文（缺省则用默认值），并写入给定的取消令牌。
 fn invocation_with_cancel(
     invocation: Option<AgentInvocationContext>,
     token: &CancellationToken,
@@ -584,15 +622,16 @@ fn invocation_with_cancel(
     invocation
 }
 
-/// Drives one finite Agent invocation through one sink.
-///
-/// See the module docs for the contract; the driver is stateless and can be
-/// reused for any number of turns.
+/**
+通过一个 sink 驱动一次有限的 Agent 调用。
+
+契约见模块文档；驱动器是无状态的，可复用于任意多个轮次。
+*/
 #[derive(Debug, Default)]
 pub struct AgentTurnDriver;
 
 impl AgentTurnDriver {
-    /// Drive `request` on `agent`, forwarding envelopes to `sink`.
+    /// 在 `agent` 上驱动 `request`，并把信封转发给 `sink`。
     pub async fn drive(
         &self,
         agent: &dyn Agent,
@@ -756,8 +795,8 @@ impl AgentTurnDriver {
             let envelope = match item {
                 Ok(envelope) => envelope,
                 Err(error) => {
-                    // The transport only errors before the first event (an
-                    // invalid identity); map it to a typed failure.
+                    /* 传输层只会在第一个事件之前出错（身份无效）；
+                    将其映射为类型化失败。 */
                     outcome = Some(TurnOutcome::Failed(AgentFailure::from(&error)));
                     break;
                 }
@@ -864,16 +903,19 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration as StdDuration;
 
-    /// Agent that replays scripted events, optionally with a delay so
-    /// cancellation can be observed mid-stream. Events are built per stream
-    /// because `AgentEvent` is not `Clone`.
+    /** 重放脚本化事件的 Agent，可选地加入延迟，以便在流中途观察取消。
+    由于 `AgentEvent` 不是 `Clone`，每个流都会重新构建事件。 */
     struct ScriptedAgent {
+        /// Agent 名称。
         name: &'static str,
+        /// 每次建流时调用以生成事件序列。
         script: fn() -> Vec<AgentEvent>,
+        /// 每个事件之前的可选延迟。
         delay: Option<StdDuration>,
     }
 
     impl ScriptedAgent {
+        /// 以给定脚本创建无延迟的 Agent。
         fn new(script: fn() -> Vec<AgentEvent>) -> Self {
             Self {
                 name: "scripted",
@@ -882,6 +924,7 @@ mod tests {
             }
         }
 
+        /// 设置每个事件之前的延迟。
         fn with_delay(mut self, delay: StdDuration) -> Self {
             self.delay = Some(delay);
             self
@@ -932,6 +975,7 @@ mod tests {
         }
     }
 
+    /// 在调用上下文中立即标记输入已排空的测试 Agent。
     struct ImmediateDrainAgent;
 
     impl Agent for ImmediateDrainAgent {
@@ -990,6 +1034,7 @@ mod tests {
         }
     }
 
+    /// 流永不就绪的测试 Agent。
     struct PendingAgent;
 
     impl Agent for PendingAgent {
@@ -1035,9 +1080,12 @@ mod tests {
         }
     }
 
+    /// 记录信封序号、可在指定数量后关闭的测试 sink。
     #[derive(Default)]
     struct RecordingSink {
+        /// 已收到信封的序号。
         events: Mutex<Vec<u64>>,
+        /// 收到该数量的信封后返回 `Closed`。
         close_after: Option<usize>,
     }
 
@@ -1056,11 +1104,13 @@ mod tests {
         }
     }
 
+    /// 按标签构造测试用事件身份。
     fn identity(label: &str) -> EventIdentity {
         EventIdentity::new(format!("stream-{label}"), format!("turn-{label}"))
             .expect("valid identity")
     }
 
+    /// 构造一个已上报的用量事件。
     fn usage_event(prompt: usize, completion: usize) -> AgentEvent {
         AgentEvent::LlmUsage {
             model: "test-model".to_string(),
@@ -1073,6 +1123,7 @@ mod tests {
         }
     }
 
+    /// Agent 在调用上下文中立即排空时，初始输入以 drained=true 结算。
     #[tokio::test]
     async fn tracked_initial_input_uses_immediate_agent_context_drain() {
         let (request, mut input) =
@@ -1091,6 +1142,7 @@ mod tests {
         );
     }
 
+    /// Agent 不发布排空时，初始输入以 drained=false 结算。
     #[tokio::test]
     async fn tracked_initial_input_without_agent_publisher_keeps_no_drain() {
         let (request, mut input) = TurnRequest::new(identity("initial-generic"), "hello")
@@ -1113,6 +1165,7 @@ mod tests {
         );
     }
 
+    /// 调用 Agent 流之前即发布 Accepted；丢弃驱动 future 后以 Dropped 结算。
     #[tokio::test]
     async fn tracked_initial_input_publishes_accepted_before_stream_call() {
         let (request, mut input) =
@@ -1134,6 +1187,7 @@ mod tests {
         );
     }
 
+    /// 取消终态以类型化的 Cancelled 结算且未排空。
     #[tokio::test]
     async fn tracked_initial_input_cancelled_terminal_is_typed_without_drain() {
         let (request, mut input) = TurnRequest::new(identity("initial-cancelled"), "hello")
@@ -1156,6 +1210,7 @@ mod tests {
         );
     }
 
+    /// 流启动失败以类型化的 Failed 结算且未排空。
     #[tokio::test]
     async fn tracked_initial_input_start_failure_is_typed_without_drain() {
         let (request, mut input) = TurnRequest::new(identity("initial-failed"), "hello")
@@ -1174,6 +1229,7 @@ mod tests {
         );
     }
 
+    /// 终态信封投递失败时，输入仍按执行终态 Completed 结算。
     #[tokio::test]
     async fn tracked_initial_input_terminal_sink_failure_keeps_execution_terminal() {
         let (request, mut input) = TurnRequest::new(identity("initial-sink-failed"), "hello")
@@ -1197,6 +1253,7 @@ mod tests {
         );
     }
 
+    /// 正常完成的轮次映射最终答案，序号从 1 开始。
     #[tokio::test]
     async fn completed_turn_maps_final_answer_and_sequences_from_one() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1222,6 +1279,7 @@ mod tests {
         assert_eq!(*events, vec![1, 2]);
     }
 
+    /// 执行模式下取消终态映射为 Cancelled。
     #[tokio::test]
     async fn execute_mode_maps_cancelled_terminal() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| vec![AgentEvent::Cancelled]));
@@ -1234,6 +1292,7 @@ mod tests {
         assert!(receipt.final_answer.is_none());
     }
 
+    /// 错误终态映射为类型化失败。
     #[tokio::test]
     async fn error_terminal_maps_typed_failure() {
         let failure = AgentFailure::from(&ReactError::Other("boom".to_string()));
@@ -1253,6 +1312,7 @@ mod tests {
         assert_eq!(receipt.status(), "failed");
     }
 
+    /// 用量在多次提供方调用间累加。
     #[tokio::test]
     async fn usage_accumulates_across_provider_calls() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1271,6 +1331,7 @@ mod tests {
         assert_eq!(receipt.llm_calls, 2);
     }
 
+    /// 回执携带最终消息标识与压缩次数。
     #[tokio::test]
     async fn receipt_owns_final_message_and_compaction_facts() -> Result<(), String> {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1317,6 +1378,7 @@ mod tests {
         Ok(())
     }
 
+    /// 终态投递失败时保留完成事实与最终答案。
     #[tokio::test]
     async fn failed_terminal_delivery_keeps_final_completion_facts() -> Result<(), String> {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1350,6 +1412,7 @@ mod tests {
         Ok(())
     }
 
+    /// 取消终态投递失败时保留执行终态。
     #[tokio::test]
     async fn cancelled_terminal_delivery_keeps_execution_terminal() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| vec![AgentEvent::Cancelled]));
@@ -1364,6 +1427,7 @@ mod tests {
         assert!(matches!(receipt.delivery, TurnDeliveryOutcome::Failed(_)));
     }
 
+    /// 生产方错误的投递失败时保留原始失败。
     #[tokio::test]
     async fn producer_error_delivery_failure_keeps_original_failure() {
         let producer_failure = AgentFailure::from(&ReactError::Other("producer boom".to_string()));
@@ -1385,6 +1449,7 @@ mod tests {
         assert!(matches!(receipt.delivery, TurnDeliveryOutcome::Failed(_)));
     }
 
+    /// 续接编号从已持久化序号之后继续。
     #[tokio::test]
     async fn resumed_sequencing_continues_after_persisted_sequence() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| vec![AgentEvent::Cancelled]));
@@ -1399,6 +1464,7 @@ mod tests {
         assert_eq!(*events, vec![42]);
     }
 
+    /// sink 关闭会取消轮次并产出 Cancelled 终态。
     #[tokio::test]
     async fn closed_sink_cancels_and_yields_cancelled_terminal() {
         let agent: Arc<dyn Agent> = Arc::new(
@@ -1416,12 +1482,13 @@ mod tests {
         };
         let request = TurnRequest::new(identity("closed"), "hello");
         let receipt = AgentTurnDriver.drive(agent.as_ref(), request, &sink).await;
-        // The default cancellation wrapper yields Cancelled once the token
-        // fires and the stream stops delivering later events.
+        /* 令牌触发后，默认的取消包装器会产出 Cancelled，
+        且流不再投递后续事件。 */
         assert_eq!(receipt.outcome, TurnOutcome::Cancelled);
         assert_eq!(receipt.delivery, TurnDeliveryOutcome::Closed);
     }
 
+    /// sink 在终态时关闭不影响已完成的执行结果。
     #[tokio::test]
     async fn terminal_closed_sink_keeps_completed_execution() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1443,6 +1510,7 @@ mod tests {
         assert_eq!(receipt.final_answer.as_deref(), Some("done"));
     }
 
+    /// 流启动即失败的测试 Agent。
     struct FailingAgent;
 
     impl Agent for FailingAgent {
@@ -1480,6 +1548,7 @@ mod tests {
         }
     }
 
+    /// 流启动时即返回取消错误的测试 Agent。
     struct CancelledStartAgent;
 
     impl Agent for CancelledStartAgent {
@@ -1518,6 +1587,7 @@ mod tests {
         }
     }
 
+    /// 流启动失败映射为失败回执并投递一个错误信封。
     #[tokio::test]
     async fn stream_start_failure_maps_to_failed_receipt() {
         let agent: Arc<dyn Agent> = Arc::new(FailingAgent);
@@ -1536,6 +1606,7 @@ mod tests {
         );
     }
 
+    /// 流启动时取消映射为取消回执。
     #[tokio::test]
     async fn stream_start_cancellation_maps_to_cancelled_receipt() {
         let (request, mut input) = TurnRequest::new(identity("start-cancelled"), "hello")
@@ -1558,6 +1629,7 @@ mod tests {
         );
     }
 
+    /// 流启动失败信封投递失败时保留原始失败。
     #[tokio::test]
     async fn stream_start_delivery_failure_keeps_original_failure() {
         let receipt = AgentTurnDriver
@@ -1572,6 +1644,7 @@ mod tests {
         assert_eq!(receipt.last_event_sequence, 1);
     }
 
+    /// 每次投递都失败的测试 sink。
     struct FailingSink;
 
     #[async_trait]
@@ -1586,6 +1659,7 @@ mod tests {
         }
     }
 
+    /// sink 失败被记为 Failed 而非 Cancelled。
     #[tokio::test]
     async fn sink_failure_is_failed_not_cancelled() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1607,6 +1681,7 @@ mod tests {
         assert_eq!(receipt.last_event_sequence, 1);
     }
 
+    /// 记录调用上下文、消息文本和取消状态的测试 Agent。
     #[derive(Default)]
     struct InvocationRecordingAgent {
         working_dir: Mutex<Option<std::path::PathBuf>>,
@@ -1682,6 +1757,7 @@ mod tests {
         }
     }
 
+    /// 结构化聊天消息保留调用上下文。
     #[tokio::test]
     async fn structured_chat_message_preserves_invocation_context() {
         let agent = Arc::new(InvocationRecordingAgent::default());
@@ -1708,6 +1784,7 @@ mod tests {
         );
     }
 
+    /// 带调用上下文的文本聊天走结构化聊天契约。
     #[tokio::test]
     async fn text_chat_with_invocation_uses_structured_chat_contract() {
         let agent = Arc::new(InvocationRecordingAgent::default());
@@ -1740,6 +1817,7 @@ mod tests {
         );
     }
 
+    /// 请求级取消令牌优先于调用上下文中的令牌；仅有调用上下文令牌时保留它。
     #[tokio::test]
     async fn request_cancel_precedes_invocation_cancel_and_invocation_only_is_retained() {
         let agent = Arc::new(InvocationRecordingAgent::default());
@@ -1777,6 +1855,7 @@ mod tests {
         );
     }
 
+    /// 每次投递前异步延迟的测试 sink。
     struct DelayedSink {
         events: tokio::sync::Mutex<Vec<(u64, bool)>>,
     }
@@ -1793,6 +1872,7 @@ mod tests {
         }
     }
 
+    /// 异步 sink 保持顺序且不阻塞运行时推进。
     #[tokio::test(flavor = "current_thread")]
     async fn async_sink_preserves_order_and_allows_runtime_progress() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1828,6 +1908,7 @@ mod tests {
         );
     }
 
+    /// 缺少终态事件时得到失败回执。
     #[tokio::test]
     async fn missing_terminal_is_a_failed_receipt() {
         let agent: Arc<dyn Agent> = Arc::new(ScriptedAgent::new(|| {
@@ -1841,8 +1922,10 @@ mod tests {
         assert_eq!(receipt.delivery, TurnDeliveryOutcome::Delivered);
     }
 
+    /// sink 在回执统计完成后取得终态信封，且恰好一个终态。
     #[tokio::test]
     async fn sink_takes_terminal_envelope_after_receipt_accounting() {
+        /// 取得并保存信封所有权的测试 sink。
         #[derive(Default)]
         struct OwningSink {
             envelopes: Mutex<Vec<EventEnvelope>>,

@@ -50,8 +50,8 @@ enum MacroCrate {
     Orchestration,
 }
 
-/// 解析 `target` 对应的 echo-agent crate 路径：优先返回拆分后的独立 crate 名，
-/// 若调用方就是该 crate 自身则返回 `crate`；两者都找不到时返回编译错误。
+/** 解析 `target` 对应的 echo-agent crate 路径：优先返回拆分后的独立 crate 名，
+若调用方就是该 crate 自身则返回 `crate`；两者都找不到时返回编译错误。 */
 fn resolve_echo_crate_path(target: MacroCrate) -> syn::Result<syn::Path> {
     const CORE_CANDIDATES: &[&str] = &["echo_core", "echo_agent"];
     const ORCHESTRATION_CANDIDATES: &[&str] = &["echo_orchestration", "echo_agent"];
@@ -76,8 +76,8 @@ fn resolve_echo_crate_path(target: MacroCrate) -> syn::Result<syn::Path> {
     ))
 }
 
-/// 拼出 `<echo_crate>::__macro_support::<crate_name>` 形式的字符串字面量，
-/// 用于生成代码中引用宏支持库（如 serde、schemars）的完整路径。
+/** 拼出 `<echo_crate>::__macro_support::<crate_name>` 形式的字符串字面量，
+用于生成代码中引用宏支持库（如 serde、schemars）的完整路径。 */
 fn macro_support_crate_path(echo_crate: &syn::Path, crate_name: &str) -> LitStr {
     let path = quote!(#echo_crate).to_string().replace(' ', "");
     LitStr::new(
@@ -86,9 +86,11 @@ fn macro_support_crate_path(echo_crate: &syn::Path, crate_name: &str) -> LitStr 
     )
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[derive(Tool)] — 从结构体定义生成 Tool 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[derive(Tool)] — 从结构体定义生成 Tool 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从结构体定义生成完整 `Tool` trait 实现的派生宏。
 
@@ -134,9 +136,11 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
     }
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[tool] — 从 async fn 生成 Tool 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[tool] — 从 async fn 生成 Tool 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /// `#[tool(...)]` 属性宏解析后的参数：工具名称、描述以及可选的权限列表。
 struct ToolAttrs {
@@ -241,8 +245,8 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[tool]` 的核心实现：校验函数签名、提取参数、生成参数结构体
-/// 以及对应的 `Tool` trait 实现代码。
+/** `#[tool]` 的核心实现：校验函数签名、提取参数、生成参数结构体
+以及对应的 `Tool` trait 实现代码。 */
 fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let serde_crate = macro_support_crate_path(&echo_agent, "serde");
@@ -322,15 +326,15 @@ fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
         }
 
         impl #struct_name {
-            /// 反序列化并校验工具参数，返回类型化的结构体；
-            /// 失败时返回携带出错字段名的 [`ToolError::InvalidParameter`]。
+            /** 反序列化并校验工具参数，返回类型化的结构体；
+            失败时返回携带出错字段名的 [`ToolError::InvalidParameter`]。 */
             fn deserialize_params(params: &#echo_agent::tools::ToolParameters) -> #echo_agent::error::Result<#params_name> {
                 let value = #echo_agent::__macro_support::serde_json::Value::Object(params.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
                 #echo_agent::__macro_support::serde_json::from_value(value).map_err(|e| {
                     let msg = e.to_string();
-                    // 从常见的 serde 报错格式中提取字段名：
-                    // "missing field `name`" -> "name"
-                    // "invalid type: ... at `field`" -> "field"
+                    /* 从常见的 serde 报错格式中提取字段名：
+                    "missing field `name`" -> "name"
+                    "invalid type: ... at `field`" -> "field" */
                     let field = msg
                         .strip_prefix("missing field `")
                         .and_then(|s| s.strip_suffix('`'))
@@ -350,9 +354,11 @@ fn tool_impl(attrs: ToolAttrs, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
     Ok(expanded)
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[callback] — 从 impl 块生成 AgentCallback 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[callback] — 从 impl 块生成 AgentCallback 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从一个 impl 块生成 `AgentCallback` 实现，仅覆盖你实际定义的方法。
 
@@ -381,8 +387,8 @@ pub fn callback(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[callback]` 的核心实现：校验 impl 块非泛型，并将其中的方法
-/// 包装为返回 `BoxFuture<'a, ()>` 的 `AgentCallback` trait 实现。
+/** `#[callback]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+包装为返回 `BoxFuture<'a, ()>` 的 `AgentCallback` trait 实现。 */
 fn callback_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     reject_generic_impl(&input, "#[callback]")?;
@@ -396,9 +402,11 @@ fn callback_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[guard] — 从 async fn 生成 Guard 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[guard] — 从 async fn 生成 Guard 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /// `#[guard(name = "...")]` 属性宏解析后的参数。
 struct NameAttr {
@@ -483,9 +491,11 @@ fn guard_impl(attrs: NameAttr, func: ItemFn) -> syn::Result<proc_macro2::TokenSt
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[handler] — 从 impl 块生成 HumanLoopHandler 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[handler] — 从 impl 块生成 HumanLoopHandler 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从一个 impl 块生成 `HumanLoopHandler` 实现。
 
@@ -520,8 +530,8 @@ pub fn handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[handler]` 的核心实现：校验 impl 块非泛型，并将其中的方法
-/// 包装为保留各自返回类型的 `HumanLoopHandler` trait 实现。
+/** `#[handler]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+包装为保留各自返回类型的 `HumanLoopHandler` trait 实现。 */
 fn handler_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let orchestration = resolve_echo_crate_path(MacroCrate::Orchestration)?;
     let macro_support = resolve_echo_crate_path(MacroCrate::Core)?;
@@ -536,9 +546,11 @@ fn handler_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[compressor] — 从 async fn 生成 ContextCompressor 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[compressor] — 从 async fn 生成 ContextCompressor 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从一个 async 函数生成 `ContextCompressor` 实现。
 
@@ -564,8 +576,8 @@ pub fn compressor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[compressor]` 的核心实现：校验返回类型，并生成对应的
-/// `ContextCompressor` trait 实现。
+/** `#[compressor]` 的核心实现：校验返回类型，并生成对应的
+`ContextCompressor` trait 实现。 */
 fn compressor_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let fn_name = &func.sig.ident;
@@ -587,9 +599,11 @@ fn compressor_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[permission_policy] — 从 async fn 生成 PermissionPolicy 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[permission_policy] — 从 async fn 生成 PermissionPolicy 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从一个 async 函数生成 `PermissionPolicy` 实现。
 
@@ -612,8 +626,8 @@ pub fn permission_policy(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[permission_policy]` 的核心实现：校验返回类型，并生成对应的
-/// `PermissionPolicy` trait 实现。
+/** `#[permission_policy]` 的核心实现：校验返回类型，并生成对应的
+`PermissionPolicy` trait 实现。 */
 fn permission_policy_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     let fn_name = &func.sig.ident;
@@ -636,9 +650,11 @@ fn permission_policy_impl(func: ItemFn) -> syn::Result<proc_macro2::TokenStream>
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// #[audit_logger] — 从 impl 块生成 AuditLogger 实现
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#[audit_logger] — 从 impl 块生成 AuditLogger 实现
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
 /** 从一个 impl 块生成 `AuditLogger` 实现。
 
@@ -673,8 +689,8 @@ pub fn audit_logger(_attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
-/// `#[audit_logger]` 的核心实现：校验 impl 块非泛型，并将其中的方法
-/// 包装为保留各自返回类型的 `AuditLogger` trait 实现。
+/** `#[audit_logger]` 的核心实现：校验 impl 块非泛型，并将其中的方法
+包装为保留各自返回类型的 `AuditLogger` trait 实现。 */
 fn audit_logger_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     let echo_agent = resolve_echo_crate_path(MacroCrate::Core)?;
     reject_generic_impl(&input, "#[audit_logger]")?;
@@ -688,12 +704,14 @@ fn audit_logger_impl(input: ItemImpl) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 共享辅助函数
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+共享辅助函数
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*/
 
-/// 从函数签名中提取参数，返回生成参数结构体所需的字段定义
-/// （携带从文档注释转换来的 `#[schemars(description = ...)]`）以及字段名列表。
+/** 从函数签名中提取参数，返回生成参数结构体所需的字段定义
+（携带从文档注释转换来的 `#[schemars(description = ...)]`）以及字段名列表。 */
 fn extract_fn_params(
     func: &ItemFn,
 ) -> syn::Result<(Vec<proc_macro2::TokenStream>, Vec<syn::Ident>)> {
@@ -799,10 +817,10 @@ fn lifetimed_params(
         .collect()
 }
 
-/// 为缺少显式生命周期的顶层引用类型添加 `'a`。
-/// `&T` → `&'a T`，`&mut T` → `&'a mut T`。
-/// 已带具名生命周期的引用（如 `&'b T`）保持不变。
-/// 非引用类型原样透传。
+/** 为缺少显式生命周期的顶层引用类型添加 `'a`。
+`&T` → `&'a T`，`&mut T` → `&'a mut T`。
+已带具名生命周期的引用（如 `&'b T`）保持不变。
+非引用类型原样透传。 */
 fn add_lifetime_a(ty: &syn::Type) -> proc_macro2::TokenStream {
     match ty {
         syn::Type::Reference(r) => {
@@ -848,8 +866,8 @@ fn reject_generic_impl(input: &ItemImpl, macro_name: &str) -> syn::Result<()> {
     }
 }
 
-/// 将字符串解析为合法的 Rust 标识符，用作生成类型的名称；
-/// 解析失败时返回带有来源说明的编译错误。
+/** 将字符串解析为合法的 Rust 标识符，用作生成类型的名称；
+解析失败时返回带有来源说明的编译错误。 */
 fn generated_ident(value: &str, source: &str) -> syn::Result<syn::Ident> {
     syn::parse_str::<syn::Ident>(value).map_err(|_| {
         syn::Error::new(
@@ -859,8 +877,8 @@ fn generated_ident(value: &str, source: &str) -> syn::Result<syn::Ident> {
     })
 }
 
-/// 从一组属性中提取所有 `#[doc = "..."]`（即 `///` 文档注释）文本，
-/// 按顺序以空格拼接为一行；若没有任何文档注释则返回 `None`。
+/** 从一组属性中提取所有 `#[doc = "..."]`（即 `///` 文档注释）文本，
+按顺序以空格拼接为一行；若没有任何文档注释则返回 `None`。 */
 pub(crate) fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
     let docs: Vec<String> = attrs
         .iter()
@@ -872,7 +890,12 @@ pub(crate) fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
                 && let syn::Expr::Lit(expr_lit) = &nv.value
                 && let syn::Lit::Str(s) = &expr_lit.lit
             {
-                return Some(s.value().trim().to_string());
+                // 块注释 `/** */` 会产生一个带换行和缩进的属性，逐行 trim 后拼接，与 `///` 结果一致
+                let value = s.value();
+                let lines: Vec<&str> = value.lines().map(str::trim).collect();
+                let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(lines.len());
+                let end = lines.iter().rposition(|l| !l.is_empty()).map_or(start, |i| i + 1);
+                return Some(lines[start..end].join(" "));
             }
             None
         })
@@ -885,8 +908,8 @@ pub(crate) fn extract_doc_comments(attrs: &[syn::Attribute]) -> Option<String> {
     }
 }
 
-/// 将下划线分隔的字符串（如 `snake_case`）转换为帕斯卡命名（`PascalCase`），
-/// 用于从函数名或工具名派生生成类型的标识符。
+/** 将下划线分隔的字符串（如 `snake_case`）转换为帕斯卡命名（`PascalCase`），
+用于从函数名或工具名派生生成类型的标识符。 */
 fn to_pascal_case(s: &str) -> String {
     s.split('_')
         .map(|word| {

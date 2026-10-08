@@ -308,10 +308,12 @@ impl StateGraph {
     }
 }
 
+/// `StateGraph` DSL 的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证函数节点可正确添加并构建。
     #[tokio::test]
     async fn test_state_graph_function_nodes() {
         let mut sg = StateGraph::new("test_flow");
@@ -340,6 +342,7 @@ mod tests {
         assert_eq!(y, "hello world");
     }
 
+    /// 验证状态图按顺序运行并产出预期状态。
     #[tokio::test]
     async fn test_state_graph_run() {
         let mut sg = StateGraph::new("hello_flow");
@@ -368,6 +371,7 @@ mod tests {
         assert_eq!(msg, "HELLO!");
     }
 
+    /// 验证条件边会根据状态选择正确的分支。
     #[tokio::test]
     async fn test_state_graph_conditional() {
         let mut sg = StateGraph::new("cond_flow");
@@ -407,4 +411,3 @@ mod tests {
         assert_eq!(result.steps, 2); // check + pass 两步
     }
 }
-</content>

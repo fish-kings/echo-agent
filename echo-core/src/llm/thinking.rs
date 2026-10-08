@@ -1,66 +1,76 @@
-//! Thinking / reasoning-depth control for chat requests.
-//!
-//! Mainstream models expose "how hard should the model think before answering"
-//! via several incompatible wire protocols. Verified against each vendor's
-//! official API docs (mid-2026):
-//!
-//! | Family | Models | Wire field | Values |
-//! |--------|--------|-----------|--------|
-//! | OpenAI reasoning | GPT-5.6 | `reasoning_effort` | `none`/`low`/`medium`/`high`/`xhigh`/`max` |
-//! | Anthropic effort | Claude 4.6 (Opus/Sonnet) | `effort` + `thinking:{type:"adaptive"}` | `low`/`medium`/`high`/`xhigh`/`max` |
-//! | Anthropic adaptive-only | Claude 4.7+ | no request field | model decides |
-//! | Qwen3 | Qwen3-* | `enable_thinking:bool` + `thinking_budget:int` | bool / int |
-//! | GLM effort | GLM-5.2+ | `reasoning_effort` (+ `thinking.type`) | effective `none`/`high`/`max` |
-//! | Kimi | K3 / K2.7 / K2.6 | effort / model-managed / `thinking.type` | model-specific |
-//!
-//! Rather than leak vendor dialects through the framework, we expose ONE
-//! semantic knob ([`ThinkingConfig`]) and translate per-provider in the LLM
-//! client implementation. This keeps call sites portable across models.
-//!
-//! [`ModelProfile`]: crate::llm::capabilities::ModelProfile
+/*!
+聊天请求的思考 / 推理深度控制。
+
+主流模型通过多种互不兼容的线上协议来暴露“模型在回答前应该思考多深”。
+以下内容已对照各厂商官方 API 文档核实（2026 年中）：
+
+| 系列 | 模型 | 线上字段 | 取值 |
+|--------|--------|-----------|--------|
+| OpenAI reasoning | GPT-5.6 | `reasoning_effort` | `none`/`low`/`medium`/`high`/`xhigh`/`max` |
+| Anthropic effort | Claude 4.6 (Opus/Sonnet) | `effort` + `thinking:{type:"adaptive"}` | `low`/`medium`/`high`/`xhigh`/`max` |
+| Anthropic 仅自适应 | Claude 4.7+ | 无请求字段 | 由模型决定 |
+| Qwen3 | Qwen3-* | `enable_thinking:bool` + `thinking_budget:int` | bool / int |
+| GLM effort | GLM-5.2+ | `reasoning_effort`（+ `thinking.type`） | 实际生效 `none`/`high`/`max` |
+| Kimi | K3 / K2.7 / K2.6 | effort / 模型托管 / `thinking.type` | 因模型而异 |
+
+我们不让各厂商的方言渗透进框架，而是只暴露**一个**语义旋钮
+（[`ThinkingConfig`]），并在 LLM 客户端实现中按 provider 进行转换。
+这样调用点可以在不同模型之间保持可移植。
+
+[`ModelProfile`]: crate::llm::capabilities::ModelProfile
+*/
 
 use serde::{Deserialize, Serialize};
 
-/// Unified reasoning-depth knob, translated to per-provider wire formats by
-/// each `LlmClient` implementation.
-///
-/// `None` on [`crate::llm::ChatRequest`] means "use the model's default
-/// behavior" — no thinking field is sent.
+/**
+统一的推理深度旋钮，由各个 `LlmClient` 实现转换为对应 provider 的线上格式。
+
+[`crate::llm::ChatRequest`] 上为 `None` 表示“使用模型的默认行为”
+—— 不发送任何 thinking 字段。
+*/
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingConfig {
-    /// Disable thinking entirely where the model supports a toggle
-    /// (Qwen3 `enable_thinking:false`, GLM `thinking.type:"disabled"`,
-    /// OpenAI `reasoning_effort:"none"` on GPT-5.1+). For models with no
-    /// off-switch, this is treated as the lowest available level.
+    /**
+    在模型支持开关的情况下完全关闭思考
+    （Qwen3 `enable_thinking:false`、GLM `thinking.type:"disabled"`、
+    GPT-5.1+ 上的 OpenAI `reasoning_effort:"none"`）。对于没有关闭开关的
+    模型，按最低可用档位处理。
+    */
     Disabled,
-    /// Discrete reasoning level. Maps to OpenAI `reasoning_effort` and
-    /// Anthropic `effort`; for budget-based protocols it converts to a
-    /// fraction of `max_tokens`.
+    /**
+    离散的推理档位。映射到 OpenAI `reasoning_effort` 与 Anthropic `effort`；
+    对于基于预算的协议，会换算为 `max_tokens` 的一定比例。
+    */
     Level(ThinkingLevel),
-    /// Exact token budget for internal reasoning. Targets Anthropic
-    /// `budget_tokens` (Claude 3.7–4.5) and Qwen3 `thinking_budget`; other
-    /// families approximate to the nearest level.
+    /**
+    内部推理的精确 token 预算。面向 Anthropic `budget_tokens`
+    （Claude 3.7–4.5）与 Qwen3 `thinking_budget`；其他系列会近似到最接近的档位。
+    */
     BudgetTokens(#[serde(rename = "budget_tokens")] u32),
 }
 
 impl ThinkingConfig {
-    /// Convenience: medium level (a sensible default when the user wants
-    /// "think more" without picking specifics).
+    /**
+    便捷构造：medium 档位（当用户只想“多思考一些”而不指定细节时，
+    这是一个合理的默认值）。
+    */
     pub fn medium() -> Self {
         Self::Level(ThinkingLevel::Medium)
     }
 
-    /// Parse a flexible user/config-facing spec into a `ThinkingConfig`.
-    ///
-    /// Accepts:
-    /// - `"auto"` / `""` → returns `None` (use model default)
-    /// - `"disabled"` / `"off"` / `"none"` → [`ThinkingConfig::Disabled`]
-    /// - `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"` / `"max"` → [`ThinkingConfig::Level`]
-    /// - A bare integer string (`"4000"`) → [`ThinkingConfig::BudgetTokens`]
-    ///
-    /// Returns `Ok(None)` for `"auto"`/empty, `Err` for unrecognized strings
-    /// (so config typos surface loudly rather than silently defaulting).
+    /**
+    将面向用户/配置的灵活描述解析为 `ThinkingConfig`。
+
+    接受：
+    - `"auto"` / `""` → 返回 `None`（使用模型默认值）
+    - `"disabled"` / `"off"` / `"none"` → [`ThinkingConfig::Disabled`]
+    - `"minimal"` / `"low"` / `"medium"` / `"high"` / `"xhigh"` / `"max"` → [`ThinkingConfig::Level`]
+    - 纯整数字符串（`"4000"`）→ [`ThinkingConfig::BudgetTokens`]
+
+    对 `"auto"`/空串返回 `Ok(None)`，对无法识别的字符串返回 `Err`
+    （让配置拼写错误显式暴露，而不是悄悄回退到默认值）。
+    */
     pub fn parse_spec(s: &str) -> std::result::Result<Option<Self>, String> {
         let trimmed = s.trim();
         match trimmed.to_ascii_lowercase().as_str() {
@@ -77,11 +87,13 @@ impl ThinkingConfig {
         }
     }
 
-    /// The OpenAI `reasoning_effort` string this config maps to, or `None`.
-    ///
-    /// Used by OpenAI-compatible providers (OpenAI, Azure, DeepSeek-V3.2+,
-    /// Gemini OpenAI-compat). `Disabled` maps to `"none"` (GPT-5.1+) which older
-    /// models treat as `"minimal"` at the API; providers may downshift.
+    /**
+    该配置映射到的 OpenAI `reasoning_effort` 字符串，或 `None`。
+
+    供 OpenAI 兼容的 provider 使用（OpenAI、Azure、DeepSeek-V3.2+、
+    Gemini 的 OpenAI 兼容接口）。`Disabled` 映射为 `"none"`（GPT-5.1+），
+    较旧的模型会在 API 层将其视为 `"minimal"`；provider 可能会向下降档。
+    */
     pub fn to_reasoning_effort(&self) -> Option<&'static str> {
         match self {
             Self::Disabled => Some("minimal"),
@@ -92,8 +104,8 @@ impl ThinkingConfig {
             Self::Level(ThinkingLevel::High) => Some("high"),
             Self::Level(ThinkingLevel::Xhigh) => Some("xhigh"),
             Self::Level(ThinkingLevel::Max) => Some("max"),
-            // A raw budget maps to the nearest effort level: <4k ≈ low,
-            // <12k ≈ medium, <24k ≈ high, <48k ≈ xhigh, otherwise max.
+            /* 原始预算映射到最接近的 effort 档位：<4k ≈ low，
+            <12k ≈ medium，<24k ≈ high，<48k ≈ xhigh，其余为 max。 */
             Self::BudgetTokens(n) => Some(if *n < 4_000 {
                 "low"
             } else if *n < 12_000 {
@@ -108,13 +120,15 @@ impl ThinkingConfig {
         }
     }
 
-    /// The Anthropic `effort` string (Claude 4.6+) this config maps to, or
-    /// `None` when thinking is disabled.
-    ///
-    /// Claude 4.6 accepts: `low`/`medium`/`high`/`xhigh`/`max`.
-    ///
-    /// `Minimal` → `None` (关闭思考,不是 `low`),与"最低档 = 极速响应"定位一致。
-    /// `Disabled` → `None` (不发 effort 字段 + 不发 thinking block = 完全关闭)。
+    /**
+    该配置映射到的 Anthropic `effort` 字符串（Claude 4.6+）；
+    关闭思考时返回 `None`。
+
+    Claude 4.6 接受：`low`/`medium`/`high`/`xhigh`/`max`。
+
+    `Minimal` → `None` (关闭思考,不是 `low`),与"最低档 = 极速响应"定位一致。
+    `Disabled` → `None` (不发 effort 字段 + 不发 thinking block = 完全关闭)。
+    */
     pub fn to_anthropic_effort(&self) -> Option<&'static str> {
         match self {
             Self::Disabled => None,
@@ -139,11 +153,13 @@ impl ThinkingConfig {
         }
     }
 
-    /// Anthropic `budget_tokens` (Claude 3.7–4.5), given the request's
-    /// `max_tokens` (the budget MUST be strictly less than `max_tokens`).
-    ///
-    /// `Disabled` / `None` / `Minimal` → `None` (关闭思考,极速响应)。
-    /// Returns `None` when the resolved budget would be >= max_tokens.
+    /**
+    根据请求的 `max_tokens` 计算 Anthropic `budget_tokens`（Claude 3.7–4.5）
+    （预算必须严格小于 `max_tokens`）。
+
+    `Disabled` / `None` / `Minimal` → `None` (关闭思考,极速响应)。
+    当 `max_tokens` 过小（<= 1）无法容纳预算时返回 `None`；否则预算会被截断到 `max_tokens - 1`。
+    */
     pub fn to_anthropic_budget(&self, max_tokens: u32) -> Option<u32> {
         let budget = match self {
             Self::Disabled => return None,
@@ -157,7 +173,7 @@ impl ThinkingConfig {
                     ThinkingLevel::High => 0.8,
                     ThinkingLevel::Xhigh => 0.95,
                     ThinkingLevel::Max => 0.98,
-                    // None / Minimal unreachable (returned above)
+                    // None / Minimal 不可达（已在上方提前返回）
                     ThinkingLevel::None | ThinkingLevel::Minimal => return None,
                 };
                 ((max_tokens as f64) * frac).round() as u32
@@ -169,10 +185,12 @@ impl ThinkingConfig {
         Some(budget.min(max_tokens - 1))
     }
 
-    /// The Qwen3/GLM `enable_thinking` boolean this config maps to.
-    ///
-    /// `Minimal` returns `false` because "最低档" = 关闭思考(极速响应,最省
-    /// 成本),与 `Disabled` 一致。只有 Low/Medium/High/Xhigh 才开启思考。
+    /**
+    该配置映射到的 Qwen3/GLM `enable_thinking` 布尔值。
+
+    `Minimal` 返回 `false` because "最低档" = 关闭思考(极速响应,最省
+    成本),与 `Disabled` 一致。只有 Low/Medium/High/Xhigh 才开启思考。
+    */
     pub fn to_enable_thinking(&self) -> bool {
         !matches!(
             self,
@@ -180,9 +198,11 @@ impl ThinkingConfig {
         )
     }
 
-    /// The GLM `thinking.type` value (`"enabled"` or `"disabled"`).
-    ///
-    /// `Minimal` → `"disabled"` (最低档 = 关闭思考,极速响应)。
+    /**
+    GLM 的 `thinking.type` 取值（`"enabled"` 或 `"disabled"`）。
+
+    `Minimal` → `"disabled"` (最低档 = 关闭思考,极速响应)。
+    */
     pub fn to_glm_thinking_type(&self) -> &'static str {
         if matches!(
             self,
@@ -194,11 +214,13 @@ impl ThinkingConfig {
         }
     }
 
-    /// The GLM-5.x `reasoning_effort` string this config maps to, or `None`.
-    ///
-    /// GLM-5.2 accepts `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`.
-    /// (The server maps `low`/`medium` → `high`, but we send the literal value
-    /// so the user's intent is preserved in the request log.)
+    /**
+    该配置映射到的 GLM-5.x `reasoning_effort` 字符串，或 `None`。
+
+    GLM-5.2 接受 `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`。
+    （服务端会把 `low`/`medium` 映射为 `high`，但我们仍发送字面值，
+    以便在请求日志中保留用户的原始意图。）
+    */
     pub fn to_glm_reasoning_effort(&self) -> Option<&'static str> {
         match self {
             Self::Disabled => Some("none"),
@@ -222,29 +244,39 @@ impl ThinkingConfig {
     }
 }
 
-/// Discrete reasoning level.
+/// 离散的推理档位。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThinkingLevel {
-    /// No thinking (GPT-5.1+ `reasoning_effort:"none"`). On models without a
-    /// true off-switch this rounds down to Minimal.
+    /**
+    不思考（GPT-5.1+ `reasoning_effort:"none"`）。在没有真正关闭开关的
+    模型上会向下取整为 Minimal。
+    */
     None,
-    /// Minimal thinking (fastest, cheapest). Only models that accept
-    /// `reasoning_effort: "minimal"` (GPT-5 family) honor this precisely.
+    /**
+    最少思考（最快、最便宜）。只有接受 `reasoning_effort: "minimal"` 的
+    模型（GPT-5 系列）会精确遵循该档位。
+    */
     Minimal,
+    /// 低推理强度。
     Low,
+    /// 中等推理强度。
     Medium,
+    /// 高推理强度。
     High,
-    /// Extended-high reasoning effort.
+    /// 超高推理强度。
     Xhigh,
-    /// Maximum reasoning effort. This is distinct from `xhigh` for models such
-    /// as GPT-5.6 and Claude 4.6.
+    /**
+    最大推理强度。对于 GPT-5.6 和 Claude 4.6 等模型，它与 `xhigh` 是不同的档位。
+    */
     Max,
 }
 
 impl ThinkingLevel {
-    /// Parse from a user-facing string (case-insensitive). Returns `None` for
-    /// unrecognized input rather than panicking.
+    /**
+    从面向用户的字符串解析（不区分大小写）。对无法识别的输入返回 `None`，
+    而不是 panic。
+    */
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "none" | "off" => Some(Self::None),
@@ -259,52 +291,70 @@ impl ThinkingLevel {
     }
 }
 
-/// Which thinking wire-protocol a model speaks, if any.
-///
-/// Used to decide (a) whether to emit a thinking field at all, and (b) which
-/// translation to apply. It is resolved centrally from the provider endpoint,
-/// API protocol, and model id rather than persisted in user configuration.
+/**
+模型所使用的 thinking 线上协议（如果有的话）。
+
+用于决定：(a) 是否要发送 thinking 字段；(b) 应用哪种转换。它由 provider
+端点、API 协议和模型 id 集中解析得出，而不是持久化在用户配置中。
+*/
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingProtocol {
-    /// Model does not support a thinking control. Any `ThinkingConfig` on the
-    /// request is silently dropped (with a `warn!`).
+    /**
+    模型不支持思考控制。请求上的任何 `ThinkingConfig` 都会被静默丢弃
+    （并记录一条 `warn!`）。
+    */
     #[default]
     None,
-    /// The model reasons automatically and exposes no request-side control.
+    /// 模型自动进行推理，不暴露请求侧的控制项。
     ModelManaged,
-    /// OpenAI `reasoning_effort` (GPT-5 family, o-series, **DeepSeek-V3.2+**).
-    /// o-series forbids `temperature`/`top_p`.
+    /**
+    OpenAI `reasoning_effort`（GPT-5 系列、o 系列、**DeepSeek-V3.2+**）。
+    o 系列禁止使用 `temperature`/`top_p`。
+    */
     OpenaiReasoningEffort,
-    /// DeepSeek `reasoning_effort` plus `thinking:{type}`. Its accepted effort
-    /// values and disable semantics differ from OpenAI even though both use an
-    /// OpenAI-compatible transport.
+    /**
+    DeepSeek `reasoning_effort` 加 `thinking:{type}`。尽管两者都使用
+    OpenAI 兼容的传输方式，但它接受的 effort 取值和关闭语义与 OpenAI 不同。
+    */
     DeepseekReasoningEffort,
-    /// Anthropic `effort` + `thinking:{type:"adaptive"}` (Claude 4.6 Sonnet/Opus).
-    /// On Opus 4.7+ the `thinking` block is dropped entirely (adaptive-only).
+    /**
+    Anthropic `effort` + `thinking:{type:"adaptive"}`（Claude 4.6 Sonnet/Opus）。
+    在 Opus 4.7+ 上会完全去掉 `thinking` 块（仅自适应）。
+    */
     AnthropicEffort,
-    /// Anthropic `thinking:{type:"enabled", budget_tokens}` (Claude 3.7 – 4.5).
-    /// These models also accept the `effort` param as of 4.5.
+    /**
+    Anthropic `thinking:{type:"enabled", budget_tokens}`（Claude 3.7 – 4.5）。
+    从 4.5 起这些模型也接受 `effort` 参数。
+    */
     AnthropicThinkingBudget,
-    /// Claude Opus 4.7+ — adaptive thinking only. Sending any thinking field
-    /// returns a 400, so we drop the config with a `warn!`.
+    /**
+    Claude Opus 4.7+ —— 仅支持自适应思考。发送任何 thinking 字段都会
+    返回 400，因此我们会丢弃该配置并记录一条 `warn!`。
+    */
     AnthropicAdaptive,
-    /// Qwen3 `enable_thinking` boolean + optional `thinking_budget` integer.
+    /// Qwen3 `enable_thinking` 布尔值 + 可选的 `thinking_budget` 整数。
     EnableThinkingFlag,
-    /// Generic `thinking:{type:"enabled"|"disabled"}` toggle used by Kimi 2.6
-    /// and compatible chat endpoints.
+    /**
+    通用的 `thinking:{type:"enabled"|"disabled"}` 开关，
+    被 Kimi 2.6 及兼容的聊天端点使用。
+    */
     ThinkingType,
-    /// GLM-5.2+ `reasoning_effort`.
-    /// Accepts `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`; `low`/
-    /// `medium` are server-mapped to `high`, so we still send them faithfully.
+    /**
+    GLM-5.2+ `reasoning_effort`。
+    接受 `max`/`xhigh`/`high`/`medium`/`low`/`minimal`/`none`；`low`/
+    `medium` 会被服务端映射为 `high`，但我们仍如实发送。
+    */
     GlmReasoningEffort,
-    /// Ollama `think` boolean or level string.
+    /// Ollama `think` 布尔值或档位字符串。
     OllamaThink,
 }
 
 impl ThinkingProtocol {
-    /// True iff a non-`None` thinking field should actually be emitted for this
-    /// protocol. `None` and `AnthropicAdaptive` both mean "don't send anything".
+    /**
+    当且仅当该协议确实需要发送非 `None` 的 thinking 字段时返回 true。
+    `None` 与 `AnthropicAdaptive` 都表示“什么都不发送”。
+    */
     pub fn emits_field(&self) -> bool {
         matches!(
             self,
@@ -379,7 +429,7 @@ mod tests {
             ThinkingConfig::Level(ThinkingLevel::Max).to_anthropic_effort(),
             Some("max")
         );
-        // Disabled → None (4.6+ models treat absence as model-decided).
+        // Disabled → None（4.6+ 模型将缺省视为由模型自行决定）。
         assert_eq!(ThinkingConfig::Disabled.to_anthropic_effort(), None);
     }
 

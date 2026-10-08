@@ -1,45 +1,55 @@
-//! Search engine Provider abstraction
-//!
-//! Defines the [`SearchProvider`] trait and [`SearchResult`] type,
-//! supporting multiple search engine backends (DuckDuckGo, Brave, Tavily, etc.).
+/*!
+ * 搜索引擎 Provider 抽象
+ *
+ * 定义 [`SearchProvider`] trait 和 [`SearchResult`] 类型，
+ * 支持多种搜索引擎后端（DuckDuckGo、Brave、Tavily 等）。
+ */
 
+/// Brave 搜索 Provider
 pub mod brave;
+/// DuckDuckGo 搜索 Provider
 pub mod duckduckgo;
+/// Tavily 搜索 Provider
 pub mod tavily;
+/// Provider 共用的工具函数
 pub mod utils;
 
 use async_trait::async_trait;
 use echo_core::error::Result;
 use serde::{Deserialize, Serialize};
 
-/// Search result entry
+/// 搜索结果条目
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    /// Title
+    /// 标题
     pub title: String,
-    /// URL
+    /// 结果链接 URL
     pub url: String,
-    /// Snippet / summary
+    /// 片段 / 摘要
     pub snippet: String,
 }
 
-/// Search engine Provider trait
-///
-/// All search engine backends must implement this trait.
-/// The framework provides [`duckduckgo::DuckDuckGoProvider`] as a free fallback.
-///
-/// # Extension
-///
-/// To implement `BraveSearchProvider` or `TavilyProvider`, simply implement this trait
-/// and pass it via `WebSearchTool::new(provider)`.
+/**
+ * 搜索引擎 Provider trait
+ *
+ * 所有搜索引擎后端都必须实现此 trait。
+ * 框架提供 [`duckduckgo::DuckDuckGoProvider`] 作为免费兜底。
+ *
+ * # 扩展
+ *
+ * 要实现 `BraveSearchProvider` 或 `TavilyProvider`，只需实现此 trait，
+ * 并通过 `WebSearchTool::new(provider)` 传入即可。
+ */
 #[async_trait]
 pub trait SearchProvider: Send + Sync {
-    /// Provider name
+    /// Provider 名称
     fn name(&self) -> &str;
 
-    /// Execute a search query
-    ///
-    /// - `query`: search keywords
-    /// - `max_results`: maximum number of results to return
+    /**
+     * 执行搜索查询
+     *
+     * - `query`：搜索关键词
+     * - `max_results`：返回的最大结果数
+     */
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>>;
 }

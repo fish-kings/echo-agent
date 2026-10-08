@@ -1,7 +1,9 @@
-//! 技能相似度检测与合并。
-//!
-//! 基于触发词、路径、工具以及描述文本检测重叠的技能，
-//! 然后生成或执行合并以减少冗余。
+/*!
+技能相似度检测与合并。
+
+基于触发词、路径、工具以及描述文本检测重叠的技能，
+然后生成或执行合并以减少冗余。
+*/
 
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
@@ -19,8 +21,10 @@ use super::skill_mutation::{
 };
 use crate::error::Result;
 
-// 从 echo-execution 重新导出 SkillDescriptor 供本模块使用。
-// 实际类型定义在 echo_execution::skills::external::types 中。
+/*
+从 echo-execution 重新导出 SkillDescriptor 供本模块使用。
+实际类型定义在 echo_execution::skills::external::types 中。
+*/
 pub use echo_execution::skills::external::SkillDescriptor;
 
 /// 超过该阈值即生成合并提案。
@@ -96,8 +100,10 @@ impl SkillSimilarityDetector {
         }
     }
 
-    /// 根据明细计算综合相似度分数。
-    /// 权重：triggers 0.4，paths 0.2，tools 0.2，description 0.2
+    /**
+    根据明细计算综合相似度分数。
+    权重：triggers 0.4，paths 0.2，tools 0.2，description 0.2
+    */
     pub fn overall_score(breakdown: &SimilarityBreakdown) -> f64 {
         breakdown.trigger_overlap * 0.4
             + breakdown.path_overlap * 0.2
@@ -173,8 +179,10 @@ impl SkillSimilarityDetector {
         Ok(proposals)
     }
 
-    /// 根据遥测数据决定哪个技能应作为主技能。
-    /// 激活次数更多或使用时间更近的一方会成为主技能。
+    /**
+    根据遥测数据决定哪个技能应作为主技能。
+    激活次数更多或使用时间更近的一方会成为主技能。
+    */
     async fn determine_primary(
         &self,
         desc_a: &SkillDescriptor,
@@ -193,9 +201,11 @@ impl SkillSimilarityDetector {
             .ok()
             .flatten();
 
-        // 归一化打分：50% activation_count（≤1.0）+ 50% recency
-        // （通过近似的 epoch→now 窗口把 last_used 归一化到 [0, 1]）。
-        // 此前 `last_used / 1e12` ≈ 1.77，会盖过 ≤1.0 的 activation_count。
+        /**
+        归一化打分：50% activation_count（≤1.0）+ 50% recency
+        （通过近似的 epoch→now 窗口把 last_used 归一化到 [0, 1]）。
+        此前 `last_used / 1e12` ≈ 1.77，会盖过 ≤1.0 的 activation_count。
+        */
         fn usage_score(t: &SkillTelemetry) -> f64 {
             let recency = (t.last_used as f64 / 1.7e12 - 1.0).clamp(0.0, 1.0);
             t.activation_count as f64 * 0.5 + recency * 0.5
@@ -251,6 +261,7 @@ impl SkillMerger {
         ))
     }
 
+    /// 根据合并提案生成合并预览（不落盘），返回待审批的预览结果。
     pub async fn preview_merge(
         &self,
         request_id: impl Into<String>,
@@ -342,6 +353,7 @@ impl SkillMerger {
         })
     }
 
+    /// 在审批通过后执行先前生成的合并预览，把合并结果写入技能存储。
     pub async fn execute_preview(
         &self,
         preview: SkillMergePreview,
@@ -497,8 +509,10 @@ mod tests {
     fn test_jaccard_overlap_partial() {
         let list_a = vec!["git".to_string(), "commit".to_string(), "push".to_string()];
         let list_b = vec!["git".to_string(), "commit".to_string(), "pull".to_string()];
-        // 交集：{git, commit} = 2
-        // 并集：{git, commit, push, pull} = 4
+        /*
+        交集：{git, commit} = 2
+        并集：{git, commit, push, pull} = 4
+        */
         let overlap = jaccard_overlap(&list_a, &list_b);
         assert!((overlap - 0.5).abs() < 1e-9);
     }
@@ -516,8 +530,10 @@ mod tests {
         let text_a = "Git workflow for version control";
         let text_b = "Git workflow management";
         let similarity = word_similarity(text_a, text_b);
-        // 交集：{Git, workflow} = 2
-        // 并集：{Git, workflow, for, version, control, management} = 6
+        /*
+        交集：{Git, workflow} = 2
+        并集：{Git, workflow, for, version, control, management} = 6
+        */
         assert!((similarity - 2.0 / 6.0).abs() < 1e-9);
     }
 
@@ -711,8 +727,10 @@ mod tests {
         assert!(primary.allowed_tools.contains(&"Bash".to_string()));
         assert!(primary.allowed_tools.contains(&"Read".to_string()));
         assert!(primary.allowed_tools.contains(&"Write".to_string()));
-        // 持久化文件是标准格式：合并后的工具集合以空格分隔字符串的形式写入，
-        // 而路由用的 triggers 没有标准字段，只保留在内存中的描述符里。
+        /*
+        持久化文件是标准格式：合并后的工具集合以空格分隔字符串的形式写入，
+        而路由用的 triggers 没有标准字段，只保留在内存中的描述符里。
+        */
         let persisted =
             std::fs::read_to_string(&primary_path).map_err(|error| error.to_string())?;
         assert!(persisted.contains("allowed-tools: Bash Read Write"));

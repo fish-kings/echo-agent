@@ -65,8 +65,10 @@ impl LlmCritic {
         self
     }
 
-    /// 设置 provider 端用户 ID，用于在支持该特性的 provider（例如 DeepSeek）上
-    /// 实现 KVCache/内容安全/调度隔离。
+    /**
+    设置 provider 端用户 ID，用于在支持该特性的 provider（例如 DeepSeek）上
+    实现 KVCache/内容安全/调度隔离。
+    */
     pub fn with_cache_user_id(mut self, user_id: impl Into<String>) -> Self {
         self.cache_user_id = Some(user_id.into());
         self

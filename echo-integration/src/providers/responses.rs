@@ -219,8 +219,10 @@ impl LlmClient for ResponsesClient {
     }
 }
 
-/// 将底层的原始 SSE 事件流适配为统一的 `ChatChunk` 流：维护一个流式适配器状态机，
-/// 在流正常结束（`[DONE]` 或 EOF）前必须先观测到 `response.completed`，否则返回错误。
+/**
+将底层的原始 SSE 事件流适配为统一的 `ChatChunk` 流：维护一个流式适配器状态机，
+在流正常结束（`[DONE]` 或 EOF）前必须先观测到 `response.completed`，否则返回错误。
+*/
 fn adapt_responses_stream<S>(raw_stream: S) -> BoxStream<'static, Result<ChatChunk>>
 where
     S: futures::Stream<Item = Result<JsonSseEvent>> + Send + 'static,
@@ -260,9 +262,11 @@ fn insert_option<T: serde::Serialize>(
     }
 }
 
-/// 将框架内的消息列表转换为 Responses API 的 `input` 数组：助手消息前会附带其
-/// 不透明的推理块，工具结果消息映射为 `function_call_output`，普通消息映射为
-/// `message`，助手的工具调用则映射为 `function_call` 条目。
+/**
+将框架内的消息列表转换为 Responses API 的 `input` 数组：助手消息前会附带其
+不透明的推理块，工具结果消息映射为 `function_call_output`，普通消息映射为
+`message`，助手的工具调用则映射为 `function_call` 条目。
+*/
 fn messages_to_input(messages: &[Message]) -> Value {
     let mut input = Vec::new();
     for message in messages {
@@ -301,8 +305,10 @@ fn messages_to_input(messages: &[Message]) -> Value {
     Value::Array(input)
 }
 
-/// 将属于 `openai_responses` 提供方的不透明推理块追加为 Responses 的 `reasoning` 输入项；
-/// 其他提供方的推理块或非不透明变体会被跳过，因为它们无法被本 Provider 重放。
+/**
+将属于 `openai_responses` 提供方的不透明推理块追加为 Responses 的 `reasoning` 输入项；
+其他提供方的推理块或非不透明变体会被跳过，因为它们无法被本 Provider 重放。
+*/
 fn append_opaque_reasoning(target: &mut Vec<Value>, blocks: Option<&[ReasoningBlock]>) {
     for block in blocks.unwrap_or_default() {
         let ReasoningBlock::Opaque {

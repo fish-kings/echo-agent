@@ -1,10 +1,12 @@
-//! 护栏系统示例
-//!
-//! 演示如何使用 RuleGuard 对用户输入和 LLM 输出进行安全过滤。
-//!
-//! ```bash
-//! RUST_LOG=info cargo run --features content-guard --example demo19_guard
-//! ```
+/*!
+护栏系统示例
+
+演示如何使用 RuleGuard 对用户输入和 LLM 输出进行安全过滤。
+
+```bash
+RUST_LOG=info cargo run --features content-guard --example demo19_guard
+```
+*/
 
 /* 本示例需要 `content-guard` feature。当该 feature 未启用时，
 提供一个桩实现的 main 函数，以保证该文件仍可作为 example 编译通过。 */
@@ -39,7 +41,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
     let output_guard = Arc::new(
         RuleGuardBuilder::new("output-filter")
-            .blocked_pattern(r"(?i)sk-[a-zA-Z0-9]{20,}") // API Key
+            .blocked_pattern(r"(?i)sk-[a-zA-Z0-9]{20,}") // 匹配 API Key
             .direction(GuardDirection::Output)
             .build(),
     );

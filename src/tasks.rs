@@ -1,6 +1,8 @@
-//! Tasks facade（任务门面模块）
-//!
-//! 本模块是对 `echo_orchestration::tasks` 的公共 SDK 重新导出。
+/*!
+Tasks facade（任务门面模块）
+
+本模块是对 `echo_orchestration::tasks` 的公共 SDK 重新导出。
+*/
 
 /// 直接从 `echo_orchestration::tasks` 重新导出。
 pub mod orchestration {
@@ -9,16 +11,20 @@ pub mod orchestration {
 
 pub use echo_orchestration::tasks::*;
 
-/// 将 Agent 的任务关联工具替换为由 `service` 支撑的工具。
-/// 工具注册是按名称进行的，因此这一操作能够原子化地
-/// 切换所使用的 store/policy 服务，而不会暴露出第二套任务 API。
+/**
+将 Agent 的任务关联工具替换为由 `service` 支撑的工具。
+工具注册是按名称进行的，因此这一操作能够原子化地
+切换所使用的 store/policy 服务，而不会暴露出第二套任务 API。
+*/
 pub fn register_task_tools(
     agent: &mut crate::agent::ReactAgent,
     service: std::sync::Arc<TaskRevisionService>,
 ) {
-    // 保留下来的权威来源必须与工具保持一致：宿主侧的接口
-    // 会读取 `ReactAgent::task_revision_service()`，并且必须
-    // 观察到与已注册工具实际使用的完全相同的那个服务。
+    /*
+    保留下来的权威来源必须与工具保持一致：宿主侧的接口
+    会读取 `ReactAgent::task_revision_service()`，并且必须
+    观察到与已注册工具实际使用的完全相同的那个服务。
+    */
     agent.set_task_revision_service(service);
     for tool in build_task_tools(agent.task_revision_service().clone()) {
         agent.replace_tool(tool);
@@ -29,6 +35,7 @@ pub fn register_task_tools(
 mod tests {
     use super::*;
 
+    /// 验证注册任务工具会替换工具管理器使用的默认任务服务。
     #[tokio::test]
     async fn register_task_tools_replaces_default_service_used_by_tool_manager()
     -> Result<(), String> {

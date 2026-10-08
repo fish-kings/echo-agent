@@ -1,4 +1,4 @@
-//! DAG workflow: agents organized as a directed acyclic graph, executed in topological order with independent nodes running concurrently.
+//! DAG 工作流：Agent 以有向无环图组织，按拓扑顺序执行，相互独立的节点并发运行。
 
 use super::{SharedAgent, StepOutput, Workflow, WorkflowOutput, shared_agent};
 use echo_core::agent::Agent;
@@ -9,83 +9,93 @@ use std::time::Instant;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
-/// A node in the DAG
+/// DAG 中的一个节点。
 pub struct DagNode {
+    /// 节点唯一标识。
     pub id: String,
+    /// 该节点执行所用的 Agent。
     pub agent: SharedAgent,
 }
 
-/// Directed edge in the DAG (from -> to means to depends on from's output)
+/// DAG 中的有向边（from -> to 表示 to 依赖 from 的输出）。
 #[derive(Debug, Clone)]
 pub struct DagEdge {
+    /// 起点节点 ID（上游）。
     pub from: String,
+    /// 终点节点 ID（下游）。
     pub to: String,
 }
 
-/// DAG workflow: nodes execute in topological order; independent nodes run concurrently.
-///
-/// Each node receives the concatenated outputs of all its predecessors (joined by newlines) as input;
-/// root nodes with zero in-degree receive the workflow's original input.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_core::agent::{Agent, AgentEvent};
-/// use echo_core::error::Result;
-/// use echo_orchestration::workflow::{DagWorkflow, Workflow};
-/// use futures::future::BoxFuture;
-/// use futures::stream::{self, BoxStream};
-///
-/// # struct DummyAgent {
-/// #     name: String,
-/// # }
-/// #
-/// # impl DummyAgent {
-/// #     fn new(name: impl Into<String>) -> Self {
-/// #         Self { name: name.into() }
-/// #     }
-/// # }
-/// #
-/// # impl Agent for DummyAgent {
-/// #     fn name(&self) -> &str { &self.name }
-/// #     fn model_name(&self) -> &str { "mock-model" }
-/// #     fn system_prompt(&self) -> &str { "You are a mock agent" }
-/// #     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
-/// #         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
-/// #     }
-/// #     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
-/// #         Box::pin(async move {
-/// #             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
-/// #             Ok(s)
-/// #         })
-/// #     }
-/// # }
-///
-/// # async fn example() -> Result<()> {
-/// let researcher = DummyAgent::new("researcher");
-/// let analyst = DummyAgent::new("analyst");
-/// let writer = DummyAgent::new("writer");
-///
-/// let mut wf = DagWorkflow::builder()
-///     .node("research", researcher)
-///     .node("analyze", analyst)
-///     .node("write", writer)
-///     .edge("research", "write")
-///     .edge("analyze", "write")
-///     .build()?;
-///
-/// let output = wf.run("Analyze the 2025 AI Agent ecosystem").await?;
-/// println!("{}", output.result);
-/// # Ok(())
-/// # }
-/// ```
+/**
+DAG 工作流：节点按拓扑顺序执行，相互独立的节点并发运行。
+
+每个节点以其所有前驱节点输出的拼接结果（以空行连接）作为输入；
+入度为 0 的根节点接收工作流的原始输入。
+
+# 示例
+
+```rust,no_run
+use echo_core::agent::{Agent, AgentEvent};
+use echo_core::error::Result;
+use echo_orchestration::workflow::{DagWorkflow, Workflow};
+use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream};
+
+# struct DummyAgent {
+#     name: String,
+# }
+#
+# impl DummyAgent {
+#     fn new(name: impl Into<String>) -> Self {
+#         Self { name: name.into() }
+#     }
+# }
+#
+# impl Agent for DummyAgent {
+#     fn name(&self) -> &str { &self.name }
+#     fn model_name(&self) -> &str { "mock-model" }
+#     fn system_prompt(&self) -> &str { "You are a mock agent" }
+#     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
+#         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
+#     }
+#     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
+#         Box::pin(async move {
+#             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
+#             Ok(s)
+#         })
+#     }
+# }
+
+# async fn example() -> Result<()> {
+let researcher = DummyAgent::new("researcher");
+let analyst = DummyAgent::new("analyst");
+let writer = DummyAgent::new("writer");
+
+let mut wf = DagWorkflow::builder()
+    .node("research", researcher)
+    .node("analyze", analyst)
+    .node("write", writer)
+    .edge("research", "write")
+    .edge("analyze", "write")
+    .build()?;
+
+let output = wf.run("Analyze the 2025 AI Agent ecosystem").await?;
+println!("{}", output.result);
+# Ok(())
+# }
+```
+*/
 pub struct DagWorkflow {
+    /// 节点 ID 到 Agent 的映射。
     nodes: HashMap<String, SharedAgent>,
+    /// 所有有向边。
     edges: Vec<DagEdge>,
+    /// 构建时计算出的拓扑顺序。
     node_order: Vec<String>,
 }
 
 impl DagWorkflow {
+    /// 创建 [`DagWorkflowBuilder`] 构建器。
     pub fn builder() -> DagWorkflowBuilder {
         DagWorkflowBuilder {
             nodes: Vec::new(),
@@ -95,6 +105,7 @@ impl DagWorkflow {
 }
 
 impl Workflow for DagWorkflow {
+    /// 按拓扑顺序分批并发执行节点，最终汇总所有叶子节点的输出。
     fn run<'a>(&'a mut self, input: &'a str) -> BoxFuture<'a, Result<WorkflowOutput>> {
         Box::pin(async move {
             let total_start = Instant::now();
@@ -248,7 +259,7 @@ impl Workflow for DagWorkflow {
                 }
             }
 
-            // Final result: collect output from all leaf nodes (out-degree = 0)
+            // 最终结果：收集所有叶子节点（出度为 0）的输出
             let leaf_nodes: Vec<&str> = self
                 .node_order
                 .iter()
@@ -272,26 +283,28 @@ impl Workflow for DagWorkflow {
     }
 }
 
-/// [`DagWorkflow`] builder
+/// [`DagWorkflow`] 的构建器。
 pub struct DagWorkflowBuilder {
+    /// 已注册的（节点 ID, Agent）列表。
     nodes: Vec<(String, SharedAgent)>,
+    /// 已添加的有向边。
     edges: Vec<DagEdge>,
 }
 
 impl DagWorkflowBuilder {
-    /// Register a named node
+    /// 注册一个命名节点。
     pub fn node(mut self, id: impl Into<String>, agent: impl Agent + 'static) -> Self {
         self.nodes.push((id.into(), shared_agent(agent)));
         self
     }
 
-    /// Register a named node (using an already-wrapped SharedAgent)
+    /// 注册一个命名节点（使用已包装好的 SharedAgent）。
     pub fn node_shared(mut self, id: impl Into<String>, agent: SharedAgent) -> Self {
         self.nodes.push((id.into(), agent));
         self
     }
 
-    /// Add a directed edge: `from`'s output will flow into `to`'s input
+    /// 添加一条有向边：`from` 的输出将流入 `to` 的输入。
     pub fn edge(mut self, from: impl Into<String>, to: impl Into<String>) -> Self {
         self.edges.push(DagEdge {
             from: from.into(),
@@ -300,7 +313,7 @@ impl DagWorkflowBuilder {
         self
     }
 
-    /// Build the DAG workflow, validate acyclicity, and compute topological order
+    /// 构建 DAG 工作流：校验节点与边、检测环并计算拓扑顺序。
     pub fn build(self) -> Result<DagWorkflow> {
         let node_ids: HashSet<&str> = self.nodes.iter().map(|(id, _)| id.as_str()).collect();
         if node_ids.len() != self.nodes.len() {
@@ -350,8 +363,9 @@ impl DagWorkflowBuilder {
     }
 }
 
-// ── DAG Algorithms ──────────────────────────────────────────────────────────────────
+// ── DAG 算法 ──────────────────────────────────────────────────────────────────
 
+/// 构建每个节点的前驱节点列表。
 fn build_predecessors(edges: &[DagEdge]) -> HashMap<&str, Vec<String>> {
     let mut preds: HashMap<&str, Vec<String>> = HashMap::new();
     for edge in edges {
@@ -363,6 +377,7 @@ fn build_predecessors(edges: &[DagEdge]) -> HashMap<&str, Vec<String>> {
     preds
 }
 
+/// 构建每个节点的后继节点列表。
 fn build_successors(edges: &[DagEdge]) -> HashMap<&str, Vec<String>> {
     let mut succs: HashMap<&str, Vec<String>> = HashMap::new();
     for edge in edges {
@@ -374,6 +389,7 @@ fn build_successors(edges: &[DagEdge]) -> HashMap<&str, Vec<String>> {
     succs
 }
 
+/// 计算每个节点的入度。
 fn compute_in_degree<'a>(nodes: &'a [String], edges: &[DagEdge]) -> HashMap<&'a str, usize> {
     let mut deg: HashMap<&str, usize> = nodes.iter().map(|id| (id.as_str(), 0)).collect();
     for edge in edges {
@@ -384,7 +400,7 @@ fn compute_in_degree<'a>(nodes: &'a [String], edges: &[DagEdge]) -> HashMap<&'a 
     deg
 }
 
-/// Kahn's algorithm for topological sort
+/// 使用 Kahn 算法进行拓扑排序。
 fn topological_sort(nodes: &[String], edges: &[DagEdge]) -> Result<Vec<String>> {
     let mut in_deg = compute_in_degree(nodes, edges);
     let succs = build_successors(edges);
@@ -422,7 +438,7 @@ fn topological_sort(nodes: &[String], edges: &[DagEdge]) -> Result<Vec<String>> 
     Ok(order)
 }
 
-/// DFS-based cycle detection; returns the cycle path if found
+/// 基于 DFS 的环检测；若发现环则返回环路径。
 fn detect_cycle(nodes: &[String], edges: &[DagEdge]) -> Option<Vec<String>> {
     let succs: HashMap<String, Vec<String>> = {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -434,10 +450,14 @@ fn detect_cycle(nodes: &[String], edges: &[DagEdge]) -> Option<Vec<String>> {
         map
     };
 
+    /// DFS 三色标记。
     #[derive(Clone, Copy, PartialEq)]
     enum Color {
+        /// 尚未访问。
         White,
+        /// 正在访问（位于当前递归路径上）。
         Gray,
+        /// 已完成访问。
         Black,
     }
 
@@ -445,6 +465,7 @@ fn detect_cycle(nodes: &[String], edges: &[DagEdge]) -> Option<Vec<String>> {
         nodes.iter().map(|id| (id.clone(), Color::White)).collect();
     let mut path: Vec<String> = Vec::new();
 
+    /// 深度优先遍历；遇到灰色节点即表示存在环。
     fn dfs(
         node: &str,
         succs: &HashMap<String, Vec<String>>,
@@ -484,7 +505,7 @@ fn detect_cycle(nodes: &[String], edges: &[DagEdge]) -> Option<Vec<String>> {
     None
 }
 
-// ── Unit Tests ──────────────────────────────────────────────────────────────────
+// ── 单元测试 ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -493,25 +514,33 @@ mod tests {
     use futures::stream::{self, BoxStream};
     use std::time::Duration;
 
+    /// 可配置延迟与失败行为的测试 Agent。
     struct TestAgent {
+        /// Agent 名称，同时作为成功时的输出。
         name: &'static str,
+        /// 是否返回错误。
         fail: bool,
+        /// 执行前的等待时长。
         delay: Duration,
     }
 
     impl Agent for TestAgent {
+        /// 返回测试 Agent 名称
         fn name(&self) -> &str {
             self.name
         }
 
+        /// 返回模拟模型名称
         fn model_name(&self) -> &str {
             "test"
         }
 
+        /// 返回模拟系统提示词
         fn system_prompt(&self) -> &str {
             "test"
         }
 
+        /// 执行任务并返回模拟结果
         fn execute<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<String>> {
             Box::pin(async move {
                 tokio::time::sleep(self.delay).await;
@@ -523,6 +552,7 @@ mod tests {
             })
         }
 
+        /// 以流式方式执行任务，返回模拟事件流
         fn execute_stream<'a>(
             &'a self,
             _task: &'a str,
@@ -535,6 +565,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证线性链的拓扑排序。
     fn test_topological_sort_simple() {
         let nodes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let edges = vec![
@@ -552,6 +583,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证菱形依赖的拓扑排序。
     fn test_topological_sort_diamond() {
         let nodes = vec![
             "a".to_string(),
@@ -585,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证能检测到环。
     fn test_cycle_detection() {
         let nodes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let edges = vec![
@@ -605,6 +638,7 @@ mod tests {
     }
 
     #[test]
+    /// 验证无环图不会误报。
     fn test_no_cycle() {
         let nodes = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let edges = vec![
@@ -621,6 +655,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证节点失败时会中止并清理同批次的兄弟任务。
     async fn failed_dag_aborts_and_drains_sibling_tasks() {
         let mut workflow = DagWorkflow::builder()
             .node(
@@ -649,6 +684,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证成功执行时步骤按拓扑顺序而非完成顺序记录。
     async fn successful_dag_preserves_topological_step_order() -> Result<()> {
         let mut workflow = DagWorkflow::builder()
             .node(

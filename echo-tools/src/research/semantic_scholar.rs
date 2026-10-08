@@ -1,7 +1,9 @@
-//! Semantic Scholar 论文搜索工具。
-//!
-//! 查询 Semantic Scholar API 获取学术论文，返回包含引用数、参考文献数、
-//! 研究领域等在内的丰富元数据。
+/*!
+Semantic Scholar 论文搜索工具。
+
+查询 Semantic Scholar API 获取学术论文，返回包含引用数、参考文献数、
+研究领域等在内的丰富元数据。
+*/
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;

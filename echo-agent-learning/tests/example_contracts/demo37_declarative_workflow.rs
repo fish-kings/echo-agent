@@ -1,20 +1,23 @@
-//! demo37_declarative_workflow —— Workflow 声明式定义（YAML / JSON）
-//!
-//! 演示通过 YAML / JSON 文本声明图工作流结构，
-//! 降低非 Rust 用户的使用门槛：
-//! - `WorkflowDefinition::from_yaml_str()` / `from_json_str()`
-//! - `workflow::loader::load_graph_from_yaml_str()` / `load_graph_from_json_str()`
-//! - 支持条件分支、并行 fan-out 等高级拓扑
-//!
-//! ```bash
-//! cargo test --all-features --locked contract_demo37_declarative_workflow -- --nocapture
-//! ```
+/*!
+demo37_declarative_workflow —— Workflow 声明式定义（YAML / JSON）
+
+演示通过 YAML / JSON 文本声明图工作流结构，
+降低非 Rust 用户的使用门槛：
+- `WorkflowDefinition::from_yaml_str()` / `from_json_str()`
+- `workflow::loader::load_graph_from_yaml_str()` / `load_graph_from_json_str()`
+- 支持条件分支、并行 fan-out 等高级拓扑
+
+```bash
+cargo test --all-features --locked contract_demo37_declarative_workflow -- --nocapture
+```
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::workflow::loader::{
     WorkflowDefinition, load_graph_from_json_str, load_graph_from_yaml_str,
 };
 
+/// demo37 契约测试：演示从 YAML / JSON 文本解析工作流定义并构建图，覆盖条件分支与并行 fan-out。
 #[tokio::test]
 async fn contract_demo37_declarative_workflow() -> echo_agent::error::Result<()> {
     println!("═══ Declarative Workflow Demo ═══\n");

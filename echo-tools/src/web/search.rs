@@ -1,11 +1,13 @@
-//! Web search tool
-//!
-//! Provides [`WebSearchTool`] with support for multiple search engines via [`SearchProvider`].
-//! Defaults to [`DuckDuckGoProvider`] (free, no API key required).
-//!
-//! # Usage
-//!
-//! ```text
+/*!
+ * Web 搜索工具
+ *
+ * 提供 [`WebSearchTool`]，通过 [`SearchProvider`] 支持多种搜索引擎。
+ * 默认使用 [`DuckDuckGoProvider`]（免费，无需 API Key）。
+ *
+ * # 用法
+ *
+ * ```text
+ */
 
 use super::providers::SearchProvider;
 use super::providers::brave::BraveSearchProvider;
@@ -18,20 +20,26 @@ use echo_core::tools::{Tool, ToolFailure, ToolFailureCategory, ToolParameters, T
 use futures::future::BoxFuture;
 use serde_json::Value;
 
+/// 默认每页结果数
 const DEFAULT_MAX_RESULTS: usize = 5;
+/// 允许的最大每页结果数
 const MAX_ALLOWED_RESULTS: usize = 10;
 
-/// Web search tool
-///
-/// Supports web search through different search engine Providers.
-/// Built-in DuckDuckGo as the free fallback option.
+/**
+ * Web 搜索工具
+ *
+ * 通过不同的搜索引擎 Provider 进行网页搜索。
+ * 内置 DuckDuckGo 作为免费兜底选项。
+ */
 pub struct WebSearchTool {
+    /// 实际执行搜索的 Provider
     provider: Box<dyn SearchProvider>,
+    /// 默认最大结果数
     default_max_results: usize,
 }
 
 impl WebSearchTool {
-    /// Create with a custom Provider
+    /// 使用自定义 Provider 创建
     pub fn new(provider: Box<dyn SearchProvider>) -> Self {
         Self {
             provider,
@@ -39,29 +47,31 @@ impl WebSearchTool {
         }
     }
 
-    /// Create with DuckDuckGo (free fallback)
+    /// 使用 DuckDuckGo 创建（免费兜底）
     pub fn with_duckduckgo() -> Self {
         Self::new(Box::new(DuckDuckGoProvider::new()))
     }
 
-    /// Create with Brave Search (requires API key)
+    /// 使用 Brave Search 创建（需要 API Key）
     pub fn with_brave(api_key: impl Into<String>) -> Self {
         Self::new(Box::new(BraveSearchProvider::new(api_key)))
     }
 
-    /// Create with Tavily (requires API key, AI-optimized search)
+    /// 使用 Tavily 创建（需要 API Key，面向 AI 优化的搜索）
     pub fn with_tavily(api_key: impl Into<String>) -> Self {
         Self::new(Box::new(TavilyProvider::new(api_key)))
     }
 
-    /// Auto-select the best available Provider
-    ///
-    /// Priority: Tavily > Brave > DuckDuckGo
-    ///
-    /// Reads API keys from environment variables:
-    /// - `TAVILY_API_KEY` → Tavily (AI-optimized, highest quality)
-    /// - `BRAVE_SEARCH_API_KEY` → Brave Search (high quality)
-    /// - No key → DuckDuckGo (free fallback)
+    /**
+     * 自动选择最佳可用 Provider
+     *
+     * 优先级：Tavily > Brave > DuckDuckGo
+     *
+     * 从环境变量读取 API Key：
+     * - `TAVILY_API_KEY` → Tavily（面向 AI 优化，质量最高）
+     * - `BRAVE_SEARCH_API_KEY` → Brave Search（高质量）
+     * - 无 Key → DuckDuckGo（免费兜底）
+     */
     pub fn auto() -> Self {
         if let Some(provider) = TavilyProvider::from_env() {
             tracing::info!("WebSearch: auto-selected Tavily Provider");
@@ -75,32 +85,36 @@ impl WebSearchTool {
         Self::with_duckduckgo()
     }
 
-    /// Set the default maximum number of results
+    /// 设置默认最大结果数
     pub fn with_max_results(mut self, n: usize) -> Self {
         self.default_max_results = n.clamp(1, MAX_ALLOWED_RESULTS);
         self
     }
 
-    /// Get the current Provider name
+    /// 获取当前 Provider 名称
     pub fn provider_name(&self) -> &str {
         self.provider.name()
     }
 }
 
 impl Tool for WebSearchTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "web_search"
     }
 
+    /// 所需权限：网络访问。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Network]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Search for information on the internet. Returns search result titles, links, and snippets. \
          Results use cursor pagination; repeat the same query and limit with page.next_cursor."
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -124,6 +138,7 @@ impl Tool for WebSearchTool {
         })
     }
 
+    /// 执行搜索并返回分页的 JSON 结果；Provider 失败时返回可重试的瞬时失败。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let query = parameters
@@ -195,6 +210,7 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// 空结果序列化为空数组。
     #[test]
     fn test_empty_results_json() {
         let results: Vec<SearchResult> = vec![];
@@ -202,6 +218,7 @@ mod tests {
         assert!(json.as_array().unwrap().is_empty());
     }
 
+    /// 结果序列化后的 JSON 结构。
     #[test]
     fn test_results_json_structure() {
         let results = vec![
@@ -227,13 +244,16 @@ mod tests {
         assert_eq!(arr[1]["snippet"], "");
     }
 
-    /// Mock provider that fails N times then succeeds
+    /// 模拟 Provider：前 N 次失败，之后成功
     struct FailNTimesProvider {
+        /// 需要失败的次数
         fail_count: u32,
+        /// 共享的调用计数器
         call_count: Arc<AtomicU32>,
     }
 
     impl FailNTimesProvider {
+        /// 创建 Provider，并返回其调用计数器。
         fn new(fail_count: u32) -> (Self, Arc<AtomicU32>) {
             let counter = Arc::new(AtomicU32::new(0));
             (
@@ -248,10 +268,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SearchProvider for FailNTimesProvider {
+        /// Provider 名称。
         fn name(&self) -> &str {
             "mock-fail-n"
         }
 
+        /// 前 N 次返回失败，之后返回成功结果。
         async fn search(&self, _query: &str, _max_results: usize) -> Result<Vec<SearchResult>> {
             let call = self.call_count.fetch_add(1, Ordering::SeqCst);
             if call < self.fail_count {
@@ -270,15 +292,17 @@ mod tests {
         }
     }
 
-    /// Provider that always fails
+    /// 始终失败的 Provider
     struct AlwaysFailProvider;
 
     #[async_trait::async_trait]
     impl SearchProvider for AlwaysFailProvider {
+        /// Provider 名称。
         fn name(&self) -> &str {
             "mock-always-fail"
         }
 
+        /// 总是返回失败。
         async fn search(&self, _query: &str, _max_results: usize) -> Result<Vec<SearchResult>> {
             Err(echo_core::error::ToolError::ExecutionFailed {
                 tool: "mock".to_string(),
@@ -288,6 +312,7 @@ mod tests {
         }
     }
 
+    /// 瞬时失败直接交由中央重试策略处理，工具内部不重试。
     #[tokio::test]
     async fn transient_failure_is_returned_to_the_central_retry_policy() {
         let (provider, counter) = FailNTimesProvider::new(2);
@@ -307,6 +332,7 @@ mod tests {
         );
     }
 
+    /// Provider 失败被归类为瞬时失败。
     #[tokio::test]
     async fn provider_failure_is_classified_as_transient() {
         let tool = WebSearchTool::new(Box::new(AlwaysFailProvider));

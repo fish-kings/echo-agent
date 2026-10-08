@@ -1,14 +1,16 @@
-//! 审计追踪 + 权限服务示例
-//!
-//! 演示 PermissionService 管线的审计记录：
-//! - InMemoryPermissionAuditSink：内存环形缓冲区
-//! - LoggingPermissionAuditSink：tracing 日志
-//! - CompositePermissionAuditSink：组合多个 Sink
-//! - 查询审计记录：recent() / query()
-//!
-//! ```bash
-//! RUST_LOG=info cargo run -p echo-agent-learning --example demo20_audit
-//! ```
+/*!
+审计追踪 + 权限服务示例
+
+演示 PermissionService 管线的审计记录：
+- InMemoryPermissionAuditSink：内存环形缓冲区
+- LoggingPermissionAuditSink：tracing 日志
+- CompositePermissionAuditSink：组合多个 Sink
+- 查询审计记录：recent() / query()
+
+```bash
+RUST_LOG=info cargo run -p echo-agent-learning --example demo20_audit
+```
+*/
 
 use echo_agent::human_loop::{
     CompositePermissionAuditSink, HumanLoopEvent, HumanLoopManager, InMemoryPermissionAuditSink,
@@ -24,14 +26,17 @@ use std::sync::Arc;
 struct RunCommandTool;
 
 impl Tool for RunCommandTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "run_command"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "执行系统命令（需要 Execute 权限）"
     }
 
+    /// 工具参数的 JSON Schema：必填字符串参数 `command`。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -45,6 +50,7 @@ impl Tool for RunCommandTool {
         })
     }
 
+    /// 模拟执行命令，返回包含命令文本的结果。
     fn execute(
         &self,
         params: ToolParameters,
@@ -58,6 +64,7 @@ impl Tool for RunCommandTool {
         })
     }
 
+    /// 声明该工具需要 Execute 权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Execute]
     }
@@ -67,18 +74,22 @@ impl Tool for RunCommandTool {
 struct SafeTool;
 
 impl Tool for SafeTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "get_time"
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "获取当前时间（无特殊权限要求）"
     }
 
+    /// 工具参数的 JSON Schema：无参数。
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({ "type": "object", "properties": {} })
     }
 
+    /// 返回固定的模拟时间字符串。
     fn execute(
         &self,
         _params: ToolParameters,
@@ -87,6 +98,7 @@ impl Tool for SafeTool {
     }
 }
 
+/// 程序入口：配置多种权限审计 Sink，执行工具调用并查询审计记录。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     tracing_subscriber::fmt()
@@ -127,7 +139,7 @@ async fn main() -> echo_agent::error::Result<()> {
                     responder.respond("无需额外输入".to_string());
                 }
                 _ => {
-                    // SelectionRequest and other variants — not used by this demo.
+                    // SelectionRequest 及其他变体本 demo 未使用。
                 }
             }
         }

@@ -72,6 +72,7 @@ pub struct AcpLedgerLimits {
 }
 
 impl Default for AcpLedgerLimits {
+    /// 返回默认的账本上限配置。
     fn default() -> Self {
         Self {
             max_events: DEFAULT_MAX_LEDGER_EVENTS,
@@ -466,6 +467,7 @@ struct SharedRunSink {
 
 #[async_trait]
 impl EventSink for SharedRunSink {
+    /// 将事件提交到共享账本，并转发给下游。
     async fn on_event(&self, envelope: EventEnvelope) -> Result<SinkControl> {
         self.ledger.commit(envelope.clone())?;
         if let Some(projector) = &self.projector {
@@ -970,10 +972,12 @@ pub trait AcpConnectionProfile: Send + Sync + 'static {
     >;
 }
 
+/// 运行关闭流程的单元测试。
 #[cfg(test)]
 mod close_tests {
     use super::*;
 
+    /// 验证运行关闭超时后，未结算的框架回执会被保留以便重试。
     #[tokio::test]
     async fn run_close_timeout_keeps_unsettled_framework_receipt_for_retry() -> Result<()> {
         let runs = RunRegistry::default();

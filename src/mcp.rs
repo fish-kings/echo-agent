@@ -1,7 +1,9 @@
-//! MCP（Model Context Protocol，模型上下文协议）门面模块。
-//!
-//! 重新导出 `echo_integration::mcp` 的公共 API。
-//! 权威实现位于 `echo_integration`。
+/*!
+MCP（Model Context Protocol，模型上下文协议）门面模块。
+
+重新导出 `echo_integration::mcp` 的公共 API。
+权威实现位于 `echo_integration`。
+*/
 
 /// 直接从 `echo_integration::mcp` 重新导出。
 pub mod integration {

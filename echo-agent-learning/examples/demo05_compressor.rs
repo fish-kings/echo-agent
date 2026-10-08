@@ -1,11 +1,13 @@
-//! demo05 - 综合能力演示
-//!
-//! 本示例将框架的四项核心能力整合到一个真实场景中：
-//!
-//! - **工具调用**：数学运算工具（加减乘除）
-//! - **任务规划**：将复杂费用计算拆分为并行子任务
-//! - **Human-in-Loop**：通过受审批保护的 `divide` 工具验证人工确认链路
-//! - **上下文压缩**：滑动窗口自动管理长对话的 token 用量
+/*!
+demo05 - 综合能力演示
+
+本示例将框架的四项核心能力整合到一个真实场景中：
+
+- **工具调用**：数学运算工具（加减乘除）
+- **任务规划**：将复杂费用计算拆分为并行子任务
+- **Human-in-Loop**：通过受审批保护的 `divide` 工具验证人工确认链路
+- **上下文压缩**：滑动窗口自动管理长对话的 token 用量
+*/
 
 use echo_agent::compression::compressor::SlidingWindowCompressor;
 use echo_agent::human_loop::{
@@ -19,21 +21,25 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+/// 工具：返回两数之和。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 工具：返回 a 减 b 的差。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 工具：返回两数之积。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 工具：返回 a 除以 b 的商，除数为 0 时返回错误结果。
 #[tool(name = "divide", description = "两数相除")]
 async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     if b == 0.0 {
@@ -42,6 +48,7 @@ async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} / {} = {}", a, b, a / b)))
 }
 
+/// 示例入口：依次演示工具调用、任务规划、人工审批与上下文压缩。
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -84,7 +91,7 @@ async fn main() -> Result<()> {
                     responder.respond("自动审批输入".to_string())
                 }
                 _ => {
-                    // SelectionRequest and other variants — not used by this demo.
+                    // SelectionRequest 等其它变体：本示例不会用到。
                 }
             }
         }
@@ -180,8 +187,10 @@ async fn main() -> Result<()> {
     agent.add_tool(Box::new(SubtractTool));
     agent.add_tool(Box::new(MultiplyTool));
 
-    // divide 工具标记为“需要人工审批”：主流程完成后会追加一次聚焦验收，
-    // 强制验证 add_need_appeal_tool 的审批链路确实可用。
+    /*
+    divide 工具标记为“需要人工审批”：主流程完成后会追加一次聚焦验收，
+    强制验证 add_need_appeal_tool 的审批链路确实可用。
+    */
     agent.add_need_appeal_tool(Box::new(DivideTool));
 
     // 滑动窗口压缩：超限后保留最近 20 条消息

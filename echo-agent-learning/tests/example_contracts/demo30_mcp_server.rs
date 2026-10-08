@@ -1,18 +1,20 @@
-//! demo30_mcp_server.rs —— MCP Server 演示
-//!
-//! 演示如何将 echo-agent 的 Tool 暴露为 MCP 服务端，
-//! 让外部 MCP 客户端（Claude Desktop、Cursor 等）发现和调用工具。
-//!
-//! # 新特性展示
-//!
-//! - `McpServer::builder()` / `McpServer::from_tools()` 构建器
-//! - MCP 2025-11-25 协议 + 向下兼容版本协商
-//! - `handle_json_rpc()` 公共 API（用于自定义传输层或测试）
-//! - `tools/list`、`tools/call`、`ping` 完整流程
-//!
-//! ```bash
-//! cargo test --all-features --locked contract_demo30_mcp_server -- --nocapture
-//! ```
+/*!
+demo30_mcp_server.rs —— MCP Server 演示
+
+演示如何将 echo-agent 的 Tool 暴露为 MCP 服务端，
+让外部 MCP 客户端（Claude Desktop、Cursor 等）发现和调用工具。
+
+# 新特性展示
+
+- `McpServer::builder()` / `McpServer::from_tools()` 构建器
+- MCP 2025-11-25 协议 + 向下兼容版本协商
+- `handle_json_rpc()` 公共 API（用于自定义传输层或测试）
+- `tools/list`、`tools/call`、`ping` 完整流程
+
+```bash
+cargo test --all-features --locked contract_demo30_mcp_server -- --nocapture
+```
+*/
 
 use echo_agent::error::Result;
 use echo_agent::mcp::McpServer;
@@ -100,10 +102,12 @@ impl Tool for CalculatorTool {
     }
 }
 
-// ── Main ────────────────────────────────────────────────────────────────────
+// ── 主流程 ────────────────────────────────────────────────────────────────────
 
-/// demo30 契约测试：完整走一遍 MCP Server 的构建、握手、协议版本协商、
-/// `tools/list`、`tools/call`、`ping` 以及各类错误路径，验证行为符合预期契约。
+/**
+demo30 契约测试：完整走一遍 MCP Server 的构建、握手、协议版本协商、
+`tools/list`、`tools/call`、`ping` 以及各类错误路径，验证行为符合预期契约。
+*/
 #[tokio::test]
 async fn contract_demo30_mcp_server() -> Result<()> {
     println!("═══════════════════════════════════════════════════════");
@@ -178,7 +182,7 @@ async fn contract_demo30_mcp_server() -> Result<()> {
     server.handle_json_rpc(&notif.to_string()).await;
     println!("\n  notifications/initialized sent");
 
-    // ── Part 3: tools/list ───────────────────────────────────────────────────
+    // ── Part 3: 列出工具 tools/list ───────────────────────────────────────────────────
     println!("\n--- Part 3: tools/list ---\n");
 
     let resp = send(
@@ -197,7 +201,7 @@ async fn contract_demo30_mcp_server() -> Result<()> {
         println!("    - {:15} : {}", name, description);
     }
 
-    // ── Part 4: tools/call ───────────────────────────────────────────────────
+    // ── Part 4: 调用工具 tools/call ───────────────────────────────────────────────────
     println!("\n--- Part 4: tools/call ---\n");
 
     let resp = send(
@@ -351,8 +355,10 @@ async fn contract_demo30_mcp_server() -> Result<()> {
     println!("  demo30 完成");
     println!("═══════════════════════════════════════════════════════");
 
-    // 取消注释下面的代码即可作为真实 stdio MCP Server 运行：
-    // server.serve_stdio().await?;
+    /*
+    取消注释下面的代码即可作为真实 stdio MCP Server 运行：
+    server.serve_stdio().await?;
+    */
 
     Ok(())
 }

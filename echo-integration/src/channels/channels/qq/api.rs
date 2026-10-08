@@ -1,10 +1,12 @@
-//! QQ 机器人 HTTP API —— 获取 Token + 发送消息
-//!
-//! 官方 API 文档：
-//! - Token：POST <https://bots.qq.com/app/getAppAccessToken>
-//! - Gateway：GET <https://api.sgroup.qq.com/v2/gateway>
-//! - 私聊消息：POST `https://api.sgroup.qq.com/v2/users/{openid}/messages`
-//! - 群消息：POST `https://api.sgroup.qq.com/v2/groups/{guild_id}/messages`
+/*!
+QQ 机器人 HTTP API —— 获取 Token + 发送消息
+
+官方 API 文档：
+- 获取 Token：POST <https://bots.qq.com/app/getAppAccessToken>
+- 网关（Gateway）：GET <https://api.sgroup.qq.com/v2/gateway>
+- 私聊消息：POST `https://api.sgroup.qq.com/v2/users/{openid}/messages`
+- 群消息：POST `https://api.sgroup.qq.com/v2/groups/{guild_id}/messages`
+*/
 
 use super::super::super::types::ChatType;
 use crate::redaction::{json as redact_json, json_with_secrets, request_error, text_with_secrets};
@@ -16,7 +18,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+/// QQ 机器人开放平台 API 基础地址
 const QQ_API_BASE: &str = "https://api.sgroup.qq.com";
+/// 获取 AppAccessToken 的接口地址
 const QQ_TOKEN_URL: &str = "https://bots.qq.com/app/getAppAccessToken";
 
 /// 构造一个共享使用的 `reqwest::Client`；若自定义构建失败则退回默认客户端。
@@ -136,8 +140,10 @@ impl TokenManager {
             })?
             .to_string();
 
-        // QQ Token 有效期通常为 7200 秒；提前 5 分钟刷新
-        // 注意：expires_in 可能是字符串 "7200"，也可能是数字 7200
+        /*
+        QQ Token 有效期通常为 7200 秒；提前 5 分钟刷新
+        注意：expires_in 可能是字符串 "7200"，也可能是数字 7200
+        */
         let expires_in = json
             .get("expiresIn")
             .or_else(|| json.get("expires_in"))
@@ -158,7 +164,7 @@ impl TokenManager {
     }
 }
 
-// ── Gateway URL ───────────────────────────────────────────────────────────────
+// ── 网关 URL ───────────────────────────────────────────────────────────────
 
 /// 获取 WebSocket Gateway 地址
 pub async fn get_gateway_url(client: &reqwest::Client, token: &str) -> Result<String> {

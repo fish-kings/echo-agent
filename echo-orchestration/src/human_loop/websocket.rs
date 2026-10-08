@@ -16,50 +16,54 @@ use uuid::Uuid;
 use super::{HumanLoopKind, HumanLoopProvider, HumanLoopRequest, HumanLoopResponse};
 use echo_core::error::{ReactError, Result};
 
+/// 待处理请求表：request_id -> 响应发送端。
 type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<ClientResponse>>>>;
+/// 已连接客户端的消息发送端列表。
 type ClientSenders = Arc<Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>>;
 
-/// WebSocket 人工介入 Provider。
-///
-/// 在本地启动 WebSocket 服务器，向已连接的客户端推送审批/输入请求，
-/// 并异步等待第一个响应。适合与 Web UI、移动端或自定义工具集成。
-///
-/// # 使用方法
-///
-/// ```rust,no_run
-/// // Requires the `websocket` feature.
-/// # #[cfg(feature = "websocket")]
-/// # async fn example() {
-/// # use echo_orchestration::human_loop::WebSocketHumanLoopProvider;
-/// # let provider = WebSocketHumanLoopProvider::bind(9000).await.unwrap();
-/// # let _ = provider;
-/// # }
-/// # #[cfg(not(feature = "websocket"))]
-/// # fn example() {}
-/// ```
-///
-/// # 协议
-///
-/// **服务端 → 客户端**：
-/// ```json
-/// {
-///   "kind": "approval" | "input",
-///   "request_id": "uuid",
-///   "prompt": "...",
-///   "tool_name": "xxx",
-///   "args": { ... }
-/// }
-/// ```
-///
-/// **客户端 → 服务端**：
-/// ```json
-/// {
-///   "request_id": "uuid",
-///   "decision": "approved" | "rejected",
-///   "text": "用户输入（input 场景）",
-///   "reason": "可选说明"
-/// }
-/// ```
+/**
+WebSocket 人工介入 Provider。
+
+在本地启动 WebSocket 服务器，向已连接的客户端推送审批/输入请求，
+并异步等待第一个响应。适合与 Web UI、移动端或自定义工具集成。
+
+# 使用方法
+
+```rust,no_run
+// Requires the `websocket` feature.
+# #[cfg(feature = "websocket")]
+# async fn example() {
+# use echo_orchestration::human_loop::WebSocketHumanLoopProvider;
+# let provider = WebSocketHumanLoopProvider::bind(9000).await.unwrap();
+# let _ = provider;
+# }
+# #[cfg(not(feature = "websocket"))]
+# fn example() {}
+```
+
+# 协议
+
+**服务端 → 客户端**：
+```json
+{
+  "kind": "approval" | "input",
+  "request_id": "uuid",
+  "prompt": "...",
+  "tool_name": "xxx",
+  "args": { ... }
+}
+```
+
+**客户端 → 服务端**：
+```json
+{
+  "request_id": "uuid",
+  "decision": "approved" | "rejected",
+  "text": "用户输入（input 场景）",
+  "reason": "可选说明"
+}
+```
+*/
 pub struct WebSocketHumanLoopProvider {
     /// 等待响应的请求映射（request_id -> 用于唤醒等待方的 oneshot 发送端）
     pending: PendingMap,
@@ -112,8 +116,10 @@ impl WebSocketHumanLoopProvider {
         let addr = SocketAddr::from(([127, 0, 0, 1], port));
         let listener = TcpListener::bind(addr).await?;
 
-        // 使用 UUID v4（122 位随机性）生成随机认证令牌。
-        // 客户端必须将此令牌作为第一条 WebSocket 消息发送以完成认证。
+        /*
+        使用 UUID v4（122 位随机性）生成随机认证令牌。
+        客户端必须将此令牌作为第一条 WebSocket 消息发送以完成认证。
+        */
         let auth_token = Uuid::new_v4().to_string();
 
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
@@ -162,6 +168,7 @@ impl WebSocketHumanLoopProvider {
     }
 }
 
+/// 处理单个 WebSocket 连接：完成鉴权握手、转发广播消息并分发客户端响应。
 async fn handle_connection(
     stream: tokio::net::TcpStream,
     addr: SocketAddr,
@@ -179,8 +186,10 @@ async fn handle_connection(
 
     let (mut write, mut read) = ws_stream.split();
 
-    // 认证：客户端必须将正确的令牌作为第一条消息发送。
-    // 使用常量时间比较，防止基于时序的令牌枚举攻击。
+    /**
+    认证：客户端必须将正确的令牌作为第一条消息发送。
+    使用常量时间比较，防止基于时序的令牌枚举攻击。
+    */
     const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
     match tokio::time::timeout(AUTH_TIMEOUT, read.next()).await {
         Ok(Some(Ok(Message::Text(token)))) => {
@@ -272,6 +281,7 @@ async fn handle_connection(
 }
 
 impl HumanLoopProvider for WebSocketHumanLoopProvider {
+    /// 广播请求给所有客户端并等待第一个匹配的响应（支持超时）。
     fn request(&self, req: HumanLoopRequest) -> BoxFuture<'_, Result<HumanLoopResponse>> {
         Box::pin(async move {
             let request_id = Uuid::new_v4().to_string();

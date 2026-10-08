@@ -16,59 +16,61 @@ fn default_merge(results: Vec<String>) -> String {
     results.join("\n---\n")
 }
 
-/// 并发工作流：所有已注册的 agent 并行执行；结果通过 `merge` 函数合并。
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use echo_core::agent::{Agent, AgentEvent};
-/// use echo_core::error::Result;
-/// use echo_orchestration::workflow::{ConcurrentWorkflow, Workflow};
-/// use futures::future::BoxFuture;
-/// use futures::stream::{self, BoxStream};
-///
-/// # struct DummyAgent {
-/// #     name: String,
-/// # }
-/// #
-/// # impl DummyAgent {
-/// #     fn new(name: impl Into<String>) -> Self {
-/// #         Self { name: name.into() }
-/// #     }
-/// # }
-/// #
-/// # impl Agent for DummyAgent {
-/// #     fn name(&self) -> &str { &self.name }
-/// #     fn model_name(&self) -> &str { "mock-model" }
-/// #     fn system_prompt(&self) -> &str { "You are a mock agent" }
-/// #     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
-/// #         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
-/// #     }
-/// #     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
-/// #         Box::pin(async move {
-/// #             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
-/// #             Ok(s)
-/// #         })
-/// #     }
-/// # }
-///
-/// # async fn example() -> Result<()> {
-/// let agent_x = DummyAgent::new("tech");
-/// let agent_y = DummyAgent::new("business");
-///
-/// let mut wf = ConcurrentWorkflow::builder()
-///     .agent(agent_x)
-///     .agent(agent_y)
-///     .merge(|results| {
-///         format!("Combined analysis:\n{}", results.join("\n\n"))
-///     })
-///     .build();
-///
-/// let output = wf.run("Analyze AI Agent development trends").await?;
-/// println!("{}", output.result);
-/// # Ok(())
-/// # }
-/// ```
+/**
+并发工作流：所有已注册的 agent 并行执行；结果通过 `merge` 函数合并。
+
+# 示例
+
+```rust,no_run
+use echo_core::agent::{Agent, AgentEvent};
+use echo_core::error::Result;
+use echo_orchestration::workflow::{ConcurrentWorkflow, Workflow};
+use futures::future::BoxFuture;
+use futures::stream::{self, BoxStream};
+
+# struct DummyAgent {
+#     name: String,
+# }
+#
+# impl DummyAgent {
+#     fn new(name: impl Into<String>) -> Self {
+#         Self { name: name.into() }
+#     }
+# }
+#
+# impl Agent for DummyAgent {
+#     fn name(&self) -> &str { &self.name }
+#     fn model_name(&self) -> &str { "mock-model" }
+#     fn system_prompt(&self) -> &str { "You are a mock agent" }
+#     fn execute<'a>(&'a self, task: &'a str) -> BoxFuture<'a, Result<String>> {
+#         Box::pin(async move { Ok(format!("{}: {task}", self.name)) })
+#     }
+#     fn execute_stream<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<BoxStream<'a, Result<AgentEvent>>>> {
+#         Box::pin(async move {
+#             let s: BoxStream<'a, Result<AgentEvent>> = Box::pin(stream::empty());
+#             Ok(s)
+#         })
+#     }
+# }
+
+# async fn example() -> Result<()> {
+let agent_x = DummyAgent::new("tech");
+let agent_y = DummyAgent::new("business");
+
+let mut wf = ConcurrentWorkflow::builder()
+    .agent(agent_x)
+    .agent(agent_y)
+    .merge(|results| {
+        format!("Combined analysis:\n{}", results.join("\n\n"))
+    })
+    .build();
+
+let output = wf.run("Analyze AI Agent development trends").await?;
+println!("{}", output.result);
+# Ok(())
+# }
+```
+*/
 pub struct ConcurrentWorkflow {
     /// 已注册的、并发执行的 agent 列表
     agents: Vec<SharedAgent>,
@@ -87,6 +89,7 @@ impl ConcurrentWorkflow {
 }
 
 impl Workflow for ConcurrentWorkflow {
+    /// 并发执行所有 agent，按注册顺序收集结果后调用合并函数。
     fn run<'a>(&'a mut self, input: &'a str) -> BoxFuture<'a, Result<WorkflowOutput>> {
         Box::pin(async move {
             let total_start = Instant::now();
@@ -240,24 +243,31 @@ mod tests {
 
     /// 用于测试的 agent，可配置是否失败以及延迟时长
     struct TestAgent {
+        /// Agent 名称，同时作为成功时的输出。
         name: &'static str,
+        /// 是否返回错误。
         fail: bool,
+        /// 执行前的等待时长。
         delay: Duration,
     }
 
     impl Agent for TestAgent {
+        /// 返回测试 Agent 名称
         fn name(&self) -> &str {
             self.name
         }
 
+        /// 返回模拟模型名称
         fn model_name(&self) -> &str {
             "test"
         }
 
+        /// 返回模拟系统提示词
         fn system_prompt(&self) -> &str {
             "test"
         }
 
+        /// 执行任务并返回模拟结果
         fn execute<'a>(&'a self, _task: &'a str) -> BoxFuture<'a, Result<String>> {
             Box::pin(async move {
                 tokio::time::sleep(self.delay).await;
@@ -269,6 +279,7 @@ mod tests {
             })
         }
 
+        /// 以流式方式执行任务，返回模拟事件流
         fn execute_stream<'a>(
             &'a self,
             _task: &'a str,
@@ -281,6 +292,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证某个 agent 失败时会中止并清理其余并发任务。
     async fn failed_concurrent_workflow_aborts_and_drains_siblings() {
         let mut workflow = ConcurrentWorkflow::builder()
             .agent(TestAgent {
@@ -302,6 +314,7 @@ mod tests {
     }
 
     #[tokio::test]
+    /// 验证成功时结果按注册顺序而非完成顺序合并。
     async fn successful_concurrent_workflow_preserves_registration_order() -> Result<()> {
         let mut workflow = ConcurrentWorkflow::builder()
             .agent(TestAgent {

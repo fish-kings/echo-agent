@@ -1,31 +1,33 @@
-//! Mock Agent，实现了 [`Agent`] trait，用于在测试多 Agent 编排逻辑时替代真实的子 Agent。
-//!
-//! 在测试编排逻辑时，我们通常希望：
-//! - 避免发起真实的 LLM 调用
-//! - 控制每个子 Agent 的返回内容
-//! - 验证某个子 Agent 被调用了多少次、每次收到的任务是什么
-//!
-//! # 示例
-//!
-//! ```rust
-//! use echo_agent::testing::MockAgent;
-//! use echo_agent::agent::Agent;
-//!
-//! # #[tokio::main]
-//! # async fn main() -> echo_agent::error::Result<()> {
-//! let agent = MockAgent::new("math_agent")
-//!     .with_response("The result is 42")
-//!     .with_response("The result is 100");
-//!
-//! let r1 = agent.execute("compute 6 * 7").await?;
-//! let r2 = agent.execute("compute 10 * 10").await?;
-//! assert_eq!(r1, "The result is 42");
-//! assert_eq!(r2, "The result is 100");
-//! assert_eq!(agent.call_count(), 2);
-//! assert_eq!(agent.calls().first().map(String::as_str), Some("compute 6 * 7"));
-//! # Ok(())
-//! # }
-//! ```
+/*!
+ * Mock Agent，实现了 [`Agent`] trait，用于在测试多 Agent 编排逻辑时替代真实的子 Agent。
+ *
+ * 在测试编排逻辑时，我们通常希望：
+ * - 避免发起真实的 LLM 调用
+ * - 控制每个子 Agent 的返回内容
+ * - 验证某个子 Agent 被调用了多少次、每次收到的任务是什么
+ *
+ * # 示例
+ *
+ * ```rust
+ * use echo_agent::testing::MockAgent;
+ * use echo_agent::agent::Agent;
+ *
+ * # #[tokio::main]
+ * # async fn main() -> echo_agent::error::Result<()> {
+ * let agent = MockAgent::new("math_agent")
+ *     .with_response("The result is 42")
+ *     .with_response("The result is 100");
+ *
+ * let r1 = agent.execute("compute 6 * 7").await?;
+ * let r2 = agent.execute("compute 10 * 10").await?;
+ * assert_eq!(r1, "The result is 42");
+ * assert_eq!(r2, "The result is 100");
+ * assert_eq!(agent.call_count(), 2);
+ * assert_eq!(agent.calls().first().map(String::as_str), Some("compute 6 * 7"));
+ * # Ok(())
+ * # }
+ * ```
+ */
 
 use crate::agent::{Agent, AgentEvent, CancellationToken};
 use crate::error::{AgentError, ReactError, Result};
@@ -97,13 +99,17 @@ pub struct MockAgent {
     event_scripts: Arc<Mutex<VecDeque<Vec<MockAgentStep>>>>,
     /// 已收到的任务/消息字符串，按调用顺序记录。
     calls: Arc<Mutex<Vec<String>>>,
-    /// 通过 `execute_stream_message_with_cancel` 收到的多模态消息
-    /// （用于记录分发逻辑是否把附件转发给了子 Agent）。
+    /**
+     * 通过 `execute_stream_message_with_cancel` 收到的多模态消息
+     * （用于记录分发逻辑是否把附件转发给了子 Agent）。
+     */
     messages: Arc<Mutex<Vec<echo_core::llm::types::Message>>>,
     /// 流式调用中收到的值域调用上下文（value-scoped invocation metadata）。
     invocation_contexts: Arc<Mutex<Vec<echo_core::agent::AgentInvocationContext>>>,
-    /// 按顺序记录的 `set_working_dir` 调用（Sprint 8 隔离性测试）。
-    /// 每一项是要求该 Agent 绑定的路径（`None` 表示清除）。
+    /**
+     * 按顺序记录的 `set_working_dir` 调用（Sprint 8 隔离性测试）。
+     * 每一项是要求该 Agent 绑定的路径（`None` 表示清除）。
+     */
     working_dirs: Arc<Mutex<Vec<Option<std::path::PathBuf>>>>,
     /// 返回结果前的人为延迟（用于后台分发相关的测试）。
     delay_ms: u64,
@@ -115,8 +121,10 @@ pub struct MockAgent {
 测试可以克隆一个 MockAgent、注册这个克隆体，再对原对象做断言。
 */
 impl Clone for MockAgent {
-    /// 克隆该 Mock Agent；由于所有可观察状态都在 `Arc<Mutex>` 之后，
-    /// 克隆体与原对象共享调用/消息历史。
+    /**
+     * 克隆该 Mock Agent；由于所有可观察状态都在 `Arc<Mutex>` 之后，
+     * 克隆体与原对象共享调用/消息历史。
+     */
     fn clone(&self) -> Self {
         Self {
             name: self.name.clone(),
@@ -240,8 +248,10 @@ impl MockAgent {
             .len()
     }
 
-    /// 最近收到的多模态消息（如果分发从未转发过 `Message` 则返回 `None`）。
-    /// 用于验证子 Agent 是否看到了用户的附件。
+    /**
+     * 最近收到的多模态消息（如果分发从未转发过 `Message` 则返回 `None`）。
+     * 用于验证子 Agent 是否看到了用户的附件。
+     */
     pub fn last_message(&self) -> Option<echo_core::llm::types::Message> {
         self.messages
             .lock()
@@ -258,8 +268,10 @@ impl MockAgent {
         self.calls.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 
-    /// 按顺序记录的所有 `set_working_dir` 调用（Sprint 8 隔离性测试）。
-    /// 每一项是要求该 Agent 绑定的路径；`None` 表示清除。
+    /**
+     * 按顺序记录的所有 `set_working_dir` 调用（Sprint 8 隔离性测试）。
+     * 每一项是要求该 Agent 绑定的路径；`None` 表示清除。
+     */
     pub fn working_dir_calls(&self) -> Vec<Option<std::path::PathBuf>> {
         self.working_dirs
             .lock()
@@ -284,8 +296,10 @@ impl MockAgent {
         std::mem::take(&mut *contexts)
     }
 
-    /// 弹出下一个预设文本响应；队列为空时回退到默认成功响应，
-    /// 两者都没有则返回错误。
+    /**
+     * 弹出下一个预设文本响应；队列为空时回退到默认成功响应，
+     * 两者都没有则返回错误。
+     */
     fn next_response(&self) -> Result<String> {
         self.responses
             .lock()
@@ -299,8 +313,10 @@ impl MockAgent {
             })
     }
 
-    /// 构建下一次流式调用的事件流：优先使用预设的事件脚本，
-    /// 否则退化为发出一个 `FinalAnswer` 事件（取自 `next_response`）。
+    /**
+     * 构建下一次流式调用的事件流：优先使用预设的事件脚本，
+     * 否则退化为发出一个 `FinalAnswer` 事件（取自 `next_response`）。
+     */
     fn next_event_stream<'a>(
         &'a self,
         cancel: CancellationToken,
@@ -409,9 +425,11 @@ impl Agent for MockAgent {
         })
     }
 
-    /// 多模态分发的重载：记录收到的消息（便于测试断言子 Agent 是否看到了
-    /// 用户附件），并像文本路径一样消费一个预设响应。若不重载此方法，
-    /// trait 的默认实现会拒绝多模态分发，导致无法测试消息转发逻辑。
+    /**
+     * 多模态分发的重载：记录收到的消息（便于测试断言子 Agent 是否看到了
+     * 用户附件），并像文本路径一样消费一个预设响应。若不重载此方法，
+     * trait 的默认实现会拒绝多模态分发，导致无法测试消息转发逻辑。
+     */
     fn execute_stream_message_with_cancel<'a>(
         &'a self,
         message: echo_core::llm::types::Message,
@@ -465,8 +483,10 @@ impl Agent for MockAgent {
         })
     }
 
-    /// `chat()` 同样记录调用并消费预设响应队列。
-    /// 注意：MockAgent 不维护真实的对话上下文，这里只是满足调用契约。
+    /**
+     * `chat()` 同样记录调用并消费预设响应队列。
+     * 注意：MockAgent 不维护真实的对话上下文，这里只是满足调用契约。
+     */
     fn chat<'a>(&'a self, message: &'a str) -> BoxFuture<'a, Result<String>> {
         Box::pin(async move {
             self.calls
@@ -513,8 +533,10 @@ impl Agent for MockAgent {
         })
     }
 
-    /// 记录 `set_working_dir` 调用，便于 Sprint 8 隔离性测试验证子 Agent
-    /// 是否被 chroot 进了对应的 worktree（以及之后是否被清除）。
+    /**
+     * 记录 `set_working_dir` 调用，便于 Sprint 8 隔离性测试验证子 Agent
+     * 是否被 chroot 进了对应的 worktree（以及之后是否被清除）。
+     */
     fn set_working_dir(&self, path: Option<std::path::PathBuf>) {
         self.working_dirs
             .lock()
@@ -594,8 +616,10 @@ impl FailingMockAgent {
             .push(task.to_string());
     }
 
-    /// 构建下一次流式调用的事件流：使用预设脚本，若脚本耗尽则
-    /// 直接产出配置的默认错误。
+    /**
+     * 构建下一次流式调用的事件流：使用预设脚本，若脚本耗尽则
+     * 直接产出配置的默认错误。
+     */
     fn next_event_stream<'a>(
         &'a self,
         cancel: CancellationToken,
@@ -717,8 +741,10 @@ mod tests {
         Ok(())
     }
 
-    /// 验证 FailingMockAgent 能按脚本先发出部分事件，再以指定类型化错误结束流，
-    /// 且调用历史被正确记录。
+    /**
+     * 验证 FailingMockAgent 能按脚本先发出部分事件，再以指定类型化错误结束流，
+     * 且调用历史被正确记录。
+     */
     #[tokio::test]
     async fn failing_mock_agent_scripts_partial_event_then_typed_error() -> Result<()> {
         let agent = FailingMockAgent::new("partial-failure", "default failure")

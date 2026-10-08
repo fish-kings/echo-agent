@@ -1,7 +1,9 @@
-//! Skill execution telemetry — tracks tool reliability while skills are active.
-//!
-//! Provides `SkillTelemetryStore` which wraps the framework `Store` trait to persist
-//! telemetry data under the `["agent", "skill_telemetry"]` namespace.
+/*!
+ * 技能执行遥测——在技能激活期间跟踪工具的可靠性。
+ *
+ * 提供 `SkillTelemetryStore`，它封装框架的 `Store` trait，
+ * 将遥测数据持久化到 `["agent", "skill_telemetry"]` 命名空间下。
+ */
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, OnceLock};
@@ -11,56 +13,58 @@ use tracing::warn;
 
 use echo_core::memory::Store;
 
-/// A single tool execution observed while a skill is active.
+/// 技能激活期间观察到的一次工具执行。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillExecutionRecord {
-    /// Name of the skill that was activated.
+    /// 被激活的技能名称。
     pub skill_name: String,
-    /// Session identifier.
+    /// 会话标识符。
     pub session_id: String,
-    /// When the skill was activated (epoch milliseconds).
+    /// 技能激活时间（epoch 毫秒）。
     pub activated_at: u64,
-    /// How long the skill was active (milliseconds).
+    /// 技能处于激活状态的时长（毫秒）。
     pub duration_ms: u64,
-    /// Tools used during this skill activation.
+    /// 本次技能激活期间使用的工具。
     pub tools_used: Vec<String>,
-    /// Total number of tool calls during this activation.
+    /// 本次激活期间的工具调用总次数。
     pub tool_calls_count: usize,
-    /// Whether the skill execution was successful.
+    /// 技能执行是否成功。
     pub success: bool,
-    /// Error message if the execution failed.
+    /// 执行失败时的错误信息。
     pub error_message: Option<String>,
 }
 
-/// Aggregated telemetry metrics for a single skill.
+/// 单个技能的聚合遥测指标。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillTelemetry {
-    /// Skill name.
+    /// 技能名称。
     pub skill_name: String,
-    /// Total number of tool observations while this skill was active.
+    /// 该技能激活期间的工具观察总次数。
     pub activation_count: u64,
-    /// Number of successful activations.
+    /// 成功激活的次数。
     pub success_count: u64,
-    /// Number of failed activations.
+    /// 失败激活的次数。
     pub failure_count: u64,
-    /// Total cumulative duration (milliseconds).
+    /// 累计总时长（毫秒）。
     pub total_duration_ms: u64,
-    /// Tools commonly used with this skill and their usage counts.
+    /// 与该技能常一起使用的工具及其使用次数。
     pub common_tools: HashMap<String, u64>,
-    /// Common failure patterns.
+    /// 常见失败模式。
     pub common_failures: Vec<FailurePattern>,
-    /// Last used timestamp (epoch milliseconds).
+    /// 最近一次使用的时间戳（epoch 毫秒）。
     pub last_used: u64,
-    /// First used timestamp (epoch milliseconds).
+    /// 首次使用的时间戳（epoch 毫秒）。
     pub first_used: u64,
-    /// Recent execution results (last 20 executions, true = success, false = failure).
-    /// Used for computing recent_success_rate in health monitoring.
+    /**
+     * 最近的执行结果（最近 20 次，true = 成功，false = 失败）。
+     * 用于在健康监控中计算 recent_success_rate。
+     */
     #[serde(default)]
     pub recent_records: VecDeque<bool>,
 }
 
 impl SkillTelemetry {
-    /// Create new empty telemetry for a skill.
+    /// 为技能创建新的空遥测数据。
     pub fn new(skill_name: &str) -> Self {
         let now = epoch_millis();
         Self {
@@ -77,14 +81,14 @@ impl SkillTelemetry {
         }
     }
 
-    /// Record a single execution.
+    /// 记录一次执行。
     pub fn record(&mut self, record: &SkillExecutionRecord) {
         self.activation_count += 1;
         if record.success {
             self.success_count += 1;
         } else {
             self.failure_count += 1;
-            // Track failure patterns
+            // 跟踪失败模式
             if let Some(ref msg) = record.error_message {
                 let snippet = truncate_to_200(msg);
                 if let Some(pattern) = self
@@ -112,14 +116,14 @@ impl SkillTelemetry {
             self.first_used = record.activated_at;
         }
 
-        // Maintain recent_records FIFO (last 20 executions)
+        // 维护 recent_records FIFO 队列（最近 20 次执行）
         self.recent_records.push_front(record.success);
         if self.recent_records.len() > 20 {
             self.recent_records.pop_back();
         }
     }
 
-    /// Success rate as a percentage (0.0 to 1.0).
+    /// 成功率（0.0 到 1.0）。
     pub fn success_rate(&self) -> f64 {
         if self.activation_count == 0 {
             return 0.0;
@@ -127,7 +131,7 @@ impl SkillTelemetry {
         self.success_count as f64 / self.activation_count as f64
     }
 
-    /// Average duration in milliseconds.
+    /// 平均时长（毫秒）。
     pub fn avg_duration_ms(&self) -> u64 {
         if self.activation_count == 0 {
             return 0;
@@ -135,8 +139,10 @@ impl SkillTelemetry {
         self.total_duration_ms / self.activation_count
     }
 
-    /// Recent success rate based on the last 20 executions (0.0 to 1.0).
-    /// Returns 0.0 if no recent records are available.
+    /**
+     * 基于最近 20 次执行的近期成功率（0.0 到 1.0）。
+     * 没有近期记录时返回 0.0。
+     */
     pub fn recent_success_rate(&self) -> f64 {
         if self.recent_records.is_empty() {
             return 0.0;
@@ -146,29 +152,34 @@ impl SkillTelemetry {
     }
 }
 
-/// A recurring failure pattern observed during skill execution.
+/// 技能执行期间观察到的重复失败模式。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FailurePattern {
-    /// First 200 characters of the error message.
+    /// 错误信息的前 200 个字符。
     pub error_snippet: String,
-    /// How many times this failure has occurred.
+    /// 该失败出现的次数。
     pub count: u64,
-    /// Last occurrence timestamp (epoch milliseconds).
+    /// 最近一次出现的时间戳（epoch 毫秒）。
     pub last_occurred: u64,
 }
 
-/// Store for skill telemetry data, backed by the framework `Store` trait.
-///
-/// Stores aggregated telemetry under `["agent", "skill_telemetry"]` namespace,
-/// keyed by skill name.
+/**
+ * 技能遥测数据存储，底层由框架的 `Store` trait 支撑。
+ *
+ * 聚合遥测数据存放在 `["agent", "skill_telemetry"]` 命名空间下，以技能名称为键。
+ */
 #[derive(Clone)]
 pub struct SkillTelemetryStore {
+    /// 底层持久化存储
     store: Arc<dyn Store>,
+    /// 串行化读-改-写操作的写锁
     write_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
+/// 进程级共享的遥测写锁，保证并发记录时不会丢失更新。
 static TELEMETRY_WRITE_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
 
+/// 获取（必要时初始化）共享的遥测写锁。
 fn telemetry_write_lock() -> Arc<tokio::sync::Mutex<()>> {
     TELEMETRY_WRITE_LOCK
         .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
@@ -176,7 +187,7 @@ fn telemetry_write_lock() -> Arc<tokio::sync::Mutex<()>> {
 }
 
 impl SkillTelemetryStore {
-    /// Create a new telemetry store backed by the given `Store`.
+    /// 基于给定的 `Store` 创建遥测存储。
     pub fn new(store: Arc<dyn Store>) -> Self {
         Self {
             store,
@@ -184,7 +195,7 @@ impl SkillTelemetryStore {
         }
     }
 
-    /// Record a skill execution, updating aggregated telemetry.
+    /// 记录一次技能执行，并更新聚合遥测数据。
     pub async fn record_execution(
         &self,
         record: &SkillExecutionRecord,
@@ -211,7 +222,7 @@ impl SkillTelemetryStore {
         Ok(())
     }
 
-    /// Get aggregated telemetry for a specific skill.
+    /// 获取指定技能的聚合遥测数据。
     pub async fn get_telemetry(
         &self,
         skill_name: &str,
@@ -236,7 +247,7 @@ impl SkillTelemetryStore {
         }
     }
 
-    /// List telemetry for all skills.
+    /// 列出所有技能的遥测数据（按最近使用时间倒序）。
     pub async fn list_all(&self) -> echo_core::error::Result<Vec<SkillTelemetry>> {
         let items = self
             .store
@@ -259,7 +270,7 @@ impl SkillTelemetryStore {
     }
 }
 
-/// Get current time as epoch milliseconds.
+/// 获取当前时间的 epoch 毫秒数。
 fn epoch_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -267,7 +278,7 @@ fn epoch_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// Truncate a string to at most 200 characters.
+/// 将字符串截断为最多 200 个字符。
 fn truncate_to_200(s: &str) -> String {
     if s.chars().count() <= 200 {
         s.to_string()
@@ -280,6 +291,7 @@ fn truncate_to_200(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// 构造一条测试用执行记录。
     fn make_record(name: &str, success: bool, duration: u64) -> SkillExecutionRecord {
         SkillExecutionRecord {
             skill_name: name.to_string(),
@@ -297,6 +309,7 @@ mod tests {
         }
     }
 
+    /// 新建遥测数据应为空。
     #[test]
     fn test_telemetry_new() {
         let t = SkillTelemetry::new("test-skill");
@@ -305,6 +318,7 @@ mod tests {
         assert_eq!(t.success_rate(), 0.0);
     }
 
+    /// 记录成功执行应更新成功计数。
     #[test]
     fn test_telemetry_record_success() {
         let mut t = SkillTelemetry::new("coding");
@@ -316,6 +330,7 @@ mod tests {
         assert!((t.success_rate() - 1.0).abs() < f64::EPSILON);
     }
 
+    /// 记录失败执行应更新失败计数与失败模式。
     #[test]
     fn test_telemetry_record_failure() {
         let mut t = SkillTelemetry::new("coding");
@@ -328,6 +343,7 @@ mod tests {
         assert_eq!(t.common_failures[0].error_snippet, "timeout error");
     }
 
+    /// 失败片段截断应对 UTF-8 安全。
     #[test]
     fn failure_snippet_truncation_is_utf8_safe() {
         let input = "错".repeat(250);
@@ -335,6 +351,7 @@ mod tests {
         assert_eq!(truncated.chars().count(), 200);
     }
 
+    /// 多次记录应正确聚合时长与工具使用。
     #[test]
     fn test_telemetry_aggregate() {
         let mut t = SkillTelemetry::new("coding");
@@ -347,11 +364,12 @@ mod tests {
         assert_eq!(t.failure_count, 1);
         assert_eq!(t.total_duration_ms, 9000);
         assert_eq!(t.avg_duration_ms(), 3000);
-        // bash used 3 times, read_file used 3 times
+        // bash 使用 3 次，read_file 使用 3 次
         assert_eq!(t.common_tools.get("bash"), Some(&3));
         assert_eq!(t.common_tools.get("read_file"), Some(&3));
     }
 
+    /// 相同错误应合并为同一失败模式。
     #[test]
     fn test_failure_pattern_dedup() {
         let mut t = SkillTelemetry::new("coding");
@@ -361,6 +379,7 @@ mod tests {
         assert_eq!(t.common_failures[0].count, 2);
     }
 
+    /// 验证 200 字符截断。
     #[test]
     fn test_truncate_to_200() {
         let short = "hello";
@@ -370,27 +389,30 @@ mod tests {
         assert_eq!(truncate_to_200(&long).len(), 200);
     }
 
+    /// 近期记录应只保留最近 20 次。
     #[test]
     fn test_recent_records_fifo() {
         let mut t = SkillTelemetry::new("coding");
 
-        // Record 25 executions (more than the 20 FIFO limit)
+        // 记录 25 次执行（超过 20 次的 FIFO 上限）
         for i in 0..25 {
             let r = make_record("coding", i % 2 == 0, 1000);
             t.record(&r);
         }
 
-        // Should only keep last 20
+        // 应只保留最近 20 次
         assert_eq!(t.recent_records.len(), 20);
         assert_eq!(t.activation_count, 25);
     }
 
+    /// 无近期记录时近期成功率为 0。
     #[test]
     fn test_recent_success_rate_empty() {
         let t = SkillTelemetry::new("coding");
         assert_eq!(t.recent_success_rate(), 0.0);
     }
 
+    /// 全部成功时近期成功率为 1。
     #[test]
     fn test_recent_success_rate_all_success() {
         let mut t = SkillTelemetry::new("coding");
@@ -400,10 +422,11 @@ mod tests {
         assert!((t.recent_success_rate() - 1.0).abs() < f64::EPSILON);
     }
 
+    /// 成功与失败混合时近期成功率正确。
     #[test]
     fn test_recent_success_rate_mixed() {
         let mut t = SkillTelemetry::new("coding");
-        // 3 success, 2 failure
+        // 3 次成功，2 次失败
         t.record(&make_record("coding", true, 1000));
         t.record(&make_record("coding", true, 1000));
         t.record(&make_record("coding", false, 1000));

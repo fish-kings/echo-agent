@@ -231,8 +231,9 @@ impl SkillHealthMonitor {
             0.0
         };
 
-        // 命令有效性：不存在严重失败
-        // 若存在包含 "critical" 或 "fatal" 关键词的失败，则降低评分
+        /* 命令有效性：不存在严重失败
+         * 若存在包含 "critical" 或 "fatal" 关键词的失败，则降低评分
+         */
         let has_critical_failures = telemetry.common_failures.iter().any(|f| {
             let snippet_lower = f.error_snippet.to_lowercase();
             snippet_lower.contains("critical") || snippet_lower.contains("fatal")
@@ -457,8 +458,9 @@ mod tests {
         };
 
         let score = breakdown.overall_score();
-        // 0.9*0.3 + 0.95*0.2 + 0.5*0.1 + 0.8*0.15 + 0.9*0.15 + 1.0*0.1
-        // = 0.27 + 0.19 + 0.05 + 0.12 + 0.135 + 0.1 = 0.865
+        /* 0.9*0.3 + 0.95*0.2 + 0.5*0.1 + 0.8*0.15 + 0.9*0.15 + 1.0*0.1
+         * = 0.27 + 0.19 + 0.05 + 0.12 + 0.135 + 0.1 = 0.865
+         */
         assert!((score - 0.865).abs() < 0.01);
     }
 

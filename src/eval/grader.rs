@@ -57,6 +57,7 @@ pub struct LlmGrader {
 }
 
 impl Default for LlmGrader {
+    /// 创建默认实例。
     fn default() -> Self {
         Self::new()
     }
@@ -288,4 +289,3 @@ mod tests {
         assert!(report.results[0].passed);
     }
 }
-</content>

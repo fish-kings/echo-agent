@@ -39,8 +39,10 @@ impl MemoryRecaller {
     pub async fn recall(&self, query: &str, top_k: usize) -> crate::error::Result<Vec<StoreItem>> {
         let ns = crate::evolution::layer::WARM_NAMESPACE; // ["agent","memories"]
 
-        // 1. 通过混合检索获取候选项；混合检索出错时回退到关键词
-        //    检索（不对错误文本做字符串匹配判断）。
+        /*
+        1. 通过混合检索获取候选项；混合检索出错时回退到关键词
+           检索（不对错误文本做字符串匹配判断）。
+        */
         let candidates = match self
             .store
             .search_with(ns, SearchQuery::hybrid(query, top_k * 3))

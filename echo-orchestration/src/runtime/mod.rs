@@ -1,8 +1,10 @@
-//! 用于驱动有限次 Agent 调用的通用运行时基础组件。
-//!
-//! | 模块 | 说明 |
-//! |--------|-------------|
-//! | [`turn_driver`] | 单次有限 Agent 回合：`AgentTurnDriver`、`TurnRequest`、`TurnOutcome`、`EventSink` |
+/*!
+用于驱动有限次 Agent 调用的通用运行时基础组件。
+
+| 模块 | 说明 |
+|--------|-------------|
+| [`turn_driver`] | 单次有限 Agent 回合：`AgentTurnDriver`、`TurnRequest`、`TurnOutcome`、`EventSink` |
+*/
 
 pub mod turn_driver;
 

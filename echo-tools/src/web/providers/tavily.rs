@@ -1,16 +1,18 @@
-//! Tavily Search API Provider
-//!
-//! AI-optimized search via the Tavily AI Search API, requires an API Key.
-//!
-//! # Features
-//!
-//! - AI-optimized search results with higher quality summaries
-//! - Supports automatic web content extraction
-//! - Designed specifically for AI Agents
-//!
-//! # Getting an API Key
-//!
-//! Visit <https://tavily.com/> to register and get an API Key.
+/*!
+ * Tavily 搜索 API Provider
+ *
+ * 通过 Tavily AI Search API 进行面向 AI 优化的搜索，需要 API Key。
+ *
+ * # 特性
+ *
+ * - 面向 AI 优化的搜索结果，摘要质量更高
+ * - 支持自动提取网页内容
+ * - 专为 AI Agent 设计
+ *
+ * # 获取 API Key
+ *
+ * 访问 <https://tavily.com/> 注册并获取 API Key。
+ */
 
 use super::utils::truncate_chars;
 use super::{SearchProvider, SearchResult};
@@ -20,18 +22,24 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// Tavily Search API Provider
-///
-/// Searches via the Tavily AI Search API, requires an API Key.
+/**
+ * Tavily 搜索 API Provider
+ *
+ * 通过 Tavily AI Search API 搜索，需要 API Key。
+ */
 pub struct TavilyProvider {
+    /// 带超时配置的 HTTP 客户端
     client: Client,
+    /// Tavily API 密钥
     api_key: String,
 }
 
 impl TavilyProvider {
-    /// Create a new Tavily Provider
-    ///
-    /// - `api_key`: Tavily API Key
+    /**
+     * 创建新的 Tavily Provider
+     *
+     * - `api_key`：Tavily API Key
+     */
     pub fn new(api_key: impl Into<String>) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(15))
@@ -43,25 +51,32 @@ impl TavilyProvider {
         }
     }
 
-    /// Create from environment variable
-    ///
-    /// Reads the `TAVILY_API_KEY` environment variable.
+    /**
+     * 从环境变量创建
+     *
+     * 读取 `TAVILY_API_KEY` 环境变量。
+     */
     pub fn from_env() -> Option<Self> {
         std::env::var("TAVILY_API_KEY").ok().map(Self::new)
     }
 }
 
-/// Tavily search request body
+/// Tavily 搜索请求体
 #[derive(Serialize)]
 struct TavilyRequest {
+    /// API 密钥
     api_key: String,
+    /// 查询关键词
     query: String,
+    /// 最大结果数
     max_results: usize,
+    /// 是否包含 AI 生成的答案
     #[serde(rename = "include_answer")]
     include_answer: bool,
 }
 
 impl std::fmt::Debug for TavilyRequest {
+    /// 调试输出时隐藏 API Key。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TavilyRequest")
             .field("api_key", &"[REDACTED]")
@@ -72,25 +87,32 @@ impl std::fmt::Debug for TavilyRequest {
     }
 }
 
-/// Tavily search response
+/// Tavily 搜索响应
 #[derive(Debug, Deserialize)]
 struct TavilyResponse {
+    /// 搜索结果列表
     results: Vec<TavilyResult>,
 }
 
+/// Tavily 单条搜索结果
 #[derive(Debug, Deserialize)]
 struct TavilyResult {
+    /// 标题
     title: Option<String>,
+    /// 结果链接 URL
     url: Option<String>,
+    /// 内容摘要
     content: Option<String>,
 }
 
 #[async_trait]
 impl SearchProvider for TavilyProvider {
+    /// Provider 名称。
     fn name(&self) -> &str {
         "tavily"
     }
 
+    /// 调用 Tavily API 搜索，并处理鉴权失败、限流等错误状态。
     async fn search(&self, query: &str, max_results: usize) -> Result<Vec<SearchResult>> {
         let request = TavilyRequest {
             api_key: self.api_key.clone(),
@@ -177,6 +199,7 @@ impl SearchProvider for TavilyProvider {
 mod tests {
     use super::*;
 
+    /// 请求体序列化字段正确。
     #[test]
     fn test_tavily_request_serialization() -> std::result::Result<(), String> {
         let req = TavilyRequest {
@@ -206,6 +229,7 @@ mod tests {
         Ok(())
     }
 
+    /// 解析 Tavily 响应。
     #[test]
     fn test_parse_tavily_response() -> std::result::Result<(), String> {
         let json = r#"{
@@ -256,6 +280,7 @@ mod tests {
         Ok(())
     }
 
+    /// 解析空结果响应。
     #[test]
     fn test_parse_tavily_empty_response() -> std::result::Result<(), String> {
         let json = r#"{"results": [], "answer": null}"#;

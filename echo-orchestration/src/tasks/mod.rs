@@ -1,7 +1,9 @@
-//! 可修订任务图的规划与执行基础组件。
-//!
-//! [`TaskRevisionService`] 是唯一的 CRUD/关系权威模块，
-//! [`RuntimeTaskService`] 是唯一的依赖执行入口。
+/*!
+可修订任务图的规划与执行基础组件。
+
+[`TaskRevisionService`] 是唯一的 CRUD/关系权威模块，
+[`RuntimeTaskService`] 是唯一的依赖执行入口。
+*/
 
 pub mod background_state;
 mod events;

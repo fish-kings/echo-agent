@@ -1,14 +1,18 @@
-//! 记忆与持久化子系统
-//!
-//! 集中管理上下文窗口、长期记忆存储、运行时 checkpoint、
-//! 状态快照以及会话历史投影。
+/*!
+记忆与持久化子系统
+
+集中管理上下文窗口、长期记忆存储、运行时 checkpoint、
+状态快照以及会话历史投影。
+*/
 
 use crate::compression::ContextManager;
 use crate::memory::{SnapshotManager, Store};
 use std::sync::Arc;
 
-/// 运行时状态的水合（hydration）阶段，描述 `context` 与某个
-/// checkpoint 身份之间的同步状态。
+/**
+运行时状态的水合（hydration）阶段，描述 `context` 与某个
+checkpoint 身份之间的同步状态。
+*/
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) enum RuntimeStateHydration {
     /// 尚未初始化，`context` 还未关联任何 checkpoint 身份。
@@ -20,10 +24,12 @@ pub(crate) enum RuntimeStateHydration {
     Hydrated(Option<String>),
 }
 
-/// 记忆与持久化子系统
-///
-/// 汇聚了会话上下文、长期记忆 Store、状态快照、
-/// 运行时 checkpoint 存储以及会话历史投影 Store。
+/**
+记忆与持久化子系统
+
+汇聚了会话上下文、长期记忆 Store、状态快照、
+运行时 checkpoint 存储以及会话历史投影 Store。
+*/
 pub(crate) struct MemorySubsystem {
     /// 当前会话的上下文管理器。
     pub(crate) context: Arc<tokio::sync::Mutex<ContextManager>>,
@@ -35,11 +41,13 @@ pub(crate) struct MemorySubsystem {
     pub(crate) conversation_store: Option<Arc<dyn crate::memory::ConversationStore>>,
     /// 可选的运行时 checkpoint 存储。
     pub(crate) state_store: Option<Arc<dyn crate::state::RuntimeStateStore>>,
-    /// `context` 当前所代表的运行时 checkpoint 身份。
-    ///
-    /// 在任何可取消的恢复变更操作之前都会先发布 `Hydrating`，因此
-    /// 一次被取消的切换绝不会让部分替换后的上下文，看起来像是
-    /// 仍对应此前那个身份的已就绪状态。
+    /**
+    `context` 当前所代表的运行时 checkpoint 身份。
+
+    在任何可取消的恢复变更操作之前都会先发布 `Hydrating`，因此
+    一次被取消的切换绝不会让部分替换后的上下文，看起来像是
+    仍对应此前那个身份的已就绪状态。
+    */
     pub(crate) runtime_state_hydration: Arc<tokio::sync::Mutex<RuntimeStateHydration>>,
     /// 内存中上下文所代表的运行时权威（authority）版本号。
     pub(crate) runtime_state_version:

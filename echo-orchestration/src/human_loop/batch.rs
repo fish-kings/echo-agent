@@ -1,10 +1,12 @@
-//! 批量审批支持
-//!
-//! 当多个工具同时需要审批时，将它们打包成批量请求，
-//! 让用户一次性处理，避免逐个审批的交互疲劳。
-//!
-//! `BatchApprovalProvider` 的默认 `batch_request` 实现会逐个调用 `request()`。
-//! 自定义 Provider 可以覆写此方法，提供更高效的批量交互体验。
+/*!
+批量审批支持
+
+当多个工具同时需要审批时，将它们打包成批量请求，
+让用户一次性处理，避免逐个审批的交互疲劳。
+
+`BatchApprovalProvider` 的默认 `batch_request` 实现会逐个调用 `request()`。
+自定义 Provider 可以覆写此方法，提供更高效的批量交互体验。
+*/
 
 use std::time::Duration;
 
@@ -117,14 +119,18 @@ pub enum BatchApprovalResponse {
 
 // ── 批量审批 trait ────────────────────────────────────────────────────────────
 
-/// 批量审批扩展 trait
-///
-/// 为 [`HumanLoopProvider`] 添加批量审批能力。
-/// 默认实现逐个调用 `request()`。
+/**
+批量审批扩展 trait
+
+为 [`HumanLoopProvider`] 添加批量审批能力。
+默认实现逐个调用 `request()`。
+*/
 pub trait BatchApprovalProvider: HumanLoopProvider {
-    /// 批量审批请求
-    ///
-    /// 默认实现：逐个调用 `request()`。
+    /**
+    批量审批请求
+
+    默认实现：逐个调用 `request()`。
+    */
     fn batch_request(
         &self,
         batch: BatchApprovalRequest,

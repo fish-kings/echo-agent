@@ -1,6 +1,8 @@
-//! Web 内容提取工具 —— 从 HTML 中提取结构化内容
-//!
-//! 从 HTML 内容中提取标题、链接、各级标题、段落、表格等信息。
+/*!
+Web 内容提取工具 —— 从 HTML 中提取结构化内容
+
+从 HTML 内容中提取标题、链接、各级标题、段落、表格等信息。
+*/
 
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::{Tool, ToolParameters, ToolResult};

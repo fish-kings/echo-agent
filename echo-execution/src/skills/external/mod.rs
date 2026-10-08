@@ -5,6 +5,7 @@ pub mod loader;
 pub mod prompt_exec;
 pub mod resource_tool;
 pub mod run_script_tool;
+/// skill 描述、文档与资源等公共类型。
 pub mod types;
 pub mod validate;
 

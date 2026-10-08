@@ -1,7 +1,9 @@
-//! 触发准确率评估 —— 衡量子 Agent 的激活表现如何。
-//!
-//! 针对子 Agent 路由，评估精确率（precision，该触发时是否触发了？）
-//! 与召回率（recall，不该触发时是否没有触发？）。
+/*!
+触发准确率评估 —— 衡量子 Agent 的激活表现如何。
+
+针对子 Agent 路由，评估精确率（precision，该触发时是否触发了？）
+与召回率（recall，不该触发时是否没有触发？）。
+*/
 
 use serde::{Deserialize, Serialize};
 
@@ -172,6 +174,7 @@ impl TriggerAccuracy {
 mod tests {
     use super::*;
 
+    /// 验证全部正确触发时准确率指标均为满分。
     #[test]
     fn test_trigger_accuracy_perfect() {
         let cases = vec![
@@ -198,6 +201,7 @@ mod tests {
         assert_eq!(acc.f1, 1.0);
     }
 
+    /// 验证不该触发却触发时会被统计为误报。
     #[test]
     fn test_trigger_accuracy_false_positive() {
         let cases = vec![TriggerTestCase {

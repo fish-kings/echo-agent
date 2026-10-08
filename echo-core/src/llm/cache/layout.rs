@@ -1,9 +1,11 @@
 use crate::llm::types::{Message, ToolDefinition};
 
-/// 缓存断点的精确目标。
-///
-/// 用精确枚举点表达断点位置而非用 `Vec<SegmentKind>` 重复表达同段两个断点。
-/// Provider 实现负责将断点目标映射为协议级指令（Anthropic `cache_control`、OpenAI 前缀位置等）。
+/**
+缓存断点的精确目标。
+
+用精确枚举点表达断点位置而非用 `Vec<SegmentKind>` 重复表达同段两个断点。
+Provider 实现负责将断点目标映射为协议级指令（Anthropic `cache_control`、OpenAI 前缀位置等）。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BreakpointTarget {
     /// system 段最后一个 block
@@ -27,43 +29,60 @@ pub struct CacheHints {
     pub segments: SegmentRanges,
 }
 
+/// 各提示词分段在 flatten 后 messages 数组中的索引范围集合。
 #[derive(Debug, Clone, Default)]
 pub struct SegmentRanges {
+    /// system 段的索引范围
     pub system: SegmentRange,
+    /// canonical 段的索引范围
     pub canonical: SegmentRange,
+    /// history 段的索引范围
     pub history: SegmentRange,
+    /// runtime_context 段的索引范围
     pub runtime_context: SegmentRange,
 }
 
+/// 左闭右开的索引区间 `[start, end)`。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SegmentRange {
+    /// 起始索引（包含）
     pub start: usize,
+    /// 结束索引（不包含）
     pub end: usize,
 }
 
 impl SegmentRange {
+    /// 返回区间长度（`end < start` 时为 0）。
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
     }
 
+    /// 判断区间是否为空。
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 }
 
-/// 只读 layout view：从现有单一 messages 数组识别分段，不改原数组。
-///
-/// 分段规则（基于现有消息的 role 和内容标记，零拷贝）：
-/// - **system**: 开头连续的 `Role::System` 消息
-/// - **canonical**: system 段内（或紧随）含 `"Canonical context"` 文本的消息
-/// - **history**: system/canonical 之后、首个 runtime_context 之前的所有消息
-/// - **runtime_context**: 尾部以 `[runtime_context:` 开头的消息（可能多条）
+/**
+只读 layout view：从现有单一 messages 数组识别分段，不改原数组。
+
+分段规则（基于现有消息的 role 和内容标记，零拷贝）：
+- **system**: 开头连续的 `Role::System` 消息
+- **canonical**: system 段内（或紧随）含 `"Canonical context"` 文本的消息
+- **history**: system/canonical 之后、首个 runtime_context 之前的所有消息
+- **runtime_context**: 尾部以 `[runtime_context:` 开头的消息（可能多条）
+*/
 #[derive(Debug, Clone)]
 pub struct PromptCacheLayout<'a> {
+    /// system 段消息切片
     pub system: &'a [Message],
+    /// canonical 段消息切片
     pub canonical: &'a [Message],
+    /// history 段消息切片
     pub history: &'a [Message],
+    /// runtime_context 段消息切片
     pub runtime_context: &'a [Message],
+    /// 本次请求携带的工具定义
     pub tools: &'a [ToolDefinition],
 }
 
@@ -76,8 +95,8 @@ impl<'a> PromptCacheLayout<'a> {
             .position(|m| m.role != crate::llm::types::Role::System)
             .unwrap_or(messages.len());
 
-        // canonical 段：system 区域内含 "Canonical context" 标记的消息。
-        // `to_reinjection_messages` 产生 "[Canonical context — ...]" 或类似格式。
+        /* canonical 段：system 区域内含 "Canonical context" 标记的消息。
+        `to_reinjection_messages` 产生 "[Canonical context — ...]" 或类似格式。 */
         let canon_start = messages[..sys_end]
             .iter()
             .position(|m| {
@@ -163,21 +182,26 @@ impl<'a> PromptCacheLayout<'a> {
     }
 }
 
+/// 缓存分段布局的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::llm::types::Message;
 
+    /// 构造 system 消息的测试辅助函数
     fn sys(t: &str) -> Message {
         Message::system(t.to_string())
     }
+    /// 构造 user 消息的测试辅助函数
     fn user(t: &str) -> Message {
         Message::user(t.to_string())
     }
+    /// 构造 runtime_context 消息的测试辅助函数
     fn rt(t: &str) -> Message {
         Message::user(format!("[runtime_context:{t}]"))
     }
 
+    /// 验证典型会话的分段结果。
     #[test]
     fn segments_typical_conversation() {
         let msgs = vec![
@@ -194,6 +218,7 @@ mod tests {
         assert_eq!(layout.runtime_context.len(), 1);
     }
 
+    /// 验证没有规范化消息时规范段为空。
     #[test]
     fn no_canonical_yields_empty_canonical_seg() {
         let msgs = vec![sys("S"), user("hi")];
@@ -203,6 +228,7 @@ mod tests {
         assert_eq!(layout.history.len(), 1);
     }
 
+    /// 验证尾部连续的运行时上下文被归为一组。
     #[test]
     fn multiple_trailing_runtime_context_grouped() {
         let msgs = vec![
@@ -216,6 +242,7 @@ mod tests {
         assert_eq!(layout.runtime_context.len(), 2);
     }
 
+    /// 验证各段范围与切片长度一致。
     #[test]
     fn ranges_match_slice_lengths() {
         let msgs = vec![sys("S"), sys("[Canonical context — x]"), user("h"), rt("t")];
@@ -228,6 +255,7 @@ mod tests {
         assert_eq!(r.runtime_context.end, 4);
     }
 
+    /// 验证运行时上下文变化不影响历史段。
     #[test]
     fn runtime_context_change_does_not_affect_history_segment() {
         let msgs1 = vec![sys("S"), user("h"), rt("turn\ncwd: /a")];
@@ -242,6 +270,7 @@ mod tests {
         );
     }
 
+    /// 验证空消息列表的所有分段均为空。
     #[test]
     fn empty_messages_all_empty_segments() {
         let msgs: Vec<Message> = vec![];
@@ -252,13 +281,13 @@ mod tests {
         assert!(layout.runtime_context.is_empty());
     }
 
-    // ── Cross-turn stability tests ──
+    // ── 跨轮次稳定性测试 ──
 
-    /// Simulate turn N → turn N+1: system and canonical should remain identical
-    /// between turns; only history grows and runtime_context changes.
+    /** 模拟第 N 轮 → 第 N+1 轮：system 与 canonical 在两轮间应保持完全一致；
+    仅 history 增长、runtime_context 变化。 */
     #[test]
     fn system_and_canonical_stable_across_turns() {
-        // Turn N
+        // 第 N 轮
         let turn_n = vec![
             sys("You are Echo Agent"),
             sys("[Canonical context — project rules restored]"),
@@ -266,7 +295,7 @@ mod tests {
             user("what is Rust?"),
             rt("turn\ncwd: /project"),
         ];
-        // Turn N+1: same system + canonical, one more history message, different runtime
+        // 第 N+1 轮：相同 system + canonical，多一条 history 消息，runtime 不同
         let turn_n1 = vec![
             sys("You are Echo Agent"),
             sys("[Canonical context — project rules restored]"),
@@ -279,7 +308,7 @@ mod tests {
         let l_n = PromptCacheLayout::from_messages(&turn_n, &[]);
         let l_n1 = PromptCacheLayout::from_messages(&turn_n1, &[]);
 
-        // system and canonical segments must be identical
+        // system 与 canonical 段必须完全一致
         assert_eq!(l_n.system.len(), l_n1.system.len());
         assert_eq!(l_n.canonical.len(), l_n1.canonical.len());
         for (a, b) in l_n.system.iter().zip(l_n1.system.iter()) {
@@ -289,10 +318,10 @@ mod tests {
             assert_eq!(a.content.as_text(), b.content.as_text());
         }
 
-        // history grows (N+1 has +1 message)
+        // history 增长（N+1 轮多 1 条消息）
         assert_eq!(l_n.history.len() + 1, l_n1.history.len());
 
-        // runtime_context changes (different content)
+        // runtime_context 发生变化（内容不同）
         assert_eq!(l_n.runtime_context.len(), 1);
         assert_eq!(l_n1.runtime_context.len(), 1);
         assert_ne!(
@@ -301,8 +330,8 @@ mod tests {
         );
     }
 
-    /// Verify that segment_ranges correctly reflects the ordering invariant:
-    /// system ≤ canonical ≤ history ≤ runtime_context.
+    /** 验证 segment_ranges 正确反映顺序不变式：
+    system ≤ canonical ≤ history ≤ runtime_context。 */
     #[test]
     fn segment_ranges_are_monotonic() {
         let msgs = vec![
@@ -325,7 +354,7 @@ mod tests {
         assert!(r.runtime_context.start <= r.runtime_context.end);
     }
 
-    /// When there's no canonical context, system segment absorbs all system messages.
+    /// 无 canonical context 时，system 段吸收全部 system 消息。
     #[test]
     fn no_canonical_all_system_messages_go_to_system_segment() {
         let msgs = vec![

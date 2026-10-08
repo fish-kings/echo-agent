@@ -23,10 +23,12 @@ pub(crate) struct BoundedProcessOutput {
     pub truncated: bool,
 }
 
-/// 启动并执行一个子进程，带超时控制、取消信号响应，并对输出总字节数做上限截断。
-///
-/// 会持续读取子进程的标准输出与标准错误，直到进程退出或以下情况先发生：
-/// 超时、外部取消信号触发。进程退出后清理整个进程组，避免残留子进程。
+/**
+启动并执行一个子进程，带超时控制、取消信号响应，并对输出总字节数做上限截断。
+
+会持续读取子进程的标准输出与标准错误，直到进程退出或以下情况先发生：
+超时、外部取消信号触发。进程退出后清理整个进程组，避免残留子进程。
+*/
 pub(crate) async fn run_bounded_command<I, S>(
     tool_name: &str,
     program: &str,
@@ -168,8 +170,10 @@ where
         })
 }
 
-/// 将新读取到的字节追加到 `destination` 中，但不超过 `max_output_bytes` 与 `other_len`（另一路输出已占用的字节数）之和的总预算；
-/// 超出部分会被丢弃，并将 `truncated` 置为 `true`。
+/**
+将新读取到的字节追加到 `destination` 中，但不超过 `max_output_bytes` 与 `other_len`（另一路输出已占用的字节数）之和的总预算；
+超出部分会被丢弃，并将 `truncated` 置为 `true`。
+*/
 fn retain_output(
     bytes: &[u8],
     destination: &mut Vec<u8>,
@@ -189,8 +193,10 @@ fn retain_output(
 async fn cleanup_process_tree(child: &mut tokio::process::Child) {
     #[cfg(unix)]
     if let Some(pid) = child.id().and_then(|pid| i32::try_from(pid).ok()) {
-        // SAFETY: `kill` 接收的是上面创建的进程组 id 的相反数（负数）；
-        // 此处没有指针或借用内存跨越 FFI 边界。
+        /*
+        SAFETY: `kill` 接收的是上面创建的进程组 id 的相反数（负数）；
+        此处没有指针或借用内存跨越 FFI 边界。
+        */
         let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
     }
     let _ = child.kill().await;

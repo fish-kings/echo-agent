@@ -1,55 +1,64 @@
-//! `#[derive(Tool)]` — Generate `Tool` trait impl from a struct definition.
-//!
-//! ## Usage
-//!
-//! ```rust,ignore
-//! #[derive(Tool)]
-//! #[tool(name = "read_file", description = "Read a file", risk_level = "ReadOnly")]
-//! struct ReadFileTool {
-//!     #[tool_param(skip)]
-//!     base_dir: PathBuf,
-//!
-//!     #[tool_param(description = "File path")]
-//!     path: String,
-//!
-//!     #[tool_param(description = "Start line")]
-//!     start_line: Option<usize>,
-//! }
-//!
-//! impl ToolRunner<ReadFileToolParams> for ReadFileTool {
-//!     async fn run(&self, params: ReadFileToolParams) -> Result<ToolResult> {
-//!         // ... business logic ...
-//!     }
-//! }
-//! ```
-//!
-//! The macro generates:
-//! - `ReadFileToolParams` struct with `Deserialize + JsonSchema`
-//! - Full `impl Tool for ReadFileTool` (name, description, parameters, execute, etc.)
+/*!
+`#[derive(Tool)]` —— 根据结构体定义生成 `Tool` trait 实现。
+
+## 用法
+
+```rust,ignore
+#[derive(Tool)]
+#[tool(name = "read_file", description = "Read a file", risk_level = "ReadOnly")]
+struct ReadFileTool {
+    #[tool_param(skip)]
+    base_dir: PathBuf,
+
+    #[tool_param(description = "File path")]
+    path: String,
+
+    #[tool_param(description = "Start line")]
+    start_line: Option<usize>,
+}
+
+impl ToolRunner<ReadFileToolParams> for ReadFileTool {
+    async fn run(&self, params: ReadFileToolParams) -> Result<ToolResult> {
+        // ... business logic ...
+    }
+}
+```
+
+该宏会生成：
+- 实现了 `Deserialize + JsonSchema` 的 `ReadFileToolParams` 结构体
+- 完整的 `impl Tool for ReadFileTool`（name、description、parameters、execute 等）
+*/
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Attribute, Data, DeriveInput, Fields, Ident, LitStr, Token};
 
-// ── Parsed attributes ──────────────────────────────────────────────────────────
+// ── 解析后的属性 ──────────────────────────────────────────────────────────
 
-/// Parsed `#[tool(...)]` struct-level attributes
+/// 解析后的结构体级 `#[tool(...)]` 属性
 struct ToolStructAttrs {
+    /// 工具名称
     name: String,
+    /// 工具描述
     description: String,
+    /// 风险等级（`ReadOnly` / `Standard` / `Dangerous`），未指定则使用默认
     risk_level: Option<String>,
+    /// 工具所需的权限列表
     permissions: Vec<Ident>,
 }
 
-/// Parsed `#[tool_param(...)]` field-level attributes
+/// 解析后的字段级 `#[tool_param(...)]` 属性
 struct ToolParamAttrs {
+    /// 是否跳过该字段（内部状态，不暴露为参数）
     skip: bool,
+    /// 参数描述
     description: Option<String>,
 }
 
-// ── Parsing helpers ────────────────────────────────────────────────────────────
+// ── 解析辅助函数 ────────────────────────────────────────────────────────────
 
 impl syn::parse::Parse for ToolStructAttrs {
+    /// 解析 `name`、`description`、`risk_level`、`permissions` 键值对。
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut name: Option<String> = None;
         let mut description: Option<String> = None;
@@ -111,7 +120,7 @@ impl syn::parse::Parse for ToolStructAttrs {
     }
 }
 
-/// Parse `#[tool_param(skip)]` or `#[tool_param(description = "...")]` from a field.
+/// 从字段上解析 `#[tool_param(skip)]` 或 `#[tool_param(description = "...")]`。
 fn parse_tool_param_attrs(attrs: &[Attribute]) -> syn::Result<ToolParamAttrs> {
     let mut skip = false;
     let mut description: Option<String> = None;
@@ -127,7 +136,7 @@ fn parse_tool_param_attrs(attrs: &[Attribute]) -> syn::Result<ToolParamAttrs> {
         }
     }
 
-    // Also check for doc comments on the field
+    // 同时检查字段上的文档注释
     if description.is_none() {
         description = super::extract_doc_comments(attrs);
     }
@@ -135,13 +144,16 @@ fn parse_tool_param_attrs(attrs: &[Attribute]) -> syn::Result<ToolParamAttrs> {
     Ok(ToolParamAttrs { skip, description })
 }
 
-/// Raw parse of tool_param args (supports both `skip` and `description = "..."`)
+/// tool_param 参数的原始解析结果（同时支持 `skip` 与 `description = "..."`）
 struct ToolParamRaw {
+    /// 是否出现了 `skip`
     skip: bool,
+    /// `description` 的值
     description: Option<String>,
 }
 
 impl syn::parse::Parse for ToolParamRaw {
+    /// 解析以逗号分隔的 `skip` / `description = "..."` 参数。
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut skip = false;
         let mut description: Option<String> = None;
@@ -168,8 +180,7 @@ impl syn::parse::Parse for ToolParamRaw {
     }
 }
 
-/// Extract the first `#[tool(...)]` attribute from the struct, parse it, and return
-/// the parsed ToolStructAttrs.
+/// 从结构体上取出第一个 `#[tool(...)]` 属性并解析，返回 ToolStructAttrs。
 fn extract_tool_attrs(attrs: &[Attribute]) -> syn::Result<ToolStructAttrs> {
     for attr in attrs {
         if attr.path().is_ident("tool") {
@@ -182,16 +193,21 @@ fn extract_tool_attrs(attrs: &[Attribute]) -> syn::Result<ToolStructAttrs> {
     ))
 }
 
-// ── Struct field info ──────────────────────────────────────────────────────────
+// ── 结构体字段信息 ──────────────────────────────────────────────────────────
 
+/// 需要暴露给 LLM 的参数字段
 struct ParamField {
+    /// 字段名
     ident: Ident,
+    /// 字段类型
     ty: syn::Type,
+    /// 附加到生成字段上的 `#[schemars(...)]` 属性
     schemars_attr: TokenStream,
 }
 
-// ── Main entry point ───────────────────────────────────────────────────────────
+// ── 主入口 ───────────────────────────────────────────────────────────
 
+/// `#[derive(Tool)]` 的实现入口：生成参数结构体与 `Tool` trait 实现。
 pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     let echo_crate = crate::resolve_echo_crate_path(crate::MacroCrate::Core)?;
     let serde_crate = crate::macro_support_crate_path(&echo_crate, "serde");
@@ -207,12 +223,12 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         ));
     }
 
-    // Extract struct-level #[tool(...)] attributes
+    // 提取结构体级的 #[tool(...)] 属性
     let tool_attrs = extract_tool_attrs(&input.attrs)?;
     let tool_name = &tool_attrs.name;
     let tool_desc = &tool_attrs.description;
 
-    // Parse struct fields
+    // 解析结构体字段
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
             Fields::Named(fields) => &fields.named,
@@ -223,7 +239,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
                 ));
             }
             Fields::Unit => {
-                // Unit struct: generate params as an empty struct
+                // 单元结构体：参数生成为空结构体
                 return generate_unit_tool(
                     &echo_crate,
                     struct_ident,
@@ -242,7 +258,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         }
     };
 
-    // Separate parameter fields from state fields
+    // 将参数字段与状态字段分开
     let mut param_fields: Vec<ParamField> = Vec::new();
     let mut field_names: Vec<Ident> = Vec::new();
 
@@ -253,7 +269,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
 
         let param_attrs = parse_tool_param_attrs(&field.attrs)?;
         if param_attrs.skip {
-            continue; // Internal state, not exposed to LLM
+            continue; // 内部状态，不暴露给 LLM
         }
 
         let schemars_attr = if let Some(desc) = &param_attrs.description {
@@ -270,7 +286,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         field_names.push(field_ident.clone());
     }
 
-    // Generate the params struct
+    // 生成参数结构体
     let param_field_defs: Vec<TokenStream> = param_fields
         .iter()
         .map(|f| {
@@ -284,7 +300,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         })
         .collect();
 
-    // ── Risk level override ────────────────────────────────────────────────
+    // ── 风险等级覆盖 ────────────────────────────────────────────────
     let risk_level_override = if let Some(level) = &tool_attrs.risk_level {
         let level_path = match level.as_str() {
             "ReadOnly" => quote! { #echo_crate::tools::ToolRiskLevel::ReadOnly },
@@ -309,7 +325,7 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         quote! {}
     };
 
-    // ── Permissions override ──────────────────────────────────────────────
+    // ── 权限覆盖 ──────────────────────────────────────────────
     let permissions_override = if tool_attrs.permissions.is_empty() {
         quote! {}
     } else {
@@ -323,9 +339,9 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
         }
     };
 
-    // ── Build the generate block ──────────────────────────────────────────
+    // ── 构建生成代码块 ──────────────────────────────────────────
     let generated = quote! {
-        /// Auto-generated parameter struct for [`#struct_ident`].
+        /// 为 [`#struct_ident`] 自动生成的参数结构体。
         #[derive(#echo_crate::__macro_support::serde::Deserialize, #echo_crate::__macro_support::schemars::JsonSchema)]
         #[serde(crate = #serde_crate)]
         #[schemars(crate = #schemars_crate)]
@@ -394,8 +410,9 @@ pub fn derive_tool_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     Ok(generated)
 }
 
-// ── Unit struct special case ───────────────────────────────────────────────────
+// ── 单元结构体特例 ───────────────────────────────────────────────────
 
+/// 为单元结构体生成空参数结构体与 `Tool` trait 实现。
 fn generate_unit_tool(
     echo_crate: &syn::Path,
     struct_ident: &Ident,
@@ -441,7 +458,7 @@ fn generate_unit_tool(
     };
 
     Ok(quote! {
-        /// Auto-generated empty parameter struct for [`#struct_ident`].
+        /// 为 [`#struct_ident`] 自动生成的空参数结构体。
         #[derive(#echo_crate::__macro_support::serde::Deserialize, #echo_crate::__macro_support::schemars::JsonSchema)]
         #[serde(crate = #serde_crate)]
         #[schemars(crate = #schemars_crate)]

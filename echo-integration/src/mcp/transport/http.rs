@@ -15,13 +15,15 @@ use echo_core::error::{McpError, ReactError, Result};
 
 use super::{McpTransport, redact_response_error};
 
-/// HTTP 传输层（MCP Streamable HTTP）
-///
-/// 通过 HTTP POST 发送 JSON-RPC 请求，适用于远程 MCP 服务端。
-/// 符合 MCP Streamable HTTP 规范：直接 POST 到端点 URL。
-///
-/// 该请求/响应式传输层没有服务端到客户端的接收通道。
-/// 若服务端会返回异步的 `202 Accepted` 响应，则必须改用 SSE 传输层。
+/**
+HTTP 传输层（MCP Streamable HTTP）
+
+通过 HTTP POST 发送 JSON-RPC 请求，适用于远程 MCP 服务端。
+符合 MCP Streamable HTTP 规范：直接 POST 到端点 URL。
+
+该请求/响应式传输层没有服务端到客户端的接收通道。
+若服务端会返回异步的 `202 Accepted` 响应，则必须改用 SSE 传输层。
+*/
 pub struct HttpTransport {
     /// 底层 HTTP 客户端。
     client: reqwest::Client,
@@ -48,6 +50,7 @@ struct HttpOperationGuard<'a> {
 }
 
 impl Drop for HttpOperationGuard<'_> {
+    /// 递减在途操作计数并唤醒等待关闭的任务。
     fn drop(&mut self) {
         self.transport.in_flight.fetch_sub(1, Ordering::AcqRel);
         self.transport.operations_changed.notify_waiters();
@@ -114,8 +117,10 @@ impl HttpTransport {
 }
 
 impl McpTransport for HttpTransport {
-    /// 通过 HTTP POST 发送一次 JSON-RPC 请求并同步等待响应，
-    /// 对瞬时性错误（连接重置、超时、DNS、TLS、5xx 等）进行有限次重试。
+    /**
+    通过 HTTP POST 发送一次 JSON-RPC 请求并同步等待响应，
+    对瞬时性错误（连接重置、超时、DNS、TLS、5xx 等）进行有限次重试。
+    */
     fn send(&self, request: JsonRpcRequest) -> BoxFuture<'_, Result<JsonRpcResponse>> {
         Box::pin(async move {
             let _operation = self.admit_operation()?;
@@ -143,8 +148,10 @@ impl McpTransport for HttpTransport {
                 builder = builder.header(k, v);
             }
 
-            // Retry loop for transient HTTP errors (connection reset, timeout, DNS, TLS, 5xx)
+            // 针对瞬时性 HTTP 错误（连接重置、超时、DNS、TLS、5xx）的重试循环
+            /// 最大重试次数
             const MAX_RETRIES: u32 = 3;
+            /// 指数退避的基础延迟（毫秒）
             const BASE_DELAY_MS: u64 = 500;
             let mut retry_count: u32 = 0;
             let response = loop {
@@ -162,7 +169,7 @@ impl McpTransport for HttpTransport {
                         if retry_count < MAX_RETRIES && is_retryable_error(&e) {
                             retry_count += 1;
                             let delay_ms = BASE_DELAY_MS * 2u64.pow(retry_count - 1);
-                            // Add jitter: +/- 25%
+                            // 加入抖动：±25%
                             let jitter = delay_ms / 4;
                             let delay = if jitter > 0 {
                                 let r = (delay_ms as i64 - jitter as i64
@@ -211,9 +218,10 @@ impl McpTransport for HttpTransport {
 
             let status = response.status().as_u16();
 
-            // Plain HTTP has no inbound stream that could ever deliver the
-            // accepted response. Fail immediately instead of waiting on an
-            // unreachable oneshot for 60 seconds.
+            /*
+            纯 HTTP 没有任何入站流能够送达这个已被接受（202）的响应。
+            因此立即失败，而不是在一个永远收不到结果的 oneshot 上等待 60 秒。
+            */
             if status == 202 {
                 return Err(ReactError::Mcp(Box::new(McpError::ProtocolError(format!(
                     "HTTP request {id} returned 202 Accepted, but this endpoint has no server-to-client response stream; configure MCP SSE transport"
@@ -250,6 +258,7 @@ impl McpTransport for HttpTransport {
         })
     }
 
+    /// 通过 HTTP POST 发送 JSON-RPC 通知，非 2xx 响应视为失败。
     fn notify(&self, notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let _operation = self.admit_operation()?;
@@ -286,29 +295,33 @@ impl McpTransport for HttpTransport {
         })
     }
 
+    /// 关闭传输层，最多等待 5 秒让在途操作结束。
     fn close(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move { self.close_with_timeout(Duration::from_secs(5)).await })
     }
 
+    /// 纯 HTTP 传输没有服务端通知通道，始终返回 `None`。
     fn notification_rx(&self) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
         None
     }
 }
 
-/// Check if a reqwest error is transient and worth retrying.
-///
-/// Retries on: connection failures, timeouts, DNS errors, TLS handshake errors,
-/// connection resets, EOF on connection, and HTTP 503/504 responses.
+/**
+判断 reqwest 错误是否为瞬时错误、值得重试。
+
+以下情况会重试：连接失败、超时、DNS 错误、TLS 握手错误、
+连接重置、连接 EOF，以及 HTTP 502/503/504 响应。
+*/
 fn is_retryable_error(e: &reqwest::Error) -> bool {
     if e.is_timeout() || e.is_connect() {
         return true;
     }
     if let Some(status) = e.status() {
-        // 5xx server errors (especially 502/503/504) are transient
+        // 5xx 服务端错误（尤其是 502/503/504）属于瞬时错误
         let code = status.as_u16();
         return code == 502 || code == 503 || code == 504;
     }
-    // Check the error message for common transient patterns
+    // 检查错误信息中常见的瞬时错误特征
     let msg = e.to_string().to_lowercase();
     msg.contains("connection reset")
         || msg.contains("connection refused")
@@ -324,6 +337,7 @@ fn is_retryable_error(e: &reqwest::Error) -> bool {
 mod tests {
     use super::*;
 
+    /// 验证关闭会等待已准入的操作完成并阻止新工作。
     #[tokio::test]
     async fn close_waits_for_admitted_operations_and_fences_new_work() -> Result<()> {
         let transport = Arc::new(HttpTransport::new(
@@ -352,6 +366,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭超时后，可在操作结束后重试关闭。
     #[tokio::test]
     async fn timed_out_close_can_be_retried_after_the_operation_settles() -> Result<()> {
         let transport = HttpTransport::new("http://127.0.0.1:1".to_string(), HashMap::new());
@@ -363,6 +378,7 @@ mod tests {
         transport.close_with_timeout(Duration::from_secs(1)).await
     }
 
+    /// 验证通知投递失败可被观察到。
     #[tokio::test]
     async fn notification_delivery_failure_is_observable() {
         let transport = HttpTransport::new("http://127.0.0.1:1".to_string(), HashMap::new());
@@ -372,6 +388,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// 验证通知被 HTTP 拒绝时可被观察到。
     #[tokio::test]
     async fn notification_http_rejection_is_observable() -> Result<()> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

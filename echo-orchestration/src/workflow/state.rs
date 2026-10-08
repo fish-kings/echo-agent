@@ -1,15 +1,16 @@
-//! Shared state (SharedState)
-//!
-//! The core mechanism for inter-node communication in graph workflows. Each node passes data
-//! by reading and writing `SharedState`. State is checkpointed automatically after each
-//! node executes, supporting resume / replay.
-//!
-//! ## Design Principles
-//!
-//! - **Type safety**: type-safe KV access via `get::<T>()` / `set()` with serde serialization
-//! - **Thread safety**: `Arc<RwLock>` interior mutability, concurrency-safe across nodes
-//! - **Serializable**: the entire State can be snapshotted to JSON for persistence
-//! - **Structured message history**: preserves full `Message` structure (no loss of tool call metadata)
+/*!
+共享状态（SharedState）
+
+图工作流中节点间通信的核心机制。各节点通过读写 `SharedState` 传递数据。
+每个节点执行完毕后会自动对状态做检查点，支持恢复 / 重放。
+
+## 设计原则
+
+- **类型安全**：通过 `get::<T>()` / `set()` 结合 serde 序列化实现类型安全的 KV 访问
+- **线程安全**：`Arc<RwLock>` 内部可变性，跨节点并发安全
+- **可序列化**：整个 State 可快照为 JSON 以便持久化
+- **结构化消息历史**：保留完整的 `Message` 结构（不丢失工具调用元数据）
+*/
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +20,7 @@ use std::sync::{Arc, RwLock};
 use echo_core::error::ReactError;
 use echo_core::llm::types::Message;
 
-/// Recursively merge two JSON objects
+/// 递归合并两个 JSON 对象
 fn deep_merge_values(
     target: &mut serde_json::Map<String, Value>,
     source: &serde_json::Map<String, Value>,
@@ -35,24 +36,28 @@ fn deep_merge_values(
     }
 }
 
-/// SharedState operation return type
+/// SharedState 操作的返回类型
 pub type StateResult<T> = std::result::Result<T, StateError>;
 
+/// SharedState 操作可能产生的错误
 #[derive(Debug)]
 pub enum StateError {
-    /// Serialization or deserialization failure.
+    /// 序列化或反序列化失败。
     Serialize(String),
-    /// A lock was poisoned (another thread panicked while holding it).
+    /// 锁已中毒（另一个线程在持有锁时发生了 panic）。
     LockPoisoned(String),
-    /// A type mismatch occurred when deserializing a stored value.
+    /// 反序列化已存储的值时类型不匹配。
     TypeMismatch {
+        /// 出现类型不匹配的键
         key: String,
+        /// 期望的类型
         expected: String,
+        /// 实际发现的类型
         found: String,
     },
-    /// A required key is missing from the state.
+    /// 状态中缺少必需的键。
     MissingKey(String),
-    /// An invalid operation was attempted (e.g., fork on empty state).
+    /// 尝试执行了无效操作（例如对空状态执行 fork）。
     InvalidOperation(String),
 }
 
@@ -101,50 +106,52 @@ impl From<StateError> for ReactError {
     }
 }
 
-/// Shared state for graph workflows
-///
-/// Nodes read/write arbitrary key-value pairs via `get` / `set`, and access structured
-/// conversation history via `messages()`. Internally uses `Arc<RwLock>`, safe to share
-/// across nodes and threads.
-///
-/// # Example
-///
-/// ```rust
-/// use echo_orchestration::workflow::SharedState;
-///
-/// let state = SharedState::new();
-/// state.set("count", 42);
-/// state.set("name", "echo");
-///
-/// assert_eq!(state.get::<i64>("count"), Some(42));
-/// assert_eq!(state.get::<String>("name"), Some("echo".to_string()));
-/// ```
+/**
+图工作流的共享状态
+
+节点通过 `get` / `set` 读写任意键值对，并通过 `messages()` 访问结构化的对话历史。
+内部使用 `Arc<RwLock>`，可安全地在节点与线程之间共享。
+
+# 示例
+
+```rust
+use echo_orchestration::workflow::SharedState;
+
+let state = SharedState::new();
+state.set("count", 42);
+state.set("name", "echo");
+
+assert_eq!(state.get::<i64>("count"), Some(42));
+assert_eq!(state.get::<String>("name"), Some("echo".to_string()));
+```
+*/
 #[derive(Clone)]
 pub struct SharedState {
+    /// 共享的内部状态
     inner: Arc<RwLock<StateInner>>,
 }
 
-/// Internal state (serializable)
+/// 内部状态（可序列化）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StateInner {
-    /// Arbitrary KV data
+    /// 任意 KV 数据
     pub values: HashMap<String, Value>,
-    /// Structured message history
+    /// 结构化消息历史
     pub messages: Vec<Message>,
-    /// Current node (runtime info)
+    /// 当前节点（运行时信息）
     #[serde(default)]
     pub current_node: Option<String>,
 }
 
 impl SharedState {
-    /// Create an empty state
+    /// 创建空状态
     pub fn new() -> Self {
         Self {
             inner: Arc::new(RwLock::new(StateInner::default())),
         }
     }
 
-    /// Create from existing data
+    /// 基于已有数据创建
     pub fn from_values(values: HashMap<String, Value>) -> Self {
         Self {
             inner: Arc::new(RwLock::new(StateInner {
@@ -155,7 +162,7 @@ impl SharedState {
         }
     }
 
-    /// Restore from a snapshot
+    /// 从快照恢复
     pub fn from_snapshot(snapshot: &str) -> std::result::Result<Self, serde_json::Error> {
         let inner: StateInner = serde_json::from_str(snapshot)?;
         Ok(Self {
@@ -163,12 +170,14 @@ impl SharedState {
         })
     }
 
-    // ── KV Operations ─────────────────────────────────────────────────────────────
+    // ── KV 操作 ─────────────────────────────────────────────────────────────
 
-    /// Set a value (auto-serialized to JSON).
-    ///
-    /// Returns Result (`StateResult<()>`) -- no longer panics on serialization failure or lock poison.
-    /// Callers must handle the returned error instead of discarding failed state updates.
+    /**
+    设置一个值（自动序列化为 JSON）。
+
+    返回 Result（`StateResult<()>`）——序列化失败或锁中毒时不再 panic。
+    调用方必须处理返回的错误，而不是丢弃失败的状态更新。
+    */
     pub fn set<T: Serialize>(&self, key: impl Into<String>, value: T) -> StateResult<()> {
         let key = key.into();
         let v = serde_json::to_value(value).map_err(|e| StateError::Serialize(e.to_string()))?;
@@ -181,12 +190,12 @@ impl SharedState {
         Ok(())
     }
 
-    /// Backward-compatible: set value, returns Option<()> on failure (no panic)
+    /// 向后兼容：设置值，失败时返回 Option<()>（不会 panic）
     pub fn set_best_effort<T: Serialize>(&self, key: impl Into<String>, value: T) -> Option<()> {
         self.set(key, value).ok()
     }
 
-    /// Get a value (auto-deserialized)
+    /// 获取一个值（自动反序列化）
     pub fn get<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Option<T> {
         let Ok(inner) = self.inner.read() else {
             return None;
@@ -197,12 +206,12 @@ impl SharedState {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
 
-    /// Get raw JSON value
+    /// 获取原始 JSON 值
     pub fn get_raw(&self, key: &str) -> Option<Value> {
         self.inner.read().ok()?.values.get(key).cloned()
     }
 
-    /// Check if key exists
+    /// 检查键是否存在
     pub fn contains(&self, key: &str) -> bool {
         self.inner
             .read()
@@ -210,12 +219,12 @@ impl SharedState {
             .unwrap_or(false)
     }
 
-    /// Remove a key
+    /// 移除一个键
     pub fn remove(&self, key: &str) -> Option<Value> {
         self.inner.write().ok()?.values.remove(key)
     }
 
-    /// Get all keys
+    /// 获取所有键
     pub fn keys(&self) -> Vec<String> {
         self.inner
             .read()
@@ -223,9 +232,9 @@ impl SharedState {
             .unwrap_or_default()
     }
 
-    // ── Message Operations ────────────────────────────────────────────────────────────
+    // ── 消息操作 ────────────────────────────────────────────────────────────
 
-    /// Push a message, returns Result
+    /// 追加一条消息，返回 Result
     pub fn push_message(&self, msg: Message) -> StateResult<()> {
         let mut inner = self
             .inner
@@ -236,7 +245,7 @@ impl SharedState {
         Ok(())
     }
 
-    /// Get a clone of all messages
+    /// 获取所有消息的克隆
     pub fn messages(&self) -> Vec<Message> {
         self.inner
             .read()
@@ -244,7 +253,7 @@ impl SharedState {
             .unwrap_or_default()
     }
 
-    /// Get message count
+    /// 获取消息数量
     pub fn message_count(&self) -> usize {
         self.inner
             .read()
@@ -252,7 +261,7 @@ impl SharedState {
             .unwrap_or(0)
     }
 
-    /// Clear messages, returns Result
+    /// 清空消息，返回 Result
     pub fn clear_messages(&self) -> StateResult<()> {
         let mut inner = self
             .inner
@@ -263,16 +272,16 @@ impl SharedState {
         Ok(())
     }
 
-    // ── Node Tracking ────────────────────────────────────────────────────────────
+    // ── 节点追踪 ────────────────────────────────────────────────────────────
 
-    /// Set the current node
+    /// 设置当前节点
     pub(crate) fn set_current_node(&self, node: impl Into<String>) {
         if let Ok(mut inner) = self.inner.write() {
             inner.current_node = Some(node.into());
         }
     }
 
-    /// Get the current node
+    /// 获取当前节点
     pub fn current_node(&self) -> Option<String> {
         self.inner
             .read()
@@ -280,7 +289,7 @@ impl SharedState {
             .and_then(|inner| inner.current_node.clone())
     }
 
-    /// Create an isolated copy for branch execution.
+    /// 为分支执行创建一份隔离副本。
     pub fn fork(&self) -> StateResult<Self> {
         let inner = self
             .inner
@@ -292,9 +301,9 @@ impl SharedState {
         })
     }
 
-    // ── Serialization ──────────────────────────────────────────────────────────────
+    // ── 序列化 ──────────────────────────────────────────────────────────────
 
-    /// Export as JSON snapshot, returns Result (no longer panics)
+    /// 导出为 JSON 快照，返回 Result（不再 panic）
     pub fn snapshot(&self) -> StateResult<String> {
         let inner = self
             .inner
@@ -303,7 +312,7 @@ impl SharedState {
         serde_json::to_string_pretty(&*inner).map_err(|e| StateError::Serialize(e.to_string()))
     }
 
-    /// Export as JSON Value, returns Result
+    /// 导出为 JSON Value，返回 Result
     pub fn to_json_value(&self) -> StateResult<serde_json::Value> {
         let inner = self
             .inner
@@ -312,7 +321,7 @@ impl SharedState {
         serde_json::to_value(&*inner).map_err(|e| StateError::Serialize(e.to_string()))
     }
 
-    /// Restore from JSON Value
+    /// 从 JSON Value 恢复
     pub fn from_json(json: &serde_json::Value) -> std::result::Result<Self, serde_json::Error> {
         let inner: StateInner = serde_json::from_value(json.clone())?;
         Ok(Self {
@@ -320,7 +329,7 @@ impl SharedState {
         })
     }
 
-    /// Merge values from another state (does not overwrite existing keys), returns Result
+    /// 合并另一个状态中的值（不覆盖已有键），返回 Result
     pub fn merge(&self, other: &SharedState) -> StateResult<()> {
         let other_inner = self
             .inner
@@ -331,8 +340,8 @@ impl SharedState {
             .inner
             .read()
             .map_err(|e| StateError::LockPoisoned(e.to_string()))?;
-        // SAFETY: need read both locks to prevent deadlock.
-        // merge reads from others and writes to self, we re-lock sequentially
+        /* SAFETY：需要读取两把锁以防止死锁。
+        merge 从 other 读取并写入 self，因此按顺序重新加锁 */
         drop(self_inner);
 
         let other_lock = other
@@ -354,7 +363,7 @@ impl SharedState {
         Ok(())
     }
 
-    /// Merge values from another state (overwrites existing keys), returns Result
+    /// 合并另一个状态中的值（覆盖已有键），返回 Result
     pub fn merge_overwrite(&self, other: &SharedState) -> StateResult<()> {
         let other_lock = other
             .inner
@@ -372,12 +381,13 @@ impl SharedState {
         Ok(())
     }
 
-    /// Deep merge values from another state (recursively merge nested structures), returns Result
-    ///
-    /// Unlike `merge_overwrite`: when a key's value is a JSON object in both states,
-    /// this method recursively merges the two object's fields rather than wholesale overwrite.
-    /// Useful for maintaining data consistency when parallel branches modify nested structures
-    /// in the same state.
+    /**
+    深度合并另一个状态中的值（递归合并嵌套结构），返回 Result
+
+    与 `merge_overwrite` 不同：当某个键在两个状态中的值都是 JSON 对象时，
+    本方法会递归合并两个对象的字段，而不是整体覆盖。
+    适用于并行分支修改同一状态中的嵌套结构时保持数据一致性。
+    */
     pub fn deep_merge(&self, other: &SharedState) -> StateResult<()> {
         let other_lock = other
             .inner
@@ -389,7 +399,7 @@ impl SharedState {
             .map_err(|e| StateError::LockPoisoned(e.to_string()))?;
         for (k, other_val) in &other_lock.values {
             if let Some(self_val) = self_lock.values.get(k) {
-                // If both are objects, recursively merge
+                // 若两者都是对象，则递归合并
                 if let (Some(self_obj), Some(other_obj)) =
                     (self_val.as_object(), other_val.as_object())
                 {
@@ -399,7 +409,7 @@ impl SharedState {
                     continue;
                 }
             }
-            // Otherwise overwrite directly
+            // 否则直接覆盖
             self_lock.values.insert(k.clone(), other_val.clone());
         }
         drop(other_lock);
@@ -431,7 +441,7 @@ impl std::fmt::Debug for SharedState {
     }
 }
 
-// ── Unit Tests ────────────────────────────────────────────────────────────────
+// ── 单元测试 ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -508,7 +518,7 @@ mod tests {
         a.merge(&b).unwrap();
         assert_eq!(a.get::<i64>("x"), Some(1));
         assert_eq!(a.get::<i64>("y"), Some(2));
-        assert_eq!(a.get::<String>("shared"), Some("from_a".to_string())); // not overwritten
+        assert_eq!(a.get::<String>("shared"), Some("from_a".to_string())); // 未被覆盖
     }
 
     #[test]
@@ -529,7 +539,7 @@ mod tests {
         let cloned = state.clone();
 
         state.set("x", 42).unwrap();
-        assert_eq!(cloned.get::<i64>("x"), Some(42)); // Arc shared
+        assert_eq!(cloned.get::<i64>("x"), Some(42)); // Arc 共享
     }
 
     #[test]

@@ -224,8 +224,10 @@ fn default_agent_checkpoint_payload_version() -> u16 {
     1
 }
 
-/// 兼容新旧两种检查点负载格式：新版带 schema_version 的结构，或旧版仅有
-/// 消息数组的格式。
+/**
+ * 兼容新旧两种检查点负载格式：新版带 schema_version 的结构，或旧版仅有
+ * 消息数组的格式。
+ */
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum AgentCheckpointPayloadCompat {
@@ -297,8 +299,10 @@ impl AgentCheckpoint {
         Ok(payload)
     }
 
-    /// 校验 transcript 投影游标是否与本检查点的会话身份一致、序号严格递增且
-    /// 摘要格式合法。
+    /**
+     * 校验 transcript 投影游标是否与本检查点的会话身份一致、序号严格递增且
+     * 摘要格式合法。
+     */
     fn validate_transcript_projection(
         &self,
         projection: Option<&TranscriptProjectionCheckpoint>,
@@ -327,8 +331,10 @@ impl AgentCheckpoint {
         Ok(())
     }
 
-    /// 校验待结算 transcript 投影的身份、游标前后一致性，以及批次摘要是否与
-    /// cursor_after 中记录的摘要相符。
+    /**
+     * 校验待结算 transcript 投影的身份、游标前后一致性，以及批次摘要是否与
+     * cursor_after 中记录的摘要相符。
+     */
     fn validate_pending_transcript_projection(
         &self,
         pending: Option<&PendingTranscriptProjection>,
@@ -505,8 +511,10 @@ impl AgentCheckpoint {
     }
 }
 
-/// 校验消息历史中每一个 assistant 发起的工具调用都恰好有一条对应的、名称匹配
-/// 的工具结果消息，且没有重复或孤立（orphan）的工具结果。
+/**
+ * 校验消息历史中每一个 assistant 发起的工具调用都恰好有一条对应的、名称匹配
+ * 的工具结果消息，且没有重复或孤立（orphan）的工具结果。
+ */
 fn validate_tool_message_pairing(
     messages: &[crate::llm::types::Message],
 ) -> crate::error::Result<()> {
@@ -561,7 +569,7 @@ fn invalid_checkpoint(message: String) -> crate::error::ReactError {
     ))
 }
 
-// ── RuntimeStateStore trait ────────────────────────────────────────────
+// ── RuntimeStateStore 特征 ────────────────────────────────────────────
 
 /// 无需执行 I/O 即可对外声明的、带版本号的运行时状态支持能力。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -580,11 +588,22 @@ pub enum RuntimeStateVersion {
     /// 尚不存在任何状态。
     Absent,
     /// 存在但未纳入版本管理，仅以摘要（digest）标识内容。
-    Unmanaged { digest: String },
+    Unmanaged {
+        /// 内容摘要。
+        digest: String,
+    },
     /// 已纳入版本管理，带有明确的修订号（revision）。
-    Managed { revision: u64 },
+    Managed {
+        /// 当前修订号。
+        revision: u64,
+    },
     /// 已被退休（retired），保留退休时的修订号与对应操作 ID。
-    Retired { revision: u64, operation_id: String },
+    Retired {
+        /// 退休时的修订号。
+        revision: u64,
+        /// 执行退休的操作 ID。
+        operation_id: String,
+    },
 }
 
 /// compare-and-save 请求期望替换掉的版本。
@@ -594,9 +613,15 @@ pub enum RuntimeStateExpectedVersion {
     /// 期望当前不存在任何状态。
     Absent,
     /// 期望当前状态是未纳入版本管理、带有指定摘要的内容。
-    Unmanaged { digest: String },
+    Unmanaged {
+        /// 期望的内容摘要。
+        digest: String,
+    },
     /// 期望当前状态处于指定的修订号。
-    Managed { revision: u64 },
+    Managed {
+        /// 期望的修订号。
+        revision: u64,
+    },
 }
 
 /// 一个稳定运行时作用域（scope）的持久化生命周期。
@@ -1027,11 +1052,14 @@ fn invalid_runtime_operation(message: impl Into<String>) -> crate::error::ReactE
 pub enum ScopeRetirementAdvance {
     /// 会话（transcript）已被删除，附带删除回执。
     ConversationDeleted {
+        /// 会话删除回执。
         receipt: crate::memory::ManagedConversationDeleteReceipt,
     },
     /// 某个运行时代次已被丢弃。
     GenerationDropped {
+        /// 被丢弃代次的运行时状态 ID。
         runtime_state_id: String,
+        /// 丢弃时仍挂起的操作 ID（如有）。
         pending_operation_id: Option<String>,
     },
     /// 整个退休流程已完成。
@@ -1208,11 +1236,16 @@ pub(crate) enum TranscriptProjectionDispatch {
     RetryDurablePending,
 }
 
-/// transcript 投影结算的内部结果：结算状态本身，以及（如已提交）新的运行时
-/// 版本号和已结算的游标。
+/**
+ * transcript 投影结算的内部结果：结算状态本身，以及（如已提交）新的运行时
+ * 版本号和已结算的游标。
+ */
 pub(crate) struct TranscriptProjectionSettlementOutcome {
+    /// 本次投影的结算状态。
     pub(crate) settlement: crate::memory::TranscriptProjectionSettlement,
+    /// 若结算已提交，则为提交后的新运行时状态版本号。
     pub(crate) committed_version: Option<RuntimeStateVersion>,
+    /// 若结算已提交，则为已结算的 transcript 投影游标。
     pub(crate) settled_cursor: Option<TranscriptProjectionCheckpoint>,
 }
 
@@ -1221,9 +1254,11 @@ const PERSISTED_STATE_OPERATION_TIMEOUT: std::time::Duration = std::time::Durati
 /// 为记录持久化失败预留的时间余量，确保截止时间到达前仍有机会写入失败标记。
 const PERSISTENCE_FAILURE_RECORD_RESERVE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// 一次持久化操作的截止时间预算：既有对外暴露的绝对截止时间 `context`，
-/// 也有本地 Tokio 时钟下换算出的 `deadline`，以及为记录失败预留余量后的
-/// `effect_deadline`。
+/**
+ * 一次持久化操作的截止时间预算：既有对外暴露的绝对截止时间 `context`，
+ * 也有本地 Tokio 时钟下换算出的 `deadline`，以及为记录失败预留余量后的
+ * `effect_deadline`。
+ */
 #[derive(Debug, Clone, Copy)]
 struct PersistenceOperationDeadline {
     context: crate::memory::PersistenceCallContext,
@@ -1240,8 +1275,10 @@ impl PersistenceOperationDeadline {
         )?)
     }
 
-    /// 将调用方传入的绝对 Unix 截止时间换算为本地 Tokio 时钟下的 `Instant`，
-    /// 并预留出失败记录所需的时间余量。
+    /**
+     * 将调用方传入的绝对 Unix 截止时间换算为本地 Tokio 时钟下的 `Instant`，
+     * 并预留出失败记录所需的时间余量。
+     */
     fn from_context(context: crate::memory::PersistenceCallContext) -> crate::error::Result<Self> {
         let absolute_deadline_ms = u64::try_from(context.absolute_deadline_unix_ms)
             .map_err(|_| persistence_deadline_error("invalid persistence deadline"))?;
@@ -1255,9 +1292,11 @@ impl PersistenceOperationDeadline {
         let deadline = now
             .checked_add(remaining)
             .ok_or_else(|| persistence_deadline_error("local persistence deadline overflow"))?;
-        // 从正常操作预算中预留一部分时间给持久化失败的 CAS 记录。调用方给的
-        // 预算本身很短时，直接使用完整的截止时间，而不是让某个 effect
-        // 在第一次被轮询之前就先超时。
+        /*
+         * 从正常操作预算中预留一部分时间给持久化失败的 CAS 记录。调用方给的
+         * 预算本身很短时，直接使用完整的截止时间，而不是让某个 effect
+         * 在第一次被轮询之前就先超时。
+         */
         let reserved = deadline
             .checked_sub(PERSISTENCE_FAILURE_RECORD_RESERVE)
             .filter(|reserved| *reserved > now)
@@ -1270,8 +1309,10 @@ impl PersistenceOperationDeadline {
     }
 }
 
-/// 在给定的截止时间预算内等待一个持久化 future 完成，超时则返回
-/// `DeadlineExceeded` 错误。
+/**
+ * 在给定的截止时间预算内等待一个持久化 future 完成，超时则返回
+ * `DeadlineExceeded` 错误。
+ */
 async fn await_persistence<T>(
     budget: PersistenceOperationDeadline,
     operation: &str,
@@ -1316,8 +1357,10 @@ pub trait RuntimeStateStore: Send + Sync {
         RuntimeStateCapability::Unsupported
     }
 
-    /// 报告带上下文的调用是否真正强制执行了传入的绝对截止时间，而不是在
-    /// 适配器的默认实现中被默默丢弃。
+    /**
+     * 报告带上下文的调用是否真正强制执行了传入的绝对截止时间，而不是在
+     * 适配器的默认实现中被默默丢弃。
+     */
     fn persistence_call_capability(&self) -> crate::memory::PersistenceCallCapability {
         crate::memory::PersistenceCallCapability::Unsupported
     }
@@ -1337,8 +1380,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文（携带绝对截止时间）的 [`Self::load_runtime_state`] 变体。
-    /// 默认实现直接委托给不带上下文的版本。
+    /**
+     * 带调用上下文（携带绝对截止时间）的 [`Self::load_runtime_state`] 变体。
+     * 默认实现直接委托给不带上下文的版本。
+     */
     fn load_runtime_state_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1362,8 +1407,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::load_scope_authority`] 变体。默认实现直接委托
-    /// 给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::load_scope_authority`] 变体。默认实现直接委托
+     * 给不带上下文的版本。
+     */
     fn load_scope_authority_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1385,8 +1432,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::compare_and_save_checkpoint`] 变体。默认实现
-    /// 直接委托给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::compare_and_save_checkpoint`] 变体。默认实现
+     * 直接委托给不带上下文的版本。
+     */
     fn compare_and_save_checkpoint_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1408,8 +1457,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::acknowledge_transcript_projection`] 变体。默认
-    /// 实现直接委托给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::acknowledge_transcript_projection`] 变体。默认
+     * 实现直接委托给不带上下文的版本。
+     */
     fn acknowledge_transcript_projection_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1431,8 +1482,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::retire_runtime_generation`] 变体。默认实现
-    /// 直接委托给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::retire_runtime_generation`] 变体。默认实现
+     * 直接委托给不带上下文的版本。
+     */
     fn retire_runtime_generation_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1454,8 +1507,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::begin_scope_retirement`] 变体。默认实现直接
-    /// 委托给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::begin_scope_retirement`] 变体。默认实现直接
+     * 委托给不带上下文的版本。
+     */
     fn begin_scope_retirement_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1480,8 +1535,10 @@ pub trait RuntimeStateStore: Send + Sync {
         })
     }
 
-    /// 带调用上下文的 [`Self::continue_scope_retirement`] 变体。默认实现
-    /// 直接委托给不带上下文的版本。
+    /**
+     * 带调用上下文的 [`Self::continue_scope_retirement`] 变体。默认实现
+     * 直接委托给不带上下文的版本。
+     */
     fn continue_scope_retirement_with_context<'a>(
         &'a self,
         _context: crate::memory::PersistenceCallContext,
@@ -1510,12 +1567,14 @@ pub trait RuntimeStateStore: Send + Sync {
         checkpoint: &'a AgentCheckpoint,
     ) -> futures::future::BoxFuture<'a, crate::error::Result<()>>;
 
-    /// 保存一个检查点，并将其全局唯一的运行时身份持久化绑定到一个稳定的
-    /// 产品 / 会话作用域上。
-    ///
-    /// 实现必须将检查点写入与全局唯一的作用域归属关系，作为同一个可恢复的
-    /// 权威一起提交。只有在崩溃后能够无歧义地从该权威重建时，二级索引才
-    /// 允许暂时滞后。
+    /**
+     * 保存一个检查点，并将其全局唯一的运行时身份持久化绑定到一个稳定的
+     * 产品 / 会话作用域上。
+     *
+     * 实现必须将检查点写入与全局唯一的作用域归属关系，作为同一个可恢复的
+     * 权威一起提交。只有在崩溃后能够无歧义地从该权威重建时，二级索引才
+     * 允许暂时滞后。
+     */
     fn save_checkpoint_for_scope<'a>(
         &'a self,
         scope_id: &'a str,
@@ -1585,8 +1644,10 @@ pub async fn settle_pending_transcript_projection(
     .await
 }
 
-/// [`settle_pending_transcript_projection`] 的内部实现：先加载运行时状态，
-/// 再在给定的截止时间预算内结算其中的待处理效果。
+/**
+ * [`settle_pending_transcript_projection`] 的内部实现：先加载运行时状态，
+ * 再在给定的截止时间预算内结算其中的待处理效果。
+ */
 async fn settle_pending_transcript_projection_with_budget(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -1626,8 +1687,10 @@ async fn settle_pending_transcript_projection_with_budget(
     Ok(outcome.settlement)
 }
 
-/// 供"全新 Agent 派发"与"持久化恢复"两条路径共用的规范化结算核心逻辑
-/// （已加载状态版本）。调用方不得自行实现 apply/ack 的先后顺序。
+/**
+ * 供"全新 Agent 派发"与"持久化恢复"两条路径共用的规范化结算核心逻辑
+ * （已加载状态版本）。调用方不得自行实现 apply/ack 的先后顺序。
+ */
 pub(crate) async fn settle_loaded_pending_transcript_projection(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -1661,9 +1724,11 @@ pub(crate) async fn settle_loaded_pending_transcript_projection(
     .await
 }
 
-/// [`settle_loaded_pending_transcript_projection`] 的内部实现，携带截止时间
-/// 预算。校验已加载状态的身份匹配后，按情况处理"无检查点""无待处理效果"
-/// 或实际需要结算的待处理效果三种情形。
+/**
+ * [`settle_loaded_pending_transcript_projection`] 的内部实现，携带截止时间
+ * 预算。校验已加载状态的身份匹配后，按情况处理"无检查点""无待处理效果"
+ * 或实际需要结算的待处理效果三种情形。
+ */
 async fn settle_loaded_pending_transcript_projection_with_budget(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -1786,8 +1851,10 @@ enum TranscriptProjectionDispatchPreparation {
     Terminal(crate::memory::TranscriptProjectionSettlement),
 }
 
-/// 在重试一个持久化的待处理 transcript 投影之前，先推进其尝试计数并把新的
-/// 检查点写回运行时存储（通过 CAS），为后续实际派发做准备。
+/**
+ * 在重试一个持久化的待处理 transcript 投影之前，先推进其尝试计数并把新的
+ * 检查点写回运行时存储（通过 CAS），为后续实际派发做准备。
+ */
 async fn prepare_transcript_projection_retry(
     runtime_state_store: &dyn RuntimeStateStore,
     state: ManagedRuntimeStateSnapshot,
@@ -1916,8 +1983,10 @@ async fn prepare_transcript_projection_retry(
     }
 }
 
-/// 实际派发一个已准备好的待处理 transcript 投影：先把批次应用到会话存储，
-/// 再用应用回执向运行时存储确认，最终结算成功或记录失败。
+/**
+ * 实际派发一个已准备好的待处理 transcript 投影：先把批次应用到会话存储，
+ * 再用应用回执向运行时存储确认，最终结算成功或记录失败。
+ */
 async fn dispatch_transcript_projection(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -2165,9 +2234,11 @@ struct TranscriptProjectionFailure<'a> {
     detail: &'a str,
 }
 
-/// 尝试把本次失败的分类结果持久化记录下来，再据此构造最终的结算结果；
-/// 如果连失败记录本身都未能持久化，则退化为"结果未知"（OutcomeUnknown），
-/// 确保绝不会在无法证明的情况下错误地上报成功或错误的失败分类。
+/**
+ * 尝试把本次失败的分类结果持久化记录下来，再据此构造最终的结算结果；
+ * 如果连失败记录本身都未能持久化，则退化为"结果未知"（OutcomeUnknown），
+ * 确保绝不会在无法证明的情况下错误地上报成功或错误的失败分类。
+ */
 async fn recorded_transcript_failure_settlement(
     runtime_state_store: &dyn RuntimeStateStore,
     state: &ManagedRuntimeStateSnapshot,
@@ -2212,8 +2283,10 @@ async fn recorded_transcript_failure_settlement(
     }
 }
 
-/// 尝试用 CAS 把本次失败的尝试分类写回运行时检查点；写入本身失败时，退回
-/// 去检查该分类是否已经通过其他方式被持久化记录下来。
+/**
+ * 尝试用 CAS 把本次失败的尝试分类写回运行时检查点；写入本身失败时，退回
+ * 去检查该分类是否已经通过其他方式被持久化记录下来。
+ */
 async fn persist_transcript_attempt_failure(
     runtime_state_store: &dyn RuntimeStateStore,
     state: &ManagedRuntimeStateSnapshot,
@@ -2284,8 +2357,10 @@ async fn persist_transcript_attempt_failure(
     .await
 }
 
-/// 重新加载运行时状态，检查其中记录的失败分类是否确实与本次尝试匹配，
-/// 用于确认某次失败记录是否已经被持久化下来。
+/**
+ * 重新加载运行时状态，检查其中记录的失败分类是否确实与本次尝试匹配，
+ * 用于确认某次失败记录是否已经被持久化下来。
+ */
 async fn transcript_failure_record_is_durable(
     runtime_state_store: &dyn RuntimeStateStore,
     state: &ManagedRuntimeStateSnapshot,
@@ -2337,8 +2412,10 @@ fn transcript_attempt_is_retryable(attempt_class: &TranscriptProjectionAttemptCl
     )
 }
 
-/// 将公开的 `TranscriptProjectionErrorClass` 映射为内部持久化用的
-/// `TranscriptProjectionAttemptClass`。
+/**
+ * 将公开的 `TranscriptProjectionErrorClass` 映射为内部持久化用的
+ * `TranscriptProjectionAttemptClass`。
+ */
 fn transcript_error_attempt_class(
     error_class: crate::memory::TranscriptProjectionErrorClass,
 ) -> TranscriptProjectionAttemptClass {
@@ -2370,8 +2447,10 @@ fn transcript_error_attempt_class(
     }
 }
 
-/// 将内部持久化用的 `TranscriptProjectionAttemptClass` 映射回公开的
-/// `TranscriptProjectionErrorClass`。
+/**
+ * 将内部持久化用的 `TranscriptProjectionAttemptClass` 映射回公开的
+ * `TranscriptProjectionErrorClass`。
+ */
 fn transcript_attempt_error_class(
     attempt_class: &TranscriptProjectionAttemptClass,
 ) -> crate::memory::TranscriptProjectionErrorClass {
@@ -2616,8 +2695,10 @@ pub async fn clear_persisted_runtime_incarnation_with_context(
     .await
 }
 
-/// 判断会话存储与运行时存储是否共同构成一对"托管持久化"组合：两者都必须
-/// 同时支持原子投影 / 版本化能力，且都强制执行绝对截止时间。
+/**
+ * 判断会话存储与运行时存储是否共同构成一对"托管持久化"组合：两者都必须
+ * 同时支持原子投影 / 版本化能力，且都强制执行绝对截止时间。
+ */
 fn managed_persistence_pair(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -2648,8 +2729,10 @@ fn managed_persistence_pair(
     }
 }
 
-/// 旧版（非托管）存储对下的精确清理实现：直接删除会话历史与运行时状态，
-/// 不涉及托管的结算 / 退休流程。
+/**
+ * 旧版（非托管）存储对下的精确清理实现：直接删除会话历史与运行时状态，
+ * 不涉及托管的结算 / 退休流程。
+ */
 async fn clear_legacy_runtime_incarnation(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -2676,8 +2759,10 @@ async fn clear_legacy_runtime_incarnation(
         .await
 }
 
-/// 托管存储对下的精确清理实现：先结算待处理的 transcript 投影，确认清除
-/// 干净后再将该代次退休为墓碑。
+/**
+ * 托管存储对下的精确清理实现：先结算待处理的 transcript 投影，确认清除
+ * 干净后再将该代次退休为墓碑。
+ */
 async fn clear_managed_runtime_incarnation(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -2797,8 +2882,10 @@ fn pending_transcript_projection(
         .map(|payload| payload.and_then(|payload| payload.pending_transcript_projection))
 }
 
-/// 将一个已持久化的 `RuntimeStateVersion` 转换为对应的
-/// `RuntimeStateExpectedVersion`，用于后续 CAS 请求。
+/**
+ * 将一个已持久化的 `RuntimeStateVersion` 转换为对应的
+ * `RuntimeStateExpectedVersion`，用于后续 CAS 请求。
+ */
 fn expected_runtime_state_version(version: &RuntimeStateVersion) -> RuntimeStateExpectedVersion {
     match version {
         RuntimeStateVersion::Absent => RuntimeStateExpectedVersion::Absent,
@@ -2861,6 +2948,7 @@ pub async fn delete_persisted_conversation_with_context(
     .into())
 }
 
+/// 旧版 Store 的删除路径：先删除附属运行时状态对应的会话，再清空运行时作用域并删除主会话。
 async fn delete_legacy_persisted_conversation(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -2943,6 +3031,7 @@ pub async fn delete_persisted_conversation_managed_with_context(
     .await
 }
 
+/// 托管删除的核心流程：在给定截止时间预算内推进作用域退休，并返回删除回执。
 async fn delete_managed_persisted_conversation(
     conversation_store: &dyn crate::memory::ConversationStore,
     runtime_state_store: &dyn RuntimeStateStore,
@@ -3051,6 +3140,7 @@ async fn delete_managed_persisted_conversation(
     Ok(persisted_delete_receipt(conversation_id, retirement))
 }
 
+/// 判断作用域退休是否仍处于可继续推进的状态（已开始或进行中）。
 fn scope_retirement_can_advance(status: ScopeRetirementStatus) -> bool {
     matches!(
         status,
@@ -3058,7 +3148,7 @@ fn scope_retirement_can_advance(status: ScopeRetirementStatus) -> bool {
     )
 }
 
-// ── Re-export implementations ─────────────────────────────────────────
+// ── 重新导出各实现 ─────────────────────────────────────────
 
 /// 基于文件的运行时状态存储实现（默认实现，不依赖 SQLite）。
 pub mod file;
@@ -3076,6 +3166,7 @@ mod checkpoint_tests {
     use super::*;
     use crate::llm::types::{FunctionCall, Message, ToolCall};
 
+    /// 构造一个指定 ID 与名称、参数为空对象的测试用工具调用。
     fn tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
@@ -3087,6 +3178,7 @@ mod checkpoint_tests {
         }
     }
 
+    /// 用给定消息列表构造一个测试用检查点。
     fn checkpoint(messages: Vec<Message>) -> crate::error::Result<AgentCheckpoint> {
         let mut checkpoint = AgentCheckpoint::new("conversation-1");
         checkpoint.messages_json = serde_json::to_string(&messages)
@@ -3094,6 +3186,7 @@ mod checkpoint_tests {
         Ok(checkpoint)
     }
 
+    /// 构造托管会话投影请求，可指定期望的墓碑 epoch。
     fn managed_projection_request(
         conversation_id: &str,
         expected_tombstone_epoch: Option<u64>,
@@ -3109,12 +3202,14 @@ mod checkpoint_tests {
         }
     }
 
+    /// 返回一个截止时间早已过期的持久化调用上下文。
     fn expired_persistence_context() -> crate::memory::PersistenceCallContext {
         crate::memory::PersistenceCallContext {
             absolute_deadline_unix_ms: 1,
         }
     }
 
+    /// 构造一个携带待处理 transcript 投影的检查点及对应的待处理投影。
     fn pending_projection_checkpoint(
         conversation_id: &str,
         runtime_state_id: &str,
@@ -3170,12 +3265,15 @@ mod checkpoint_tests {
         Ok((checkpoint, pending))
     }
 
+    /// 测试用运行时状态存储：拒绝写入带失败分类的待处理投影的 CAS 请求，其余委托给内部 Store。
     #[derive(Clone)]
     struct RejectFailureCasRuntimeStore {
+        /// 被包装的真实文件存储。
         inner: FileRuntimeStateStore,
     }
 
     impl RejectFailureCasRuntimeStore {
+        /// 判断该 CAS 请求是否携带已记录失败分类的待处理投影，是则应被拒绝。
         fn rejects(request: &RuntimeCheckpointCasRequest) -> bool {
             request
                 .checkpoint
@@ -3188,6 +3286,7 @@ mod checkpoint_tests {
                 .unwrap_or(false)
         }
 
+        /// 构造注入的“未提交的瞬时失败”错误。
         fn rejected_receipt() -> crate::error::ReactError {
             echo_core::error::RuntimeStateError::TransientNoCommit(
                 "injected failure-class CAS rejection".to_string(),
@@ -3197,14 +3296,17 @@ mod checkpoint_tests {
     }
 
     impl RuntimeStateStore for RejectFailureCasRuntimeStore {
+        /// 直接委托给内部 Store。
         fn runtime_state_capability(&self) -> RuntimeStateCapability {
             RuntimeStateCapability::RevisionedV1
         }
 
+        /// 直接委托给内部 Store。
         fn persistence_call_capability(&self) -> crate::memory::PersistenceCallCapability {
             crate::memory::PersistenceCallCapability::AbsoluteDeadlineV1
         }
 
+        /// 直接委托给内部 Store。
         fn load_runtime_state<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3214,6 +3316,7 @@ mod checkpoint_tests {
             self.inner.load_runtime_state(scope_id, runtime_state_id)
         }
 
+        /// 直接委托给内部 Store。
         fn load_runtime_state_with_context<'a>(
             &'a self,
             context: crate::memory::PersistenceCallContext,
@@ -3225,6 +3328,7 @@ mod checkpoint_tests {
                 .load_runtime_state_with_context(context, scope_id, runtime_state_id)
         }
 
+        /// 直接委托给内部 Store。
         fn load_scope_authority<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3233,6 +3337,7 @@ mod checkpoint_tests {
             self.inner.load_scope_authority(scope_id)
         }
 
+        /// 直接委托给内部 Store。
         fn load_scope_authority_with_context<'a>(
             &'a self,
             context: crate::memory::PersistenceCallContext,
@@ -3243,6 +3348,7 @@ mod checkpoint_tests {
                 .load_scope_authority_with_context(context, scope_id)
         }
 
+        /// 若请求应被拒绝则返回注入错误，否则委托给内部 Store。
         fn compare_and_save_checkpoint<'a>(
             &'a self,
             request: RuntimeCheckpointCasRequest,
@@ -3254,6 +3360,7 @@ mod checkpoint_tests {
             self.inner.compare_and_save_checkpoint(request)
         }
 
+        /// 若请求应被拒绝则返回注入错误，否则委托给内部 Store。
         fn compare_and_save_checkpoint_with_context<'a>(
             &'a self,
             context: crate::memory::PersistenceCallContext,
@@ -3267,6 +3374,7 @@ mod checkpoint_tests {
                 .compare_and_save_checkpoint_with_context(context, request)
         }
 
+        /// 直接委托给内部 Store。
         fn acknowledge_transcript_projection<'a>(
             &'a self,
             request: RuntimeTranscriptAckRequest,
@@ -3275,6 +3383,7 @@ mod checkpoint_tests {
             self.inner.acknowledge_transcript_projection(request)
         }
 
+        /// 直接委托给内部 Store。
         fn acknowledge_transcript_projection_with_context<'a>(
             &'a self,
             context: crate::memory::PersistenceCallContext,
@@ -3285,6 +3394,7 @@ mod checkpoint_tests {
                 .acknowledge_transcript_projection_with_context(context, request)
         }
 
+        /// 直接委托给内部 Store。
         fn retire_runtime_generation<'a>(
             &'a self,
             request: RuntimeGenerationRetireRequest,
@@ -3293,6 +3403,7 @@ mod checkpoint_tests {
             self.inner.retire_runtime_generation(request)
         }
 
+        /// 直接委托给内部 Store。
         fn get_checkpoint<'a>(
             &'a self,
             conversation_id: &'a str,
@@ -3300,6 +3411,7 @@ mod checkpoint_tests {
             self.inner.get_checkpoint(conversation_id)
         }
 
+        /// 直接委托给内部 Store。
         fn save_checkpoint<'a>(
             &'a self,
             checkpoint: &'a AgentCheckpoint,
@@ -3307,6 +3419,7 @@ mod checkpoint_tests {
             self.inner.save_checkpoint(checkpoint)
         }
 
+        /// 直接委托给内部 Store。
         fn save_checkpoint_for_scope<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3315,6 +3428,7 @@ mod checkpoint_tests {
             self.inner.save_checkpoint_for_scope(scope_id, checkpoint)
         }
 
+        /// 直接委托给内部 Store。
         fn runtime_state_ids<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3322,6 +3436,7 @@ mod checkpoint_tests {
             self.inner.runtime_state_ids(scope_id)
         }
 
+        /// 直接委托给内部 Store。
         fn clear_runtime_state<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3331,6 +3446,7 @@ mod checkpoint_tests {
             self.inner.clear_runtime_state(scope_id, runtime_state_id)
         }
 
+        /// 直接委托给内部 Store。
         fn clear_runtime_state_scope<'a>(
             &'a self,
             scope_id: &'a str,
@@ -3339,6 +3455,7 @@ mod checkpoint_tests {
             self.inner.clear_runtime_state_scope(scope_id)
         }
 
+        /// 直接委托给内部 Store。
         fn clear_conversation<'a>(
             &'a self,
             conversation_id: &'a str,
@@ -3347,12 +3464,15 @@ mod checkpoint_tests {
         }
     }
 
+    /// 旧版会话 Store 探针：任何调用都会计数并返回错误，用于断言未被调用。
     #[derive(Default)]
     struct LegacyConversationProbe {
+        /// 被调用的次数。
         calls: std::sync::atomic::AtomicUsize,
     }
 
     impl LegacyConversationProbe {
+        /// 记录一次调用并返回“不应被调用”的错误。
         fn unexpected<T: Send + 'static>(
             &self,
         ) -> futures::future::BoxFuture<'static, crate::error::Result<T>> {
@@ -3366,6 +3486,7 @@ mod checkpoint_tests {
     }
 
     impl crate::memory::ConversationStore for LegacyConversationProbe {
+        /// 探针实现：计数并返回错误。
         fn create_conversation<'a>(
             &'a self,
             _conv: crate::memory::NewConversation,
@@ -3374,6 +3495,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn get_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3382,6 +3504,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn list_conversations<'a>(
             &'a self,
             _filter: crate::memory::ConversationFilter,
@@ -3392,6 +3515,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn update_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3402,6 +3526,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn delete_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3409,6 +3534,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn save_messages<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3417,6 +3543,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn get_messages<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3425,6 +3552,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn count_messages<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3433,12 +3561,15 @@ mod checkpoint_tests {
         }
     }
 
+    /// 旧版运行时状态 Store 探针：任何调用都会计数并返回错误，用于断言未被调用。
     #[derive(Default)]
     struct LegacyRuntimeProbe {
+        /// 被调用的次数。
         calls: std::sync::atomic::AtomicUsize,
     }
 
     impl LegacyRuntimeProbe {
+        /// 记录一次调用并返回“不应被调用”的错误。
         fn unexpected<T: Send + 'static>(
             &self,
         ) -> futures::future::BoxFuture<'static, crate::error::Result<T>> {
@@ -3452,6 +3583,7 @@ mod checkpoint_tests {
     }
 
     impl RuntimeStateStore for LegacyRuntimeProbe {
+        /// 探针实现：计数并返回错误。
         fn get_checkpoint<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3459,6 +3591,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn save_checkpoint<'a>(
             &'a self,
             _checkpoint: &'a AgentCheckpoint,
@@ -3466,6 +3599,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn save_checkpoint_for_scope<'a>(
             &'a self,
             _scope_id: &'a str,
@@ -3474,6 +3608,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn runtime_state_ids<'a>(
             &'a self,
             _scope_id: &'a str,
@@ -3481,6 +3616,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn clear_runtime_state<'a>(
             &'a self,
             _scope_id: &'a str,
@@ -3490,6 +3626,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn clear_runtime_state_scope<'a>(
             &'a self,
             _scope_id: &'a str,
@@ -3498,6 +3635,7 @@ mod checkpoint_tests {
             self.unexpected()
         }
 
+        /// 探针实现：计数并返回错误。
         fn clear_conversation<'a>(
             &'a self,
             _conversation_id: &'a str,
@@ -3506,6 +3644,7 @@ mod checkpoint_tests {
         }
     }
 
+    /// 验证检查点能恢复工具调用与结果成对的历史。
     #[test]
     fn checkpoint_restores_paired_tool_history() -> crate::error::Result<()> {
         let checkpoint = checkpoint(vec![
@@ -3521,6 +3660,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证检查点拒绝未配对或重复的工具结果。
     #[test]
     fn checkpoint_rejects_unpaired_or_duplicate_tool_results() -> crate::error::Result<()> {
         let unpaired = checkpoint(vec![Message::assistant_with_tools(vec![tool_call(
@@ -3546,6 +3686,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证 transcript 投影游标能往返序列化，并能拒绝损坏的数据。
     #[test]
     fn transcript_projection_cursor_round_trips_and_rejects_corruption() -> crate::error::Result<()>
     {
@@ -3605,6 +3746,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证带 transcript 游标的检查点其摘要开销是有界的。
     #[test]
     fn transcript_cursor_checkpoint_has_bounded_digest_overhead() -> crate::error::Result<()> {
         let projection = TranscriptProjectionCheckpoint {
@@ -3645,6 +3787,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证待处理 transcript 投影能往返序列化，且必须经由托管恢复处理。
     #[test]
     fn pending_transcript_projection_round_trips_and_requires_managed_recovery()
     -> crate::error::Result<()> {
@@ -3735,6 +3878,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证运行时退休身份拒绝被重新绑定到其它修订版本。
     #[test]
     fn runtime_retirement_identity_rejects_revision_rebinding() -> crate::error::Result<()> {
         let mut request = RuntimeGenerationRetireRequest::prepare(
@@ -3749,6 +3893,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证作用域退休复用托管删除的请求身份。
     #[test]
     fn scope_retirement_reuses_managed_delete_identity() -> crate::error::Result<()> {
         let delete = crate::memory::ManagedConversationDelete::prepare("scope", 5)?;
@@ -3760,6 +3905,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证“已完成”的退休要求作用域已处于墓碑状态。
     #[test]
     fn already_completed_retirement_requires_tombstoned_scope() -> crate::error::Result<()> {
         let delete = crate::memory::ManagedConversationDelete::prepare("scope", 5)?;
@@ -3794,6 +3940,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证过期的退休会投影出新的下限，而不修改历史。
     #[test]
     fn expired_retirement_projects_new_floor_without_mutating_history() -> crate::error::Result<()>
     {
@@ -3849,6 +3996,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证进行中且已过期的退休会让所有代次保持待处理状态。
     #[test]
     fn in_progress_expired_retirement_keeps_all_generations_pending() -> crate::error::Result<()> {
         let delete = crate::memory::ManagedConversationDelete::prepare("scope", 5)?;
@@ -3891,6 +4039,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证会话重建后重试托管删除，能取回最初的删除回执。
     #[tokio::test]
     async fn managed_delete_retry_after_recreate_recovers_original_receipt()
     -> crate::error::Result<()> {
@@ -3990,6 +4139,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证调用方截止时间已过期时，清理与删除都不会产生副作用。
     #[tokio::test]
     async fn expired_caller_deadline_has_no_clear_or_delete_side_effects()
     -> crate::error::Result<()> {
@@ -4124,6 +4274,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证未持久化失败分类的终态失败绝不会被发布为成功。
     #[tokio::test]
     async fn terminal_failure_without_durable_classification_never_publishes_success()
     -> crate::error::Result<()> {
@@ -4256,6 +4407,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证精确清理会在退休前先结算待处理的投影。
     #[tokio::test]
     async fn exact_clear_settles_pending_projection_before_retirement() -> crate::error::Result<()>
     {
@@ -4310,6 +4462,7 @@ mod checkpoint_tests {
         Ok(())
     }
 
+    /// 验证精确清理的重试不会删除重建后新实例的 transcript。
     #[tokio::test]
     async fn exact_clear_retry_does_not_delete_recreated_incarnation_transcript()
     -> crate::error::Result<()> {

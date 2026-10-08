@@ -1490,7 +1490,7 @@ async fn resource_links_tools_and_framework_failures_keep_typed_boundaries()
     Ok(())
 }
 
-// ── Shared connection runtime (supreme plan 05, extract-shared-acp-runtime) ──
+// ── 共享连接运行时（supreme plan 05，extract-shared-acp-runtime）──
 
 use echo_agent::acp::{
     AcpConnectionServices, AcpLedgerLimits, AcpSession, RunEventObserver, RunStartSpec,
@@ -1502,10 +1502,14 @@ use echo_agent::state::journal::{
     JournalIdentity, PreparedJournalBatch,
 };
 
+/// 记录已提交事件的观察者，可配置为在指定流或终止事件上失败。
 #[derive(Default)]
 struct RecordingObserver {
+    /// 已记录的 (序号, 事件负载调试文本) 列表。
     events: Arc<Mutex<Vec<(u64, String)>>>,
+    /// 若设置，则对该 stream_id 的事件返回错误。
     fail_on_stream: Arc<Mutex<Option<String>>>,
+    /// 为 true 时，对终止事件返回错误。
     fail_on_terminal: Arc<Mutex<bool>>,
 }
 
@@ -1541,7 +1545,7 @@ impl RunEventObserver for RecordingObserver {
     }
 }
 
-/// Journal hook that always fails: delivery fails without rewriting a producer terminal.
+/// 始终失败的日志钩子：投递失败，但不会改写生产者的终止结果。
 #[derive(Default)]
 struct FailingJournal;
 
@@ -1587,6 +1591,7 @@ impl EventJournal<echo_agent::agent::EventEnvelope> for FailingJournal {
     }
 }
 
+/// 用给定会话工厂构建共享连接服务，并创建一个会话，返回服务及会话 ID。
 async fn shared_services(
     factory: impl AcpSessionFactory,
 ) -> Result<(Arc<AcpConnectionServices>, String)> {
@@ -1604,6 +1609,7 @@ async fn shared_services(
     Ok((services, session_id.to_string()))
 }
 
+/// 为会话开启一个轮次并构建扩展运行的启动规格，可附带一个观察者。
 fn extension_spec(
     session: &Arc<AcpSession>,
     observer: Option<Arc<dyn RunEventObserver>>,
@@ -1627,6 +1633,7 @@ fn extension_spec(
     })
 }
 
+/// 共享权威结算扩展运行时恰好只产生一个终止事件。
 #[tokio::test]
 async fn shared_authority_settles_extension_runs_with_exactly_one_terminal() -> Result<()> {
     let test = TestFactory::new();
@@ -1656,13 +1663,14 @@ async fn shared_authority_settles_extension_runs_with_exactly_one_terminal() -> 
         .unwrap_or_else(|error| error.into_inner())
         .clone();
     assert!(!events.is_empty());
-    // Sequences are contiguous from one; the last event is the single terminal.
+    // 序号从 1 开始连续；最后一个事件是唯一的终止事件。
     for (index, (sequence, _)) in events.iter().enumerate() {
         assert_eq!(*sequence, (index + 1) as u64);
     }
     Ok(())
 }
 
+/// 所有入口共享同一个活动运行槽位。
 #[tokio::test]
 async fn one_active_run_slot_is_shared_across_entry_points() -> Result<()> {
     let test = TestFactory::new();
@@ -1679,12 +1687,13 @@ async fn one_active_run_slot_is_shared_across_entry_points() -> Result<()> {
         "a second concurrent run slot must be refused regardless of entry point"
     );
     drop(first);
-    // After the lease drops the slot is free again.
+    // 租约释放后，槽位重新可用。
     let second = session.begin_turn()?;
     drop(second);
     Ok(())
 }
 
+/// 终止前日志写入失败会使执行和投递都失败。
 #[tokio::test]
 async fn journal_failure_before_terminal_fails_execution_and_delivery() -> Result<()> {
     let test = TestFactory::new();
@@ -1705,6 +1714,7 @@ async fn journal_failure_before_terminal_fails_execution_and_delivery() -> Resul
     Ok(())
 }
 
+/// 观察者失败只算投递失败，不会改写执行结果。
 #[tokio::test]
 async fn observer_failure_is_delivery_failure_without_rewriting_execution() -> Result<()> {
     let test = TestFactory::new();
@@ -1734,6 +1744,7 @@ async fn observer_failure_is_delivery_failure_without_rewriting_execution() -> R
     Ok(())
 }
 
+/// 取消运行经由共享的取消权威路由。
 #[tokio::test]
 async fn cancel_run_routes_through_the_shared_cancellation_authority() -> Result<()> {
     let test = TestFactory::new();
@@ -1747,7 +1758,7 @@ async fn cancel_run_routes_through_the_shared_cancellation_authority() -> Result
     let spec = extension_spec(&session, None)?;
     let run_id = spec.run_id.clone();
     {
-        // Park the run on the gate ("wait-for-release" parks until cancel).
+        // 让运行停在闸门上（"wait-for-release" 会一直阻塞直到取消）。
         let mut spec = spec;
         if let TurnRequest {
             input: echo_agent::runtime::TurnInput::Text(text),
@@ -1762,11 +1773,12 @@ async fn cancel_run_routes_through_the_shared_cancellation_authority() -> Result
         let receipt = entry.wait_receipt().await;
         assert_eq!(receipt.outcome, TurnOutcome::Cancelled);
     }
-    // Unknown run ids cancel nothing.
+    // 未知的运行 ID 不会取消任何东西。
     assert!(!services.cancel_run("missing-run").await);
     Ok(())
 }
 
+/// 事件账本的上限会保留一个下限序号并限制内存占用。
 #[tokio::test]
 async fn ledger_bounds_retain_a_floor_and_clamp_memory() -> Result<()> {
     let test = TestFactory::new();

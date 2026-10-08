@@ -1,7 +1,9 @@
-//! Chart generation tool
-//!
-//! Generate data visualization charts via vega-lite v5 JSON specification.
-//! Supports line, bar, pie, scatter, area, heatmap, boxplot, and more.
+/*!
+ * 图表生成工具
+ *
+ * 通过 vega-lite v5 JSON 规范生成数据可视化图表。
+ * 支持折线图、柱状图、饼图、散点图、面积图、热力图、箱线图等。
+ */
 
 use futures::future::BoxFuture;
 use serde_json::Value;
@@ -10,24 +12,29 @@ use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
-// ── generate_chart tool ──────────────────────────────────────────────────────
+// ── generate_chart 工具 ──────────────────────────────────────────────────────
 
+/// 图表生成工具：输出 Vega-Lite v5 规范，可选生成 HTML 页面。
 pub struct GenerateChartTool;
 
 impl Tool for GenerateChartTool {
+    /// 工具名称。
     fn name(&self) -> &str {
         "generate_chart"
     }
 
+    /// 所需权限。
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read, ToolPermission::Write]
     }
 
+    /// 工具描述。
     fn description(&self) -> &str {
         "Generate data visualization charts (vega-lite v5 JSON spec). \
          Supports line, bar, pie, scatter, area, heatmap, boxplot."
     }
 
+    /// 参数的 JSON Schema。
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -76,6 +83,7 @@ impl Tool for GenerateChartTool {
         })
     }
 
+    /// 根据参数构建 Vega-Lite 规范，并可选生成可在浏览器打开的 HTML 页面。
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let chart_type = parameters
@@ -141,8 +149,9 @@ impl Tool for GenerateChartTool {
     }
 }
 
-// ── Vega-Lite Spec Builder ───────────────────────────────────────────────────
+// ── Vega-Lite 规范构建 ───────────────────────────────────────────────────
 
+/// 根据图表类型、数据与编码字段构建 Vega-Lite 规范。
 #[allow(clippy::too_many_arguments)]
 fn build_vega_lite_spec(
     chart_type: &str,
@@ -192,7 +201,7 @@ fn build_vega_lite_spec(
             });
         }
         _ => {
-            // line, bar, scatter, area
+            // 折线图、柱状图、散点图、面积图
             spec["encoding"] = serde_json::json!({
                 "x": {"field": x_field, "type": "nominal"},
                 "y": {"field": y_field, "type": "quantitative"}
@@ -208,6 +217,7 @@ fn build_vega_lite_spec(
     spec
 }
 
+/// 将图表类型映射为 Vega-Lite 的 mark 类型。
 fn mark_type(chart_type: &str) -> &str {
     match chart_type {
         "bar" => "bar",
@@ -216,12 +226,13 @@ fn mark_type(chart_type: &str) -> &str {
         "area" => "area",
         "heatmap" => "rect",
         "boxplot" => "boxplot",
-        _ => "line", // default to line
+        _ => "line", // 默认使用折线图
     }
 }
 
-// ── HTML Page Generator ─────────────────────────────────────────────────────
+// ── HTML 页面生成 ─────────────────────────────────────────────────────
 
+/// 生成内嵌 Vega-Lite 规范的独立 HTML 页面。
 fn generate_html_page(spec: &Value, title: &str) -> String {
     let spec_json = serde_json::to_string_pretty(spec).unwrap_or_else(|_| "{}".to_string());
     let display_title = if title.is_empty() {

@@ -99,9 +99,13 @@ assert_eq!(agent.calls()[0], "6 * 7 = ?");
 ```
 */
 
+/// Mock Agent 实现。
 mod mock_agent;
+/// Mock 向量嵌入器实现。
 mod mock_embedder;
+/// Mock LLM 客户端实现。
 mod mock_llm;
+/// Mock 工具实现。
 mod mock_tool;
 
 pub use mock_agent::{FailingMockAgent, MockAgent, MockAgentFailure, MockAgentStep};

@@ -1,18 +1,22 @@
-//! demo31_memory_tools —— Memory Tool 自动注入 ReAct 循环
-//!
-//! 演示 `ReactAgentBuilder::with_memory_tools(store)` 如何一行代码
-//! 自动注册 remember / recall / search_memory / forget 四个内置工具，
-//! 将 Store 直接暴露给 LLM，实现 Agent 自主使用记忆。
-//!
-//! ```bash
-//! cargo test --all-features --locked contract_demo31_memory_tools -- --nocapture
-//! ```
+/*!
+demo31_memory_tools —— Memory Tool 自动注入 ReAct 循环
+
+演示 `ReactAgentBuilder::with_memory_tools(store)` 如何一行代码
+自动注册 remember / recall / search_memory / forget 四个内置工具，
+将 Store 直接暴露给 LLM，实现 Agent 自主使用记忆。
+
+```bash
+cargo test --all-features --locked contract_demo31_memory_tools -- --nocapture
+```
+*/
 
 use echo_agent::prelude::*;
 use std::sync::Arc;
 
-/// 契约测试：验证 `with_memory_tools` / `set_memory_store` 能自动注册记忆相关工具，
-/// 并可通过 Store 完成写入与搜索。
+/**
+契约测试：验证 `with_memory_tools` / `set_memory_store` 能自动注册记忆相关工具，
+并可通过 Store 完成写入与搜索。
+*/
 #[tokio::test]
 async fn contract_demo31_memory_tools() -> echo_agent::error::Result<()> {
     let _ = tracing_subscriber::fmt()

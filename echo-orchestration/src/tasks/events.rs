@@ -1,26 +1,32 @@
-//! 面向 UI 消费者的、允许丢失的进度投影。
-//!
-//! 使用异步广播 channel 实现非阻塞的事件分发。
-//! 监听者可以在各自的异步任务中订阅并接收事件。
+/*!
+面向 UI 消费者的、允许丢失的进度投影。
+
+使用异步广播 channel 实现非阻塞的事件分发。
+监听者可以在各自的异步任务中订阅并接收事件。
+*/
 
 use super::progress::TaskProgress;
 use serde::Serialize;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// 事件总线的默认 channel 容量
-///
-/// 已提升至 512，以在高吞吐场景下减少事件丢失。
-/// 如果你的负载会产生大量事件，可以考虑使用更大的容量。
+/**
+事件总线的默认 channel 容量
+
+已提升至 512，以在高吞吐场景下减少事件丢失。
+如果你的负载会产生大量事件，可以考虑使用更大的容量。
+*/
 const DEFAULT_CHANNEL_CAPACITY: usize = 512;
 
 /// 由进度报告器发出的、非权威性的进度投影。
 #[derive(Debug, Clone, Serialize)]
 pub enum TaskEvent {
-    /// 任务内部的进度更新（百分比、当前阶段、预计完成时间）。
-    ///
-    /// 由 [`ProgressReporter`](super::progress::ProgressReporter) 针对带有
-    /// [`PhasePlan`](super::progress::PhasePlan) 的长时间运行任务发出。
+    /**
+    任务内部的进度更新（百分比、当前阶段、预计完成时间）。
+
+    由 [`ProgressReporter`](super::progress::ProgressReporter) 针对带有
+    [`PhasePlan`](super::progress::PhasePlan) 的长时间运行任务发出。
+    */
     Progress {
         /// 任务 ID
         task_id: String,
@@ -71,17 +77,21 @@ impl TaskEventListener for LoggingListener {
     }
 }
 
-/// 事件总线 —— 将事件异步广播给所有已注册的监听者
-///
-/// 使用 `tokio::sync::broadcast` 高效地向多个订阅者扇出事件。
-/// 事件被包装在 `Arc` 中以便低成本克隆。
+/**
+事件总线 —— 将事件异步广播给所有已注册的监听者
+
+使用 `tokio::sync::broadcast` 高效地向多个订阅者扇出事件。
+事件被包装在 `Arc` 中以便低成本克隆。
+*/
 pub struct TaskEventBus {
     /// 广播 channel 的发送端
     tx: broadcast::Sender<Arc<TaskEvent>>,
     // 保留同步监听者以兼容旧代码（包装在 Arc 中以便安全共享）
     sync_listeners: Vec<Arc<dyn TaskEventListener>>,
-    // 限制同步监听者并发执行的数量，防止任务堆积时
-    // tokio::spawn 无限增长（P1-2.4）。
+    /**
+    限制同步监听者并发执行的数量，防止任务堆积时
+    tokio::spawn 无限增长（P1-2.4）。
+    */
     sync_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
@@ -109,22 +119,26 @@ impl TaskEventBus {
         self.sync_listeners.push(listener);
     }
 
-    /// 订阅异步事件流
-    ///
-    /// 返回一个可在异步任务中使用的接收端。
-    ///
-    /// **警告：消费过慢可能导致滞后。** 当 channel 已满且接收端落后时，
-    /// `tokio::sync::broadcast` 会丢弃事件。如果你需要保证送达，
-    /// 请及时处理事件，或使用单独的持久化队列。
+    /**
+    订阅异步事件流
+
+    返回一个可在异步任务中使用的接收端。
+
+    **警告：消费过慢可能导致滞后。** 当 channel 已满且接收端落后时，
+    `tokio::sync::broadcast` 会丢弃事件。如果你需要保证送达，
+    请及时处理事件，或使用单独的持久化队列。
+    */
     pub fn subscribe(&self) -> broadcast::Receiver<Arc<TaskEvent>> {
         self.tx.subscribe()
     }
 
-    /// 向所有监听者发出一个事件
-    ///
-    /// 同步监听者会通过 `tokio::spawn` 被派发到后台任务，以避免阻塞调用方，
-    /// 但会受到一个信号量的并发限制（P1-2.4）。
-    /// 异步订阅者则通过各自的接收端收到该事件。
+    /**
+    向所有监听者发出一个事件
+
+    同步监听者会通过 `tokio::spawn` 被派发到后台任务，以避免阻塞调用方，
+    但会受到一个信号量的并发限制（P1-2.4）。
+    异步订阅者则通过各自的接收端收到该事件。
+    */
     pub fn emit(&self, event: TaskEvent) {
         // 将同步监听者派发到后台任务（有限并发）
         let event_for_async = Arc::new(event.clone());

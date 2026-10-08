@@ -1,7 +1,9 @@
-//! HTML 评估报告生成器 —— 生成可交互的评估报告。
-//!
-//! 思路借鉴自 `skill-creator/eval-viewer/`。生成一个独立、自包含的
-//! HTML 文件，包含通过/失败矩阵、分数分布以及每个用例的详情。
+/*!
+HTML 评估报告生成器 —— 生成可交互的评估报告。
+
+思路借鉴自 `skill-creator/eval-viewer/`。生成一个独立、自包含的
+HTML 文件，包含通过/失败矩阵、分数分布以及每个用例的详情。
+*/
 
 use crate::eval::EvalReport;
 
@@ -123,6 +125,7 @@ mod tests {
     use super::*;
     use crate::eval::{EvalReport, EvalResult};
 
+    /// 验证可生成包含评估结果的 HTML 报告。
     #[test]
     fn test_generate_html() {
         let result = EvalResult::new("test1", true).with_metric("accuracy", 0.95, "good");

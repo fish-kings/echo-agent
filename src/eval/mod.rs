@@ -30,13 +30,21 @@ let case = EvalCase {
 ```
 */
 
+/// A/B 对比评估器：比较两种 Agent 配置。
 pub mod comparator;
+/// LLM-as-Judge 评分器：使用 agent 给评测输出打分。
 pub mod grader;
+/// 基于历史 trace 的回归测试套件。
 pub mod regression;
+/// 历史 Agent 运行轨迹的离线回放分析。
 pub mod replay;
+/// HTML 评估报告生成器。
 pub mod report;
+/// 针对 agent 执行 eval 用例的运行器。
 pub mod runner;
+/// 交互式评测审阅页面（自包含 HTML）。
 pub mod server;
+/// 子 Agent 触发准确率评估。
 pub mod trigger;
 
 pub use comparator::AbComparator;
@@ -83,8 +91,10 @@ pub struct EvalCase {
     pub domain: Option<String>,
     /// 交给 Agent 的任务/问题。
     pub task: String,
-    /// 测试前需要准备的可选项目 fixture 目录。
-    /// 文件会在 Agent 运行前被复制到评估工作区。
+    /**
+     * 测试前需要准备的可选项目 fixture 目录。
+     * 文件会在 Agent 运行前被复制到评估工作区。
+     */
     #[serde(default)]
     pub project_fixture: Option<PathBuf>,
     /// 判定通过/失败的标准。

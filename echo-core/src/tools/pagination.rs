@@ -1,4 +1,4 @@
-//! Shared cursor pagination contract for collection-returning tools.
+//! 返回集合的工具所共享的游标分页契约。
 
 use super::{ToolParameters, ToolResult};
 use serde::{Deserialize, Serialize};
@@ -6,38 +6,64 @@ use sha2::{Digest, Sha256};
 use std::fmt;
 use std::io::{self, Write};
 
+/// 当前游标编码格式的版本号。
 const CURSOR_VERSION: u8 = 1;
+/// 游标字符串允许的最大字符数。
 const MAX_CURSOR_CHARS: usize = 1_024;
 
-/// Pagination input shared by collection-returning tools.
+/// 返回集合的工具所共享的分页输入。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PageRequest {
+    /// 每页最多返回的条目数。
     pub limit: usize,
+    /// 上一页返回的续页游标；为 `None` 时从第一页开始。
     pub cursor: Option<String>,
 }
 
-/// Pagination metadata shared by collection-returning tools.
+/// 返回集合的工具所共享的分页元数据。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PageInfo {
+    /// 获取下一页所用的游标；没有更多数据时为 `None`。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// 本页之后是否还有未返回的数据。
     pub truncated: bool,
+    /// 结果总数是否已知。
     pub total_known: bool,
+    /// 结果总数（已知时）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total: Option<usize>,
+    /// 本页实际返回的条目数。
     pub returned: usize,
 }
 
+/// 分页参数解析或游标校验失败时的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PageError {
-    InvalidLimit { limit: usize, max: usize },
+    /// `limit` 超出允许范围。
+    InvalidLimit {
+        /// 调用方请求的 limit。
+        limit: usize,
+        /// 允许的最大 limit。
+        max: usize,
+    },
+    /// 分页参数无效，携带错误描述。
     InvalidParameter(String),
+    /// 游标格式无效，携带错误描述。
     InvalidCursor(String),
+    /// 游标与当前查询或结果快照不匹配。
     CursorQueryMismatch,
-    CursorOutOfRange { offset: usize, total: usize },
+    /// 游标偏移超出了当前结果数量。
+    CursorOutOfRange {
+        /// 游标记录的偏移量。
+        offset: usize,
+        /// 当前结果总数。
+        total: usize,
+    },
 }
 
 impl fmt::Display for PageError {
+    /// 输出面向模型的错误说明。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidLimit { limit, max } => {
@@ -62,21 +88,30 @@ impl fmt::Display for PageError {
 
 impl std::error::Error for PageError {}
 
+/// 游标的内部结构，序列化为 JSON 后以十六进制编码。
 #[derive(Debug, Serialize, Deserialize)]
 struct CursorEnvelope {
+    /// 游标格式版本。
     version: u8,
+    /// 查询与结果快照的指纹，用于检测查询变更。
     query_fingerprint: String,
+    /// 下一页的起始偏移。
     offset: usize,
 }
 
+/// 参与计算指纹的输入。
 #[derive(Debug, Serialize)]
 struct FingerprintInput<'a, Q, T> {
+    /// 调用方的查询参数。
     query: &'a Q,
+    /// 每页条目数。
     limit: usize,
+    /// 完整的结果集快照。
     items: &'a [T],
 }
 
 impl PageRequest {
+    /// 从工具参数中解析 `limit` 与 `cursor`，并校验 limit 是否在 `1..=max_limit` 范围内。
     pub fn from_parameters(
         parameters: &ToolParameters,
         default_limit: usize,
@@ -117,6 +152,11 @@ impl PageRequest {
         Ok(Self { limit, cursor })
     }
 
+    /**
+    对完整结果集进行分页，返回当前页的条目及分页元数据。
+
+    若带有游标，会校验其版本以及查询/结果快照指纹是否与当前一致。
+    */
     pub fn paginate<T, Q>(&self, items: Vec<T>, query: &Q) -> Result<(Vec<T>, PageInfo), PageError>
     where
         T: Serialize,
@@ -170,7 +210,7 @@ impl PageRequest {
 }
 
 impl PageInfo {
-    /// Attach the common page contract and expose continuation facts to the model.
+    /// 附加通用分页契约，并向模型暴露续页信息。
     pub fn apply_to(&self, result: &mut ToolResult) {
         result.truncated = result.truncated || self.truncated;
         result
@@ -204,6 +244,7 @@ impl PageInfo {
     }
 }
 
+/// 计算查询参数、limit 与结果快照的 SHA-256 指纹。
 fn query_fingerprint<Q: Serialize, T: Serialize>(
     query: &Q,
     limit: usize,
@@ -224,26 +265,31 @@ fn query_fingerprint<Q: Serialize, T: Serialize>(
     Ok(format!("{:x}", writer.0.finalize()))
 }
 
+/// 将写入的字节直接喂给 SHA-256 哈希器的 `Write` 适配器。
 #[derive(Default)]
 struct Sha256Writer(Sha256);
 
 impl Write for Sha256Writer {
+    /// 将字节追加到哈希状态中。
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.0.update(bytes);
         Ok(bytes.len())
     }
 
+    /// 无缓冲，无需刷新。
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
 }
 
+/// 将游标结构编码为十六进制字符串。
 fn encode_cursor(envelope: &CursorEnvelope) -> Result<String, PageError> {
     let bytes = serde_json::to_vec(envelope)
         .map_err(|error| PageError::InvalidCursor(format!("cannot encode cursor: {error}")))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
+/// 从十六进制字符串解码游标结构，并校验长度与格式。
 fn decode_cursor(cursor: &str) -> Result<CursorEnvelope, PageError> {
     if cursor.chars().count() > MAX_CURSOR_CHARS || !cursor.len().is_multiple_of(2) {
         return Err(PageError::InvalidCursor(
@@ -283,6 +329,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 构造带有 limit 和可选 cursor 的测试参数。
     fn params(limit: u64, cursor: Option<&str>) -> ToolParameters {
         let mut parameters = ToolParameters::new();
         parameters.insert("limit".to_string(), json!(limit));

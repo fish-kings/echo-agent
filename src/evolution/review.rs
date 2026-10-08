@@ -112,6 +112,7 @@ impl StalenessScorer {
 }
 
 impl Default for StalenessScorer {
+    /// 等价于 [`StalenessScorer::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -253,6 +254,7 @@ impl ConflictDetector {
 }
 
 impl Default for ConflictDetector {
+    /// 等价于 [`ConflictDetector::new`]。
     fn default() -> Self {
         Self::new()
     }
@@ -438,8 +440,10 @@ pub struct ReviewConfig {
     pub review_on_session_end: bool,
     /// 每次复核返回的冲突提案数量上限。默认：`10`。
     pub max_conflicts_per_review: usize,
-    /// 单个提案允许包含的最大成员数。更大的分组会被上报，但不会出现在
-    /// 可操作的输出中，以此控制 JSONL 与提示词的膨胀。
+    /**
+     * 单个提案允许包含的最大成员数。更大的分组会被上报，但不会出现在
+     * 可操作的输出中，以此控制 JSONL 与提示词的膨胀。
+     */
     pub max_conflict_members: usize,
     /// 是否在复核期间运行技能候选检测。默认：`true`。
     pub detect_skill_candidates: bool,
@@ -448,6 +452,7 @@ pub struct ReviewConfig {
 }
 
 impl Default for ReviewConfig {
+    /// 返回默认的复核配置。
     fn default() -> Self {
         Self {
             review_on_session_end: false,
@@ -611,6 +616,7 @@ impl MemoryReviewer {
 }
 
 impl Default for MemoryReviewer {
+    /// 等价于 `Self::new()`。
     fn default() -> Self {
         Self::new()
     }
@@ -618,6 +624,7 @@ impl Default for MemoryReviewer {
 
 // ── 测试 ──────────────────────────────────────────────────────────────
 
+/// 记忆复核流程的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,21 +636,25 @@ mod tests {
     /// 用于测试的空操作 ChangeLog。
     struct NullChangeLog;
     impl ChangeLog for NullChangeLog {
+        /// 空操作：直接丢弃条目。
         fn record(&self, _entry: super::super::audit::ChangeEntry) -> Result<()> {
             Ok(())
         }
+        /// 空操作：总是视为已记录。
         fn record_idempotent(
             &self,
             _entry: super::super::audit::ChangeEntry,
         ) -> Result<super::super::audit::ChangeRecordOutcome> {
             Ok(super::super::audit::ChangeRecordOutcome::AlreadyRecorded)
         }
+        /// 空操作：总是返回空列表。
         fn query(
             &self,
             _filter: &super::super::audit::ChangeFilter,
         ) -> Result<Vec<super::super::audit::ChangeEntry>> {
             Ok(Vec::new())
         }
+        /// 空操作：总是返回 `None`。
         fn latest_for(
             &self,
             _entity_type: EntityType,
@@ -651,11 +662,13 @@ mod tests {
         ) -> Result<Option<super::super::audit::ChangeEntry>> {
             Ok(None)
         }
+        /// 空操作：总是返回 `0`。
         fn len(&self) -> usize {
             0
         }
     }
 
+    /// 构造一条用于测试的类型化记忆条目。
     fn make_entry(key: &str, content: &str, meta: MemoryMeta, updated_at: u64) -> TypedMemoryEntry {
         let mut raw = StoreItem::new(
             vec!["agent".to_string(), "typed_memories".to_string()],
@@ -672,16 +685,19 @@ mod tests {
         }
     }
 
+    /// 返回当前 Unix 时间戳（秒）。
     fn now_secs() -> u64 {
         Utc::now().timestamp().max(0) as u64
     }
 
+    /// 返回若干天前的 Unix 时间戳（秒）。
     fn days_ago_secs(days: i64) -> u64 {
         ((Utc::now() - Duration::days(days)).timestamp()).max(0) as u64
     }
 
     // ── StalenessScorer 测试 ──
 
+    /// 验证新鲜且高质量的条目保持激活状态。
     #[test]
     fn test_fresh_high_quality_entry_is_active() {
         let scorer = StalenessScorer::new();
@@ -706,6 +722,7 @@ mod tests {
         assert_eq!(report.source_factor, 0.0);
     }
 
+    /// 验证陈旧且低质量的条目成为归档候选。
     #[test]
     fn test_old_low_quality_entry_is_archive_candidate() {
         let scorer = StalenessScorer::new();
@@ -725,6 +742,7 @@ mod tests {
         assert_eq!(report.age_factor, 0.8);
     }
 
+    /// 验证矛盾信号会提高陈旧度。
     #[test]
     fn test_contradiction_bumps_staleness() {
         let scorer = StalenessScorer::new();
@@ -745,6 +763,7 @@ mod tests {
         assert_eq!(with_conflict.contradiction_factor, 0.5);
     }
 
+    /// 验证终态的推荐状态保持不变。
     #[test]
     fn test_recommended_status_is_sticky_for_terminal() {
         // 已归档/已被取代的条目绝不应因评分而被重新激活。
@@ -754,6 +773,7 @@ mod tests {
         assert_eq!(superseded, MemoryStatus::Superseded);
     }
 
+    /// 验证召回次数会降低低使用率因子。
     #[test]
     fn test_recall_count_lowers_usage_factor() {
         let scorer = StalenessScorer::new();
@@ -773,6 +793,7 @@ mod tests {
         assert_eq!(r_high.usage_factor, 0.0);
     }
 
+    /// 验证复核默认配置为手动触发且仅产出提案。
     #[test]
     fn review_defaults_are_manual_and_proposal_only() {
         let config = ReviewConfig::default();
@@ -783,6 +804,7 @@ mod tests {
 
     // ── ConflictDetector 测试 ──
 
+    /// 验证能检测出同主题同类型但内容不同的冲突。
     #[test]
     fn test_detects_same_topic_type_different_content() {
         let detector = ConflictDetector::new();
@@ -802,6 +824,7 @@ mod tests {
         assert_eq!(groups[0].memory_type, MemoryType::ProjectFact);
     }
 
+    /// 验证不同主题之间不会产生冲突。
     #[test]
     fn test_no_conflict_for_different_topics() {
         let detector = ConflictDetector::new();
@@ -830,6 +853,7 @@ mod tests {
         assert!(detector.detect(&entries).is_empty());
     }
 
+    /// 验证内容相同的条目不会产生冲突。
     #[test]
     fn test_no_conflict_for_identical_content() {
         // 两条内容完全相同的条目属于去重候选，而不是冲突。
@@ -848,6 +872,7 @@ mod tests {
 
     // ── MemoryMerger 测试 ──
 
+    /// 验证合并时保留置信度最高的条目作为主条目。
     #[tokio::test]
     async fn test_merge_keeps_highest_confidence_as_primary() -> Result<()> {
         let store = Arc::new(InMemoryStore::new());
@@ -923,6 +948,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证单条目合并是空操作。
     #[tokio::test]
     async fn test_merge_single_entry_is_noop() -> Result<()> {
         let store = Arc::new(InMemoryStore::new());
@@ -949,6 +975,7 @@ mod tests {
 
     // ── MemoryReviewer 端到端测试 ──
 
+    /// 验证复核会报告陈旧与冲突，但不修改数据。
     #[tokio::test]
     async fn test_review_reports_stale_and_conflicts_without_mutation() {
         let mem_store = Arc::new(InMemoryStore::new());
@@ -1060,6 +1087,7 @@ mod tests {
         assert_eq!(build_b.content, "Build uses cargo 1.70");
     }
 
+    /// 验证复核会省略成员数量超限的冲突提案。
     #[tokio::test]
     async fn review_omits_oversized_conflict_proposals() -> crate::error::Result<()> {
         let store = Arc::new(InMemoryStore::new());

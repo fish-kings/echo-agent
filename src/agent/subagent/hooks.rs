@@ -85,6 +85,7 @@ pub struct LoggingSubagentHooks;
 
 #[async_trait::async_trait]
 impl SubagentHooks for LoggingSubagentHooks {
+    /// 派发前记录父 Agent、子 Agent、执行模式与任务。
     async fn before_dispatch(&self, ctx: &SubagentHookContext) {
         tracing::info!(
             parent = %ctx.parent_agent,
@@ -95,6 +96,7 @@ impl SubagentHooks for LoggingSubagentHooks {
         );
     }
 
+    /// 派发完成后记录耗时与截断后的输出预览。
     async fn after_dispatch(&self, ctx: &SubagentHookContext, result: &SubagentResult) {
         let preview = if result.output.chars().count() > 100 {
             let truncated: String = result.output.chars().take(100).collect();
@@ -111,6 +113,7 @@ impl SubagentHooks for LoggingSubagentHooks {
         );
     }
 
+    /// 失败时记录警告日志，并决定不重试。
     async fn on_failure(&self, ctx: &SubagentHookContext, error: &str) -> SubagentRetryDecision {
         tracing::warn!(
             parent = %ctx.parent_agent,
@@ -122,6 +125,7 @@ impl SubagentHooks for LoggingSubagentHooks {
         SubagentRetryDecision::Fail
     }
 
+    /// 取消时记录日志。
     async fn on_cancelled(&self, ctx: &SubagentHookContext) {
         tracing::info!(
             parent = %ctx.parent_agent,
@@ -226,12 +230,14 @@ impl SubagentHookRegistry {
 }
 
 impl Default for SubagentHookRegistry {
+    /// 创建默认实例。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl Clone for SubagentHookRegistry {
+    /// 克隆实例（共享内部钩子列表）。
     fn clone(&self) -> Self {
         Self {
             hooks: self.hooks.clone(),
@@ -245,6 +251,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::Duration;
 
+    /// 记录各钩子调用次数的测试钩子。
     struct TestHooks {
         before: AtomicU32,
         after: AtomicU32,
@@ -321,4 +328,3 @@ mod tests {
         assert_eq!(registry.len(), 1);
     }
 }
-</content>

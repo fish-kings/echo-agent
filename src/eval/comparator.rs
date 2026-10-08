@@ -1,7 +1,9 @@
-//! A/B 对比评估器 —— 比较两种 Agent 配置。
-//!
-//! 思路借鉴自 `skill-creator/agents/comparator.md`。在两种不同的
-//! Agent 配置上运行相同的评估用例，并计算每个用例的分数差值。
+/*!
+A/B 对比评估器 —— 比较两种 Agent 配置。
+
+思路借鉴自 `skill-creator/agents/comparator.md`。在两种不同的
+Agent 配置上运行相同的评估用例，并计算每个用例的分数差值。
+*/
 
 use crate::eval::{EvalCase, EvalReport, EvalRunner};
 

@@ -1,4 +1,4 @@
-//! Canonical durable mutation owner for Skill lifecycle resources.
+//! Skill 生命周期资源的唯一（canonical）持久化变更权威。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
@@ -539,10 +539,11 @@ impl SkillOperationJournal {
     }
 }
 
-/// Skill 生命周期资源的唯一（canonical）持久化变更权威。
-///
-/// 所有对 Skill 文件与 Curator 状态的变更都必须经由本权威完成，
-/// 以保证操作日志、文件系统与 ChangeLog 三者之间的一致性。
+/** Skill 生命周期资源的唯一（canonical）持久化变更权威。
+ *
+ * 所有对 Skill 文件与 Curator 状态的变更都必须经由本权威完成，
+ * 以保证操作日志、文件系统与 ChangeLog 三者之间的一致性。
+ */
 pub struct SkillMutationAuthority {
     /// Skill 元数据（Curator 状态）的读写入口。
     curator: Curator,
@@ -581,10 +582,11 @@ enum SkillMutationFailPoint {
 }
 
 impl SkillMutationAuthority {
-    /// 打开（或首次创建）一个绑定到指定 Curator 与 ChangeLog 的变更权威。
-    ///
-    /// 会校验操作日志与 ChangeLog 中的审计权威标记是否一致；
-    /// 若两者都为空，则会创建一条新的绑定标记并写入 ChangeLog。
+    /** 打开（或首次创建）一个绑定到指定 Curator 与 ChangeLog 的变更权威。
+     *
+     * 会校验操作日志与 ChangeLog 中的审计权威标记是否一致；
+     * 若两者都为空，则会创建一条新的绑定标记并写入 ChangeLog。
+     */
     pub fn open(curator: Curator, change_log: Arc<dyn ChangeLog>) -> Result<Self> {
         let journal = SkillOperationJournal::open(&curator.skill_operation_journal_path())?;
         let _serial = journal.serial.try_lock().map_err(|_| {
@@ -1388,8 +1390,9 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// 将路径规范化为绝对规范路径，拒绝任何包含父目录穿越（`..`）的路径；
-/// 若路径尚不存在，则规范化其存在的最近祖先目录后拼回剩余部分。
+/** 将路径规范化为绝对规范路径，拒绝任何包含父目录穿越（`..`）的路径；
+ * 若路径尚不存在，则规范化其存在的最近祖先目录后拼回剩余部分。
+ */
 fn canonical_resource_path(path: &Path) -> Result<PathBuf> {
     if path
         .components()

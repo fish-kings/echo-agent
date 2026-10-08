@@ -1,9 +1,11 @@
-//! 旧版 HTTP+SSE 传输层（MCP 2024-11-05 协议）
-//!
-//! 适用于 旧版 SDK 的服务端。
-//!
-//! - SSE 连接：`GET {base_url}/sse`
-//! - 发送请求：`POST {base_url}/message`（注意：单数）
+/*!
+旧版 HTTP+SSE 传输层（MCP 2024-11-05 协议）
+
+适用于 旧版 SDK 的服务端。
+
+- SSE 连接：`GET {base_url}/sse`
+- 发送请求：`POST {base_url}/message`（注意：单数）
+*/
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -30,31 +32,49 @@ use super::{
     transport_closed_error,
 };
 
+/// 等待单个请求响应的超时
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// 关闭传输层的总超时
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// HTTP/SSE 传输层
 pub struct SseTransport {
+    /// 底层 HTTP 客户端
     client: reqwest::Client,
+    /// 每次请求附带的自定义请求头
     headers: HashMap<String, String>,
+    /// 下一个 JSON-RPC 请求 ID
     next_id: Arc<AtomicU64>,
+    /// 等待响应的请求表
     pending: Arc<PendingRequests>,
+    /// 服务端通知的广播发送端
     notification_tx: broadcast::Sender<JsonRpcNotification>,
+    /// 从 endpoint 事件获取的 POST 端点 URI
     message_endpoint: Arc<Mutex<Option<String>>>,
+    /// POST 操作的读写门：发送时持读锁，关闭时取写锁以等待在途 POST 结束
     post_gate: Arc<RwLock<()>>,
+    /// 用于取消 SSE 循环与在途操作的令牌
     cancel_token: CancellationToken,
+    /// SSE 接收后台任务
     sse_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
+    /// 保证关闭流程只执行一次并可被多方等待的协调器
     close_coordinator: Arc<CloseCoordinator>,
+    /// 等待单个请求响应的超时
     response_timeout: Duration,
 }
 
+/// 构造期间的 SSE 接收任务守卫：构造 future 被取消时负责取消并回收已启动的任务。
 struct SseConstructionTask {
+    /// 用于取消 SSE 循环的令牌
     cancel: CancellationToken,
+    /// 等待响应的请求表
     pending: Arc<PendingRequests>,
+    /// 已启动的接收任务（构造成功后被取走）
     task: Option<tokio::task::JoinHandle<Result<()>>>,
 }
 
 impl Drop for SseConstructionTask {
+    /// 若任务仍未被取走，则取消、中止并在后台等待其结束。
     fn drop(&mut self) {
         let Some(task) = self.task.take() else {
             return;
@@ -71,10 +91,12 @@ impl Drop for SseConstructionTask {
 }
 
 impl SseTransport {
+    /// 连接旧版 HTTP+SSE 服务端，建立 SSE 接收循环。
     pub async fn new(base_url: String, headers: HashMap<String, String>) -> Result<Self> {
         Self::new_with_warmup(base_url, headers, Duration::from_millis(300)).await
     }
 
+    /// 与 [`Self::new`] 相同，但可指定等待 endpoint 事件的预热时长。
     async fn new_with_warmup(
         base_url: String,
         headers: HashMap<String, String>,
@@ -110,6 +132,7 @@ impl SseTransport {
                 let mut last_event_id: Option<String> = None;
                 let mut retry_ms: u64 = 2_000;
                 let mut retry_count: u32 = 0;
+                /// SSE 断线后的最大重连次数
                 const MAX_RETRIES: u32 = 5;
 
                 let result = loop {
@@ -180,8 +203,10 @@ impl SseTransport {
             task: Some(sse_task),
         };
 
-        // Keep the original endpoint warm-up period while the task has an
-        // owner that can settle cancellation before Self is returned.
+        /*
+        保留原有的 endpoint 预热等待期；在返回 Self 之前，
+        该任务始终有一个能在被取消时负责收尾的所有者。
+        */
         tokio::time::sleep(warmup).await;
         let sse_task = construction.task.take().ok_or_else(|| {
             ReactError::Mcp(Box::new(McpError::ConnectionFailed(
@@ -204,6 +229,7 @@ impl SseTransport {
         })
     }
 
+    /// 建立一次 SSE 连接并持续处理事件（endpoint、响应与通知），直到连接结束或被取消。
     #[allow(clippy::too_many_arguments)]
     async fn run_sse_loop(
         client: &reqwest::Client,
@@ -386,6 +412,7 @@ impl SseTransport {
         Ok(())
     }
 
+    /// 执行完整关闭流程：取消、结清请求表、等待在途 POST、清空端点并回收 SSE 任务。
     async fn close_owned(
         cancel_token: CancellationToken,
         pending: Arc<PendingRequests>,
@@ -432,6 +459,7 @@ impl SseTransport {
         }
     }
 
+    /// 在独立任务中执行关闭流程，并在超时内等待其完成。
     async fn close_with_timeout(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         let (start, receipt) = self.close_coordinator.begin();
@@ -460,6 +488,7 @@ impl SseTransport {
 }
 
 impl McpTransport for SseTransport {
+    /// 通过 POST 端点发送请求，并经由 SSE 流等待对应响应。
     fn send(&self, request: JsonRpcRequest) -> BoxFuture<'_, Result<JsonRpcResponse>> {
         Box::pin(async move {
             let mut request = request;
@@ -495,8 +524,10 @@ impl McpTransport for SseTransport {
                 builder = builder.header(k, v);
             }
 
-            // 如果 message_endpoint 之前保存过，尝试在 header 中携带
-            // 注意：session ID 在 POST 请求 headers 中携带
+            /*
+            如果 message_endpoint 之前保存过，尝试在 header 中携带
+            注意：session ID 在 POST 请求 headers 中携带
+            */
             builder = builder.json(&request);
 
             let post_resp = tokio::select! {
@@ -540,6 +571,7 @@ impl McpTransport for SseTransport {
         })
     }
 
+    /// 通过 POST 端点发送通知；尚未获取端点时跳过发送。
     fn notify(&self, notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let _post_guard = tokio::select! {
@@ -586,10 +618,12 @@ impl McpTransport for SseTransport {
         })
     }
 
+    /// 以默认关闭超时关闭传输层。
     fn close(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move { self.close_with_timeout(CLOSE_TIMEOUT).await })
     }
 
+    /// 返回订阅服务端通知的接收器。
     fn notification_rx(&self) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
         Some(Arc::new(NotificationReceiver::new(
             self.notification_tx.subscribe(),
@@ -598,6 +632,7 @@ impl McpTransport for SseTransport {
 }
 
 impl Drop for SseTransport {
+    /// 取消 SSE 循环并关闭请求表。
     fn drop(&mut self) {
         self.cancel_token.cancel();
         self.pending.close();
@@ -613,6 +648,7 @@ mod tests {
 
     use super::*;
 
+    /// 构造用于测试的 SSE 传输，并返回后台任务是否已结束的标记。
     fn test_transport(
         endpoint: Option<String>,
         response_timeout: Duration,
@@ -656,6 +692,7 @@ mod tests {
         ))
     }
 
+    /// 验证构造过程被取消时会收尾其已启动的接收任务。
     #[tokio::test]
     async fn cancelled_construction_settles_its_started_receive_task() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -685,6 +722,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭会排空待处理请求、等待任务结束，且可重复调用。
     #[tokio::test]
     async fn close_drains_pending_awaits_task_and_is_idempotent() -> Result<()> {
         let (transport, settled) = test_transport(None, Duration::from_secs(1), false)?;
@@ -699,6 +737,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭超时会中止并等待无响应的任务。
     #[tokio::test]
     async fn close_timeout_aborts_and_awaits_unresponsive_task() -> Result<()> {
         let (transport, _) = test_transport(None, Duration::from_secs(1), true)?;
@@ -714,6 +753,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证缺少端点时不会登记待处理请求。
     #[tokio::test]
     async fn missing_endpoint_never_registers_pending_request() -> Result<()> {
         let (transport, _) = test_transport(None, Duration::from_secs(1), false)?;
@@ -729,6 +769,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 POST 失败会移除待处理请求。
     #[tokio::test]
     async fn post_failure_removes_pending_request() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -747,6 +788,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证通知 POST 失败可被观察到。
     #[tokio::test]
     async fn notification_post_failure_is_observable() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -764,6 +806,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭会取消并等待进行中的通知 POST。
     #[tokio::test]
     async fn close_cancels_and_awaits_inflight_notification_post() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -806,6 +849,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭 future 被取消后仍保留自有任务，供重试时获取结果。
     #[tokio::test]
     async fn cancelled_close_future_keeps_owned_task_for_retry_receipt() -> Result<()> {
         let (transport, _) = test_transport(None, Duration::from_secs(1), true)?;
@@ -833,6 +877,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭会取消卡住的错误响应体读取并收尾 SSE 任务。
     #[tokio::test]
     async fn close_cancels_stalled_error_body_and_settles_sse_task() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -872,6 +917,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 POST 闸门获取失败时仍会中止并等待 SSE 任务。
     #[tokio::test]
     async fn post_gate_failure_still_aborts_and_joins_sse_task() -> Result<()> {
         let (transport, _) = test_transport(None, Duration::from_secs(1), true)?;
@@ -890,6 +936,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证响应超时会移除待处理请求。
     #[tokio::test]
     async fn response_timeout_removes_pending_request() -> Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;

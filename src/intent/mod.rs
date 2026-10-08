@@ -92,8 +92,10 @@ pub trait IntentClassifier: Send + Sync {
 /// [`IntentRouter`] 的配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IntentRouterConfig {
-    /// 信任一次分类结果所需的最低置信度。
-    /// 低于该阈值的结果会被当作 [`Intent::Fallback`] 处理。
+    /**
+    信任一次分类结果所需的最低置信度。
+    低于该阈值的结果会被当作 [`Intent::Fallback`] 处理。
+    */
     pub confidence_threshold: f32,
     /// 是否启用 `DirectAnswer` 快捷路径。
     pub enable_direct_answer: bool,
@@ -110,6 +112,7 @@ fn default_classification_timeout_ms() -> u64 {
 }
 
 impl Default for IntentRouterConfig {
+    /// 返回默认路由配置：置信度阈值 0.7，并启用各快捷路径。
     fn default() -> Self {
         Self {
             confidence_threshold: 0.7,
@@ -221,5 +224,7 @@ pub use self::classifier::{
 };
 pub use self::trigger_supervisor::TriggerSupervisor;
 
+/// 意图分类器实现（关键词 / LLM 分类器等）。
 mod classifier;
+/// 融合多路触发信号的触发监督器。
 mod trigger_supervisor;

@@ -1,10 +1,12 @@
-//! 上下文压缩
-//!
-//! 维护对话历史，并在 token 超出限制时自动压缩，由 [`ContextManager`] 统一管理。
-//!
-//! 内置压缩策略（均实现 [`ContextCompressor`] trait）：
-//! - [`compressor::SlidingWindowCompressor`]：滑动窗口，丢弃最早的 N 条消息
-//! - [`compressor::SummaryCompressor`]：LLM 摘要，将旧消息压缩为一条系统摘要消息（stage4 P4.3 默认策略）
+/*!
+上下文压缩
+
+维护对话历史，并在 token 超出限制时自动压缩，由 [`ContextManager`] 统一管理。
+
+内置压缩策略（均实现 [`ContextCompressor`] trait）：
+- [`compressor::SlidingWindowCompressor`]：滑动窗口，丢弃最早的 N 条消息
+- [`compressor::SummaryCompressor`]：LLM 摘要，将旧消息压缩为一条系统摘要消息（stage4 P4.3 默认策略）
+*/
 
 pub mod compressor;
 pub mod horizon;
@@ -27,11 +29,14 @@ use echo_core::tokenizer::{HeuristicTokenizer, Tokenizer};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+/// 框架投影信封的固定前缀，用于识别由框架管理的上下文投影消息。
 const PROJECTION_ENVELOPE_PREFIX: &str = "<echo-agent-context-projection-v1>";
 
-/// 判断一条消息是否携带了由框架管理的上下文投影信封（envelope）。
-///
-/// 调用方应使用该判断函数，而不是直接匹配内部的信封表示形式。
+/**
+判断一条消息是否携带了由框架管理的上下文投影信封（envelope）。
+
+调用方应使用该判断函数，而不是直接匹配内部的信封表示形式。
+*/
 pub fn is_context_projection_message(message: &Message) -> bool {
     projection_envelope_text(message).is_some()
 }
@@ -62,10 +67,12 @@ fn projection_marker_prefix(marker: &str) -> Option<String> {
         .map(|encoded| format!("{PROJECTION_ENVELOPE_PREFIX}\nmarker={encoded}\n"))
 }
 
-/// 将被驱逐消息提升为长期记忆的回调 trait。
-///
-/// 当压缩从上下文中驱逐消息时，该 trait 允许提取关键事实并写入记忆 Store 以便后续召回。
-/// 这就是所谓的 "L3 记忆提升"（Memory Promotion）机制。
+/**
+将被驱逐消息提升为长期记忆的回调 trait。
+
+当压缩从上下文中驱逐消息时，该 trait 允许提取关键事实并写入记忆 Store 以便后续召回。
+这就是所谓的 "L3 记忆提升"（Memory Promotion）机制。
+*/
 pub trait MemoryPromoter: Send + Sync {
     /// 处理被驱逐的消息，并将关键事实提升到记忆中。
     fn promote(
@@ -120,8 +127,10 @@ pub struct ForceCompressStats {
     pub after_tokens: usize,
 }
 
-/// `ContextManager::prepare()` 的返回结果 —— 包含准备好的消息列表，
-/// 以及在触发自动压缩时附带的压缩统计信息。
+/**
+`ContextManager::prepare()` 的返回结果 —— 包含准备好的消息列表，
+以及在触发自动压缩时附带的压缩统计信息。
+*/
 pub struct PrepareResult {
     /// 准备发送给 LLM 的消息列表。
     pub messages: Vec<Message>,
@@ -133,9 +142,11 @@ pub struct PrepareResult {
     pub verification: Option<verifier::SummaryVerification>,
 }
 
-/// 按消息角色划分的 token 明细。
-///
-/// 供 `/context` 命令展示上下文窗口预算的具体分布情况。
+/**
+按消息角色划分的 token 明细。
+
+供 `/context` 命令展示上下文窗口预算的具体分布情况。
+*/
 #[derive(Debug, Clone)]
 pub struct TokenBreakdown {
     /// 系统消息（system）占用的 token 数
@@ -225,10 +236,12 @@ fn fmt_tokens(n: usize) -> String {
     }
 }
 
-/// 用于可观测性的累计压缩指标。
-///
-/// 记录 [`ContextManager`] 生命周期内触发的压缩事件总数、节省的 token 数、
-/// 被驱逐的消息数，以及各压缩策略的使用情况。
+/**
+用于可观测性的累计压缩指标。
+
+记录 [`ContextManager`] 生命周期内触发的压缩事件总数、节省的 token 数、
+被驱逐的消息数，以及各压缩策略的使用情况。
+*/
 #[derive(Debug, Clone)]
 pub struct CompressionMetrics {
     /// 触发压缩事件的总次数。
@@ -299,46 +312,48 @@ impl CompressionMetrics {
     }
 }
 
-/// 上下文管理器：维护完整的对话历史，并在 token 超出限制时自动触发压缩。
-///
-/// # 典型用法
-///
-/// ```rust,no_run
-/// use echo_core::error::Result;
-/// use echo_core::llm::types::Message;
-/// use echo_state::compression::compressor::SlidingWindowCompressor;
-/// use echo_state::compression::{ContextCompressor, ContextManager};
-///
-/// # async fn example() -> Result<()> {
-/// let mut ctx = ContextManager::builder(4096)
-///     .compressor(SlidingWindowCompressor::new(20))
-///     .build();
-///
-/// ctx.push(Message::system("You are an assistant".to_string()));
-/// ctx.push(Message::user("Hello".to_string()));
-///
-/// // 每次调用 LLM 前调用 prepare()，自动压缩超出限制的消息
-/// let result = ctx.prepare(None).await?;
-/// let messages = result.messages;
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # SummaryCompressor 示例（stage4 P4.3 默认策略）
-///
-/// ```rust,no_run
-/// use echo_core::llm::LlmClient;
-/// use echo_state::compression::compressor::SummaryCompressor;
-/// use echo_state::compression::{ContextCompressor, ContextManager};
-/// use std::sync::Arc;
-///
-/// # async fn example(llm: Arc<dyn LlmClient>) {
-/// let compressor = SummaryCompressor::new(llm, 8);
-/// let mut ctx = ContextManager::builder(8192)
-///     .compressor(compressor)
-///     .build();
-/// # }
-/// ```
+/**
+上下文管理器：维护完整的对话历史，并在 token 超出限制时自动触发压缩。
+
+# 典型用法
+
+```rust,no_run
+use echo_core::error::Result;
+use echo_core::llm::types::Message;
+use echo_state::compression::compressor::SlidingWindowCompressor;
+use echo_state::compression::{ContextCompressor, ContextManager};
+
+# async fn example() -> Result<()> {
+let mut ctx = ContextManager::builder(4096)
+    .compressor(SlidingWindowCompressor::new(20))
+    .build();
+
+ctx.push(Message::system("You are an assistant".to_string()));
+ctx.push(Message::user("Hello".to_string()));
+
+// 每次调用 LLM 前调用 prepare()，自动压缩超出限制的消息
+let result = ctx.prepare(None).await?;
+let messages = result.messages;
+# Ok(())
+# }
+```
+
+# SummaryCompressor 示例（stage4 P4.3 默认策略）
+
+```rust,no_run
+use echo_core::llm::LlmClient;
+use echo_state::compression::compressor::SummaryCompressor;
+use echo_state::compression::{ContextCompressor, ContextManager};
+use std::sync::Arc;
+
+# async fn example(llm: Arc<dyn LlmClient>) {
+let compressor = SummaryCompressor::new(llm, 8);
+let mut ctx = ContextManager::builder(8192)
+    .compressor(compressor)
+    .build();
+# }
+```
+*/
 pub struct ContextManager {
     /// 当前维护的完整消息缓冲区
     messages: Vec<Message>,
@@ -348,41 +363,55 @@ pub struct ContextManager {
     token_limit: usize,
     /// 用于估算 token 数的分词器
     tokenizer: Arc<dyn Tokenizer>,
-    /// 用于标识受保护消息（在压缩中存活）的内容标记。
-    /// 任何内容包含这些标记之一的消息都会被排除在压缩之外。
-    /// 用于静态的、由调用方定义且必须在压缩中存活的指令。
+    /**
+    用于标识受保护消息（在压缩中存活）的内容标记。
+    任何内容包含这些标记之一的消息都会被排除在压缩之外。
+    用于静态的、由调用方定义且必须在压缩中存活的指令。
+    */
     protected_markers: Vec<String>,
-    /// 最新消息会替代旧消息的受保护内容标记。
-    ///
-    /// 适用于动态上下文，例如子 Agent 调用简报：当前值必须在压缩中存活，
-    /// 但保留历史值既浪费 token，又可能让模型接收到相互冲突的指令。
+    /**
+    最新消息会替代旧消息的受保护内容标记。
+
+    适用于动态上下文，例如子 Agent 调用简报：当前值必须在压缩中存活，
+    但保留历史值既浪费 token，又可能让模型接收到相互冲突的指令。
+    */
     replaceable_protected_markers: Vec<String>,
     /// 每个动态投影提供方最近一次发出的标记集合。
     projection_scopes: HashMap<String, HashSet<String>>,
-    /// 可选的硬性消息数量上限（作为 OOM 防护的补充手段）。
-    ///
-    /// （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`token_limit` /
-    /// `budget`）；`max_messages` 是一种可选的补充防护，用于应对消息数量
-    /// 异常增长的极端情况（例如大量不足以触发 token 阈值、但会拖慢渲染/
-    /// 处理速度的小消息）。业界主流做法是以 token 驱动（OpenAI/Anthropic/
-    /// Letta 均按 token 计费/开窗）；因此 `max_messages` 默认是 `None`
-    /// （关闭状态），与这一主流做法保持一致。需要消息数量兜底的调用方，
-    /// 可以通过 [`ContextManagerBuilder::max_messages`] 进行设置。
+    /**
+    可选的硬性消息数量上限（作为 OOM 防护的补充手段）。
+
+    （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`token_limit` /
+    `budget`）；`max_messages` 是一种可选的补充防护，用于应对消息数量
+    异常增长的极端情况（例如大量不足以触发 token 阈值、但会拖慢渲染/
+    处理速度的小消息）。业界主流做法是以 token 驱动（OpenAI/Anthropic/
+    Letta 均按 token 计费/开窗）；因此 `max_messages` 默认是 `None`
+    （关闭状态），与这一主流做法保持一致。需要消息数量兜底的调用方，
+    可以通过 [`ContextManagerBuilder::max_messages`] 进行设置。
+    */
     max_messages: Option<usize>,
-    /// 可选的、用于按百分比分配的 token 预算。
-    /// 一旦设置，`prepare()` 会使用 budget.allocate() 而不是简单的 token_limit 比较。
+    /**
+    可选的、用于按百分比分配的 token 预算。
+    一旦设置，`prepare()` 会使用 budget.allocate() 而不是简单的 token_limit 比较。
+    */
     budget: Option<TokenBudget>,
     /// 用于可观测性的累计压缩指标。
     metrics: CompressionMetrics,
-    /// 可选的可见性视界（visibility horizon）压缩器。
-    /// 一旦设置，`prepare()` 会在主压缩器之前先执行一轮视界压缩预处理，
-    /// 压缩活动窗口之外的工具调用轨迹。
+    /**
+    可选的可见性视界（visibility horizon）压缩器。
+    一旦设置，`prepare()` 会在主压缩器之前先执行一轮视界压缩预处理，
+    压缩活动窗口之外的工具调用轨迹。
+    */
     visibility_horizon: Option<horizon::VisibilityHorizonCompressor>,
-    /// 可选的、将被驱逐消息提升为长期记忆的回调。
-    /// 一旦设置，会在每次压缩后携带被驱逐的消息调用该回调。
+    /**
+    可选的、将被驱逐消息提升为长期记忆的回调。
+    一旦设置，会在每次压缩后携带被驱逐的消息调用该回调。
+    */
     memory_promoter: Option<Arc<dyn MemoryPromoter>>,
-    /// 可选的规范上下文来源，用于压缩后的重新注入。
-    /// 一旦设置，若系统提示词、规则、技能注入在压缩中被驱逐，可以据此恢复。
+    /**
+    可选的规范上下文来源，用于压缩后的重新注入。
+    一旦设置，若系统提示词、规则、技能注入在压缩中被驱逐，可以据此恢复。
+    */
     canonical_context: Option<CanonicalContext>,
 }
 
@@ -402,13 +431,15 @@ impl ContextManager {
         }
     }
 
-    /// 向上下文缓冲区追加一条消息。
-    ///
-    /// （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`prepare()` 在估算
-    /// token 数超过 `token_limit` 时触发压缩）。可选的 `max_messages` 上限
-    /// （若通过 builder 设置）是一种补充兜底：一旦超出，会执行滑动窗口式
-    /// 降级处理，保留系统消息 + 受保护消息 + 最近消息，丢弃中间最早的部分。
-    /// 默认为 `None`（不设消息数量上限，以 token 驱动，与业界主流做法一致）。
+    /**
+    向上下文缓冲区追加一条消息。
+
+    （stage4 P4.3）主要的 OOM 防护手段是 token 预算（`prepare()` 在估算
+    token 数超过 `token_limit` 时触发压缩）。可选的 `max_messages` 上限
+    （若通过 builder 设置）是一种补充兜底：一旦超出，会执行滑动窗口式
+    降级处理，保留系统消息 + 受保护消息 + 最近消息，丢弃中间最早的部分。
+    默认为 `None`（不设消息数量上限，以 token 驱动，与业界主流做法一致）。
+    */
     pub fn push(&mut self, message: Message) {
         if let Some(marker) = self.replaceable_marker_for(&message) {
             self.messages.retain(|existing| {
@@ -428,8 +459,10 @@ impl ContextManager {
         }
     }
 
-    /// 应用消息数量硬上限：保留系统消息、受保护消息和最近的消息；
-    /// 丢弃中间最早的部分。仅在设置了 `max_messages` 且超出时触发。
+    /**
+    应用消息数量硬上限：保留系统消息、受保护消息和最近的消息；
+    丢弃中间最早的部分。仅在设置了 `max_messages` 且超出时触发。
+    */
     fn apply_hard_cap(&mut self, target: usize) {
         if self.messages.len() <= target {
             return;
@@ -456,8 +489,10 @@ impl ContextManager {
             .position(|m| m.role != Role::System)
             .unwrap_or(0);
 
-        // 保留：开头所有的系统消息 + 最后 `target` 条消息。
-        // 丢弃中间最早的、非系统且非受保护的消息。
+        /*
+        保留：开头所有的系统消息 + 最后 `target` 条消息。
+        丢弃中间最早的、非系统且非受保护的消息。
+        */
         let keep_count = self.messages.len() - target;
         let mut to_remove: Vec<usize> = Vec::new();
         let mut removed = 0;
@@ -493,14 +528,16 @@ impl ContextManager {
         &self.messages
     }
 
-    /// 判断下一次调用 `prepare()` 时是否即将触发压缩 —— 即已配置压缩器
-    /// 且 token 预算已超出。
-    ///
-    /// （stage4 E1）供 `pre_compaction_flush` 使用，用于控制刷新用的 LLM
-    /// 调用只在真正即将发生压缩时触发，而不是在每次 ReAct 迭代都触发。
-    /// 该方法是对 `prepare()` 中 `needs_compression` 判断逻辑（mod.rs:1017-1025）
-    /// 的非修改性预检查。相对预算路径存在轻微的过早/延迟触发是可以接受的——
-    /// 该刷新本身是尽力而为（best-effort）的。
+    /**
+    判断下一次调用 `prepare()` 时是否即将触发压缩 —— 即已配置压缩器
+    且 token 预算已超出。
+
+    （stage4 E1）供 `pre_compaction_flush` 使用，用于控制刷新用的 LLM
+    调用只在真正即将发生压缩时触发，而不是在每次 ReAct 迭代都触发。
+    该方法是对 `prepare()` 中 `needs_compression` 判断逻辑（mod.rs:1017-1025）
+    的非修改性预检查。相对预算路径存在轻微的过早/延迟触发是可以接受的——
+    该刷新本身是尽力而为（best-effort）的。
+    */
     pub fn should_compress(&self) -> bool {
         if self.compressor.is_none() {
             return false;
@@ -514,17 +551,21 @@ impl ContextManager {
         }
     }
 
-    /// 替换内部消息缓冲区（用于从持久化存储中恢复对话）
-    ///
-    /// 消息列表应将系统提示词作为第一项（如果需要的话）。
+    /**
+    替换内部消息缓冲区（用于从持久化存储中恢复对话）
+
+    消息列表应将系统提示词作为第一项（如果需要的话）。
+    */
     pub fn set_messages(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.projection_scopes.clear();
     }
 
-    /// 估算当前上下文的 token 数
-    ///
-    /// 使用配置的 [`Tokenizer`] 实现（默认使用 [`HeuristicTokenizer`]，区分 ASCII/中日韩字符）。
+    /**
+    估算当前上下文的 token 数
+
+    使用配置的 [`Tokenizer`] 实现（默认使用 [`HeuristicTokenizer`]，区分 ASCII/中日韩字符）。
+    */
     pub fn token_estimate(&self) -> usize {
         Self::estimate_tokens(&self.messages, &*self.tokenizer)
     }
@@ -551,38 +592,44 @@ impl ContextManager {
         self.projection_scopes.clear();
     }
 
-    /// 注册一个用于保护消息不被压缩的内容标记。
-    ///
-    /// 任何内容中包含该标记字符串的消息都会在压缩过程中被排除。
-    /// 用于静态的、由调用方定义且在上下文压缩过程中不能被驱逐的指令。
-    ///
-    /// # 示例
-    /// ```rust,no_run
-    /// # use echo_state::compression::ContextManager;
-    /// let mut ctx = ContextManager::builder(4096).build();
-    /// ctx.add_protected_marker("[critical_policy]".to_string());
-    /// ```
+    /**
+    注册一个用于保护消息不被压缩的内容标记。
+
+    任何内容中包含该标记字符串的消息都会在压缩过程中被排除。
+    用于静态的、由调用方定义且在上下文压缩过程中不能被驱逐的指令。
+
+    # 示例
+    ```rust,no_run
+    # use echo_state::compression::ContextManager;
+    let mut ctx = ContextManager::builder(4096).build();
+    ctx.add_protected_marker("[critical_policy]".to_string());
+    ```
+    */
     pub fn add_protected_marker(&mut self, marker: String) {
         if !marker.is_empty() && !self.protected_markers.contains(&marker) {
             self.protected_markers.push(marker);
         }
     }
 
-    /// 注册一个具有"最新值替代旧值"语义的受保护标记。
-    ///
-    /// 推入一条包含该标记的消息时，会先移除所有含有相同标记的旧消息，再追加新值。
+    /**
+    注册一个具有"最新值替代旧值"语义的受保护标记。
+
+    推入一条包含该标记的消息时，会先移除所有含有相同标记的旧消息，再追加新值。
+    */
     pub fn add_replaceable_protected_marker(&mut self, marker: String) {
         if !marker.is_empty() && !self.replaceable_protected_markers.contains(&marker) {
             self.replaceable_protected_markers.push(marker);
         }
     }
 
-    /// 在系统消息与历史消息的边界处，替换带标记的模型上下文。
-    ///
-    /// 投影消息会被包裹上框架保留的信封（envelope）。每个给定的 marker 只替换
-    /// 它自己之前的值。若某个投影的 message 为 `None`，则视为对该 marker 的
-    /// 墓碑标记（删除）。未提及的投影保持不变，使独立的上下文来源可以安全地
-    /// 各自更新。
+    /**
+    在系统消息与历史消息的边界处，替换带标记的模型上下文。
+
+    投影消息会被包裹上框架保留的信封（envelope）。每个给定的 marker 只替换
+    它自己之前的值。若某个投影的 message 为 `None`，则视为对该 marker 的
+    墓碑标记（删除）。未提及的投影保持不变，使独立的上下文来源可以安全地
+    各自更新。
+    */
     pub fn apply_projections(&mut self, projections: &[ContextProjection]) {
         let mut replacements = Vec::new();
         for projection in projections {
@@ -612,10 +659,12 @@ impl ContextManager {
         self.messages.splice(boundary..boundary, replacements);
     }
 
-    /// Apply the complete marker set owned by one dynamic provider.
-    ///
-    /// Markers emitted by this scope on its previous call but omitted now are
-    /// removed. Projections owned by other scopes or direct callers remain.
+    /**
+    应用某个动态提供方所拥有的完整标记集合。
+
+    该作用域上一次调用时发出、但本次未再提供的标记会被移除；
+    由其他作用域或直接调用方拥有的投影保持不变。
+    */
     pub fn apply_projection_scope(
         &mut self,
         scope: impl Into<String>,
@@ -641,7 +690,7 @@ impl ContextManager {
         }
     }
 
-    /// Replace one framework-owned projection by marker.
+    /// 按标记替换一条由框架拥有的投影。
     pub fn replace_projection(&mut self, marker: impl Into<String>, message: Option<Message>) {
         let marker = marker.into();
         if marker.is_empty() {
@@ -650,10 +699,12 @@ impl ContextManager {
         self.apply_projections(&[ContextProjection { marker, message }]);
     }
 
-    /// Replace one framework-owned projection at the tail of current history.
-    ///
-    /// Tail placement is appropriate for per-turn dynamic context because it
-    /// preserves the longest stable prompt prefix for provider KV caches.
+    /**
+    在当前历史的末尾替换一条由框架拥有的投影。
+
+    末尾放置适用于每轮变化的动态上下文，因为它能为提供方的 KV 缓存
+    保留最长的稳定提示词前缀。
+    */
     pub fn replace_tail_projection(&mut self, marker: impl Into<String>, message: Option<Message>) {
         let marker = marker.into();
         if marker.is_empty() {
@@ -671,7 +722,7 @@ impl ContextManager {
         }
     }
 
-    /// Remove one framework-owned projection by exact marker.
+    /// 按精确标记移除一条由框架拥有的投影，返回被移除的消息数。
     pub fn remove_projection(&mut self, marker: &str) -> usize {
         let Some(expected) = projection_marker_prefix(marker) else {
             return 0;
@@ -684,7 +735,7 @@ impl ContextManager {
         before.saturating_sub(self.messages.len())
     }
 
-    /// Count messages currently protected by registered content markers.
+    /// 统计当前被已注册内容标记保护的消息数量。
     pub fn protected_message_count(&self) -> usize {
         self.messages
             .iter()
@@ -692,7 +743,7 @@ impl ContextManager {
             .count()
     }
 
-    /// Estimate tokens currently pinned against compression.
+    /// 估算当前因受保护而不参与压缩的 token 数。
     pub fn protected_token_estimate(&self) -> usize {
         self.messages
             .iter()
@@ -704,7 +755,7 @@ impl ContextManager {
             .sum()
     }
 
-    /// Return whether the context owns a projection with exactly this marker.
+    /// 判断上下文中是否存在标记与给定值完全一致的投影。
     pub fn has_projection(&self, marker: &str) -> bool {
         let Some(expected) = projection_marker_prefix(marker) else {
             return false;
@@ -715,7 +766,7 @@ impl ContextManager {
         })
     }
 
-    /// Check if a message is protected from compression.
+    /// 检查一条消息是否受保护、不参与压缩。
     fn is_protected(&self, message: &Message) -> bool {
         if is_context_projection_message(message) {
             return true;
@@ -730,6 +781,7 @@ impl ContextManager {
         }
     }
 
+    /// 返回消息内容命中的第一个可替换受保护标记（若有）。
     fn replaceable_marker_for(&self, message: &Message) -> Option<String> {
         let content = message.content.as_text_ref()?;
         self.replaceable_protected_markers
@@ -738,6 +790,7 @@ impl ContextManager {
             .cloned()
     }
 
+    /// 判断当前缓冲区中该标记是否恰好只有一条投影，且内容与给定消息包装后完全一致。
     fn projection_matches(&self, marker: &str, message: &Message) -> bool {
         let Some(expected_prefix) = projection_marker_prefix(marker) else {
             return false;
@@ -762,6 +815,7 @@ impl ContextManager {
             })
     }
 
+    /// 为消息内容加上携带标记的框架投影信封。
     fn wrap_projection_message(mut message: Message, marker: &str) -> Message {
         let encoded_marker =
             serde_json::to_string(marker).unwrap_or_else(|_| "\"invalid-marker\"".to_string());
@@ -780,10 +834,11 @@ impl ContextManager {
         message
     }
 
-    /// Split messages into (compressible, protected_metadata).
-    ///
-    /// Protected messages are removed from the compressible set and will be
-    /// re-inserted at their original relative positions after compression.
+    /**
+    将消息拆分为（可压缩消息, 受保护消息元数据）。
+
+    受保护消息会从可压缩集合中移除，并在压缩后重新插入到其原始的相对位置。
+    */
     fn split_protected(&self, messages: Vec<Message>) -> (Vec<Message>, Vec<ProtectedMessage>) {
         let mut compressible = Vec::new();
         let mut protected: Vec<(usize, Message)> = Vec::new();
@@ -813,11 +868,12 @@ impl ContextManager {
         (compressible, protected)
     }
 
-    /// Merge protected messages back into the compressed output.
-    ///
-    /// Protected messages are re-inserted near their original relative positions.
-    /// We restore from the tail so each message can reserve the amount of trailing
-    /// conversation that originally followed it.
+    /**
+    将受保护消息合并回压缩后的输出。
+
+    受保护消息会被重新插入到接近其原始相对位置的地方。
+    从尾部开始还原，使每条消息都能为原本跟在它后面的对话预留相应数量的位置。
+    */
     fn merge_protected(compressed: Vec<Message>, protected: Vec<ProtectedMessage>) -> Vec<Message> {
         if protected.is_empty() {
             return compressed;
@@ -841,47 +897,50 @@ impl ContextManager {
         result
     }
 
-    /// Dynamically replace the compressor without affecting the existing message buffer
+    /// 动态替换压缩器，不影响已有的消息缓冲区
     pub fn set_compressor(&mut self, compressor: impl ContextCompressor + 'static) {
         self.compressor = Some(Box::new(compressor));
     }
 
-    /// Set or replace the visibility horizon compressor.
-    ///
-    /// When configured, `prepare()` runs horizon compaction as a pre-processing
-    /// pass before the main compressor, compacting tool traces beyond the
-    /// active plan window.
+    /**
+    设置或替换可见性视界压缩器。
+
+    配置后，`prepare()` 会在主压缩器之前先执行一轮视界压缩预处理，
+    压缩活动计划窗口之外的工具调用轨迹。
+    */
     pub fn set_visibility_horizon(&mut self, compressor: horizon::VisibilityHorizonCompressor) {
         self.visibility_horizon = Some(compressor);
     }
 
-    /// Remove the visibility horizon compressor.
+    /// 移除可见性视界压缩器。
     pub fn remove_visibility_horizon(&mut self) {
         self.visibility_horizon = None;
     }
 
-    /// Set or replace the memory promoter.
-    ///
-    /// When set, the promoter receives evicted messages after each
-    /// compression pass, enabling L3 memory promotion.
+    /**
+    设置或替换记忆提升器。
+
+    设置后，每轮压缩结束时提升器都会收到被驱逐的消息，从而启用 L3 记忆提升。
+    */
     pub fn set_memory_promoter(&mut self, promoter: Arc<dyn MemoryPromoter>) {
         self.memory_promoter = Some(promoter);
     }
 
-    /// Remove the memory promoter.
+    /// 移除记忆提升器。
     pub fn remove_memory_promoter(&mut self) {
         self.memory_promoter = None;
     }
 
-    /// Run memory promotion and tool-call sanitization on the internal buffer.
-    ///
-    /// Shared by `prepare()` and `force_compress*()` to ensure consistent
-    /// post-compression processing: evicted facts → long-term memory, and
-    /// broken tool-call pairs → fixed.
-    ///
-    /// Returns the number of evicted messages sent to the promoter.
+    /**
+    对内部缓冲区执行记忆提升和工具调用配对清理。
+
+    由 `prepare()` 与 `force_compress*()` 共用，以保证压缩后的处理一致：
+    被驱逐的事实 → 长期记忆，损坏的工具调用配对 → 修复。
+
+    返回提升器实际提升的消息数量。
+    */
     async fn promote_and_sanitize(&mut self, evicted_messages: &[Message]) -> Result<usize> {
-        // ── Memory promotion ──
+        // ── 记忆提升 ──
         let count = if let Some(ref promoter) = self.memory_promoter {
             if !evicted_messages.is_empty() {
                 promoter.promote(evicted_messages).await?.promoted
@@ -892,43 +951,46 @@ impl ContextManager {
             0
         };
 
-        // ── Tool-call sanitization ──
+        // ── 工具调用配对清理 ──
         let (sanitized, _fixes) = sanitize_tool_call_pairing(&self.messages);
         self.messages = sanitized;
 
         Ok(count)
     }
 
-    /// Set canonical context sources for re-injection after compression.
-    ///
-    /// When set, `prepare()` will check if compression evicted critical context
-    /// (system prompt, rules, skill injections) and re-inject them if needed.
+    /**
+    设置用于压缩后重新注入的规范上下文来源。
+
+    设置后，`prepare()` 会检查压缩是否驱逐了关键上下文（系统提示词、规则、
+    技能注入），并在需要时重新注入。
+    */
     pub fn set_canonical_context(&mut self, context: CanonicalContext) {
         self.canonical_context = Some(context);
     }
 
-    /// Update only the canonical system prompt while preserving rules and skills.
+    /// 仅更新规范系统提示词，保留规则与技能不变。
     pub fn set_canonical_system_prompt(&mut self, system_prompt: Option<String>) {
         if let Some(context) = &mut self.canonical_context {
             context.system_prompt = system_prompt;
         }
     }
 
-    /// Remove the canonical context.
+    /// 移除规范上下文。
     pub fn remove_canonical_context(&mut self) {
         self.canonical_context = None;
     }
 
-    /// Re-inject canonical context if compression removed critical components.
-    ///
-    /// Called automatically at the end of `prepare()` when compression occurs.
+    /**
+    若压缩移除了关键组成部分，则重新注入规范上下文。
+
+    发生压缩时会在 `prepare()` 末尾自动调用。
+    */
     fn reinject_canonical_context(&mut self) {
         let Some(ref canonical) = self.canonical_context else {
             return;
         };
 
-        // Restore the exact canonical prompt even when another system message
-        // occupies the system region.
+        // 即使系统区域已被其他系统消息占据，也要还原精确的规范提示词。
         if let Some(ref prompt) = canonical.system_prompt {
             let has_canonical_system = self.messages.iter().any(|message| {
                 message.role == Role::System
@@ -940,25 +1002,23 @@ impl ContextManager {
             }
         }
 
-        // Inject canonical context messages (system prompt, rules, skills).
-        //
-        // IMPORTANT: insert at the end of the system region (sys_end), NOT at a
-        // fixed position like 1. Inserting at pos=1 shifts the entire conversation
-        // history, which invalidates the prompt cache prefix on every compression
-        // cycle. By inserting at sys_end (the boundary between system messages and
-        // history), we keep the history segment's byte positions stable, preserving
-        // both Anthropic explicit cache breakpoints and OpenAI automatic prefix
-        // caches.
+        /*
+        注入规范上下文消息（系统提示词、规则、技能）。
+
+        重要：插入到系统区域的末尾（sys_end），而不是像 1 这样的固定位置。
+        在 pos=1 处插入会使整个对话历史整体后移，导致每次压缩都让提示词缓存
+        前缀失效。插入到 sys_end（系统消息与历史之间的边界）可保持历史段的字节
+        位置稳定，从而同时保住 Anthropic 显式缓存断点与 OpenAI 自动前缀缓存。
+        */
         if let Some(msgs) = canonical.to_reinjection_messages() {
-            // Find the end of the system message region (first non-System role).
+            // 找到系统消息区域的末尾（第一条非 System 角色的消息）。
             let sys_end = self
                 .messages
                 .iter()
                 .position(|m| m.role != Role::System)
                 .unwrap_or(self.messages.len());
 
-            // Dedup: skip canonical messages whose text already exists in the
-            // current system region (prevents accumulation on repeated compression).
+            // 去重：跳过文本已存在于当前系统区域的规范消息（防止多次压缩时不断累积）。
             let existing_texts: std::collections::HashSet<String> = self.messages[..sys_end]
                 .iter()
                 .filter_map(|m| m.content.as_text())
@@ -968,14 +1028,15 @@ impl ContextManager {
                 .filter(|msg| !existing_texts.contains(msg.as_str()))
                 .collect();
 
-            // Insert at sys_end (tight against history), keeping history stable.
-            // Iterate in reverse so each message lands at the correct offset.
+            /* 在 sys_end 处插入（紧贴历史），保持历史稳定。
+            倒序迭代，使每条消息都落在正确的偏移位置。 */
             for msg in to_insert.into_iter().rev() {
                 self.messages.insert(sys_end, Message::system(msg));
             }
         }
     }
 
+    /// 用压缩后的保留消息数与 token 估算值补全检查点。
     fn finalize_checkpoint(
         &self,
         checkpoint: Option<CompressionCheckpoint>,
@@ -987,33 +1048,37 @@ impl ContextManager {
         })
     }
 
-    /// Remove the compressor, reverting to unlimited mode
+    /// 移除压缩器，回到不限制模式
     pub fn remove_compressor(&mut self) {
         self.compressor = None;
     }
 
-    /// Whether a compressor is configured
+    /// 是否已配置压缩器
     pub fn has_compressor(&self) -> bool {
         self.compressor.is_some()
     }
 
-    /// Get cumulative compression metrics for observability.
-    ///
-    /// Tracks total compressions, tokens saved, messages evicted, and
-    /// which strategies were used over the lifetime of this `ContextManager`.
+    /**
+    获取用于可观测性的累计压缩指标。
+
+    记录该 `ContextManager` 生命周期内的压缩总次数、节省的 token 数、
+    被驱逐的消息数以及使用过的压缩策略。
+    */
     pub fn compression_metrics(&self) -> &CompressionMetrics {
         &self.metrics
     }
 
-    /// Reset cumulative compression metrics to zero.
+    /// 将累计压缩指标重置为零。
     pub fn reset_compression_metrics(&mut self) {
         self.metrics = CompressionMetrics::new();
     }
 
-    /// Compute a token breakdown by message role.
-    ///
-    /// Useful for `/context` visualization — shows how context window budget is
-    /// distributed across system prompts, user messages, tool outputs, etc.
+    /**
+    按消息角色计算 token 明细。
+
+    用于 `/context` 可视化——展示上下文窗口预算在系统提示词、用户消息、
+    工具输出等之间的分布情况。
+    */
     pub fn token_breakdown(&self, max_context: Option<usize>) -> TokenBreakdown {
         let tokenizer = &*self.tokenizer;
         let mut system = 0;
@@ -1066,12 +1131,14 @@ impl ContextManager {
         }
     }
 
-    /// Force-compress the context, regardless of whether the current token count exceeds the limit.
-    ///
-    /// - If a compressor is configured, use it;
-    /// - Otherwise, temporarily use `SlidingWindowCompressor::new(fallback_window)`.
-    ///
-    /// Protected messages are excluded from compression and preserved.
+    /**
+    强制压缩上下文，无论当前 token 数是否超出上限。
+
+    - 若已配置压缩器，则使用它；
+    - 否则临时使用 `SlidingWindowCompressor::new(fallback_window)`。
+
+    受保护消息不参与压缩并会被保留。
+    */
     pub async fn force_compress(
         &mut self,
         fallback_window: usize,
@@ -1114,7 +1181,7 @@ impl ContextManager {
         let evicted = evicted_messages.len();
         self.messages = Self::merge_protected(output.messages, protected);
 
-        // ── Memory promotion + sanitize ──
+        // ── 记忆提升 + 配对清理 ──
         let memory_promotion_count = match self.promote_and_sanitize(&evicted_messages).await {
             Ok(count) => count,
             Err(error) => {
@@ -1150,11 +1217,12 @@ impl ContextManager {
         Ok((stats, checkpoint))
     }
 
-    /// Force-compress with user-provided focus instructions.
-    ///
-    /// The focus instructions are passed via `CompressionInput::focus_instructions`,
-    /// allowing LLM-based compressors (Summary, IncrementalSummary, Adaptive L4) to
-    /// prioritize specific topics in their summaries.
+    /**
+    使用用户提供的关注点指令执行强制压缩。
+
+    关注点指令通过 `CompressionInput::focus_instructions` 传入，使基于 LLM 的
+    压缩器（Summary、IncrementalSummary、Adaptive L4）能在摘要中优先保留特定主题。
+    */
     pub async fn force_compress_with_focus(
         &mut self,
         focus_instructions: &str,
@@ -1198,7 +1266,7 @@ impl ContextManager {
         let evicted = evicted_messages.len();
         self.messages = Self::merge_protected(output.messages, protected);
 
-        // ── Memory promotion + sanitize ──
+        // ── 记忆提升 + 配对清理 ──
         let memory_promotion_count = match self.promote_and_sanitize(&evicted_messages).await {
             Ok(count) => count,
             Err(error) => {
@@ -1234,9 +1302,11 @@ impl ContextManager {
         Ok((stats, checkpoint))
     }
 
-    /// Force-compress using a **specific compressor**, without affecting the currently installed compressor config.
-    ///
-    /// Suitable for temporary strategy overrides like `/compress sliding 10`.
+    /**
+    使用**指定的压缩器**执行强制压缩，不影响当前已安装的压缩器配置。
+
+    适用于 `/compress sliding 10` 这类临时策略覆盖。
+    */
     pub async fn force_compress_with(
         &mut self,
         compressor: &dyn ContextCompressor,
@@ -1266,7 +1336,7 @@ impl ContextManager {
         let evicted = evicted_messages.len();
         self.messages = Self::merge_protected(output.messages, protected);
 
-        // ── Memory promotion + sanitize ──
+        // ── 记忆提升 + 配对清理 ──
         let memory_promotion_count = match self.promote_and_sanitize(&evicted_messages).await {
             Ok(count) => count,
             Err(error) => {
@@ -1294,11 +1364,12 @@ impl ContextManager {
         Ok((stats, checkpoint))
     }
 
-    /// Update the system message content
-    ///
-    /// Typically called when `add_skill()` injects extra system prompts:
-    /// finds the first message with role == "system" and replaces its content;
-    /// if no system message exists, inserts one at the head of the queue.
+    /**
+    更新系统消息内容
+
+    通常在 `add_skill()` 注入额外系统提示词时调用：找到第一条 role == "system"
+    的消息并替换其内容；若不存在系统消息，则在队首插入一条。
+    */
     pub fn update_system(&mut self, new_system_prompt: String) {
         if let Some(msg) = self.messages.iter_mut().find(|m| m.role == Role::System) {
             msg.content = MessageContent::Text(new_system_prompt);
@@ -1307,38 +1378,42 @@ impl ContextManager {
         }
     }
 
-    /// Prepare the list of messages to send to the LLM.
-    ///
-    /// When the estimated token count exceeds `token_limit` and a compressor is configured, automatically trigger compression and update the internal buffer.
-    /// The compressed messages replace the original buffer.
-    ///
-    /// Protected messages (containing registered markers, e.g. `<skill_content>`) are
-    /// excluded from compression and re-inserted after system messages.
-    ///
-    /// `current_query` protects the active user task from losing focus during
-    /// summary-based compression.
-    ///
-    /// Returns a [`PrepareResult`] containing the prepared messages and optional
-    /// compression stats (populated only when auto-compression was triggered).
+    /**
+    准备发送给 LLM 的消息列表。
+
+    当估算 token 数超过 `token_limit` 且已配置压缩器时，自动触发压缩并更新内部缓冲区，
+    压缩后的消息会替换原缓冲区。
+
+    受保护消息（包含已注册标记，例如 `<skill_content>`）不参与压缩，并会在系统消息之后重新插入。
+
+    `current_query` 用于在基于摘要的压缩中保护当前用户任务，避免失去焦点。
+
+    返回一个 [`PrepareResult`]，其中包含准备好的消息以及可选的压缩统计信息
+    （仅在触发自动压缩时才有值）。
+    */
     pub async fn prepare(&mut self, current_query: Option<&str>) -> Result<PrepareResult> {
         self.prepare_with_cancel(current_query, 0, None).await
     }
 
-    /// Prepare model input while propagating one invocation cancellation token
-    /// through every nested compression provider call.
+    /**
+    准备模型输入，并将同一次调用的取消令牌传递给每一个嵌套的压缩提供方调用。
+
+    `tool_tokens` 为工具定义占用的 token 数，会从有效预算中扣除。
+    */
     pub async fn prepare_with_cancel(
         &mut self,
         current_query: Option<&str>,
         tool_tokens: usize,
         cancel_token: Option<echo_core::compression::CancellationToken>,
     ) -> Result<PrepareResult> {
-        // ── Snapshot original messages for verification ──
+        // ── 快照原始消息，用于后续校验 ──
         let original_messages = self.messages.clone();
 
-        // ── Pre-compression: Visibility Horizon pass ──────────────────
-        // Compact tool traces beyond the active window before the main
-        // compressor runs. This reduces the token count so the main
-        // compressor may not need to fire at all.
+        /*
+        ── 预压缩：可见性视界处理 ──────────────────
+        在主压缩器运行前，先压缩活动窗口之外的工具调用轨迹。
+        这会降低 token 数，使主压缩器可能根本无需触发。
+        */
         if let Some(ref horizon_compressor) = self.visibility_horizon {
             let before = self.messages.len();
             let horizon_original = self.messages.clone();
@@ -1382,7 +1457,7 @@ impl ContextManager {
                 Err(e) => {
                     self.messages = horizon_original;
                     tracing::warn!(error = %e, "VisibilityHorizon pre-compaction failed, continuing with original messages");
-                    // Don't fail prepare — horizon is best-effort
+                    // 不让 prepare 失败——视界压缩是尽力而为的
                 }
             }
         }
@@ -1403,8 +1478,7 @@ impl ContextManager {
             });
         let estimated_tokens = system_tokens.saturating_add(conversation_tokens);
 
-        // Compute effective token limit once so primary compression and any
-        // verifier fallback obey the same budget-aware allowance.
+        // 只计算一次有效 token 上限，使主压缩与校验失败后的回退遵循同一份感知预算的额度。
         let effective_limit = if let Some(ref budget) = self.budget {
             budget
                 .total_window()
@@ -1438,7 +1512,7 @@ impl ContextManager {
             );
             let start = std::time::Instant::now();
 
-            // Use the budget-aware effective token limit computed above.
+            // 使用上面计算出的、感知预算的有效 token 上限。
 
             let owned = std::mem::take(&mut self.messages);
             let (compressible, protected) = self.split_protected(owned);
@@ -1466,9 +1540,11 @@ impl ContextManager {
                     let protected_count = protected.len();
                     self.messages = Self::merge_protected(output.messages, protected);
 
-                    // ── L3 Memory Promotion ──
-                    // If a memory promoter is configured, pass evicted messages
-                    // so key facts can be extracted and stored for later recall.
+                    /*
+                    ── L3 记忆提升 ──
+                    若配置了记忆提升器，则把被驱逐的消息交给它，
+                    以便提取关键事实并存储，供之后召回。
+                    */
                     let memory_promotion_count = if let Some(ref promoter) = self.memory_promoter {
                         if !evicted_messages.is_empty() {
                             match promoter.promote(&evicted_messages).await {
@@ -1508,7 +1584,7 @@ impl ContextManager {
                         "Compression complete"
                     );
 
-                    // Assemble the checkpoint from the compressor's output
+                    // 根据压缩器的输出组装检查点
                     let compressed_checkpoint = compressor_checkpoint.map(|cp| {
                         cp.with_protected_count(protected_count)
                             .with_memory_promotion_count(memory_promotion_count)
@@ -1517,8 +1593,7 @@ impl ContextManager {
                     (Some(stats), compressed_checkpoint)
                 }
                 Err(e) => {
-                    // Primary compressor failed — fall back to SlidingWindow as safety net
-                    // to avoid losing all non-protected messages.
+                    // 主压缩器失败——回退到 SlidingWindow 作为兜底，避免丢失所有非受保护消息。
                     tracing::warn!(
                         error = %e,
                         "Primary compressor failed, falling back to SlidingWindowCompressor"
@@ -1545,12 +1620,11 @@ impl ContextManager {
                                 after_tokens: self.token_estimate(),
                             };
                             self.metrics.record(&stats, "SlidingWindow(fallback)");
-                            // Return the fallback result, not the original error
+                            // 返回回退结果，而不是原始错误
                             (Some(stats), fb_output.checkpoint)
                         }
                         Err(fb_err) => {
-                            // Even the fallback failed — restore the original buffer before
-                            // returning so callers that retry do not observe truncated state.
+                            // 连回退也失败了——返回前还原原始缓冲区，避免重试的调用方看到被截断的状态。
                             self.messages = original_messages.clone();
                             tracing::error!(
                                 primary_error = %e,
@@ -1566,22 +1640,22 @@ impl ContextManager {
             (None, None)
         };
 
-        // Always sanitize tool_calls → tool_result pairing before sending to LLM.
-        // Even without compression, session resume or manual manipulation can
-        // produce invalid sequences.
+        /* 发送给 LLM 前始终清理 tool_calls → tool_result 的配对。
+        即使没有压缩，会话恢复或手动修改也可能产生非法序列。 */
         let (sanitized, tool_fixes) = sanitize_tool_call_pairing(&self.messages);
-        // Write sanitized messages back to the internal buffer so subsequent
-        // reads see consistent state, and canonical re-injection targets them.
+        // 将清理后的消息写回内部缓冲区，使后续读取看到一致的状态，规范上下文重新注入也以其为目标。
         self.messages = sanitized;
 
-        // Merge tool_pair_fixes into the compression checkpoint
+        // 将 tool_pair_fixes 合并进压缩检查点
         if let Some(ref mut cp) = combined_checkpoint {
             cp.tool_pair_fixes = tool_fixes;
         }
 
-        // ── Summary verification ──
-        // Run lightweight rule-based checks when a summary was produced.
-        // On P0 check failure, fall back to SlidingWindowCompressor as safety net.
+        /*
+        ── 摘要校验 ──
+        生成了摘要时，执行轻量的基于规则的检查。
+        若 P0 检查失败，则回退到 SlidingWindowCompressor 作为兜底。
+        */
         let verification = if let Some(ref cp) = combined_checkpoint {
             if cp.summary.is_some() {
                 let v = verifier::verify_compression(&self.messages, cp, &original_messages);
@@ -1597,7 +1671,7 @@ impl ContextManager {
                             failed_checks = ?p0_failed,
                             "Summary verifier: P0 checks FAILED — falling back to SlidingWindowCompressor to recover critical information"
                         );
-                        // Re-compress original messages with SlidingWindow as safety net
+                        // 用 SlidingWindow 重新压缩原始消息作为兜底
                         let (orig_compressible, orig_protected) =
                             self.split_protected(original_messages.clone());
                         let orig_protected_tokens =
@@ -1619,10 +1693,10 @@ impl ContextManager {
                         {
                             self.messages =
                                 Self::merge_protected(fb_output.messages, orig_protected);
-                            // Re-sanitize after fallback
+                            // 回退后重新清理配对
                             let (sanitized, _fb_fixes) = sanitize_tool_call_pairing(&self.messages);
                             self.messages = sanitized;
-                            // Update the checkpoint to note the fallback
+                            // 更新检查点以记录发生了回退
                             let fb_checkpoint =
                                 CompressionCheckpoint::new("SlidingWindow(verifier-fallback)")
                                     .with_counts(self.messages.len(), fb_output.evicted.len())
@@ -1651,9 +1725,10 @@ impl ContextManager {
             None
         };
 
-        // ── Canonical context re-injection ──
-        // If canonical context is configured, ensure critical components
-        // (system prompt, rules, skill info) survived compression.
+        /*
+        ── 规范上下文重新注入 ──
+        若配置了规范上下文，确保关键组成部分（系统提示词、规则、技能信息）在压缩后仍然存在。
+        */
         if self.canonical_context.is_some() {
             self.reinject_canonical_context();
         }
@@ -1675,6 +1750,7 @@ impl ContextManager {
         })
     }
 
+    /// 使用给定分词器估算一组消息的 token 总数（饱和加法）。
     fn estimate_tokens(messages: &[Message], tokenizer: &dyn Tokenizer) -> usize {
         messages.iter().fold(0usize, |total, message| {
             total.saturating_add(message.content.estimated_tokens(tokenizer))
@@ -1682,18 +1758,17 @@ impl ContextManager {
     }
 }
 
-/// Sanitize message sequence to ensure valid `tool_calls → tool_result` pairing.
-///
-/// OpenAI-compatible APIs require that:
-/// - Every `assistant` message with `tool_calls` must be followed by `tool` messages
-///   for each `tool_call_id`
-/// - Every `tool` message must have a preceding `assistant` message with matching
-///   `tool_call_id`
-///
-/// Compression, session resume, or manual manipulation can violate these constraints.
-/// This function repairs the sequence by:
-/// 1. Adding placeholder `tool` results for orphaned `tool_calls`
-/// 2. Removing orphaned `tool` messages without matching `tool_calls`
+/**
+清理消息序列，确保 `tool_calls → tool_result` 配对合法。
+
+OpenAI 兼容 API 要求：
+- 每条带 `tool_calls` 的 `assistant` 消息之后，必须针对每个 `tool_call_id` 跟随相应的 `tool` 消息
+- 每条 `tool` 消息之前必须存在一条 `tool_call_id` 匹配的 `assistant` 消息
+
+压缩、会话恢复或手动修改都可能破坏这些约束。本函数通过以下方式修复序列：
+1. 为孤立的 `tool_calls` 补充占位的 `tool` 结果
+2. 移除没有匹配 `tool_calls` 的孤立 `tool` 消息
+*/
 fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPairFix>) {
     use std::collections::{HashMap, HashSet};
 
@@ -1703,10 +1778,10 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
         return (vec![], fixes);
     }
 
-    // Pass 1: Count tool_call_ids per assistant message and collect all available results
-    // Key: assistant message index, Value: set of tool_call_ids in that message
+    /* 第一遍：统计每条 assistant 消息的 tool_call_id，并收集所有可用的结果。
+    键：assistant 消息下标；值：该消息中 tool_call_id 的集合 */
     let mut assistant_tool_calls: HashMap<usize, HashSet<String>> = HashMap::new();
-    // All tool_call_ids that have corresponding tool result messages
+    // 所有拥有对应工具结果消息的 tool_call_id
     let mut available_results: HashSet<String> = HashSet::new();
 
     for (i, msg) in messages.iter().enumerate() {
@@ -1722,28 +1797,26 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
         }
     }
 
-    // If no tool_calls at all, return as-is
+    // 若完全没有 tool_calls，原样返回
     if assistant_tool_calls.is_empty() && available_results.is_empty() {
         return (messages.to_vec(), fixes);
     }
 
-    // Build the set of all referenced tool_call_ids (from assistant messages)
+    // 构建所有被引用的 tool_call_id 集合（来自 assistant 消息）
     let all_referenced: HashSet<String> = assistant_tool_calls
         .values()
         .flat_map(|ids| ids.iter().cloned())
         .collect();
 
-    // Pass 2: Build sanitized sequence
+    // 第二遍：构建清理后的序列
     let mut result = Vec::with_capacity(messages.len());
     let mut inserted_placeholders: HashSet<String> = HashSet::new();
-    // Track which assistant message's placeholders are pending (inserted after
-    // all its original tool results have been seen)
+    // 记录哪些 assistant 消息的占位结果尚待插入（在其所有原始工具结果都出现之后再插入）
     let mut pending_placeholders: Vec<Vec<String>> = Vec::new();
 
     for (i, msg) in messages.iter().enumerate() {
-        // Before processing the current message, check if any pending placeholder
-        // groups should be flushed. We flush when we encounter a non-tool message
-        // (meaning the tool result sequence for the previous assistant has ended).
+        /* 处理当前消息前，检查是否有待插入的占位组需要刷出。
+        遇到非 tool 消息时刷出（意味着前一条 assistant 的工具结果序列已结束）。 */
         if msg.role != Role::Tool && !pending_placeholders.is_empty() {
             for ids in pending_placeholders.drain(..) {
                 for id in ids {
@@ -1765,11 +1838,11 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
 
         if msg.role == Role::Assistant {
             if let Some(tc_ids) = assistant_tool_calls.get(&i) {
-                // Check if ALL tool_call_ids in this message are orphaned
+                // 检查该消息中的所有 tool_call_id 是否都是孤立的
                 let all_orphaned = tc_ids.iter().all(|id| !available_results.contains(id));
 
                 if all_orphaned {
-                    // Remove tool_calls field — treat as regular assistant message
+                    // 移除 tool_calls 字段——视为普通的 assistant 消息
                     let mut cleaned = msg.clone();
                     for tc_id in tc_ids.iter() {
                         fixes.push(ToolPairFix {
@@ -1781,8 +1854,7 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
                     result.push(cleaned);
                 } else {
                     result.push(msg.clone());
-                    // Track which IDs need placeholders (will be inserted after
-                    // all original tool results for this assistant message)
+                    // 记录哪些 ID 需要占位结果（将在该 assistant 消息的所有原始工具结果之后插入）
                     let missing: Vec<String> = tc_ids
                         .iter()
                         .filter(|id| !available_results.contains(*id))
@@ -1796,10 +1868,10 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
                 result.push(msg.clone());
             }
         } else if msg.role == Role::Tool {
-            // Only include if the tool_call_id is referenced by an assistant message
+            // 仅当 tool_call_id 被某条 assistant 消息引用时才保留
             let is_orphaned = match &msg.tool_call_id {
                 Some(id) => !all_referenced.contains(id),
-                None => true, // Tool message without tool_call_id is always orphaned
+                None => true, // 没有 tool_call_id 的 tool 消息总是孤立的
             };
 
             if !is_orphaned {
@@ -1822,7 +1894,7 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
         }
     }
 
-    // Flush any remaining pending placeholders (end of message list)
+    // 刷出剩余的待插入占位结果（消息列表末尾）
     for ids in pending_placeholders {
         for id in ids {
             if !inserted_placeholders.contains(&id) {
@@ -1843,115 +1915,130 @@ fn sanitize_tool_call_pairing(messages: &[Message]) -> (Vec<Message>, Vec<ToolPa
     (result, fixes)
 }
 
-/// Builder for `ContextManager`
+/// `ContextManager` 的构建器
 pub struct ContextManagerBuilder {
+    /// 触发压缩的 token 上限
     token_limit: usize,
+    /// 可选的压缩策略
     compressor: Option<Box<dyn ContextCompressor>>,
+    /// 初始消息（例如系统提示词）
     initial_messages: Vec<Message>,
+    /// 自定义分词器，未设置时使用 [`HeuristicTokenizer`]
     tokenizer: Option<Arc<dyn Tokenizer>>,
+    /// 可选的消息数量硬上限
     max_messages: Option<usize>,
+    /// 可选的按百分比分配的 token 预算
     budget: Option<TokenBudget>,
+    /// 可选的可见性视界压缩器
     visibility_horizon: Option<horizon::VisibilityHorizonCompressor>,
+    /// 可选的记忆提升器
     memory_promoter: Option<Arc<dyn MemoryPromoter>>,
+    /// 可选的规范上下文
     canonical_context: Option<CanonicalContext>,
 }
 
 impl ContextManagerBuilder {
-    /// Set the compression strategy (optional). Supports any type implementing `ContextCompressor`,
-    /// including `SlidingWindowCompressor` and `SummaryCompressor` (stage4 P4.3 default).
+    /**
+    设置压缩策略（可选）。支持任何实现了 `ContextCompressor` 的类型，
+    包括 `SlidingWindowCompressor` 和 `SummaryCompressor`（stage4 P4.3 默认策略）。
+    */
     pub fn compressor(mut self, c: impl ContextCompressor + 'static) -> Self {
         self.compressor = Some(Box::new(c));
         self
     }
 
-    /// Pre-set a system message as the initial context (typically used for Agent system prompts)
+    /// 预置一条系统消息作为初始上下文（通常用于 Agent 的系统提示词）
     pub fn with_system(mut self, system_prompt: String) -> Self {
         self.initial_messages.push(Message::system(system_prompt));
         self
     }
 
-    /// Set a custom Tokenizer (default [`HeuristicTokenizer`])
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_state::compression::ContextManager;
-    /// use echo_core::tokenizer::SimpleTokenizer;
-    /// use std::sync::Arc;
-    ///
-    /// let ctx = ContextManager::builder(4096)
-    ///     .tokenizer(Arc::new(SimpleTokenizer))
-    ///     .build();
-    /// ```
+    /**
+    设置自定义 Tokenizer（默认为 [`HeuristicTokenizer`]）
+
+    # 示例
+
+    ```rust,no_run
+    use echo_state::compression::ContextManager;
+    use echo_core::tokenizer::SimpleTokenizer;
+    use std::sync::Arc;
+
+    let ctx = ContextManager::builder(4096)
+        .tokenizer(Arc::new(SimpleTokenizer))
+        .build();
+    ```
+    */
     pub fn tokenizer(mut self, tokenizer: Arc<dyn Tokenizer>) -> Self {
         self.tokenizer = Some(tokenizer);
         self
     }
 
-    /// Set an optional hard message-count cap (supplementary OOM backstop).
-    ///
-    /// (stage4 P4.3) The primary OOM defense is the token budget; industry主流
-    /// is token-driven (OpenAI/Anthropic/Letta all bill/window on tokens).
-    /// `max_messages` defaults to `None` (disabled). Set it only when you need
-    /// a message-count backstop against pathological growth (e.g. many tiny
-    /// messages). When exceeded, `push()` applies sliding-window degradation
-    /// preserving system + protected + recent messages.
+    /**
+    设置可选的消息数量硬上限（补充性的 OOM 兜底）。
+
+    （stage4 P4.3）主要的 OOM 防护手段是 token 预算；业界主流以 token 驱动
+    （OpenAI/Anthropic/Letta 均按 token 计费/开窗）。`max_messages` 默认为 `None`
+    （关闭）。仅在需要针对异常增长（例如大量极小消息）设置消息数量兜底时才设置。
+    超出后，`push()` 会执行滑动窗口式降级，保留系统消息 + 受保护消息 + 最近消息。
+    */
     pub fn max_messages(mut self, max: usize) -> Self {
         self.max_messages = Some(max);
         self
     }
 
-    /// Set a token budget for percentage-based allocation.
-    ///
-    /// When set, `prepare()` uses budget-aware compression instead of
-    /// the simple `token_limit` comparison. The budget divides the context
-    /// window into system/tool/output/safety percentages and allocates
-    /// the remainder for conversation.
+    /**
+    设置按百分比分配的 token 预算。
+
+    设置后，`prepare()` 使用感知预算的压缩，而不是简单的 `token_limit` 比较。
+    预算会把上下文窗口按系统/工具/输出/安全余量的百分比划分，剩余部分分配给对话。
+    */
     pub fn budget(mut self, budget: TokenBudget) -> Self {
         self.budget = Some(budget);
         self
     }
 
-    /// Set a visibility horizon for proactive tool trace compaction.
-    ///
-    /// When set, `prepare()` runs a horizon compaction pass **before** the
-    /// main compressor. Tool call/result groups beyond the active window
-    /// are replaced with compact symbolic summaries, keeping the context
-    /// focused on recent work.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use echo_state::compression::{ContextManager, horizon::VisibilityHorizonConfig};
-    ///
-    /// let ctx = ContextManager::builder(128_000)
-    ///     .visibility_horizon(VisibilityHorizonConfig {
-    ///         active_window_turns: 5,
-    ///         ..Default::default()
-    ///     })
-    ///     .build();
-    /// ```
+    /**
+    设置可见性视界，用于主动压缩工具调用轨迹。
+
+    设置后，`prepare()` 会在主压缩器**之前**执行一轮视界压缩。活动窗口之外的
+    工具调用/结果组会被替换为紧凑的符号化摘要，使上下文聚焦于最近的工作。
+
+    # 示例
+
+    ```rust,no_run
+    use echo_state::compression::{ContextManager, horizon::VisibilityHorizonConfig};
+
+    let ctx = ContextManager::builder(128_000)
+        .visibility_horizon(VisibilityHorizonConfig {
+            active_window_turns: 5,
+            ..Default::default()
+        })
+        .build();
+    ```
+    */
     pub fn visibility_horizon(mut self, config: horizon::VisibilityHorizonConfig) -> Self {
         self.visibility_horizon = Some(horizon::VisibilityHorizonCompressor::new(config));
         self
     }
 
-    /// Set a memory promoter callback.
-    ///
-    /// When compression evicts messages, the promoter is called with the
-    /// evicted messages so key facts can be extracted and written to a
-    /// long-term memory Store (L3 memory promotion).
+    /**
+    设置记忆提升回调。
+
+    压缩驱逐消息时，会携带被驱逐的消息调用提升器，以便提取关键事实并写入
+    长期记忆 Store（L3 记忆提升）。
+    */
     pub fn memory_promoter(mut self, promoter: Arc<dyn MemoryPromoter>) -> Self {
         self.memory_promoter = Some(promoter);
         self
     }
 
-    /// Set the canonical context for re-injection after compression.
+    /// 设置用于压缩后重新注入的规范上下文。
     pub fn canonical_context(mut self, context: CanonicalContext) -> Self {
         self.canonical_context = Some(context);
         self
     }
 
+    /// 根据当前配置构建 `ContextManager`。
     pub fn build(self) -> ContextManager {
         ContextManager {
             messages: self.initial_messages,
@@ -1981,19 +2068,24 @@ mod tests {
     use futures::future::BoxFuture;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 测试用分词器：每个字符计为一个 token。
     struct CharacterTokenizer;
 
     impl Tokenizer for CharacterTokenizer {
+        /// 按字符数计数。
         fn count_tokens(&self, text: &str) -> usize {
             text.chars().count()
         }
     }
 
+    /// 测试用压缩器：记录收到的 token 上限，并驱逐全部输入消息。
     struct LimitRecorder {
+        /// 最近一次收到的 token 上限
         limit: Arc<AtomicUsize>,
     }
 
     impl ContextCompressor for LimitRecorder {
+        /// 记录 token 上限并返回空的消息列表。
         fn compress(&self, input: CompressionInput) -> BoxFuture<'_, Result<CompressionOutput>> {
             self.limit.store(input.token_limit, Ordering::SeqCst);
             Box::pin(async move {
@@ -2006,6 +2098,7 @@ mod tests {
         }
     }
 
+    /// prepare 应扣除受保护上下文占用的 token，并使用配置的分词器计数。
     #[tokio::test]
     async fn prepare_deducts_protected_context_and_uses_configured_tokenizer() -> Result<()> {
         let recorded_limit = Arc::new(AtomicUsize::new(usize::MAX));
@@ -2023,14 +2116,15 @@ mod tests {
 
         let _ = ctx.prepare(None).await?;
 
-        // Output and safety reserve 20 tokens. The protected 20-token message
-        // is deducted before compression; the system prompt remains inside the
-        // compressor input and shares the remaining 60-token input capacity.
+        /* 输出与安全余量预留 20 个 token。受保护的 20 token 消息在压缩前被扣除；
+        系统提示词仍留在压缩器输入中，与其余消息共享剩下的 60 token 输入容量。 */
         assert_eq!(recorded_limit.load(Ordering::SeqCst), 60);
         Ok(())
     }
 
+    /// 同一标记的投影再次应用时应替换旧值，只保留一条。
     #[test]
+    /// 同一标记的投影再次应用时应替换旧值，只保留一条。
     fn context_projection_replaces_existing_tagged_message() {
         let marker = "<runtime_projection>";
         let mut ctx = ContextManager::builder(4096)
@@ -2072,7 +2166,9 @@ mod tests {
         assert_eq!(ctx.protected_message_count(), 1);
     }
 
+    /// message 为 None 的投影应移除该标记的旧投影。
     #[test]
+    /// message 为 None 的投影应移除该标记的旧投影。
     fn context_projection_none_removes_stale_tagged_message() {
         let marker = "<runtime_projection>";
         let mut ctx = ContextManager::builder(4096)
@@ -2100,7 +2196,9 @@ mod tests {
         assert_eq!(ctx.protected_message_count(), 0);
     }
 
+    /// 更新某个投影时不影响其他来源的投影。
     #[test]
+    /// 更新某个投影时不影响其他来源的投影。
     fn context_projection_update_preserves_other_sources() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.apply_projections(&[
@@ -2127,7 +2225,9 @@ mod tests {
         }));
     }
 
+    /// 内容未变的投影应保持原位置，以维持前缀缓存稳定。
     #[test]
+    /// 内容未变的投影应保持原位置，以维持前缀缓存稳定。
     fn unchanged_projection_keeps_its_position_for_prefix_cache_stability() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.replace_projection(
@@ -2152,7 +2252,9 @@ mod tests {
         assert_eq!(before, after);
     }
 
+    /// 尾部投影应替换旧值并紧贴最新一轮对话。
     #[test]
+    /// 尾部投影应替换旧值并紧贴最新一轮对话。
     fn tail_projection_replaces_dynamic_context_near_latest_turn() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.push(Message::user("older history".to_string()));
@@ -2177,7 +2279,9 @@ mod tests {
         }));
     }
 
+    /// 作用域投影只移除该提供方此前拥有的标记。
     #[test]
+    /// 作用域投影只移除该提供方此前拥有的标记。
     fn projection_scope_removes_only_markers_previously_owned_by_provider() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.replace_projection(
@@ -2198,7 +2302,9 @@ mod tests {
         assert!(ctx.has_projection("skill:review"));
     }
 
+    /// 普通消息中出现标记文本时不应被当作投影处理。
     #[test]
+    /// 普通消息中出现标记文本时不应被当作投影处理。
     fn context_projection_preserves_unrelated_marker_text() {
         let marker = "runtime-marker";
         let mut ctx = ContextManager::builder(4096)
@@ -2222,7 +2328,9 @@ mod tests {
         assert_eq!(ctx.protected_message_count(), 1);
     }
 
+    /// has_projection 只匹配信封中完全一致的标记。
     #[test]
+    /// has_projection 只匹配信封中完全一致的标记。
     fn has_projection_matches_exact_envelope_marker() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.apply_projections(&[ContextProjection {
@@ -2235,7 +2343,9 @@ mod tests {
         assert!(!ctx.has_projection("runtime-marker-extra"));
     }
 
+    /// has_projection 忽略普通消息文本中的标记。
     #[test]
+    /// has_projection 忽略普通消息文本中的标记。
     fn has_projection_ignores_plain_message_text() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.push(Message::user(
@@ -2245,7 +2355,9 @@ mod tests {
         assert!(!ctx.has_projection("runtime-marker"));
     }
 
+    /// 从持久化恢复的投影在没有临时作用域状态时也能被移除。
     #[test]
+    /// 从持久化恢复的投影在没有临时作用域状态时也能被移除。
     fn context_projection_removes_restored_projection_without_transient_state() {
         let mut original = ContextManager::builder(4096)
             .with_system("system".to_string())
@@ -2268,7 +2380,9 @@ mod tests {
         }));
     }
 
+    /// 可替换受保护标记只保留最新的一条消息。
     #[test]
+    /// 可替换受保护标记只保留最新的一条消息。
     fn replaceable_protected_marker_keeps_only_latest_value() {
         let marker = "[task_context]";
         let mut ctx = ContextManager::builder(4096).build();
@@ -2306,7 +2420,9 @@ mod tests {
         }));
     }
 
+    /// 记忆投影应计入 token 明细中的 memory 项。
     #[test]
+    /// 记忆投影应计入 token 明细中的 memory 项。
     fn memory_projection_is_reported_in_memory_token_breakdown() {
         let mut ctx = ContextManager::builder(4096).build();
         ctx.replace_projection(
@@ -2321,6 +2437,7 @@ mod tests {
         assert_eq!(breakdown.user, 0);
     }
 
+    /// 构造一个带规范上下文、必然触发压缩的测试用 ContextManager。
     fn canonical_test_context() -> ContextManager {
         let canonical = CanonicalContext {
             system_prompt: Some("canonical system".to_string()),
@@ -2339,6 +2456,7 @@ mod tests {
         ctx
     }
 
+    /// 断言检查点中的保留消息数与 token 数与最终上下文一致。
     fn assert_canonical_checkpoint_matches_context(
         ctx: &ContextManager,
         checkpoint: Option<&CompressionCheckpoint>,
@@ -2353,6 +2471,7 @@ mod tests {
         );
     }
 
+    /// 多次 prepare 后规范系统提示词不应重复出现。
     #[tokio::test]
     async fn canonical_system_context_is_not_duplicated() -> Result<()> {
         let mut ctx = canonical_test_context();
@@ -2370,6 +2489,7 @@ mod tests {
         Ok(())
     }
 
+    /// 存在其他系统消息时，仍应补回缺失的规范系统提示词。
     #[tokio::test]
     async fn canonical_system_context_replaces_missing_prompt_beside_other_system_message()
     -> Result<()> {
@@ -2393,6 +2513,7 @@ mod tests {
         Ok(())
     }
 
+    /// prepare 返回的检查点应与最终上下文一致。
     #[tokio::test]
     async fn canonical_prepare_checkpoint_matches_final_context() -> Result<()> {
         let mut ctx = canonical_test_context();
@@ -2403,6 +2524,7 @@ mod tests {
         Ok(())
     }
 
+    /// force_compress 返回的检查点应与最终上下文一致。
     #[tokio::test]
     async fn canonical_force_compress_checkpoint_matches_final_context() -> Result<()> {
         let mut ctx = canonical_test_context();
@@ -2413,6 +2535,7 @@ mod tests {
         Ok(())
     }
 
+    /// force_compress_with_focus 返回的检查点应与最终上下文一致。
     #[tokio::test]
     async fn canonical_force_compress_with_focus_checkpoint_matches_final_context() -> Result<()> {
         let mut ctx = canonical_test_context();
@@ -2423,6 +2546,7 @@ mod tests {
         Ok(())
     }
 
+    /// force_compress_with 返回的检查点应与最终上下文一致。
     #[tokio::test]
     async fn canonical_force_compress_with_checkpoint_matches_final_context() -> Result<()> {
         let mut ctx = canonical_test_context();
@@ -2434,6 +2558,7 @@ mod tests {
         Ok(())
     }
 
+    /// 滑动窗口压缩器应保留系统消息与最新消息，丢弃最早的消息。
     #[tokio::test]
     async fn test_sliding_window_compressor() -> Result<()> {
         let mut ctx = ContextManager::builder(10)
@@ -2467,6 +2592,7 @@ mod tests {
         Ok(())
     }
 
+    /// 受保护消息在压缩后应保持原有相对位置。
     #[tokio::test]
     async fn test_protected_messages_keep_relative_position_after_compression() -> Result<()> {
         let mut ctx = ContextManager::builder(10)
@@ -2508,7 +2634,9 @@ mod tests {
         Ok(())
     }
 
+    /// 没有工具调用时，配对清理应原样返回。
     #[test]
+    /// 没有工具调用时，配对清理应原样返回。
     fn test_sanitize_tool_call_pairing_no_tools() {
         let messages = vec![
             Message::system("sys".to_string()),
@@ -2519,7 +2647,9 @@ mod tests {
         assert_eq!(result.len(), 3);
     }
 
+    /// 合法的工具调用配对应保持不变。
     #[test]
+    /// 合法的工具调用配对应保持不变。
     fn test_sanitize_tool_call_pairing_valid() {
         use echo_core::llm::types::ToolCall;
         let tc = ToolCall {
@@ -2544,9 +2674,11 @@ mod tests {
         assert!(result[1].tool_calls.is_some());
     }
 
+    /// 孤立的工具结果消息应被移除。
     #[test]
+    /// 孤立的工具结果消息应被移除。
     fn test_sanitize_tool_call_pairing_orphaned_tool() {
-        // tool result without preceding assistant tool_calls
+        // 工具结果之前没有带 tool_calls 的 assistant 消息
         let messages = vec![
             Message::user("hello".to_string()),
             Message::tool_result(
@@ -2557,18 +2689,19 @@ mod tests {
             Message::assistant("hi".to_string()),
         ];
         let (result, _fixes) = sanitize_tool_call_pairing(&messages);
-        // orphaned tool message should be removed
+        // 孤立的 tool 消息应被移除
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].role, Role::User);
         assert_eq!(result[1].role, Role::Assistant);
     }
 
+    /// 全部悬空的 tool_calls 应被清空，而不是补占位结果。
     #[test]
+    /// 全部悬空的 tool_calls 应被清空，而不是补占位结果。
     fn test_sanitize_tool_call_pairing_dangling_calls() {
         use echo_core::llm::types::ToolCall;
-        // assistant has tool_calls but no tool results (compression removed them)
-        // When ALL tool_calls are orphaned, we null out the tool_calls field
-        // rather than adding placeholder results.
+        /* assistant 带有 tool_calls，但没有工具结果（被压缩移除了）。
+        当所有 tool_calls 都孤立时，清空 tool_calls 字段，而不是补充占位结果。 */
         let tc = ToolCall {
             id: "call_missing".to_string(),
             call_type: "function".to_string(),
@@ -2583,7 +2716,7 @@ mod tests {
             Message::user("next question".to_string()),
         ];
         let (result, _fixes) = sanitize_tool_call_pairing(&messages);
-        // assistant's tool_calls should be nulled out → 3 messages (no placeholder)
+        // assistant 的 tool_calls 应被清空 → 共 3 条消息（无占位结果）
         assert_eq!(result.len(), 3);
         assert!(
             result[1].tool_calls.is_none(),
@@ -2591,10 +2724,12 @@ mod tests {
         );
     }
 
+    /// 部分缺失结果的工具调用应补充占位结果。
     #[test]
+    /// 部分缺失结果的工具调用应补充占位结果。
     fn test_sanitize_tool_call_pairing_mixed() {
         use echo_core::llm::types::ToolCall;
-        // assistant has 2 tool_calls, but only 1 result exists
+        // assistant 有 2 个 tool_calls，但只存在 1 个结果
         let tc1 = ToolCall {
             id: "call_present".to_string(),
             call_type: "function".to_string(),
@@ -2619,11 +2754,11 @@ mod tests {
                 "read_file".to_string(),
                 "content".to_string(),
             ),
-            // call_missing result was removed by compression
+            // call_missing 的结果已被压缩移除
             Message::user("next".to_string()),
         ];
         let (result, _fixes) = sanitize_tool_call_pairing(&messages);
-        // Should have: user, assistant, tool(present), tool(placeholder), user
+        // 期望为：user、assistant、tool(已有)、tool(占位)、user
         assert_eq!(result.len(), 5);
         assert_eq!(result[2].tool_call_id.as_deref(), Some("call_present"));
         assert_eq!(result[3].role, Role::Tool);
@@ -2637,16 +2772,18 @@ mod tests {
         );
     }
 
-    // ── L3 Memory Promotion tests ────────────────────────────────────
+    // ── L3 记忆提升测试 ────────────────────────────────────
 
-    /// A test promoter that records how many times it was called and
-    /// how many evicted messages it received.
+    /// 测试用提升器：记录被调用的次数以及收到的被驱逐消息总数。
     struct TestPromoter {
+        /// 被调用次数
         call_count: Arc<std::sync::atomic::AtomicUsize>,
+        /// 累计收到的被驱逐消息数
         total_evicted: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl TestPromoter {
+        /// 创建提升器，并返回共享的调用计数与被驱逐消息计数。
         fn new() -> (
             Self,
             Arc<std::sync::atomic::AtomicUsize>,
@@ -2666,6 +2803,7 @@ mod tests {
     }
 
     impl MemoryPromoter for TestPromoter {
+        /// 累加调用次数与被驱逐消息数，并返回全部提升成功的回执。
         fn promote(
             &self,
             evicted: &[Message],
@@ -2685,16 +2823,17 @@ mod tests {
         }
     }
 
+    /// 发生压缩时应调用记忆提升器并传入被驱逐消息。
     #[tokio::test]
     async fn test_memory_promoter_called_on_compression() -> Result<()> {
         let (promoter, call_count, total_evicted) = TestPromoter::new();
 
-        let mut ctx = ContextManager::builder(100) // Very low token limit to trigger compression
+        let mut ctx = ContextManager::builder(100) // 极低的 token 上限，用于触发压缩
             .compressor(SlidingWindowCompressor::new(4))
             .memory_promoter(Arc::new(promoter))
             .build();
 
-        // Push enough messages to trigger compression
+        // 推入足够多的消息以触发压缩
         ctx.push(Message::system("You are a helper.".to_string()));
         for i in 1..=10 {
             ctx.push(Message::user(format!(
@@ -2724,6 +2863,7 @@ mod tests {
         Ok(())
     }
 
+    /// 压缩应使 token 数减少超过 30%。
     #[tokio::test]
     async fn test_compression_reduces_tokens_by_30_percent() -> Result<()> {
         let mut ctx = ContextManager::builder(200)
@@ -2732,14 +2872,14 @@ mod tests {
 
         ctx.push(Message::system("You are a helpful assistant.".to_string()));
 
-        // Build a conversation with large tool outputs
+        // 构建一段含大量工具输出的对话
         for i in 1..=20 {
             ctx.push(Message::user(format!("Question {}", i)));
             ctx.push(Message::assistant(format!(
                 "Let me help you with question {}. I'll use some tools.",
                 i
             )));
-            // Simulate large tool output
+            // 模拟大型工具输出
             ctx.push(Message::user(format!("[Tool result: {}]", "x".repeat(500))));
         }
 
@@ -2748,7 +2888,7 @@ mod tests {
         let tokens_after = ctx.token_estimate();
 
         if tokens_before > 200 {
-            // Only assert if we actually had enough tokens to compress
+            // 仅在确实有足够 token 需要压缩时才断言
             let reduction = 1.0 - (tokens_after as f64 / tokens_before as f64);
             assert!(
                 reduction > 0.3,
@@ -2761,11 +2901,12 @@ mod tests {
         Ok(())
     }
 
+    /// 未发生压缩时不应调用记忆提升器。
     #[tokio::test]
     async fn test_memory_promoter_not_called_without_compression() -> Result<()> {
         let (promoter, call_count, _) = TestPromoter::new();
 
-        let mut ctx = ContextManager::builder(1_000_000) // Very high limit — no compression
+        let mut ctx = ContextManager::builder(1_000_000) // 极高的上限——不会压缩
             .memory_promoter(Arc::new(promoter))
             .build();
 

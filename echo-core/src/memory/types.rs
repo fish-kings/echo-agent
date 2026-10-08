@@ -1,18 +1,22 @@
-//! 带类型的记忆元数据 —— 为记忆条目提供结构化分类与质量指标。
-//!
-//! 进化系统中的每一条记忆都携带一个 `MemoryMeta` 结构体，用于对其类型进行
-//! 分类、跟踪置信度/重要性/稳定性，并记录其来源与生命周期状态。`MemoryMeta`
-//! 会与 `content` 字段一起序列化进 `StoreItem.value` 的 JSON 中，无需改动
-//! `Store` trait 或 `StoreItem` 的结构。
+/*!
+带类型的记忆元数据 —— 为记忆条目提供结构化分类与质量指标。
+
+进化系统中的每一条记忆都携带一个 `MemoryMeta` 结构体，用于对其类型进行
+分类、跟踪置信度/重要性/稳定性，并记录其来源与生命周期状态。`MemoryMeta`
+会与 `content` 字段一起序列化进 `StoreItem.value` 的 JSON 中，无需改动
+`Store` trait 或 `StoreItem` 的结构。
+*/
 
 use serde::{Deserialize, Serialize};
 
 // ── MemoryType ──────────────────────────────────────────────────────────
 
-/// 记忆条目的分类。
-///
-/// 每一条记忆都必须有类型 —— 进化系统中不允许存在未分类的自由文本条目。
-/// 类型决定了记忆如何被评分、审查，以及是否可能被提升。
+/**
+记忆条目的分类。
+
+每一条记忆都必须有类型 —— 进化系统中不允许存在未分类的自由文本条目。
+类型决定了记忆如何被评分、审查，以及是否可能被提升。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {
@@ -39,9 +43,11 @@ pub enum MemoryType {
 }
 
 impl MemoryType {
-    /// 该记忆类型的默认稳定性（抵抗过时的能力）。
-    ///
-    /// 数值越高，表示该记忆越不容易很快过时。
+    /**
+    该记忆类型的默认稳定性（抵抗过时的能力）。
+
+    数值越高，表示该记忆越不容易很快过时。
+    */
     pub fn default_stability(&self) -> f32 {
         match self {
             Self::UserPreference => 0.85,
@@ -76,10 +82,12 @@ impl MemoryType {
 
 // ── MemoryRisk ──────────────────────────────────────────────────────────
 
-/// 记忆条目的风险等级。
-///
-/// 高风险记忆（来自不可信来源或包含敏感内容）在提升为热记忆或规则之前
-/// 需要额外审查。
+/**
+记忆条目的风险等级。
+
+高风险记忆（来自不可信来源或包含敏感内容）在提升为热记忆或规则之前
+需要额外审查。
+*/
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryRisk {
@@ -88,8 +96,10 @@ pub enum MemoryRisk {
     Low,
     /// 中等风险 —— 提升前可能需要审查。
     Medium,
-    /// 高风险 —— 来自不可信来源或包含敏感内容。
-    /// 未经人工批准，不得提升为热记忆或规则。
+    /**
+    高风险 —— 来自不可信来源或包含敏感内容。
+    未经人工批准，不得提升为热记忆或规则。
+    */
     High,
 }
 
@@ -112,9 +122,11 @@ pub enum MemoryStatus {
 
 // ── MemorySource ────────────────────────────────────────────────────────
 
-/// 该记忆条目的创建方式。
-///
-/// 来源决定了默认的置信度水平，以及该记忆是否可以被自动提升。
+/**
+该记忆条目的创建方式。
+
+来源决定了默认的置信度水平，以及该记忆是否可以被自动提升。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemorySource {
@@ -145,8 +157,10 @@ impl MemorySource {
         }
     }
 
-    /// （第4阶段）该来源记忆的默认召回权重（0.0–1.0）。
-    /// 由复合评分用于召回排序。
+    /**
+    （第4阶段）该来源记忆的默认召回权重（0.0–1.0）。
+    由复合评分用于召回排序。
+    */
     pub fn default_recall_weight(&self) -> f32 {
         match self {
             Self::ExplicitSave => 0.8,
@@ -161,15 +175,17 @@ impl MemorySource {
 
 // ── MemoryMeta ──────────────────────────────────────────────────────────
 
-/// 带类型记忆条目的结构化元数据。
-///
-/// 序列化进 `StoreItem.value` JSON 时的形式如下：
-/// ```json
-/// {
-///   "content": "The actual memory text",
-///   "meta": { "memory_type": "debugging_lesson", "confidence": 0.85, ... }
-/// }
-/// ```
+/**
+带类型记忆条目的结构化元数据。
+
+序列化进 `StoreItem.value` JSON 时的形式如下：
+```json
+{
+  "content": "The actual memory text",
+  "meta": { "memory_type": "debugging_lesson", "confidence": 0.85, ... }
+}
+```
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryMeta {
     /// 该记忆的分类。
@@ -178,11 +194,13 @@ pub struct MemoryMeta {
     pub confidence: f32,
     /// 该记忆的稳定性 —— 抵抗过时的能力（0.0–1.0）。
     pub stability: f32,
-    /// （第4阶段）召回权重 0.0–1.0，由 agent LLM 在写入时给出。
-    /// 用于复合评分的召回排序（hermes issue #677 中称之为 "importance"）。
-    /// 之所以命名为 `recall_weight` 是为了避免与 `StoreItem.importance`
-    /// （1.0–10.0，抗剪枝权重，见 store.rs:29）冲突 —— 名字相似但语义/量纲
-    /// 不同。复合评分必须读取本字段，而不是 StoreItem.importance。
+    /**
+    （第4阶段）召回权重 0.0–1.0，由 agent LLM 在写入时给出。
+    用于复合评分的召回排序（hermes issue #677 中称之为 "importance"）。
+    之所以命名为 `recall_weight` 是为了避免与 `StoreItem.importance`
+    （1.0–10.0，抗剪枝权重，见 store.rs:29）冲突 —— 名字相似但语义/量纲
+    不同。复合评分必须读取本字段，而不是 StoreItem.importance。
+    */
     #[serde(default = "default_recall_weight")]
     pub recall_weight: f32,
     /// 风险等级 —— 决定审查要求。
@@ -196,15 +214,19 @@ pub struct MemoryMeta {
     /// 该记忆被修订的次数。
     #[serde(default)]
     pub revision_count: u32,
-    /// （第4阶段）该记忆被召回的次数。驱动 Dreaming 自我进化
-    /// （由召回频率驱动的提升）。
+    /**
+    （第4阶段）该记忆被召回的次数。驱动 Dreaming 自我进化
+    （由召回频率驱动的提升）。
+    */
     #[serde(default)]
     pub recall_count: u32,
-    /// 上一次成功召回的时间戳（Unix 秒）。
-    ///
-    /// 与 `StoreItem::updated_at` 分开维护：如果召回遥测计数的递增也
-    /// 改写元数据的更新时间，在陈旧度逻辑看来就会误判为一次语义性的
-    /// 内容编辑。
+    /**
+    上一次成功召回的时间戳（Unix 秒）。
+
+    与 `StoreItem::updated_at` 分开维护：如果召回遥测计数的递增也
+    改写元数据的更新时间，在陈旧度逻辑看来就会误判为一次语义性的
+    内容编辑。
+    */
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_recalled_at: Option<u64>,
     /// 若该记忆已被取代，此字段为替代记忆的 key。
@@ -212,8 +234,10 @@ pub struct MemoryMeta {
     pub superseded_by: Option<String>,
 }
 
-/// `MemoryMeta::recall_weight` 的 serde 默认值（用于反序列化在该字段
-/// 出现之前写入的旧条目）。
+/**
+`MemoryMeta::recall_weight` 的 serde 默认值（用于反序列化在该字段
+出现之前写入的旧条目）。
+*/
 fn default_recall_weight() -> f32 {
     0.5
 }
@@ -285,10 +309,12 @@ impl MemoryMeta {
             && self.memory_type.is_rule_eligible()
     }
 
-    /// 计算陈旧度评分（0.0 = 新鲜，1.0 = 非常陈旧）。
-    ///
-    /// 这是一个简化版本；第二阶段完整的 `StalenessScorer` 还会综合考虑
-    /// 时效、使用情况以及矛盾因素。
+    /**
+    计算陈旧度评分（0.0 = 新鲜，1.0 = 非常陈旧）。
+
+    这是一个简化版本；第二阶段完整的 `StalenessScorer` 还会综合考虑
+    时效、使用情况以及矛盾因素。
+    */
     pub fn base_staleness(&self) -> f32 {
         // 稳定性低 → 陈旧风险高
         let instability = 1.0 - self.stability;
@@ -307,8 +333,10 @@ impl MemoryMeta {
 }
 
 impl Default for MemoryMeta {
-    /// 返回一组中性的默认元数据（`ProjectFact` / 置信度与稳定性均为 0.5 /
-    /// 低风险 / 活跃状态 / 自动提取来源）。
+    /**
+    返回一组中性的默认元数据（`ProjectFact` / 置信度与稳定性均为 0.5 /
+    低风险 / 活跃状态 / 自动提取来源）。
+    */
     fn default() -> Self {
         Self {
             memory_type: MemoryType::ProjectFact,
@@ -329,10 +357,12 @@ impl Default for MemoryMeta {
 
 // ── TypedMemoryValue ────────────────────────────────────────────────────
 
-/// 带类型记忆在 `StoreItem.value` 中存储的 JSON 结构。
-///
-/// 这是它的序列化格式：`content` 字段保存实际的记忆文本，`meta` 字段
-/// 保存结构化的元数据。
+/**
+带类型记忆在 `StoreItem.value` 中存储的 JSON 结构。
+
+这是它的序列化格式：`content` 字段保存实际的记忆文本，`meta` 字段
+保存结构化的元数据。
+*/
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypedMemoryValue {
     /// 实际的记忆文本内容。
@@ -485,8 +515,8 @@ mod tests {
         });
         // 这里应该仍能解析成功 —— meta 会使用 serde 默认值
         let _parsed: Result<TypedMemoryValue, _> = serde_json::from_value(old_format);
-        // 如果 meta 是必需字段，这里会解析失败 —— 那也是预期行为。
-        // TypedMemoryStore 通过捕获解析错误来处理向后兼容问题。
+        /* 如果 meta 是必需字段，这里会解析失败 —— 那也是预期行为。
+        TypedMemoryStore 通过捕获解析错误来处理向后兼容问题。 */
     }
 
     #[test]

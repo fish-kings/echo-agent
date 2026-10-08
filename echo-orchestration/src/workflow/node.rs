@@ -1,9 +1,11 @@
-//! 图工作流节点
-//!
-//! 每个节点都是图中的一个执行单元，可以是：
-//! - **Agent 节点**：消费一个可取消的 Agent 流，并将其最终答案写入状态
-//! - **函数节点**：任意的 `async fn(SharedState) -> Result<()>`
-//! - **路由节点**：纯路由（不执行任何逻辑，仅用于条件分支）
+/*!
+图工作流节点
+
+每个节点都是图中的一个执行单元，可以是：
+- **Agent 节点**：消费一个可取消的 Agent 流，并将其最终答案写入状态
+- **函数节点**：任意的 `async fn(SharedState) -> Result<()>`
+- **路由节点**：纯路由（不执行任何逻辑，仅用于条件分支）
+*/
 
 use super::state::SharedState;
 use echo_core::agent::{Agent, AgentEvent};
@@ -50,6 +52,7 @@ impl<F> NodeFn for FnWrapper<F>
 where
     F: for<'a> Fn(&'a SharedState) -> BoxFuture<'a, Result<()>> + Send + Sync,
 {
+    /// 直接调用内部闭包。
     fn call<'a>(&'a self, state: &'a SharedState) -> BoxFuture<'a, Result<()>> {
         (self.0)(state)
     }
@@ -66,8 +69,10 @@ pub(crate) struct Node {
 impl Node {
     /// 将 agent 输出提交到共享状态中
     fn commit_agent_output(state: &SharedState, output_key: &str, output: String) -> Result<()> {
-        // 使用 merge_overwrite 以支持结构化数据合并语义，
-        // 而不是简单的键级覆盖。
+        /*
+        使用 merge_overwrite 以支持结构化数据合并语义，
+        而不是简单的键级覆盖。
+        */
         state.merge_overwrite(&SharedState::from_values(
             [(
                 output_key.to_string(),
@@ -167,9 +172,11 @@ impl Node {
         }
     }
 
-    /// 创建一个子图节点 —— 将一个已编译的 Graph 作为节点嵌入其中。
-    ///
-    /// 该子图与父图共享同一个 `SharedState`，并在父图的步骤数限制内执行。
+    /**
+    创建一个子图节点 —— 将一个已编译的 Graph 作为节点嵌入其中。
+
+    该子图与父图共享同一个 `SharedState`，并在父图的步骤数限制内执行。
+    */
     pub fn subgraph(_name: impl Into<String>, graph: super::graph::Graph) -> Self {
         Self {
             action: NodeAction::Subgraph(Box::new(graph)),
@@ -232,12 +239,13 @@ impl Node {
     }
 }
 
-// ── Unit Tests ────────────────────────────────────────────────────────────────
+// ── 单元测试 ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 执行节点流并消费所有输出，直到结束。
     async fn drain_node(node: &Node, state: &SharedState) -> Result<()> {
         let mut stream = node.execute_stream(state, CancellationToken::new());
         while let Some(token) = stream.next().await {
@@ -246,6 +254,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证函数节点能读取输入并写入输出。
     #[tokio::test]
     async fn test_function_node() -> Result<()> {
         let node = Node::function("double", |state: &SharedState| {
@@ -263,6 +272,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证透传节点不修改状态。
     #[tokio::test]
     async fn test_passthrough_node() -> Result<()> {
         let node = Node::passthrough("noop");

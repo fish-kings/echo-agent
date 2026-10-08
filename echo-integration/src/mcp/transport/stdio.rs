@@ -19,14 +19,19 @@ use super::{
     transport_closed_error,
 };
 
+/// stdio 传输层使用的各项超时配置。
 #[derive(Clone, Copy)]
 struct StdioTimeouts {
+    /// 等待单个请求响应的超时
     response: Duration,
+    /// 关闭时等待子进程自行退出的宽限期，超时后强制终止
     graceful_child: Duration,
+    /// 整个关闭流程的总超时
     close: Duration,
 }
 
 impl Default for StdioTimeouts {
+    /// 默认：响应 120 秒、子进程宽限 2 秒、关闭 5 秒。
     fn default() -> Self {
         Self {
             response: Duration::from_secs(120),
@@ -36,28 +41,40 @@ impl Default for StdioTimeouts {
     }
 }
 
-/// stdio 传输层
-///
-/// 启动子进程，通过 stdin 发送 JSON-RPC 请求（每行一个 JSON），
-/// 通过 stdout 读取响应，后台 task 负责将响应路由到对应的等待方。
+/**
+stdio 传输层
+
+启动子进程，通过 stdin 发送 JSON-RPC 请求（每行一个 JSON），
+通过 stdout 读取响应，后台 task 负责将响应路由到对应的等待方。
+*/
 pub struct StdioTransport {
+    /// 子进程 stdin 写入端（关闭后为 `None`）
     stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
+    /// 等待响应的请求表
     pending: Arc<PendingRequests>,
+    /// 下一个 JSON-RPC 请求 ID
     next_id: Arc<AtomicU64>,
+    /// 子进程句柄（回收后为 `None`）
     child: Arc<Mutex<Option<Child>>>,
+    /// 读取 stdout 并路由响应的后台任务
     stdout_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
+    /// 转发 stderr 到 tracing 的后台任务
     stderr_task: Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
+    /// 保证关闭流程只执行一次并可被多方等待的协调器
     close_coordinator: Arc<CloseCoordinator>,
+    /// 超时配置
     timeouts: StdioTimeouts,
 }
 
 impl StdioTransport {
-    /// 启动 MCP 服务端进程并建立 stdio 传输
-    ///
-    /// # 安全模型
-    ///
-    /// MCP servers are user-selected local extensions. This transport checks
-    /// only framework invariants; product policy remains application-owned.
+    /**
+    启动 MCP 服务端进程并建立 stdio 传输
+
+    # 安全模型
+
+    MCP 服务端是用户自行选择的本地扩展。本传输层只校验框架不变量；
+    产品层面的策略仍由应用负责。
+    */
     pub async fn new(
         command: &str,
         args: &[String],
@@ -67,6 +84,7 @@ impl StdioTransport {
         Self::new_with_timeouts(command, args, env, cwd, StdioTimeouts::default()).await
     }
 
+    /// 使用指定超时配置启动子进程并建立 stdio 传输。
     async fn new_with_timeouts(
         command: &str,
         args: &[String],
@@ -147,6 +165,7 @@ impl StdioTransport {
         })
     }
 
+    /// 持续读取 stdout，把带 id 的响应路由给等待方；stdout 结束或出错时关闭请求表并回收子进程。
     async fn route_stdout<R>(
         stdout: R,
         pending: Arc<PendingRequests>,
@@ -225,6 +244,7 @@ impl StdioTransport {
         }
     }
 
+    /// 持续读取 stderr 并（脱敏后）转发到 tracing。
     async fn drain_stderr<R>(stderr: R, secrets: Vec<String>) -> Result<()>
     where
         R: AsyncRead + Unpin,
@@ -253,6 +273,7 @@ impl StdioTransport {
         }
     }
 
+    /// 按默认宽限期与关闭超时回收子进程。
     async fn settle_child(
         child_slot: &Arc<Mutex<Option<Child>>>,
         timeouts: StdioTimeouts,
@@ -263,6 +284,12 @@ impl StdioTransport {
         Self::settle_child_until(child_slot, graceful_deadline, close_deadline).await
     }
 
+    /**
+    在截止时间内回收子进程。
+
+    先在宽限期内等待其自行退出，超时则强制终止并继续等待到关闭截止时间；
+    失败时把子进程句柄放回槽位，以便后续重试。
+    */
     async fn settle_child_until(
         child_slot: &Arc<Mutex<Option<Child>>>,
         graceful_deadline: Instant,
@@ -320,6 +347,7 @@ impl StdioTransport {
         }
     }
 
+    /// 在截止时间前等待后台任务结束；超时则把任务句柄放回槽位以便重试。
     async fn await_task_until(
         task_slot: &Arc<Mutex<Option<tokio::task::JoinHandle<Result<()>>>>>,
         task_name: &str,
@@ -343,6 +371,7 @@ impl StdioTransport {
         }
     }
 
+    /// 执行完整关闭流程：关闭请求表、关闭 stdin、回收子进程并等待 IO 任务结束，汇总所有错误。
     async fn close_owned(
         stdin: &Arc<Mutex<Option<tokio::process::ChildStdin>>>,
         pending: &Arc<PendingRequests>,
@@ -392,6 +421,7 @@ impl StdioTransport {
 }
 
 impl McpTransport for StdioTransport {
+    /// 向子进程 stdin 写入一行 JSON-RPC 请求，并在超时内等待对应响应。
     fn send(&self, request: JsonRpcRequest) -> BoxFuture<'_, Result<JsonRpcResponse>> {
         Box::pin(async move {
             let mut request = request;
@@ -433,6 +463,7 @@ impl McpTransport for StdioTransport {
         })
     }
 
+    /// 向子进程 stdin 写入一行 JSON-RPC 通知。
     fn notify(&self, notification: JsonRpcNotification) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let line = serde_json::to_string(&notification)
@@ -458,6 +489,7 @@ impl McpTransport for StdioTransport {
         })
     }
 
+    /// 关闭传输层；关闭流程在独立任务中执行，本 future 被取消也不会中断清理。
     fn close(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move {
             let deadline = Instant::now() + self.timeouts.close;
@@ -488,12 +520,14 @@ impl McpTransport for StdioTransport {
         })
     }
 
+    /// stdio 传输当前不提供服务端通知通道，始终返回 `None`。
     fn notification_rx(&self) -> Option<Arc<dyn super::super::types::JsonRpcNotificationReceiver>> {
         None
     }
 }
 
 impl Drop for StdioTransport {
+    /// 若尚未关闭且处于 Tokio 运行时中，则派生后台任务执行关闭流程。
     fn drop(&mut self) {
         self.pending.close();
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
@@ -529,10 +563,12 @@ impl Drop for StdioTransport {
     }
 }
 
-/// Validate the command used to spawn an MCP server.
-///
-/// Commands are executed directly without a shell, so only an empty command
-/// is a framework error. Users remain responsible for extensions they load.
+/**
+校验用于启动 MCP 服务端的命令。
+
+命令直接执行而不经过 shell，因此只有空命令属于框架错误。
+用户需自行对其加载的扩展负责。
+*/
 fn validate_mcp_command(command: &str) -> Result<()> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
@@ -553,9 +589,11 @@ mod tests {
 
     use super::*;
 
+    /// 每次读取都返回错误的测试读取器。
     struct ErrorReader;
 
     impl AsyncRead for ErrorReader {
+        /// 始终返回注入的读取失败。
         fn poll_read(
             self: Pin<&mut Self>,
             _context: &mut Context<'_>,
@@ -565,6 +603,7 @@ mod tests {
         }
     }
 
+    /// 构造用于测试的短超时配置。
     fn short_timeouts() -> StdioTimeouts {
         StdioTimeouts {
             response: Duration::from_millis(20),
@@ -573,11 +612,13 @@ mod tests {
         }
     }
 
+    /// 验证空命令会被拒绝。
     #[test]
     fn rejects_empty_command() {
         assert!(validate_mcp_command("   ").is_err());
     }
 
+    /// 验证接受用户选择的命令。
     #[test]
     fn accepts_user_selected_commands() {
         assert!(validate_mcp_command("npx").is_ok());
@@ -585,6 +626,7 @@ mod tests {
         assert!(validate_mcp_command("sh").is_ok());
     }
 
+    /// 验证 stdout 遇到 EOF 时所有待处理请求均失败。
     #[tokio::test]
     async fn stdout_eof_fails_every_pending_request() -> Result<()> {
         let pending = PendingRequests::new();
@@ -606,6 +648,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 stdout 读取出错时所有待处理请求均失败。
     #[tokio::test]
     async fn stdout_read_error_fails_every_pending_request() -> Result<()> {
         let pending = PendingRequests::new();
@@ -628,6 +671,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭会排空请求并等待真实子进程与 IO 任务结束。
     #[cfg(unix)]
     #[tokio::test]
     async fn close_drains_request_and_awaits_real_child_and_io_tasks() -> Result<()> {
@@ -684,6 +728,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭会强制终止并回收忽略 stdin 的子进程。
     #[cfg(unix)]
     #[tokio::test]
     async fn close_forces_and_reaps_child_that_ignores_stdin() -> Result<()> {
@@ -715,6 +760,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭 future 被取消后仍保留子进程所有权，直到重试时等待。
     #[cfg(unix)]
     #[tokio::test]
     async fn cancelled_close_future_keeps_child_owner_until_retry_waits() -> Result<()> {
@@ -746,6 +792,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证服务端 stdout EOF 时会在关闭返回前完成真实子进程的收尾。
     #[cfg(unix)]
     #[tokio::test]
     async fn server_stdout_eof_settles_real_child_before_close_returns() -> Result<()> {
@@ -776,6 +823,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证关闭能解除并等待阻塞在子进程 stdin 上的写入器。
     #[cfg(unix)]
     #[tokio::test]
     async fn close_unblocks_and_awaits_a_writer_stalled_on_child_stdin() -> Result<()> {
@@ -827,6 +875,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证响应超时会移除待处理请求。
     #[cfg(unix)]
     #[tokio::test]
     async fn response_timeout_removes_pending_request() -> Result<()> {

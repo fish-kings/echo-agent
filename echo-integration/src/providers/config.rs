@@ -1,8 +1,9 @@
-//! Provider-neutral runtime configuration for LLM clients.
-//!
-//! Provider catalogs, credentials, and model selection belong to the consuming
-//! application. This module only turns an explicit provider/model contract into
-//! a concrete wire client and validates that requests respect model capabilities.
+/*!
+与具体供应商无关的 LLM 客户端运行时配置。
+
+供应商目录、凭据和模型选择都归使用方应用所有。本模块只负责把显式的
+供应商/模型约定转换为具体的线上协议客户端，并校验请求是否符合模型能力。
+*/
 
 use echo_core::error::{ConfigError, LlmError, Result};
 use echo_core::llm::capabilities::resolve_thinking_profile;
@@ -10,10 +11,12 @@ use echo_core::llm::types::{ContentPart, Message, MessageContent};
 use echo_core::llm::{LlmApiProtocol, LlmTimeouts, ModelInputModality, ThinkingProtocol};
 use serde::{Deserialize, Serialize};
 
-/// Resolve a provider API root or complete endpoint for one explicit protocol.
-///
-/// A recognized complete endpoint is preserved when it already matches, or
-/// replaced when a different protocol is selected under the same provider.
+/**
+针对某个显式协议，解析供应商的 API 根地址或完整端点。
+
+若传入的是可识别的完整端点：协议一致时原样保留；
+在同一供应商下选择了不同协议时，则替换为对应协议的端点路径。
+*/
 pub fn resolve_protocol_endpoint(base_url: &str, protocol: LlmApiProtocol) -> Result<String> {
     let trimmed = base_url.trim();
     if trimmed.is_empty() {
@@ -59,32 +62,33 @@ pub fn resolve_protocol_endpoint(base_url: &str, protocol: LlmApiProtocol) -> Re
     Ok(url.to_string())
 }
 
-/// Fully resolved model configuration injected by an application.
+/// 由应用注入的、已完全解析的模型配置。
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
-    /// Stable application-defined provider id used for model capability policy.
+    /// 应用定义的稳定供应商 ID，用于模型能力策略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_name: Option<String>,
-    /// Wire protocol selected for this model.
+    /// 该模型所选用的线上协议。
     pub api_protocol: LlmApiProtocol,
-    /// Complete endpoint URL for [`Self::api_protocol`].
+    /// [`Self::api_protocol`] 对应的完整端点 URL。
     pub base_url: String,
-    /// Resolved API credential. May be empty for local providers.
+    /// 已解析的 API 凭据；本地供应商可以为空。
     pub api_key: String,
-    /// Provider-facing model name.
+    /// 发送给供应商的模型名称。
     pub model: String,
-    /// Input types accepted by this model. Pure text is the default.
+    /// 该模型接受的输入类型，默认仅纯文本。
     #[serde(default = "ModelInputModality::text_only")]
     pub input_modalities: Vec<ModelInputModality>,
-    /// Thinking wire dialect resolved centrally from the runtime contract.
+    /// 由运行时约定统一解析出的思考（thinking）线上方言。
     #[serde(default)]
     pub thinking_protocol: ThinkingProtocol,
-    /// Request and streaming timeout policy shared by every provider transport.
+    /// 所有供应商传输层共用的请求与流式超时策略。
     #[serde(default)]
     pub timeouts: LlmTimeouts,
 }
 
 impl std::fmt::Debug for LlmConfig {
+    /// 输出配置信息，`api_key` 以占位符脱敏。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("LlmConfig")
@@ -101,7 +105,7 @@ impl std::fmt::Debug for LlmConfig {
 }
 
 impl LlmConfig {
-    /// Build a runtime model config from an explicit provider contract.
+    /// 根据显式的供应商约定构建运行时模型配置。
     pub fn for_provider(
         provider_name: impl Into<String>,
         base_url: impl AsRef<str>,
@@ -134,19 +138,19 @@ impl LlmConfig {
         })
     }
 
-    /// Set the concrete model's accepted input modalities.
+    /// 设置具体模型可接受的输入模态。
     pub fn with_input_modalities(mut self, input_modalities: Vec<ModelInputModality>) -> Self {
         self.input_modalities = normalize_input_modalities(input_modalities);
         self
     }
 
-    /// Set the timeout policy used by the concrete provider client.
+    /// 设置具体供应商客户端使用的超时策略。
     pub fn with_timeouts(mut self, timeouts: LlmTimeouts) -> Self {
         self.timeouts = timeouts;
         self
     }
 
-    /// Build the wire client selected by [`Self::api_protocol`].
+    /// 构建 [`Self::api_protocol`] 所选协议对应的客户端。
     pub fn build_client(&self) -> Result<Box<dyn echo_core::llm::LlmClient>> {
         match self.api_protocol {
             LlmApiProtocol::Responses => Ok(Box::new(super::responses::ResponsesClient::new(
@@ -167,11 +171,13 @@ impl LlmConfig {
         }
     }
 
+    /// 校验消息中的输入模态是否都被当前模型支持。
     pub(crate) fn validate_input_modalities(&self, messages: &[Message]) -> Result<()> {
         validate_model_input_modalities(&self.model, &self.input_modalities, messages)
     }
 }
 
+/// 规范化输入模态列表：始终包含文本，并去除重复项。
 fn normalize_input_modalities(
     input_modalities: Vec<ModelInputModality>,
 ) -> Vec<ModelInputModality> {
@@ -184,6 +190,7 @@ fn normalize_input_modalities(
     normalized
 }
 
+/// 校验消息中的图片、音频、视频等附件是否都在模型允许的输入模态内。
 pub(crate) fn validate_model_input_modalities(
     model: &str,
     input_modalities: &[ModelInputModality],
@@ -219,6 +226,7 @@ pub(crate) fn validate_model_input_modalities(
     Ok(())
 }
 
+/// 根据文件扩展名推断附件的输入模态；无法识别时返回 `None`。
 fn file_input_modality(name: &str) -> Option<ModelInputModality> {
     let extension = std::path::Path::new(name)
         .extension()
@@ -241,6 +249,7 @@ fn file_input_modality(name: &str) -> Option<ModelInputModality> {
 mod tests {
     use super::*;
 
+    /// 验证协议端点解析支持单一根地址对应多种协议。
     #[test]
     fn protocol_endpoint_resolution_supports_one_root_with_multiple_protocols()
     -> std::result::Result<(), String> {
@@ -263,6 +272,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证提供商配置默认仅文本能力，并保留显式声明的能力。
     #[test]
     fn provider_config_defaults_to_text_and_preserves_explicit_capabilities()
     -> std::result::Result<(), String> {
@@ -294,6 +304,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证提供商配置无需用户字段即可解析 thinking 设置。
     #[test]
     fn provider_config_resolves_thinking_without_user_fields() -> std::result::Result<(), String> {
         let config = LlmConfig::for_provider(
@@ -311,6 +322,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证纯文本模型会拒绝图片、音频和视频输入。
     #[test]
     fn text_only_model_rejects_image_audio_and_video() {
         let mut image = Message::user(String::new());

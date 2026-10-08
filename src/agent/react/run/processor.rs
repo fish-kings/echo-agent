@@ -142,8 +142,10 @@ fn parse_tool_args(args_str: &str) -> Result<(Value, String), serde_json::Error>
 /// 将收集到的 tool_call_map 转换成结构化的工具调用列表
 pub(crate) type ParsedToolStep = (String, String, Value);
 
-/// 将 `tool_call_map` 转换为发送给模型的 `LlmToolCall` 列表，以及内部使用的
-/// `ParsedToolStep` 列表；若发现同一批次中存在重复的 tool_call id，则返回错误。
+/**
+ * 将 `tool_call_map` 转换为发送给模型的 `LlmToolCall` 列表，以及内部使用的
+ * `ParsedToolStep` 列表；若发现同一批次中存在重复的 tool_call id，则返回错误。
+ */
 pub(crate) fn build_tool_calls_from_map(
     tool_call_map: &HashMap<u32, (String, String, String)>,
 ) -> Result<(Vec<LlmToolCall>, Vec<ParsedToolStep>), String> {
@@ -324,4 +326,3 @@ mod tests {
         Ok(())
     }
 }
-</content>

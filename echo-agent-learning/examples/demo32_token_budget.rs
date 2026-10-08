@@ -1,35 +1,38 @@
-//! demo32_token_budget —— Token 预算管控完整演示
-//!
-//! 演示 `max_tool_output_tokens` 工具输出超限自动截断功能。
-//!
-//! # 问题场景
-//!
-//! ```
-//! 用户: "读取这个 10MB 的日志文件，分析错误"
-//!
-//! [传统方案]
-//! LLM → read_file("/var/log/huge.log")
-//! → 返回 500 万 token（超出上下文！）
-//! → 错误或无限等待
-//!
-//! [Token Budget 方案]
-//! LLM → read_file("/var/log/huge.log")
-//! → 工具返回 500 万 token
-//! → 自动截断到 max_tool_output_tokens（如 2000）
-//! → LLM 看到截断提示，可选择分析部分或请求更多
-//! ```
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo32_token_budget
-//! ```
+/*!
+demo32_token_budget —— Token 预算管控完整演示
+
+演示 `max_tool_output_tokens` 工具输出超限自动截断功能。
+
+# 问题场景
+
+```
+用户: "读取这个 10MB 的日志文件，分析错误"
+
+[传统方案]
+LLM → read_file("/var/log/huge.log")
+→ 返回 500 万 token（超出上下文！）
+→ 错误或无限等待
+
+[Token Budget 方案]
+LLM → read_file("/var/log/huge.log")
+→ 工具返回 500 万 token
+→ 自动截断到 max_tool_output_tokens（如 2000）
+→ LLM 看到截断提示，可选择分析部分或请求更多
+```
+
+# 运行方式
+
+```bash
+cargo run -p echo-agent-learning --example demo32_token_budget
+```
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::tools::{Tool, ToolParameters, ToolResult};
 use futures::{StreamExt, future::BoxFuture};
 use serde_json::json;
 
+/// 程序入口：依次演示 `max_tool_output_tokens` 的配置方式与实际截断效果。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     println!("═══ Token Budget Control Demo ═══\n");
@@ -46,6 +49,7 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: 配置方式演示 ─────────────────────────────────────────────────────
 
+/// Part 1：演示通过 AgentConfig 与 ReactAgentBuilder 配置 `max_tool_output_tokens`，并展示默认值。
 fn demo_config() -> echo_agent::error::Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 1: 配置方式");
@@ -87,24 +91,30 @@ fn demo_config() -> echo_agent::error::Result<()> {
 
 // ── Part 2: 实际截断效果演示 ─────────────────────────────────────────────────
 
+/// Part 2：用可配置输出长度的模拟工具，对比截断前后的工具输出效果。
 async fn demo_actual_truncation() -> echo_agent::error::Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 2: 实际截断效果演示");
     println!("─────────────────────────────────────────────\n");
 
+    /// 可配置输出长度的模拟文件读取工具，用于制造超长工具输出。
     struct ConfigurableOutputTool {
+        /// 期望生成的输出长度（近似字符数）。
         output_length: usize,
     }
 
     impl Tool for ConfigurableOutputTool {
+        /// 工具名称。
         fn name(&self) -> &str {
             "get_file_content"
         }
 
+        /// 工具描述。
         fn description(&self) -> &str {
             "获取文件内容（可配置输出长度）"
         }
 
+        /// 工具参数的 JSON Schema。
         fn parameters(&self) -> serde_json::Value {
             json!({
                 "type": "object",
@@ -117,6 +127,7 @@ async fn demo_actual_truncation() -> echo_agent::error::Result<()> {
             })
         }
 
+        /// 生成指定长度的模拟文件内容作为工具输出。
         fn execute(
             &self,
             _params: ToolParameters,
@@ -227,6 +238,7 @@ async fn demo_actual_truncation() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
+/// 以流式方式执行任务，收集 `get_file_content` 工具返回的输出文本。
 async fn collect_tool_output(
     agent: &mut ReactAgent,
     task: &str,
@@ -245,6 +257,7 @@ async fn collect_tool_output(
     Ok(tool_output.unwrap_or_default())
 }
 
+/// 按字符数截断字符串，超出部分以 `...` 结尾。
 fn truncate(s: &str, max: usize) -> String {
     let mut chars = s.chars();
     let out: String = chars.by_ref().take(max).collect();

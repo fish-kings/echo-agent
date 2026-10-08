@@ -1,21 +1,22 @@
-//! Compression invariant tests.
-//!
-//! These tests verify that compression preserves critical information
-//! regardless of which strategy is used. They are the "safety net" for
-//! the compression system — if any of these fail, compression is broken.
-//!
-//! ## Invariants covered
-//!
-//! 1. Tool call/result pairing integrity
-//! 2. Last user request preserved
-//! 3. System prompt preserved
-//! 4. Protected markers survive
-//! 5. Pending tasks preserved in summary
-//! 6. Referenced file paths preserved
-//! 7. Post-compression tokens ≤ target limit
-//! 8. Compression idempotency (re-compress doesn't lose more)
-//! 9. Adaptive escalation produces expected levels
-//! 10. VisibilityHorizon leaves no orphaned calls
+/*!
+压缩不变量测试。
+
+这些测试验证无论使用哪种压缩策略，压缩都能保留关键信息。
+它们是压缩系统的"安全网"——只要其中任何一个失败，就说明压缩逻辑已损坏。
+
+## 覆盖的不变量
+
+1. 工具调用/结果配对完整性
+2. 最后一条用户请求被保留
+3. 系统提示词被保留
+4. 受保护标记得以保留
+5. 待办任务保留在摘要中
+6. 被引用的文件路径被保留
+7. 压缩后 token 数 ≤ 目标上限
+8. 压缩幂等性（再次压缩不会丢失更多内容）
+9. 自适应升级产生预期的压缩级别
+10. VisibilityHorizon 不会留下孤立的工具调用
+*/
 
 #[cfg(test)]
 mod tests {
@@ -28,8 +29,9 @@ mod tests {
     use echo_core::llm::types::{Message, MessageContent, Role, ToolCall};
     use echo_core::tokenizer::{HeuristicTokenizer, Tokenizer};
 
-    // ── Test Helpers ─────────────────────────────────────────────────────────
+    // ── 测试辅助函数 ─────────────────────────────────────────────────────────
 
+    /// 构造指定角色与文本内容的消息。
     fn make_msg(role: Role, text: &str) -> Message {
         Message {
             role,
@@ -38,6 +40,7 @@ mod tests {
         }
     }
 
+    /// 构造一个参数为空对象的函数类型工具调用。
     fn make_tool_call(id: &str, name: &str) -> ToolCall {
         ToolCall {
             id: id.to_string(),
@@ -49,6 +52,7 @@ mod tests {
         }
     }
 
+    /// 构造携带给定工具调用列表的助手消息。
     fn assistant_with_tools(calls: Vec<ToolCall>) -> Message {
         Message {
             role: Role::Assistant,
@@ -58,6 +62,7 @@ mod tests {
         }
     }
 
+    /// 构造与指定工具调用 ID 对应的工具结果消息。
     fn tool_result_msg(id: &str, name: &str, content: &str) -> Message {
         Message {
             role: Role::Tool,
@@ -68,6 +73,7 @@ mod tests {
         }
     }
 
+    /// 使用启发式分词器统计消息列表的文本 token 总数。
     fn token_count(msgs: &[Message]) -> usize {
         let tokenizer = HeuristicTokenizer;
         msgs.iter()
@@ -76,14 +82,15 @@ mod tests {
             .sum()
     }
 
+    /// 判断消息列表中是否有任一文本内容包含指定子串。
     fn msgs_contain(msgs: &[Message], text: &str) -> bool {
         msgs.iter()
             .filter_map(|m| m.content.as_text())
             .any(|c| c.contains(text))
     }
 
-    /// Build a multi-turn conversation with tool calls.
-    /// Returns (messages, file_paths_mentioned).
+    /** 构建包含工具调用的多轮对话。
+    返回 (消息列表, 被提及的文件路径列表)。 */
     fn build_tool_conversation(turns: usize) -> (Vec<Message>, Vec<String>) {
         let mut msgs = vec![make_msg(Role::System, "You are a coding assistant.")];
         let mut files = Vec::new();
@@ -100,7 +107,7 @@ mod tests {
                 format!("Round {t}: found issue in auth module. TODO: refactor auth module");
             msgs.push(make_msg(Role::Assistant, &response));
         }
-        // Final user request (must be preserved)
+        // 最终的用户请求（必须被保留）
         msgs.push(make_msg(
             Role::User,
             "Now fix the bug in src/auth.rs line 42",
@@ -108,8 +115,9 @@ mod tests {
         (msgs, files)
     }
 
-    // ── Invariant 1: Tool Pair Integrity ─────────────────────────────────────
+    // ── 不变量 1：工具调用配对完整性 ─────────────────────────────────────
 
+    /// 验证滑动窗口压缩后不存在孤立的工具结果。
     #[tokio::test]
     async fn invariant_tool_pair_integrity_sliding_window() {
         let compressor = SlidingWindowCompressor::new(4);
@@ -124,7 +132,7 @@ mod tests {
         };
         let output = compressor.compress(input).await.unwrap();
 
-        // Check: every remaining tool result has a matching assistant tool_call
+        // 检查：每个保留下来的工具结果都有匹配的助手 tool_call
         let tool_call_ids: std::collections::HashSet<String> = output
             .messages
             .iter()
@@ -155,15 +163,16 @@ mod tests {
             orphaned_tools.len()
         );
 
-        // Check: checkpoint contains fix info
+        // 检查：检查点包含修复信息
         let cp = output.checkpoint.as_ref().unwrap();
         assert_eq!(cp.strategy, "SlidingWindow");
         assert!(cp.retained_count > 0);
         assert!(cp.compression_duration_ms < 1000);
     }
 
-    // ── Invariant 2: Last User Request Preserved ─────────────────────────────
+    // ── 不变量 2：最后一条用户请求被保留 ─────────────────────────────
 
+    /// 验证压缩后最后一条用户请求仍然存在。
     #[tokio::test]
     async fn invariant_last_user_request_preserved() {
         let compressor = SlidingWindowCompressor::new(3);
@@ -187,8 +196,9 @@ mod tests {
         );
     }
 
-    // ── Invariant 3: System Prompt Preserved ─────────────────────────────────
+    // ── 不变量 3：系统提示词被保留 ─────────────────────────────────
 
+    /// 验证系统提示词作为首条消息被保留。
     #[tokio::test]
     async fn invariant_system_prompt_preserved() {
         let compressor = SlidingWindowCompressor::new(2);
@@ -219,8 +229,9 @@ mod tests {
         );
     }
 
-    // ── Invariant 4: Protected Markers Survive ───────────────────────────────
+    // ── 不变量 4：受保护标记得以保留 ───────────────────────────────
 
+    /// 验证含受保护标记的消息在强制压缩后仍然存在。
     #[tokio::test]
     async fn invariant_protected_markers_survive() {
         let mut ctx = ContextManager::builder(100)
@@ -246,19 +257,20 @@ mod tests {
             msgs_contain(msgs, "latest question"),
             "Latest user message must survive"
         );
-        // Checkpoint must report protected count
+        // 检查点必须报告受保护消息数量
         if let Some(cp) = checkpoint {
             assert!(cp.protected_count > 0);
         }
     }
 
-    // ── Invariant 5: Pending Tasks Preserved ────────────────────────────────
+    // ── 不变量 5：待办任务被保留 ────────────────────────────────
 
+    /// 验证 TODO/待办任务信息在压缩后不会丢失。
     #[tokio::test]
     async fn invariant_pending_tasks_in_summary_or_retained() {
-        // This test verifies that TODO/pending task information is not lost.
-        // For LLM-based compressors, it should be in the summary.
-        // For non-LLM compressors, it should be in retained messages.
+        /* 本测试验证 TODO/待办任务信息不会丢失。
+        对基于 LLM 的压缩器，它应出现在摘要中；
+        对非 LLM 压缩器，它应出现在保留的消息中。 */
         let compressor = SlidingWindowCompressor::new(4);
         let mut messages = vec![make_msg(Role::System, "system")];
         for i in 0..6 {
@@ -279,8 +291,8 @@ mod tests {
         };
         let output = compressor.compress(input).await.unwrap();
 
-        // With sliding window (keep 4), the most recent messages should contain
-        // the TODO from the later steps
+        /* 使用滑动窗口（保留 4 条）时，最近的消息应包含
+        后续步骤中的 TODO */
         let has_todo = msgs_contain(&output.messages, "TODO");
         assert!(
             has_todo,
@@ -288,8 +300,9 @@ mod tests {
         );
     }
 
-    // ── Invariant 6: Referenced File Paths Preserved ─────────────────────────
+    // ── 不变量 6：被引用的文件路径被保留 ─────────────────────────
 
+    /// 验证最近工具调用中引用的文件路径被保留。
     #[tokio::test]
     async fn invariant_current_files_preserved() {
         let compressor = SlidingWindowCompressor::new(4);
@@ -305,7 +318,7 @@ mod tests {
         };
         let output = compressor.compress(input).await.unwrap();
 
-        // At least the most recent file reference should be preserved
+        // 至少应保留最近一次的文件引用
         let has_file = msgs_contain(&output.messages, "src/auth.rs");
         assert!(
             has_file,
@@ -313,14 +326,15 @@ mod tests {
         );
     }
 
-    // ── Invariant 7: Token Target Met ────────────────────────────────────────
+    // ── 不变量 7：达到 token 目标 ────────────────────────────────────────
 
+    /// 验证压缩能减少 token 数且检查点记录一致。
     #[tokio::test]
     async fn invariant_token_target_met() {
         let compressor = SlidingWindowCompressor::new(3);
         let (messages, _) = build_tool_conversation(8);
         let tokens_before = token_count(&messages);
-        let target = tokens_before / 4; // aggressive target
+        let target = tokens_before / 4; // 激进的目标值
 
         let input = CompressionInput {
             messages,
@@ -333,7 +347,7 @@ mod tests {
         let output = compressor.compress(input).await.unwrap();
         let tokens_after = token_count(&output.messages);
 
-        // Should reduce tokens
+        // 应当减少 token 数
         assert!(
             tokens_after < tokens_before,
             "Compression should reduce tokens: {} -> {}",
@@ -341,13 +355,14 @@ mod tests {
             tokens_after
         );
 
-        // Checkpoint token counts should match
+        // 检查点中的 token 计数应一致
         let cp = output.checkpoint.as_ref().unwrap();
         assert!(cp.token_before > cp.token_after);
     }
 
-    // ── Invariant 8: Compression Idempotent ──────────────────────────────────
+    // ── 不变量 8：压缩幂等性 ──────────────────────────────────
 
+    /// 验证对已压缩结果再次压缩不会进一步淘汰消息。
     #[tokio::test]
     async fn invariant_compression_idempotent() {
         let compressor = SlidingWindowCompressor::new(3);
@@ -364,7 +379,7 @@ mod tests {
         let output1 = compressor.compress(input).await.unwrap();
         let count1 = output1.messages.len();
 
-        // Second compression on already-compressed output should not evict more
+        // 对已压缩输出进行第二次压缩时不应再淘汰更多消息
         let input2 = CompressionInput {
             messages: output1.messages,
             token_limit: 200,
@@ -382,8 +397,9 @@ mod tests {
         );
     }
 
-    // ── Invariant 9: Adaptive Escalation ─────────────────────────────────────
+    // ── 不变量 9：自适应升级 ─────────────────────────────────────
 
+    /// 验证自适应压缩器至少应用一个压缩级别并减少 token。
     #[tokio::test]
     async fn invariant_adaptive_escalation_produces_levels() {
         let config = AdaptiveCompressionConfig {
@@ -400,7 +416,7 @@ mod tests {
         };
         let compressor = AdaptiveCompressor::new(config);
 
-        // Build oversized context with tool output
+        // 构建包含工具输出的超大上下文
         let mut messages = vec![make_msg(Role::System, "system")];
         for i in 0..8 {
             let query_msg = format!("query {i}");
@@ -412,7 +428,7 @@ mod tests {
             messages.push(tool_result_msg(
                 &tc_id,
                 "grep",
-                &"A".repeat(500), // large output to trigger L1 snip
+                &"A".repeat(500), // 大输出以触发 L1 截断
             ));
             messages.push(make_msg(Role::Assistant, &result_msg));
         }
@@ -427,7 +443,7 @@ mod tests {
         };
         let output = compressor.compress(input).await.unwrap();
 
-        // Checkpoint should report levels applied
+        // 检查点应报告已应用的级别
         let cp = output.checkpoint.as_ref().unwrap();
         assert_eq!(cp.strategy, "Adaptive");
         assert!(
@@ -437,8 +453,9 @@ mod tests {
         assert!(cp.token_before > cp.token_after, "Tokens should be reduced");
     }
 
-    // ── Invariant 10: VisibilityHorizon No Orphans ───────────────────────────
+    // ── 不变量 10：VisibilityHorizon 无孤立调用 ───────────────────────────
 
+    /// 验证 VisibilityHorizon 压缩后每个工具调用都有匹配结果。
     #[tokio::test]
     async fn invariant_horizon_no_orphaned_tool_calls() {
         use crate::compression::horizon::VisibilityHorizonConfig;
@@ -452,7 +469,7 @@ mod tests {
         };
         let compressor = VisibilityHorizonCompressor::new(config);
 
-        // Build 8-turn conversation with tool calls
+        // 构建包含工具调用的 8 轮对话
         let mut messages = vec![make_msg(Role::System, "system")];
         for t in 0..8 {
             let task_msg = format!("Task {t}: read file");
@@ -476,7 +493,7 @@ mod tests {
         };
         let output = compressor.compress(input).await.unwrap();
 
-        // Check: no orphaned tool calls (every tool_call in assistant has matching result)
+        // 检查：无孤立的工具调用（助手中的每个 tool_call 都有匹配结果）
         let tool_result_ids: std::collections::HashSet<String> = output
             .messages
             .iter()
@@ -498,7 +515,7 @@ mod tests {
             }
         }
 
-        // Checkpoint should be populated
+        // 检查点应已填充
         let cp = output.checkpoint.as_ref().unwrap();
         assert_eq!(cp.strategy, "VisibilityHorizon");
         assert!(
@@ -507,8 +524,9 @@ mod tests {
         );
     }
 
-    // ── Invariant: Focus Instructions Flow Through ────────────────────────────
+    // ── 不变量：聚焦指令透传 ────────────────────────────
 
+    /// 验证聚焦指令被记录到检查点中。
     #[tokio::test]
     async fn invariant_focus_instructions_in_checkpoint() {
         let compressor = SlidingWindowCompressor::new(3);
@@ -533,9 +551,10 @@ mod tests {
         );
     }
 
+    /// 验证聚焦指令会被注入摘要提示词。
     #[tokio::test]
     async fn invariant_focus_passed_to_summary_prompt() {
-        // Verify that focus instructions modify the summary prompt
+        // 验证聚焦指令会改变摘要提示词
         let messages = vec![
             make_msg(Role::User, "hello"),
             make_msg(Role::Assistant, "hi there"),
@@ -558,8 +577,9 @@ mod tests {
         );
     }
 
-    // ── Invariant: Checkpoint Structure ──────────────────────────────────────
+    // ── 不变量：检查点结构 ──────────────────────────────────────
 
+    /// 验证检查点的必填字段均已填充。
     #[tokio::test]
     async fn invariant_checkpoint_has_required_fields() {
         let compressor = SlidingWindowCompressor::new(3);
@@ -575,7 +595,7 @@ mod tests {
         let output = compressor.compress(input).await.unwrap();
         let cp = output.checkpoint.unwrap();
 
-        // All required fields should be populated
+        // 所有必填字段都应已填充
         assert!(!cp.checkpoint_id.is_empty(), "checkpoint_id must be set");
         assert!(!cp.strategy.is_empty(), "strategy must be set");
         assert!(cp.retained_count > 0, "retained_count must be > 0");
@@ -585,6 +605,6 @@ mod tests {
             cp.compression_duration_ms < 5000,
             "compression_duration_ms should be reasonable"
         );
-        // created_at should be recent (not checked precisely, just that it's set)
+        // created_at 应为最近时间（不精确校验，仅确认已设置）
     }
 }

@@ -41,10 +41,15 @@ if docker.is_available().await {
 ```
 */
 
+/// Docker 容器沙箱实现。
 pub mod docker;
+/// Kubernetes Pod 沙箱实现。
 pub mod k8s;
+/// 本地进程 / OS 级沙箱实现（Seatbelt、bubblewrap）。
 pub mod local;
+/// 沙箱管理器：自动探测并路由到合适的沙箱。
 pub mod manager;
+/// 沙箱选择策略：根据命令与安全级别决定隔离层级。
 pub mod policy;
 
 use std::collections::HashMap;
@@ -149,6 +154,7 @@ pub fn select_image_for_command(
 
 // ── 核心类型（定义于 echo_core::sandbox，已在上方重导出）───────────
 
+// 单元测试：镜像选择逻辑。
 #[cfg(test)]
 mod tests {
     use super::*;

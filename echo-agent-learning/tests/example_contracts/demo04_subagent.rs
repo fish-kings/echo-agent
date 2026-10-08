@@ -6,21 +6,25 @@ use echo_agent::prelude::*;
 use echo_agent::testing::MockLlmClient;
 use echo_agent::tool;
 
+/// 工具：返回两数之和。
 #[tool(name = "add", description = "两数相加")]
 async fn add(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} + {} = {}", a, b, a + b)))
 }
 
+/// 工具：返回 a 减 b 的差。
 #[tool(name = "subtract", description = "两数相减")]
 async fn subtract(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} - {} = {}", a, b, a - b)))
 }
 
+/// 工具：返回两数之积。
 #[tool(name = "multiply", description = "两数相乘")]
 async fn multiply(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} * {} = {}", a, b, a * b)))
 }
 
+/// 工具：返回 a 除以 b 的商，除数为 0 时返回错误结果。
 #[tool(name = "divide", description = "两数相除")]
 async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     if b == 0.0 {
@@ -29,6 +33,7 @@ async fn divide(a: f64, b: f64) -> Result<ToolResult> {
     Ok(ToolResult::success(format!("{} / {} = {}", a, b, a / b)))
 }
 
+/// 返回加减乘除四个数学工具的实例列表。
 fn math_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(AddTool),
@@ -38,6 +43,7 @@ fn math_tools() -> Vec<Box<dyn Tool>> {
     ]
 }
 
+/// 启动后台任务处理人工介入事件：自动批准审批请求、为输入请求回填固定答复，并统计输入请求次数。
 fn spawn_human_loop_subagent(
     manager: Arc<HumanLoopManager>,
     input_count: Arc<AtomicUsize>,
@@ -60,13 +66,14 @@ fn spawn_human_loop_subagent(
                     responder.respond("用户补充：今天下雨，请按雨天折扣计算。".to_string());
                 }
                 _ => {
-                    // SelectionRequest and other variants — not used by this demo.
+                    // SelectionRequest 等其它变体：本示例不会用到。
                 }
             }
         }
     })
 }
 
+/// 契约测试：使用 Mock LLM 验证编排 Agent 委派天气与数学子 Agent，经人工输入确认天气后完成折扣计算。
 #[tokio::test]
 async fn contract_demo04_subagent() -> Result<()> {
     let _ = tracing_subscriber::fmt()

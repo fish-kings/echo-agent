@@ -1,42 +1,50 @@
-//! Summary verifier — post-compression quality checks.
-//!
-//! Runs lightweight rule-based checks against compression output to verify
-//! that critical information was not lost. No LLM calls needed.
+/*!
+ * 摘要校验器——压缩后的质量检查。
+ *
+ * 对压缩输出执行轻量级的基于规则的检查，验证关键信息没有丢失。无需调用 LLM。
+ */
 
 use crate::compression::CompressionCheckpoint;
 use echo_core::llm::types::{Message, Role};
 
-/// Result of running all verification checks against a compression output.
+/// 对一次压缩输出执行全部校验检查后的结果。
 #[derive(Debug, Clone)]
 pub struct SummaryVerification {
-    /// Overall pass/fail (all P0 checks must pass).
+    /// 整体是否通过（所有 P0 检查都必须通过）。
     pub passed: bool,
-    /// Individual check results.
+    /// 各项检查的结果。
     pub checks: Vec<VerificationCheck>,
 }
 
-/// A single verification check result.
+/// 单项校验检查的结果。
 #[derive(Debug, Clone)]
 pub struct VerificationCheck {
+    /// 检查项名称
     pub name: String,
+    /// 该检查是否通过
     pub passed: bool,
+    /// 检查优先级
     pub priority: CheckPriority,
+    /// 检查详情说明
     pub detail: String,
 }
 
+/// 校验检查的优先级。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckPriority {
-    /// Must-pass checks — compression is considered broken if these fail.
+    /// 必须通过的检查——若失败则认为压缩结果已损坏。
     P0,
-    /// Should-pass checks — warnings but don't block.
+    /// 应当通过的检查——失败仅作为警告，不阻断。
     P1,
 }
 
-/// Run all verification checks against the compressed output.
-///
-/// `compressed_messages` — the messages after compression (what will be sent to LLM).
-/// `checkpoint` — the compression checkpoint with token stats and summary.
-/// `original_messages` — the full message buffer before compression (for context).
+/**
+ * 对压缩后的输出执行全部校验检查。
+ *
+ * `compressed_messages` — 压缩后的消息（即将发送给 LLM 的内容）。
+ * `checkpoint` — 包含 token 统计与摘要的压缩检查点。
+ * `original_messages` — 压缩前的完整消息缓冲（作为上下文参考）。
+ */
 pub fn verify_compression(
     compressed_messages: &[Message],
     checkpoint: &CompressionCheckpoint,
@@ -44,43 +52,43 @@ pub fn verify_compression(
 ) -> SummaryVerification {
     let mut checks = Vec::new();
 
-    // P0: Token target met
+    // P0：满足 token 目标
     checks.push(check_token_target(checkpoint));
 
-    // P0: Summary not empty (if an LLM compressor was used)
+    // P0：摘要非空（若使用了 LLM 压缩器）
     if checkpoint.summary.is_some() {
         checks.push(check_summary_not_empty(checkpoint));
     }
 
-    // P0: Last user query keywords in summary or retained messages
+    // P0：最后一条用户查询的关键词出现在摘要或保留消息中
     checks.push(check_last_query_presence(
         original_messages,
         compressed_messages,
         checkpoint,
     ));
 
-    // P0: Recent file paths preserved
+    // P0：保留了最近的文件路径
     checks.push(check_file_paths_presence(
         original_messages,
         compressed_messages,
         checkpoint,
     ));
 
-    // P1: Pending tasks preserved
+    // P1：保留了待处理任务
     checks.push(check_pending_tasks(
         original_messages,
         compressed_messages,
         checkpoint,
     ));
 
-    // P1: Errors preserved
+    // P1：保留了错误信息
     checks.push(check_error_presence(
         original_messages,
         compressed_messages,
         checkpoint,
     ));
 
-    // P1: User preferences preserved
+    // P1：保留了用户偏好
     checks.push(check_user_preferences(
         original_messages,
         compressed_messages,
@@ -95,8 +103,10 @@ pub fn verify_compression(
     SummaryVerification { passed, checks }
 }
 
-/// P0: Post-compression tokens must not exceed pre-compression tokens.
-/// (A stronger "within target limit" check requires model context info not available here.)
+/**
+ * P0：压缩后的 token 数不得超过压缩前。
+ * （更强的“处于目标上限内”检查需要模型上下文信息，此处无法获取。）
+ */
 fn check_token_target(checkpoint: &CompressionCheckpoint) -> VerificationCheck {
     let after = checkpoint.token_after;
     let before = checkpoint.token_before;
@@ -119,7 +129,7 @@ fn check_token_target(checkpoint: &CompressionCheckpoint) -> VerificationCheck {
     }
 }
 
-/// P0: Summary should not be trivially short.
+/// P0：摘要不应过短。
 fn check_summary_not_empty(checkpoint: &CompressionCheckpoint) -> VerificationCheck {
     let len = checkpoint.summary.as_deref().unwrap_or("").len();
     VerificationCheck {
@@ -130,31 +140,31 @@ fn check_summary_not_empty(checkpoint: &CompressionCheckpoint) -> VerificationCh
     }
 }
 
-/// P0: Last user query keywords should appear in the compressed output.
+/// P0：最后一条用户查询的关键词应出现在压缩输出中。
 fn check_last_query_presence(
     original: &[Message],
     compressed: &[Message],
     checkpoint: &CompressionCheckpoint,
 ) -> VerificationCheck {
-    // Find the last user message in original
+    // 在原始消息中查找最后一条用户消息
     let last_user = original.iter().rev().find(|m| m.role == Role::User);
 
     match last_user {
         Some(msg) => {
             let text = msg.content.as_text().unwrap_or_default();
-            // Extract key words (longest words are most likely to be distinctive)
+            // 提取关键词（较长的词更可能具有区分度）
             let keywords: Vec<&str> = text.split_whitespace().filter(|w| w.len() > 3).collect();
 
             if keywords.is_empty() {
                 return VerificationCheck {
                     name: "last_query_presence".to_string(),
-                    passed: true, // can't check if no keywords
+                    passed: true, // 没有关键词时无法检查
                     priority: CheckPriority::P0,
                     detail: "No distinctive keywords found in last query".to_string(),
                 };
             }
 
-            // Check if at least 50% of keywords appear in compressed messages or summary
+            // 检查是否至少 50% 的关键词出现在压缩消息或摘要中
             let combined = format!(
                 "{} {}",
                 compressed
@@ -189,18 +199,18 @@ fn check_last_query_presence(
     }
 }
 
-/// P0: Recent file paths from tool calls should be preserved.
+/// P0：工具调用中出现的最近文件路径应被保留。
 fn check_file_paths_presence(
     original: &[Message],
     compressed: &[Message],
     checkpoint: &CompressionCheckpoint,
 ) -> VerificationCheck {
-    // Extract file paths from the last 3 turns of tool messages
+    // 从最近 3 轮工具消息中提取文件路径
     let file_paths: Vec<String> = original
         .iter()
         .rev()
         .filter(|m| m.role == Role::Tool)
-        .take(6) // last ~3 turns of tool results
+        .take(6) // 约最近 3 轮的工具结果
         .filter_map(|m| m.content.as_text())
         .flat_map(|text| extract_file_paths_from_text(&text))
         .collect();
@@ -208,7 +218,7 @@ fn check_file_paths_presence(
     if file_paths.is_empty() {
         return VerificationCheck {
             name: "file_paths_presence".to_string(),
-            passed: true, // no file paths to check
+            passed: true, // 没有需要检查的文件路径
             priority: CheckPriority::P0,
             detail: "No file paths found in recent tool messages".to_string(),
         };
@@ -243,12 +253,14 @@ fn check_file_paths_presence(
     }
 }
 
-/// Extract likely file paths from tool output text.
-///
-/// Matches common source code file patterns: `src/auth.rs`, `/path/to/file`, `Cargo.toml`.
-/// Filters out version numbers (1.2.3), URLs, and generic dotted words.
+/**
+ * 从工具输出文本中提取可能的文件路径。
+ *
+ * 匹配常见的源码文件形式：`src/auth.rs`、`/path/to/file`、`Cargo.toml`。
+ * 过滤掉版本号（1.2.3）、URL 以及一般的带点单词。
+ */
 fn extract_file_paths_from_text(text: &str) -> Vec<String> {
-    // Common source code extensions to reduce false positives
+    // 常见源码扩展名，用于减少误报
     let code_extensions = [
         ".rs", ".py", ".js", ".ts", ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".toml", ".yaml",
         ".yml", ".json", ".md", ".txt", ".lock", ".sql", ".sh", ".css", ".html", ".xml", ".rb",
@@ -267,7 +279,7 @@ fn extract_file_paths_from_text(text: &str) -> Vec<String> {
                 || c == '['
                 || c == ']'
         });
-        // Must contain a known extension or a path separator
+        // 必须包含已知扩展名或路径分隔符
         let has_code_ext = code_extensions.iter().any(|ext| trimmed.ends_with(ext));
         let has_path_sep = trimmed.contains('/');
         if (has_code_ext || has_path_sep)
@@ -275,7 +287,7 @@ fn extract_file_paths_from_text(text: &str) -> Vec<String> {
             && trimmed.len() < 200
             && !trimmed.starts_with("http")
             && !trimmed.starts_with("https")
-            // Filter out version numbers and dotted numbers
+            // 过滤版本号和带点的数字
             && !trimmed.chars().all(|c| c.is_ascii_digit() || c == '.')
         {
             paths.push(trimmed.to_string());
@@ -284,7 +296,7 @@ fn extract_file_paths_from_text(text: &str) -> Vec<String> {
     paths
 }
 
-/// P1: TODO/pending task information should survive compression.
+/// P1：TODO/待处理任务信息应在压缩后保留。
 fn check_pending_tasks(
     original: &[Message],
     compressed: &[Message],
@@ -292,7 +304,7 @@ fn check_pending_tasks(
 ) -> VerificationCheck {
     let todo_patterns = ["TODO", "FIXME", "HACK", "PENDING", "待处理", "未完成"];
 
-    // Find messages with TODO in the original (from the evicted range)
+    // 在原始消息（被驱逐范围）中查找包含 TODO 的消息
     let todos_in_original: Vec<String> = original
         .iter()
         .filter(|m| {
@@ -338,7 +350,7 @@ fn check_pending_tasks(
     }
 }
 
-/// P1: Error information should survive compression.
+/// P1：错误信息应在压缩后保留。
 fn check_error_presence(
     original: &[Message],
     compressed: &[Message],
@@ -397,7 +409,7 @@ fn check_error_presence(
     }
 }
 
-/// P1: User preferences/constraints should survive compression.
+/// P1：用户偏好/约束应在压缩后保留。
 fn check_user_preferences(
     original: &[Message],
     compressed: &[Message],
@@ -470,6 +482,7 @@ mod tests {
     use crate::compression::CompressionCheckpoint;
     use echo_core::llm::types::Message;
 
+    /// 无问题时所有检查都应通过。
     #[test]
     fn test_verifier_all_pass_when_no_issues() {
         let compressed = vec![
@@ -486,12 +499,13 @@ mod tests {
         assert!(verification.passed);
     }
 
+    /// token 数增加时 token 目标检查应失败。
     #[test]
     fn test_token_target_check_fails_when_tokens_increase() {
         let msgs = vec![Message::user("hello".to_string())];
         let cp = CompressionCheckpoint::new("test")
             .with_counts(1, 0)
-            .with_tokens(100, 200); // token increase = failure
+            .with_tokens(100, 200); // token 增加 = 失败
 
         let verification = verify_compression(&msgs, &cp, &msgs);
         let token_check = verification
@@ -502,6 +516,7 @@ mod tests {
         assert!(!token_check.passed);
     }
 
+    /// 应能从文本中识别文件路径。
     #[test]
     fn test_file_paths_detected() {
         let paths = extract_file_paths_from_text("Modified src/auth.rs and Cargo.toml");

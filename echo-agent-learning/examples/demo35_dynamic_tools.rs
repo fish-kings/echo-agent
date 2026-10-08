@@ -1,41 +1,43 @@
-//! demo35_dynamic_tools —— 动态 Tool 注册 / 注销 / 替换完整演示
-//!
-//! 演示在 ReAct 循环中根据阶段动态调整可用工具集：
-//! - `add_tool(tool)` — 动态添加新工具
-//! - `remove_tool(name)` — 移除不再需要的工具
-//! - `replace_tool(tool)` — 替换为同名的新版本工具
-//!
-//! # 应用场景
-//!
-//! ```text
-//! 场景：多阶段代码生成任务
-//!
-//! ┌─────────────────────────────────────────────────────────┐
-//! │ Phase 1: 研究阶段                                       │
-//! │   可用工具: [search_web, read_document, fetch_github]   │
-//! │   → 收集信息，理解需求                                  │
-//! ├─────────────────────────────────────────────────────────┤
-//! │ Phase 2: 编码阶段                                       │
-//! │   移除: [search_web, read_document]                     │
-//! │   添加: [write_file, execute_code, test_code]           │
-//! │   → 实现代码，编写测试                                  │
-//! ├─────────────────────────────────────────────────────────┤
-//! │ Phase 3: 部署阶段                                       │
-//! │   移除: [write_file, execute_code]                      │
-//! │   添加: [deploy_service, health_check, monitor]         │
-//! │   → 部署服务，监控健康                                  │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! # Part 1-2: API 演示（无需 LLM）
-//! cargo run -p echo-agent-learning --example demo35_dynamic_tools
-//!
-//! # Part 3: 实际 Agent 使用（需要 LLM）
-//! QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo35_dynamic_tools
-//! ```
+/*!
+demo35_dynamic_tools —— 动态 Tool 注册 / 注销 / 替换完整演示
+
+演示在 ReAct 循环中根据阶段动态调整可用工具集：
+- `add_tool(tool)` — 动态添加新工具
+- `remove_tool(name)` — 移除不再需要的工具
+- `replace_tool(tool)` — 替换为同名的新版本工具
+
+# 应用场景
+
+```text
+场景：多阶段代码生成任务
+
+┌─────────────────────────────────────────────────────────┐
+│ Phase 1: 研究阶段                                       │
+│   可用工具: [search_web, read_document, fetch_github]   │
+│   → 收集信息，理解需求                                  │
+├─────────────────────────────────────────────────────────┤
+│ Phase 2: 编码阶段                                       │
+│   移除: [search_web, read_document]                     │
+│   添加: [write_file, execute_code, test_code]           │
+│   → 实现代码，编写测试                                  │
+├─────────────────────────────────────────────────────────┤
+│ Phase 3: 部署阶段                                       │
+│   移除: [write_file, execute_code]                      │
+│   添加: [deploy_service, health_check, monitor]         │
+│   → 部署服务，监控健康                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+# 运行方式
+
+```bash
+# Part 1-2: API 演示（无需 LLM）
+cargo run -p echo-agent-learning --example demo35_dynamic_tools
+
+# Part 3: 实际 Agent 使用（需要 LLM）
+QWEN_API_KEY=your_key cargo run -p echo-agent-learning --example demo35_dynamic_tools
+```
+*/
 
 use echo_agent::prelude::*;
 use echo_agent::tool;
@@ -67,8 +69,10 @@ async fn write_code(#[arg(description = "代码内容")] code: String) -> Result
     Ok(ToolResult::success(format!("代码已写入:\n{}", code)))
 }
 
-/// 模拟工具：执行代码，仅对几个内置的固定表达式（如 "1+1"、"2*3"）返回预设结果，
-/// 其余情况一律返回「执行成功」。
+/**
+模拟工具：执行代码，仅对几个内置的固定表达式（如 "1+1"、"2*3"）返回预设结果，
+其余情况一律返回「执行成功」。
+*/
 #[tool(name = "execute_code", description = "执行代码")]
 async fn execute_code(#[arg(description = "代码")] code: String) -> Result<ToolResult> {
     // 简单计算示例
@@ -95,8 +99,10 @@ async fn health_check() -> Result<ToolResult> {
     ))
 }
 
-/// demo35 主入口：依次演示动态工具 API 基础用法、边界情况处理，
-/// 以及在真实 Agent 中按阶段动态切换工具集的场景。
+/**
+demo35 主入口：依次演示动态工具 API 基础用法、边界情况处理，
+以及在真实 Agent 中按阶段动态切换工具集的场景。
+*/
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -124,8 +130,10 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: API 基础演示 ───────────────────────────────────────────────────────
 
-/// 演示 `add_tool` / `remove_tool` / `replace_tool` 的基础用法，
-/// 模拟一个 Agent 在研究、编码、替换、部署四个阶段依次调整工具集。
+/**
+演示 `add_tool` / `remove_tool` / `replace_tool` 的基础用法，
+模拟一个 Agent 在研究、编码、替换、部署四个阶段依次调整工具集。
+*/
 fn demo_api_basics() {
     println!("─────────────────────────────────────────────");
     println!("Part 1: 动态工具 API 演示");
@@ -151,9 +159,11 @@ fn demo_api_basics() {
     let removed_search = agent.remove_tool("search_web");
     let removed_doc = agent.remove_tool("read_document");
 
-    // `Agent::remove_tool`（trait 方法，通过 prelude::* 引入）返回 `bool`；
-    // 此处该方法遮蔽了返回持有的 Arc 世代的固有方法 `ReactAgent::remove_tool`。
-    // 二者对本处的断言而言是等价的。
+    /*
+    `Agent::remove_tool`（trait 方法，通过 prelude::* 引入）返回 `bool`；
+    此处该方法遮蔽了返回持有的 Arc 世代的固有方法 `ReactAgent::remove_tool`。
+    二者对本处的断言而言是等价的。
+    */
     assert!(removed_search);
     assert!(removed_doc);
 
@@ -189,8 +199,10 @@ fn demo_api_basics() {
 
 // ── Part 2: 边界情况处理 ───────────────────────────────────────────────────────
 
-/// 演示动态工具 API 的边界情况：移除不存在的工具、`replace_tool` 在目标工具
-/// 不存在时自动注册、以及重复添加同名工具时的覆盖行为。
+/**
+演示动态工具 API 的边界情况：移除不存在的工具、`replace_tool` 在目标工具
+不存在时自动注册、以及重复添加同名工具时的覆盖行为。
+*/
 fn demo_edge_cases() {
     println!("─────────────────────────────────────────────");
     println!("Part 2: 边界情况处理");
@@ -224,8 +236,10 @@ fn demo_edge_cases() {
 
 // ── Part 3: 实际 Agent 使用场景 ─────────────────────────────────────────────────
 
-/// 演示真实 Agent 场景下的动态工具切换：多阶段代码生成任务中按阶段切换工具集，
-/// 以及为同名工具执行安全升级式替换。
+/**
+演示真实 Agent 场景下的动态工具切换：多阶段代码生成任务中按阶段切换工具集，
+以及为同名工具执行安全升级式替换。
+*/
 async fn demo_agent_with_dynamic_tools() -> echo_agent::error::Result<()> {
     println!("─────────────────────────────────────────────");
     println!("Part 3: 实际 Agent 使用场景");

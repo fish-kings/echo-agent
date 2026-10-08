@@ -952,9 +952,11 @@ impl AgentConfig {
     * `path` - 工作目录路径，`None` 表示使用当前目录
     */
     pub fn working_dir(self, path: Option<PathBuf>) -> Self {
-        // Mutex 中毒 (某持有锁的线程 panic) 时不让整个 agent 崩溃:
-        // 用 into_inner() 恢复毒锁内部数据继续写入。对齐 react_loop.rs:811
-        // 的 .ok() 思路 — 配置写入失败也不该 panic。
+        /*
+        Mutex 中毒 (某持有锁的线程 panic) 时不让整个 agent 崩溃:
+        用 into_inner() 恢复毒锁内部数据继续写入。对齐 react_loop.rs:811
+        的 .ok() 思路 — 配置写入失败也不该 panic。
+        */
         *self.working_dir.lock().unwrap_or_else(|e| e.into_inner()) = path;
         self
     }
@@ -1022,10 +1024,12 @@ impl AgentConfig {
 
 // ── 单元测试 ──────────────────────────────────────────────────────────────────────
 
+/// `AgentConfig` 的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证 `AgentConfig::new` 的默认字段。
     #[test]
     fn test_agent_config_new() {
         let config = AgentConfig::new("qwen3-max", "assistant", "You are a helpful assistant");
@@ -1040,6 +1044,7 @@ mod tests {
         assert!(!config.is_subagent_enabled());
     }
 
+    /// 验证最小化配置预设。
     #[test]
     fn test_agent_config_minimal() {
         let config = AgentConfig::minimal("qwen3-max", "Be helpful");
@@ -1050,6 +1055,7 @@ mod tests {
         assert!(!config.is_cot_enabled());
     }
 
+    /// 验证标准配置预设。
     #[test]
     fn test_agent_config_standard() {
         let config = AgentConfig::standard("qwen3-max", "agent1", "You are helpful");
@@ -1058,6 +1064,7 @@ mod tests {
         assert!(config.is_cot_enabled());
     }
 
+    /// 验证全功能配置预设。
     #[test]
     fn test_agent_config_full_featured() {
         let config = AgentConfig::full_featured("qwen3-max", "agent1", "You are helpful");
@@ -1067,6 +1074,7 @@ mod tests {
         assert!(config.is_cot_enabled());
     }
 
+    /// 验证构建器链式调用正确设置各字段。
     #[test]
     fn test_agent_config_builder_chain() {
         let config = AgentConfig::new("model", "agent", "prompt")
@@ -1093,6 +1101,7 @@ mod tests {
         assert!(!config.get_tool_error_feedback());
     }
 
+    /// 验证权限模式可无损往返转换。
     #[test]
     fn permission_mode_round_trips_without_loss() {
         let modes = [
@@ -1113,6 +1122,7 @@ mod tests {
         }
     }
 
+    /// 验证允许的工具列表设置。
     #[test]
     fn test_agent_config_allowed_tools() {
         let config = AgentConfig::new("model", "agent", "prompt")
@@ -1121,6 +1131,7 @@ mod tests {
         assert_eq!(config.get_allowed_tools(), &["tool1", "tool2"]);
     }
 
+    /// 验证会话 ID 设置。
     #[test]
     fn test_agent_config_session_id() {
         let config = AgentConfig::new("model", "agent", "prompt").session_id("session-123");
@@ -1128,6 +1139,7 @@ mod tests {
         assert_eq!(config.get_session_id(), Some("session-123"));
     }
 
+    /// 验证对话 ID 设置。
     #[test]
     fn test_agent_config_conversation_id() {
         let config =
@@ -1136,6 +1148,7 @@ mod tests {
         assert_eq!(config.get_conversation_id(), Some("conversation-123"));
     }
 
+    /// 验证模型名称可被修改。
     #[test]
     fn test_agent_config_model_name_mutation() {
         let mut config = AgentConfig::new("model1", "agent", "prompt");
@@ -1144,6 +1157,7 @@ mod tests {
         assert_eq!(config.get_model_name(), "model2");
     }
 
+    /// 验证启用全部功能的配置。
     #[test]
     fn test_agent_config_with_full_features() {
         let config = AgentConfig::new("model", "agent", "prompt").with_full_features();
@@ -1153,6 +1167,7 @@ mod tests {
         assert!(config.is_cot_enabled());
     }
 
+    /// 验证工具列表配置。
     #[test]
     fn test_agent_config_with_tools() {
         let config = AgentConfig::new("model", "agent", "prompt").with_tools();
@@ -1161,6 +1176,7 @@ mod tests {
         assert!(config.is_cot_enabled());
     }
 
+    /// 验证记忆存储路径配置。
     #[test]
     fn test_agent_config_memory_path() {
         let config =

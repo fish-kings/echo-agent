@@ -1,4 +1,4 @@
-//! ChannelManager — manages the lifecycle of multiple IM channel plugins
+//! ChannelManager —— 管理多个 IM 渠道插件的生命周期
 
 use super::types::{ChannelPlugin, MessageHandler};
 use echo_core::error::Result;
@@ -6,32 +6,41 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Identity-bearing lifecycle result for one channel.
+/// 携带渠道标识的单个渠道生命周期操作结果。
 pub struct ChannelLifecycleResult {
+    /// 渠道 ID。
     pub channel_id: String,
+    /// 该渠道生命周期操作的结果。
     pub result: Result<()>,
 }
 
-/// Manage startup, shutdown, and querying of multiple IM channels.
-///
-/// Supports:
-/// - Registering multiple ChannelPlugins (QQ Bot, Feishu, etc.)
-/// - Unified start / stop
-/// - Query or send by ID
-/// - Explicit awaited shutdown through [`Self::stop_all`]
+/**
+管理多个 IM 渠道的启动、关闭与查询。
+
+支持：
+- 注册多个 ChannelPlugin（QQ 机器人、飞书等）
+- 统一启动 / 停止
+- 按 ID 查询或发送
+- 通过 [`Self::stop_all`] 显式等待关闭完成
+*/
 pub struct ChannelManager {
+    /// 已注册的渠道插件，按渠道 ID 索引。
     channels: HashMap<String, Box<dyn ChannelPlugin>>,
+    /// 各渠道当前持有的消息处理器，按渠道 ID 索引。
     handlers: HashMap<String, Arc<dyn MessageHandler>>,
+    /// 传输层已成功停止的渠道 ID 集合，避免重复调用插件 stop。
     stopped_transports: HashSet<String>,
 }
 
 impl Default for ChannelManager {
+    /// 等价于 [`ChannelManager::new`]。
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl ChannelManager {
+    /// 创建空的渠道管理器。
     pub fn new() -> Self {
         Self {
             channels: HashMap::new(),
@@ -40,7 +49,7 @@ impl ChannelManager {
         }
     }
 
-    /// Register a channel plugin
+    /// 注册渠道插件；ID 重复时返回错误
     pub fn register(&mut self, plugin: Box<dyn ChannelPlugin>) -> Result<()> {
         let id = plugin.id().to_string();
         if self.channels.contains_key(&id) {
@@ -55,19 +64,22 @@ impl ChannelManager {
         Ok(())
     }
 
-    /// Get the number of channels
+    /// 获取已注册渠道数量
     pub fn len(&self) -> usize {
         self.channels.len()
     }
 
+    /// 是否没有注册任何渠道。
     pub fn is_empty(&self) -> bool {
         self.channels.is_empty()
     }
 
-    /// Start all registered channels.
-    ///
-    /// Creates a task for each channel and starts them concurrently. Returns `Vec<Result<()>>`
-    /// so the caller can inspect the result of each channel; a single failure does not affect others.
+    /**
+    启动所有已注册渠道。
+
+    为每个渠道创建处理器并启动。返回每个渠道的 [`ChannelLifecycleResult`]，
+    调用方可逐一检查各渠道结果；单个渠道失败不影响其他渠道。
+    */
     pub async fn start_all(
         &mut self,
         handler_factory: impl Fn(&str) -> Arc<dyn MessageHandler> + Sync,
@@ -101,8 +113,8 @@ impl ChannelManager {
                 }
                 Err(e) => {
                     warn!("Failed to start channel '{}': {}", id, e);
-                    // A failed start may have retained the handler or opened a
-                    // transport. Keep ownership whenever rollback is incomplete.
+                    /* 启动失败时插件可能已持有处理器或打开了传输层。
+                    只要回滚未完全成功，就保留所有权。 */
                     let failure = match plugin.stop().await {
                         Ok(()) => {
                             self.stopped_transports.insert(id.clone());
@@ -144,7 +156,7 @@ impl ChannelManager {
         results
     }
 
-    /// Stop a single channel
+    /// 停止单个渠道（先停传输层，再关闭处理器）
     pub async fn stop(&mut self, channel_id: &str) -> Result<()> {
         if let Some(plugin) = self.channels.get_mut(channel_id) {
             info!("Stopping channel: {}", channel_id);
@@ -168,7 +180,7 @@ impl ChannelManager {
         }
     }
 
-    /// Stop all registered channels
+    /// 停止所有已注册渠道，汇总各渠道的失败信息
     pub async fn stop_all(&mut self) -> Result<()> {
         info!("Stopping all channels...");
 
@@ -194,7 +206,7 @@ impl ChannelManager {
         }
     }
 
-    /// Get a channel reference by ID
+    /// 按 ID 获取渠道引用
     pub fn get(&self, id: &str) -> Option<&(dyn ChannelPlugin + '_)> {
         match self.channels.get(id) {
             Some(plugin) => Some(plugin.as_ref()),
@@ -202,10 +214,10 @@ impl ChannelManager {
         }
     }
 
-    /// Get a mutable channel reference by ID
+    /// 按 ID 获取渠道的可变引用
     pub fn get_mut(&mut self, id: &str) -> Option<&mut (dyn ChannelPlugin + '_)> {
-        // External mutable access may restart or otherwise change transport
-        // state, so the next managed stop must call the plugin again.
+        /* 外部可变访问可能重启或以其他方式改变传输层状态，
+        因此下一次受管停止必须再次调用插件的 stop。 */
         self.stopped_transports.remove(id);
         match self.channels.get_mut(id) {
             Some(plugin) => Some(plugin.as_mut()),
@@ -213,13 +225,14 @@ impl ChannelManager {
         }
     }
 
-    /// List all registered channel IDs
+    /// 列出所有已注册的渠道 ID
     pub fn channel_ids(&self) -> Vec<&str> {
         self.channels.keys().map(|k| k.as_str()).collect()
     }
 }
 
 impl Drop for ChannelManager {
+    /// 若仍有未关闭的处理器，记录提示日志。
     fn drop(&mut self) {
         if !self.handlers.is_empty() {
             info!(
@@ -241,8 +254,11 @@ mod close_tests {
     use std::time::Duration;
     use tokio::sync::Notify;
 
+    /// 测试用处理器：传输层未停止时拒绝关闭，首次关闭返回临时错误。
     struct ClosingHandler {
+        /// 传输层是否已停止。
         stopped: Arc<AtomicBool>,
+        /// close 调用次数。
         closes: Arc<AtomicUsize>,
     }
 
@@ -269,10 +285,15 @@ mod close_tests {
         }
     }
 
+    /// 测试用渠道插件：记录 stop 次数，可配置重复 stop 时报错。
     struct ClosingPlugin {
+        /// 传输层是否已停止。
         stopped: Arc<AtomicBool>,
+        /// stop 调用次数。
         stops: Arc<AtomicUsize>,
+        /// 重复调用 stop 时是否返回错误。
         fail_repeated_stop: bool,
+        /// 启动时传入的处理器。
         handler: Option<Arc<dyn MessageHandler>>,
     }
 
@@ -314,6 +335,7 @@ mod close_tests {
         }
     }
 
+    /// 验证处理器关闭成功前，管理器始终保留处理器所有权。
     #[tokio::test]
     async fn stop_retains_handler_until_awaited_close_succeeds() -> Result<()> {
         let stopped = Arc::new(AtomicBool::new(false));
@@ -347,10 +369,14 @@ mod close_tests {
         Ok(())
     }
 
+    /// 验证被取消的 stop 会保留处理器以便重试。
     #[tokio::test]
     async fn cancelled_stop_keeps_handler_for_retry() -> Result<()> {
+        /// 首次 close 永久挂起的测试处理器。
         struct InterruptedHandler {
+            /// 首次进入 close 时发出通知。
             entered: Arc<Notify>,
+            /// close 调用次数。
             closes: Arc<AtomicUsize>,
         }
 
@@ -404,11 +430,16 @@ mod close_tests {
         Ok(())
     }
 
+    /// 验证被取消的 start 仍保留已发布的处理器，供 stop_all 关闭。
     #[tokio::test]
     async fn cancelled_start_keeps_published_handler_for_stop_all() -> Result<()> {
+        /// start 永久挂起的测试插件。
         struct ParkedStartPlugin {
+            /// 进入 start 后发出通知。
             started: Arc<Notify>,
+            /// 传输层是否已停止。
             stopped: Arc<AtomicBool>,
+            /// 启动时传入的处理器。
             handler: Option<Arc<dyn MessageHandler>>,
         }
 
@@ -440,8 +471,11 @@ mod close_tests {
             }
         }
 
+        /// 传输层未停止时拒绝关闭的测试处理器。
         struct ParkedStartHandler {
+            /// 传输层是否已停止。
             stopped: Arc<AtomicBool>,
+            /// 成功 close 的次数。
             closes: Arc<AtomicUsize>,
         }
         #[async_trait]

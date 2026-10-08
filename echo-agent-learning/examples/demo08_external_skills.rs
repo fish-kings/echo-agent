@@ -1,19 +1,21 @@
-//! demo08_external_skills.rs — 基于文件的技能系统：完整功能演示
-//!
-//! 展示完整的 agentskills.io 技能系统：
-//!
-//! | 功能 | 说明 |
-//! |---------|------------|
-//! | 渐进式披露 | 三层结构：catalog（目录）→ activate（激活）→ resources/scripts（资源/脚本） |
-//! | 内联 shell 执行 | SKILL.md 中的 `!`cmd`` 与 ` ```! cmd ``` ` |
-//! | 变量替换 | `${SKILL_DIR}`、`${SESSION_ID}`、`${ARGUMENTS}` |
-//! | Hooks（钩子） | 宿主/插件的 Hook 配置与技能文件本身是分离的 |
-//! | `allowed-tools` | 按技能声明允许使用的工具；对内置技能工具在运行时强制生效 |
-//!
-//! # 运行方式
-//! ```bash
-//! cargo run -p echo-agent-learning --example demo08_external_skills
-//! ```
+/*!
+ * demo08_external_skills.rs — 基于文件的技能系统：完整功能演示
+ *
+ * 展示完整的 agentskills.io 技能系统：
+ *
+ * | 功能 | 说明 |
+ * |---------|------------|
+ * | 渐进式披露 | 三层结构：catalog（目录）→ activate（激活）→ resources/scripts（资源/脚本） |
+ * | 内联 shell 执行 | SKILL.md 中的 `!`cmd`` 与 ` ```! cmd ``` ` |
+ * | 变量替换 | `${SKILL_DIR}`、`${SESSION_ID}`、`${ARGUMENTS}` |
+ * | Hooks（钩子） | 宿主/插件的 Hook 配置与技能文件本身是分离的 |
+ * | `allowed-tools` | 按技能声明允许使用的工具；对内置技能工具在运行时强制生效 |
+ *
+ * # 运行方式
+ * ```bash
+ * cargo run -p echo-agent-learning --example demo08_external_skills
+ * ```
+ */
 
 use echo_agent::prelude::*;
 use echo_agent::skills::external::loader::{DiscoveryScope, SkillLoader};
@@ -32,8 +34,10 @@ fn demo_skills_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/demo_skills")
 }
 
-/// 程序入口：依次运行技能发现、目录展示、激活、脚本执行、Agent 集成、
-/// v2 新特性与小红书封面图生成技能七个部分的演示。
+/**
+ * 程序入口：依次运行技能发现、目录展示、激活、脚本执行、Agent 集成、
+ * v2 新特性与小红书封面图生成技能七个部分的演示。
+ */
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -64,8 +68,10 @@ async fn main() -> echo_agent::error::Result<()> {
 
 // ── Part 1: 技能发现 ────────────────────────────────────────────────────────
 
-/// 第一层：仅解析 SKILL.md 的 frontmatter（名称 + 描述）。
-/// 这是开销最小的操作——不读取任何文件正文。
+/**
+ * 第一层：仅解析 SKILL.md 的 frontmatter（名称 + 描述）。
+ * 这是开销最小的操作——不读取任何文件正文。
+ */
 async fn demo_1_discovery() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 1: Skill Discovery (Tier 1 — frontmatter only)\n");
@@ -146,8 +152,10 @@ async fn demo_1_discovery() -> echo_agent::error::Result<()> {
 
 // ── Part 2: 技能目录 ──────────────────────────────────────────────────────────
 
-/// 注入系统提示词：每个技能仅包含名称 + 描述。
-/// 这是 LLM 在每次对话开始时能"看到"的全部内容。
+/**
+ * 注入系统提示词：每个技能仅包含名称 + 描述。
+ * 这是 LLM 在每次对话开始时能"看到"的全部内容。
+ */
 async fn demo_2_catalog() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 2: Skill Catalog (injected into system prompt)\n");
@@ -185,8 +193,10 @@ async fn demo_2_catalog() -> echo_agent::error::Result<()> {
 
 // ── Part 3: 技能激活 ───────────────────────────────────────────────────────────
 
-/// 第二层：加载完整的 SKILL.md 正文 + 资源清单。
-/// 只有当 LLM 调用 activate_skill 时才会发生。
+/**
+ * 第二层：加载完整的 SKILL.md 正文 + 资源清单。
+ * 只有当 LLM 调用 activate_skill 时才会发生。
+ */
 async fn demo_3_activation() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 3: Skill Activation (Tier 2 — full instructions)\n");
@@ -263,8 +273,10 @@ async fn demo_3_activation() -> echo_agent::error::Result<()> {
 
 // ── Part 4: 脚本执行 ─────────────────────────────────────────────────────────
 
-/// 第三层 b：执行技能 scripts/ 目录下的脚本。
-/// 验证真实的 `run_skill_script` 工具调用路径，而非绕过它直接执行。
+/**
+ * 第三层 b：执行技能 scripts/ 目录下的脚本。
+ * 验证真实的 `run_skill_script` 工具调用路径，而非绕过它直接执行。
+ */
 async fn demo_4_script_execution() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 4: Script Execution (Tier 3b — run_skill_script)\n");
@@ -925,10 +937,12 @@ async fn demo_6_new_features() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 7: XiaoHongShu Image Generator ──────────────────────────────────────
+// ── Part 7: 小红书封面图生成 ──────────────────────────────────────
 
-/// Demonstrates activating and executing the xiaohongshu-image-generator skill.
-/// Shows: skill discovery → activation → script execution → output verification.
+/**
+ * 演示激活并执行 xiaohongshu-image-generator 技能。
+ * 流程：技能发现 → 激活 → 脚本执行 → 输出校验。
+ */
 async fn demo_7_xiaohongshu_image_generator() -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(59));
     println!("Part 7: XiaoHongShu Image Generator Skill\n");
@@ -940,7 +954,7 @@ async fn demo_7_xiaohongshu_image_generator() -> echo_agent::error::Result<()> {
         ));
     }
 
-    // 7a: Discover & activate
+    // 7a：发现并激活
     println!("  7a. Skill Discovery & Activation");
     println!("  ──────────────────────────────────");
     {
@@ -995,7 +1009,7 @@ async fn demo_7_xiaohongshu_image_generator() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 7b: Generate cover image
+    // 7b：生成封面图
     println!("  7b. Generate Cover Image");
     println!("  ─────────────────────────");
     {
@@ -1063,7 +1077,7 @@ async fn demo_7_xiaohongshu_image_generator() -> echo_agent::error::Result<()> {
     }
     println!();
 
-    // 7c: Agent integration demo
+    // 7c：Agent 集成演示
     println!("  7c. Agent Integration");
     println!("  ──────────────────────");
     {

@@ -1,14 +1,18 @@
-//! 审计日志
-//!
-//! 完整记录 tool 调用链、护栏阻断、权限拒绝等事件，支持合规审查。
-//!
-//! # 核心类型
-//!
-//! - [`AuditEvent`][]: 审计事件
-//! - [`AuditLogger`]: 日志记录器 trait
-//! - [`AuditCallback`]: 基于 `AgentCallback` 的自动审计
+/*!
+审计日志
 
+完整记录 tool 调用链、护栏阻断、权限拒绝等事件，支持合规审查。
+
+# 核心类型
+
+- [`AuditEvent`][]: 审计事件
+- [`AuditLogger`]: 日志记录器 trait
+- [`AuditCallback`]: 基于 `AgentCallback` 的自动审计
+*/
+
+/// 文件审计日志后端。
 pub mod file;
+/// 内存审计日志后端。
 pub mod memory;
 
 pub use echo_core::audit::*;
@@ -23,25 +27,28 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
+/// 诊断失败通知队列的容量上限。
 const DIAGNOSTIC_DELIVERY_CAPACITY: usize = 1_024;
+/// 进程级计数器：未能投递的诊断失败通知数量。
 static DIAGNOSTIC_DELIVERY_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
+    /// 标记当前线程是否正处于诊断分发过程中，用于检测重入上报。
     static IN_DIAGNOSTIC_DISPATCH: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Diagnostic record family whose persistence delivery failed.
+/// 持久化投递失败的诊断记录类别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DiagnosticRecordKind {
-    /// Structured execution trace stored through a `RunStore`.
+    /// 通过 `RunStore` 存储的结构化执行追踪。
     Trace,
-    /// Audit event stored through an [`AuditLogger`].
+    /// 通过 [`AuditLogger`] 存储的审计事件。
     Audit,
 }
 
 impl DiagnosticRecordKind {
-    /// Stable lowercase identifier for structured observers.
+    /// 返回供结构化观察者使用的稳定小写标识符。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Trace => "trace",
@@ -50,24 +57,24 @@ impl DiagnosticRecordKind {
     }
 }
 
-/// Persistence operation that produced a diagnostic delivery failure.
+/// 产生诊断投递失败的持久化操作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DiagnosticDeliveryOperation {
-    /// Persist the initial diagnostic record.
+    /// 持久化初始诊断记录。
     Start,
-    /// Append one event to an existing diagnostic record.
+    /// 向已有诊断记录追加一个事件。
     Append,
-    /// Load the record required for terminal diagnostic finalization.
+    /// 加载终态诊断收尾所需的记录。
     Load,
-    /// Persist the terminal diagnostic projection.
+    /// 持久化终态诊断投影。
     Finalize,
-    /// Persist one standalone audit record.
+    /// 持久化一条独立的审计记录。
     Record,
 }
 
 impl DiagnosticDeliveryOperation {
-    /// Stable lowercase identifier for structured observers.
+    /// 返回供结构化观察者使用的稳定小写标识符。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Start => "start",
@@ -79,28 +86,29 @@ impl DiagnosticDeliveryOperation {
     }
 }
 
-/// Structured fact emitted when diagnostic persistence fails.
-///
-/// This fact is deliberately separate from an Agent execution result. An
-/// observer may retain, count, or alert on it, but cannot rewrite the producer
-/// terminal that was already decided by the Agent runtime.
+/**
+诊断持久化失败时发出的结构化事实。
+
+该事实刻意与 Agent 执行结果分离。观察者可以保留、计数或据此告警，
+但无法改写 Agent 运行时已经确定的生产者终态。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DiagnosticDeliveryFailure {
-    /// Time when the backend failure occurred, before asynchronous reporting.
+    /// 后端失败发生的时间（早于异步上报）。
     pub occurred_at: chrono::DateTime<chrono::Utc>,
-    /// Trace or audit record family.
+    /// 追踪或审计记录类别。
     pub record_kind: DiagnosticRecordKind,
-    /// Failed persistence operation.
+    /// 失败的持久化操作。
     pub operation: DiagnosticDeliveryOperation,
-    /// Run, trace, or session identity when one is available.
+    /// 可用时的 run、trace 或 session 标识。
     pub record_id: Option<String>,
-    /// Backend error without the diagnostic payload.
+    /// 不含诊断载荷的后端错误信息。
     pub error: String,
 }
 
 impl DiagnosticDeliveryFailure {
-    /// Construct one diagnostic delivery failure fact.
+    /// 构造一条诊断投递失败事实（会对错误信息应用默认保留策略）。
     pub fn new(
         record_kind: DiagnosticRecordKind,
         operation: DiagnosticDeliveryOperation,
@@ -118,49 +126,51 @@ impl DiagnosticDeliveryFailure {
         failure
     }
 
+    /// 使用默认内容保留策略清洗错误文本（脱敏与截断）。
     fn apply_retention(&mut self) {
         self.error = ContentRetentionPolicy::default().sanitize_text(&self.error);
     }
 }
 
-/// Consumer for diagnostic persistence failures.
-///
-/// The framework invokes this callback on a bounded diagnostic dispatcher, not
-/// on the Agent producer. The callback is observational and has no control
-/// return. Implementations should still return promptly so later diagnostic
-/// notifications are not delayed. Applications that require an audit write for
-/// a business commit must call [`AuditLogger::log`] directly and bind its
-/// `Result` at that commit boundary instead of relying on an Agent callback.
-///
-/// # Example
-///
-/// ```rust
-/// use echo_state::audit::{DiagnosticDeliveryFailure, DiagnosticDeliveryObserver};
-/// use std::sync::Arc;
-/// use std::sync::atomic::{AtomicUsize, Ordering};
-///
-/// #[derive(Default)]
-/// struct FailureCounter(AtomicUsize);
-///
-/// impl DiagnosticDeliveryObserver for FailureCounter {
-///     fn on_failure(&self, _failure: DiagnosticDeliveryFailure) {
-///         self.0.fetch_add(1, Ordering::Relaxed);
-///     }
-/// }
-///
-/// let observer: Arc<dyn DiagnosticDeliveryObserver> = Arc::new(FailureCounter::default());
-/// let _ = observer;
-/// ```
+/**
+诊断持久化失败的消费者。
+
+框架在一个有界的诊断分发器上调用此回调，而不是在 Agent 生产者上调用。
+该回调仅用于观察，没有控制性返回值。实现仍应尽快返回，以免延迟后续的诊断通知。
+若应用需要把审计写入作为业务提交的一部分，必须直接调用 [`AuditLogger::log`]
+并在该提交边界上绑定其 `Result`，而不是依赖 Agent 回调。
+
+# 示例
+
+```rust
+use echo_state::audit::{DiagnosticDeliveryFailure, DiagnosticDeliveryObserver};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[derive(Default)]
+struct FailureCounter(AtomicUsize);
+
+impl DiagnosticDeliveryObserver for FailureCounter {
+    fn on_failure(&self, _failure: DiagnosticDeliveryFailure) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+let observer: Arc<dyn DiagnosticDeliveryObserver> = Arc::new(FailureCounter::default());
+let _ = observer;
+```
+*/
 pub trait DiagnosticDeliveryObserver: Send + Sync {
-    /// Observe one failed diagnostic persistence operation.
+    /// 观察一次失败的诊断持久化操作。
     fn on_failure(&self, failure: DiagnosticDeliveryFailure);
 }
 
-/// Default observer that emits a stable structured `tracing` event.
+/// 默认观察者：发出一个稳定的结构化 `tracing` 事件。
 #[derive(Debug, Default)]
 struct TracingDiagnosticDeliveryObserver;
 
 impl DiagnosticDeliveryObserver for TracingDiagnosticDeliveryObserver {
+    /// 对失败信息应用保留策略后，以结构化 tracing 错误事件输出。
     fn on_failure(&self, mut failure: DiagnosticDeliveryFailure) {
         failure.apply_retention();
         tracing::error!(
@@ -175,11 +185,15 @@ impl DiagnosticDeliveryObserver for TracingDiagnosticDeliveryObserver {
     }
 }
 
+/// 发送给诊断分发线程的一条通知。
 struct DiagnosticDeliveryNotification {
+    /// 可选的自定义观察者；为空时仅触发默认 tracing 观察者。
     observer: Option<Arc<dyn DiagnosticDeliveryObserver>>,
+    /// 待投递的失败事实。
     failure: DiagnosticDeliveryFailure,
 }
 
+/// 以饱和方式递增诊断通知丢弃计数。
 fn increment_diagnostic_delivery_dropped() {
     let _ =
         DIAGNOSTIC_DELIVERY_DROPPED.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -187,7 +201,9 @@ fn increment_diagnostic_delivery_dropped() {
         });
 }
 
+/// 惰性初始化并返回诊断分发线程的发送端；线程创建失败时返回 `None`。
 fn diagnostic_delivery_sender() -> Option<&'static SyncSender<DiagnosticDeliveryNotification>> {
+    /// 诊断分发线程发送端的全局单例。
     static SENDER: OnceLock<Option<SyncSender<DiagnosticDeliveryNotification>>> = OnceLock::new();
     SENDER
         .get_or_init(|| {
@@ -224,23 +240,26 @@ fn diagnostic_delivery_sender() -> Option<&'static SyncSender<DiagnosticDelivery
         .as_ref()
 }
 
-/// Number of diagnostic failure notifications that could not be delivered.
-///
-/// This saturating process-local counter covers dispatcher initialization
-/// failure, queue saturation/disconnection, reentrant reporting, and observer
-/// unwind. It is best-effort self-diagnostics, not an execution result.
+/**
+未能投递的诊断失败通知数量。
+
+这是一个饱和的进程级计数器，涵盖分发器初始化失败、队列满/断开、
+重入上报以及观察者 unwind 等情况。它只是尽力而为的自诊断信息，不是执行结果。
+*/
 pub fn diagnostic_delivery_dropped_count() -> u64 {
     DIAGNOSTIC_DELIVERY_DROPPED.load(Ordering::Relaxed)
 }
 
-/// Initialize the process-local diagnostic dispatcher before producer work.
+/// 在生产者工作开始前初始化进程级诊断分发器，返回是否初始化成功。
 #[doc(hidden)]
 pub fn initialize_diagnostic_delivery() -> bool {
     diagnostic_delivery_sender().is_some()
 }
 
-/// Enqueue the default structured failure event and optional custom observer
-/// notification without blocking the Agent producer.
+/**
+将默认的结构化失败事件以及可选的自定义观察者通知放入队列，
+不会阻塞 Agent 生产者。
+*/
 #[doc(hidden)]
 pub fn report_diagnostic_delivery_failure(
     observer: Option<Arc<dyn DiagnosticDeliveryObserver>>,
@@ -266,40 +285,51 @@ pub fn report_diagnostic_delivery_failure(
 
 /// 存储工具调用开始时的信息
 struct ToolCallInfo {
+    /// 已按保留策略清洗过的调用参数。
     args: Value,
+    /// 调用开始时刻，用于计算耗时。
     started_at: std::time::Instant,
 }
 
-/// 基于 `AgentCallback` 的审计日志自动记录器
-///
-/// 实现 `AgentCallback`，将所有回调事件自动写入 `AuditLogger`。
-///
-/// # 示例
-///
-/// ```rust
-/// use echo_state::audit::{memory::InMemoryAuditLogger, AuditCallback};
-/// use std::sync::Arc;
-///
-/// let logger = Arc::new(InMemoryAuditLogger::new());
-/// let audit_cb = Arc::new(AuditCallback::new(logger, "my-agent", None));
-/// // 将 `audit_cb` 接入你自己的 agent/runtime 层，或通过 `echo_agent` façade 使用。
-/// let _ = audit_cb;
-/// ```
+/**
+基于 `AgentCallback` 的审计日志自动记录器
+
+实现 `AgentCallback`，将所有回调事件自动写入 `AuditLogger`。
+
+# 示例
+
+```rust
+use echo_state::audit::{memory::InMemoryAuditLogger, AuditCallback};
+use std::sync::Arc;
+
+let logger = Arc::new(InMemoryAuditLogger::new());
+let audit_cb = Arc::new(AuditCallback::new(logger, "my-agent", None));
+// 将 `audit_cb` 接入你自己的 agent/runtime 层，或通过 `echo_agent` façade 使用。
+let _ = audit_cb;
+```
+*/
 pub struct AuditCallback {
+    /// 审计事件的写入后端。
     logger: Arc<dyn AuditLogger>,
+    /// 写入前应用的内容保留（脱敏/截断）策略。
     retention: ContentRetentionPolicy,
+    /// 审计后端写入失败时通知的自定义观察者。
     diagnostic_delivery_observer: Option<Arc<dyn DiagnosticDeliveryObserver>>,
+    /// 事件归属的 Agent 名称。
     agent_name: String,
+    /// 事件归属的会话 ID。
     session_id: Option<String>,
-    /// tool_call_id → ToolCallInfo（args + start time）
+    /// tool_call_id → ToolCallInfo（参数 + 开始时间）
     tool_calls: Mutex<HashMap<String, ToolCallInfo>>,
-    /// Monotonic counter for generating unique tool_call_ids.
-    /// Using a global counter instead of a per-tool-name sequence avoids
-    /// prefix-collision in the lookup when concurrent calls share a tool name.
+    /**
+    用于生成唯一 tool_call_id 的单调递增计数器。
+    使用全局计数器而非按工具名分别计数，可避免并发调用共享同一工具名时查找出现前缀冲突。
+    */
     next_call_id: AtomicU64,
 }
 
 impl AuditCallback {
+    /// 使用给定的审计后端、Agent 名称与可选会话 ID 创建审计回调，并预先初始化诊断分发器。
     pub fn new(
         logger: Arc<dyn AuditLogger>,
         agent_name: impl Into<String>,
@@ -317,8 +347,10 @@ impl AuditCallback {
         }
     }
 
-    /// Replace the observer used when the audit backend rejects a callback
-    /// record. The callback remains observational and never changes execution.
+    /**
+    替换审计后端拒绝回调记录时所使用的观察者。
+    该回调仅用于观察，永远不会改变执行流程。
+    */
     pub fn with_diagnostic_delivery_observer(
         mut self,
         observer: Arc<dyn DiagnosticDeliveryObserver>,
@@ -327,6 +359,7 @@ impl AuditCallback {
         self
     }
 
+    /// 设置内容保留策略，并用新策略重新清洗已记录的在途调用参数。
     pub fn with_retention_policy(mut self, retention: ContentRetentionPolicy) -> Self {
         for info in self
             .tool_calls
@@ -340,6 +373,7 @@ impl AuditCallback {
         self
     }
 
+    /// 对事件应用保留策略后写入后端；写入失败时异步上报诊断失败，不影响调用方。
     async fn record_event(&self, mut event: AuditEvent) {
         event.apply_retention(&self.retention);
         let record_id = event.trace_id.clone().or_else(|| event.session_id.clone());
@@ -356,36 +390,39 @@ impl AuditCallback {
         }
     }
 
-    /// 为工具调用生成唯一的 map key。
-    ///
-    /// Key 格式为 `"{tool}#{n}"`：以工具名为前缀 + 全局单调递增序号。前缀让
-    /// [`pop_tool_call`] 能按工具名做前缀匹配（一个工具名下可能有多个并发
-    /// in-flight 调用），全局序号保证 key 唯一、且可比较出最旧的调用。
-    ///
-    /// 之前实现返回 `call_{n}`，而 [`pop_tool_call`] 按 `"{tool}#"` 前缀查 ——
-    /// 两者格式不匹配，pop 永远命中不了，导致 on_tool_end/on_tool_error 的
-    /// duration_ms 恒为 0、input 恒为 Null（P1-13）。统一为 `tool#N` 修复。
+    /**
+    为工具调用生成唯一的 map key。
+
+    Key 格式为 `"{tool}#{n}"`：以工具名为前缀 + 全局单调递增序号。前缀让
+    [`pop_tool_call`] 能按工具名做前缀匹配（一个工具名下可能有多个并发
+    in-flight 调用），全局序号保证 key 唯一、且可比较出最旧的调用。
+
+    之前实现返回 `call_{n}`，而 [`pop_tool_call`] 按 `"{tool}#"` 前缀查 ——
+    两者格式不匹配，pop 永远命中不了，导致 on_tool_end/on_tool_error 的
+    duration_ms 恒为 0、input 恒为 Null（P1-13）。统一为 `tool#N` 修复。
+    */
     fn make_tool_call_id(&self, tool: &str) -> String {
         let n = self.next_call_id.fetch_add(1, Ordering::Relaxed);
         format!("{}#{}", tool, n)
     }
 
+    /// 以当前会话与 Agent 名称构造一个带当前时间戳的审计事件。
     fn make_event(&self, event_type: AuditEventType) -> AuditEvent {
         AuditEvent::now(self.session_id.clone(), self.agent_name.clone(), event_type)
     }
 
-    /// Look up and remove the oldest in-flight tool call by tool name.
-    ///
-    /// Uses an exact-prefix match on the tool-in-key pattern (not
-    /// iteration-order-dependent), then removes and returns the entry
-    /// with the smallest embedded sequence number.  This is deterministic
-    /// even when concurrent calls share a tool name.
+    /**
+    按工具名查找并移除最旧的在途工具调用。
+
+    对 key 中的工具名部分做精确前缀匹配（不依赖迭代顺序），然后移除并返回
+    内嵌序号最小的条目。即使并发调用共享同一工具名，结果也是确定的。
+    */
     fn pop_tool_call(&self, tool: &str) -> Option<ToolCallInfo> {
         let mut map = self
             .tool_calls
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        // Collect all keys matching this tool's tracking prefix ("{tool}#N").
+        // 收集所有匹配该工具追踪前缀（"{tool}#N"）的 key。
         let candidates: Vec<String> = map
             .keys()
             .filter(|k| k.starts_with(&format!("{}#", tool)))
@@ -394,7 +431,7 @@ impl AuditCallback {
         if candidates.is_empty() {
             return None;
         }
-        // Remove the entry with the smallest sequence number (oldest).
+        // 移除序号最小（最旧）的条目。
         let key = candidates.into_iter().min_by_key(|k| {
             k.split('#')
                 .nth(1)
@@ -404,6 +441,7 @@ impl AuditCallback {
         map.remove(&key)
     }
 
+    /// 记录一次工具调用的开始：清洗参数后连同开始时间存入在途表。
     fn remember_tool_call(&self, call_id: String, args: &Value) {
         let mut args = args.clone();
         self.retention.sanitize_json(&mut args);
@@ -419,6 +457,7 @@ impl AuditCallback {
             );
     }
 
+    /// 按精确 call_id 取出并移除在途工具调用记录。
     fn take_tool_call(&self, call_id: &str) -> Option<ToolCallInfo> {
         self.tool_calls
             .lock()
@@ -428,6 +467,7 @@ impl AuditCallback {
 }
 
 impl echo_core::agent::AgentCallback for AuditCallback {
+    /// 工具开始（无 call_id）：生成 `tool#N` 形式的内部 key 并记录参数。
     fn on_tool_start<'a>(
         &'a self,
         _agent: &'a str,
@@ -440,6 +480,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 工具开始（带 call_id）：以 call_id 为 key 记录参数。
     fn on_tool_start_with_id<'a>(
         &'a self,
         _agent: &'a str,
@@ -452,6 +493,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 工具成功结束（无 call_id）：按工具名匹配最旧调用并写入成功的 ToolCall 事件。
     fn on_tool_end<'a>(
         &'a self,
         _agent: &'a str,
@@ -476,6 +518,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 工具成功结束（带 call_id）：按 call_id 关联并写入成功的 ToolCall 事件。
     fn on_tool_end_with_id<'a>(
         &'a self,
         _agent: &'a str,
@@ -500,6 +543,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 工具执行出错（无 call_id）：按工具名匹配最旧调用并写入失败的 ToolCall 事件。
     fn on_tool_error<'a>(
         &'a self,
         _agent: &'a str,
@@ -524,6 +568,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 工具执行出错（带 call_id）：按 call_id 关联并写入失败的 ToolCall 事件。
     fn on_tool_error_with_id<'a>(
         &'a self,
         _agent: &'a str,
@@ -548,6 +593,10 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /**
+    工具被中断（带 call_id）：优先使用开始时记录的参数；若从未开始，
+    则使用准入时的输入（经保留策略清洗）并将耗时记为 0。
+    */
     fn on_tool_interrupted_with_id<'a>(
         &'a self,
         _agent: &'a str,
@@ -577,6 +626,7 @@ impl echo_core::agent::AgentCallback for AuditCallback {
         })
     }
 
+    /// 最终回答：写入 FinalAnswer 审计事件。
     fn on_final_answer<'a>(&'a self, _agent: &'a str, answer: &'a str) -> BoxFuture<'a, ()> {
         Box::pin(async move {
             let event = self.make_event(AuditEventType::FinalAnswer {
@@ -587,16 +637,20 @@ impl echo_core::agent::AgentCallback for AuditCallback {
     }
 }
 
+/// 审计模块的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
     use echo_core::agent::AgentCallback;
     use echo_core::error::{ReactError, Result};
 
+    /// 在临时 tracing 订阅者下执行 `action`，捕获期间产生的日志字段文本。
     pub(super) fn capture_audit_logs<T>(action: impl FnOnce() -> T) -> (T, String) {
+        /// 将 tracing 事件字段写入共享字符串缓冲区的捕获订阅者。
         struct Capture(Arc<Mutex<String>>);
 
         impl tracing::field::Visit for Capture {
+            /// 以 `name=value;` 形式记录字符串字段。
             fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
                 use std::fmt::Write;
                 let _ = write!(
@@ -606,6 +660,7 @@ mod tests {
                 );
             }
 
+            /// 以 `name=value;` 形式记录 Debug 字段。
             fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
                 use std::fmt::Write;
                 let _ = write!(
@@ -617,6 +672,7 @@ mod tests {
         }
 
         impl tracing::Subscriber for Capture {
+            /// 对所有 callsite 始终声明感兴趣。
             fn register_callsite(
                 &self,
                 _: &'static tracing::Metadata<'static>,
@@ -624,27 +680,36 @@ mod tests {
                 tracing::subscriber::Interest::always()
             }
 
+            /// 启用所有元数据。
             fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
                 true
             }
+            /// 为新 span 分配固定 ID。
             fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
                 tracing::span::Id::from_u64(1)
             }
+            /// 忽略 span 记录。
             fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            /// 忽略 span 之间的 follows-from 关系。
             fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            /// 将事件字段写入捕获缓冲区。
             fn event(&self, event: &tracing::Event<'_>) {
                 event.record(&mut Capture(self.0.clone()));
             }
+            /// 忽略进入 span。
             fn enter(&self, _: &tracing::span::Id) {}
+            /// 忽略退出 span。
             fn exit(&self, _: &tracing::span::Id) {}
         }
 
         let output = Arc::new(Mutex::new(String::new()));
         let capture = tracing::Dispatch::new(Capture(output.clone()));
-        // tracing-core 0.1.36 can cache `Interest::never` when a callsite is
-        // first observed on another thread while only one Dispatch exists.
-        // Keep a second Dispatch registered so cache rebuilds use the
-        // multi-dispatch path. Remove this after tokio-rs/tracing#3611 lands.
+        /*
+        当只存在一个 Dispatch 时，若某 callsite 首次在另一线程上被观察到，
+        tracing-core 0.1.36 可能缓存 `Interest::never`。
+        这里额外保持注册第二个 Dispatch，使缓存重建走多 dispatch 路径。
+        待 tokio-rs/tracing#3611 合入后移除此处理。
+        */
         let _callsite_cache_guard =
             tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
         let result = tracing::dispatcher::with_default(&capture, action);
@@ -652,15 +717,17 @@ mod tests {
         (result, text)
     }
 
+    /// 验证默认诊断日志会对被修改过的错误信息和记录 ID 做脱敏。
     #[test]
     fn audit_default_diagnostic_logging_sanitizes_mutated_error() {
         let mut failure = sample_failure();
         failure.record_id = Some("token=raw-record-identity-secret".into());
         failure.error = "Bearer abcdefghijklmnopqrstuvwxyz".into();
         let (_, logs) = capture_audit_logs(|| {
-            // Exercise the upstream race deterministically: after Capture is
-            // registered, another thread without a subscriber sees this
-            // static callsite before the Capture thread does.
+            /*
+            确定性地复现上游竞态：Capture 注册后，另一个没有订阅者的线程
+            先于 Capture 线程观察到这个静态 callsite。
+            */
             let uncaptured = sample_failure();
             std::thread::spawn(move || {
                 TracingDiagnosticDeliveryObserver.on_failure(uncaptured);
@@ -675,6 +742,7 @@ mod tests {
         assert!(!logs.contains("raw-record-identity-secret"));
     }
 
+    /// 验证内存审计日志默认保留策略及策略变更后都会净化存储副本。
     #[tokio::test]
     async fn audit_memory_default_retention_and_policy_change_sanitize_stored_copies() -> Result<()>
     {
@@ -708,10 +776,12 @@ mod tests {
         Ok(())
     }
 
+    /// 将审计事件原样记录到内存列表中的测试日志器。
     #[derive(Default)]
     struct RecordingAuditLogger(Mutex<Vec<AuditEvent>>);
 
     impl AuditLogger for RecordingAuditLogger {
+        /// 追加一条审计事件。
         fn log<'a>(&'a self, event: AuditEvent) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 self.0.lock().unwrap_or_else(|e| e.into_inner()).push(event);
@@ -719,11 +789,13 @@ mod tests {
             })
         }
 
+        /// 返回全部已记录事件，忽略过滤条件。
         fn query<'a>(&'a self, _filter: AuditFilter) -> BoxFuture<'a, Result<Vec<AuditEvent>>> {
             Box::pin(async move { Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()) })
         }
     }
 
+    /// 验证自定义后端只会收到经过保留策略处理的副本。
     #[tokio::test]
     async fn audit_callback_custom_backend_receives_only_retained_copies() -> Result<()> {
         let logger = Arc::new(RecordingAuditLogger::default());
@@ -773,6 +845,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证锁中毒后，乱序完成的工具调用仍能按 call_id 正确关联。
     #[tokio::test]
     async fn audit_callback_correlates_reverse_completion_by_call_id_after_poison() -> Result<()> {
         let logger = Arc::new(RecordingAuditLogger::default());
@@ -828,6 +901,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证中断事件在有无 start 回调时都使用已准入的输入。
     #[tokio::test]
     async fn audit_callback_interruption_uses_admitted_input_with_or_without_start() -> Result<()> {
         let logger = Arc::new(RecordingAuditLogger::default());
@@ -881,6 +955,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证内存与文件审计在零限制下仍保持类型化契约。
     #[tokio::test]
     async fn audit_memory_and_file_retention_preserve_typed_contract_at_zero_limits() -> Result<()>
     {
@@ -994,6 +1069,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证内存与文件审计都会完整脱敏私钥正文。
     #[tokio::test]
     async fn memory_and_file_audit_redact_complete_private_key_body() -> Result<()> {
         let directory =
@@ -1033,6 +1109,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证诊断错误在分发给自定义观察者前已被保留策略处理。
     #[test]
     fn audit_diagnostic_errors_are_retained_before_custom_dispatch() -> Result<()> {
         let observer = Arc::new(RecordingObserver::default());
@@ -1056,9 +1133,11 @@ mod tests {
         Ok(())
     }
 
+    /// 每次写入都返回注入错误的审计日志器。
     struct FailingAuditLogger;
 
     impl AuditLogger for FailingAuditLogger {
+        /// 始终返回注入的持久化失败。
         fn log<'a>(&'a self, _event: AuditEvent) -> BoxFuture<'a, Result<()>> {
             Box::pin(async {
                 Err(ReactError::Other(
@@ -1067,18 +1146,23 @@ mod tests {
             })
         }
 
+        /// 始终返回空结果。
         fn query<'a>(&'a self, _filter: AuditFilter) -> BoxFuture<'a, Result<Vec<AuditEvent>>> {
             Box::pin(async { Ok(Vec::new()) })
         }
     }
 
+    /// 记录诊断投递失败并支持等待的观察者。
     #[derive(Default)]
     struct RecordingObserver {
+        /// 已收到的失败记录。
         failures: Mutex<Vec<DiagnosticDeliveryFailure>>,
+        /// 失败列表变化时通知等待者。
         changed: std::sync::Condvar,
     }
 
     impl DiagnosticDeliveryObserver for RecordingObserver {
+        /// 记录失败并唤醒等待者。
         fn on_failure(&self, failure: DiagnosticDeliveryFailure) {
             self.failures
                 .lock()
@@ -1089,6 +1173,7 @@ mod tests {
     }
 
     impl RecordingObserver {
+        /// 等待直至至少收到 `count` 条失败记录，超时返回错误。
         fn wait_for_count(&self, count: usize) -> Result<Vec<DiagnosticDeliveryFailure>> {
             let failures = self
                 .failures
@@ -1109,30 +1194,38 @@ mod tests {
         }
     }
 
+    /// 在回调中重入上报失败的观察者。
     struct ReentrantObserver {
+        /// 回调完成后发送通知。
         completed: std::sync::mpsc::Sender<()>,
     }
 
     impl DiagnosticDeliveryObserver for ReentrantObserver {
+        /// 重入上报失败后发送完成通知。
         fn on_failure(&self, failure: DiagnosticDeliveryFailure) {
             report_diagnostic_delivery_failure(None, failure);
             let _ = self.completed.send(());
         }
     }
 
+    /// 在回调中触发 unwind 的观察者。
     struct UnwindingObserver {
+        /// 回调被调用时发送通知。
         attempted: std::sync::mpsc::Sender<()>,
     }
 
     impl DiagnosticDeliveryObserver for UnwindingObserver {
+        /// 发送通知后主动触发 unwind。
         fn on_failure(&self, _failure: DiagnosticDeliveryFailure) {
             let _ = self.attempted.send(());
-            // Intentional fault injection: the diagnostic dispatcher catches
-            // this unwind, increments its drop counter, and remains alive.
+            /*
+            有意的故障注入：诊断分发器会捕获此 unwind，递增丢弃计数，并保持存活。
+            */
             std::panic::resume_unwind(Box::new("injected observer unwind".to_string()));
         }
     }
 
+    /// 构造一条示例诊断投递失败记录。
     fn sample_failure() -> DiagnosticDeliveryFailure {
         DiagnosticDeliveryFailure::new(
             DiagnosticRecordKind::Audit,
@@ -1142,6 +1235,7 @@ mod tests {
         )
     }
 
+    /// 验证后端写入失败会上报诊断，但不改变回调结果。
     #[tokio::test]
     async fn audit_callback_reports_backend_failure_without_changing_callback_result() -> Result<()>
     {
@@ -1168,6 +1262,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证重入观察者被限制并计入丢弃计数。
     #[test]
     fn reentrant_observer_is_bounded_and_counted() -> Result<()> {
         let dropped_before = diagnostic_delivery_dropped_count();
@@ -1186,6 +1281,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证观察者 unwind 不会阻断后续诊断投递。
     #[test]
     fn unwinding_observer_does_not_stop_later_diagnostic_delivery() -> Result<()> {
         let dropped_before = diagnostic_delivery_dropped_count();

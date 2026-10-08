@@ -1,11 +1,14 @@
-//! 提示词改进生成器 —— 使用 LLM 根据失败反馈重新生成提示词。
-//!
-//! 思路借鉴自 `skill-creator/scripts/improve_description.py`。
-//! 接收失败的评估结果，生成改进后的系统提示词或工具说明。
+/*!
+提示词改进生成器 —— 使用 LLM 根据失败反馈重新生成提示词。
+
+思路借鉴自 `skill-creator/scripts/improve_description.py`。
+接收失败的评估结果，生成改进后的系统提示词或工具说明。
+*/
 
 use crate::agent::Agent;
 use crate::improve::RunCritique;
 
+/// 提示词改进请求的固定策略前缀（位于动态载荷之前，便于缓存）。
 const PROMPT_IMPROVEMENT_CONTRACT: &str = r#"You maintain prompts for a production, tool-using AI agent that may work across software, data, research, documents, and other domains.
 
 Produce the smallest prompt change that directly addresses the supplied failure evidence.
@@ -26,6 +29,7 @@ pub struct PromptGenerator {
 }
 
 impl Default for PromptGenerator {
+    /// 创建默认提示词生成器，最大字符数为 4096。
     fn default() -> Self {
         Self { max_chars: 4096 }
     }
@@ -136,6 +140,7 @@ impl PromptGenerator {
 mod tests {
     use super::*;
 
+    /// 验证改进提示词中固定策略位于动态载荷之前。
     #[test]
     fn improvement_contract_keeps_policy_before_dynamic_payload() {
         let prompt = PromptGenerator::build_improvement_prompt(
@@ -152,6 +157,7 @@ mod tests {
         assert!(prompt.contains("provider prompt caches"));
     }
 
+    /// 验证标签内容提取对多字节 UTF-8 字符安全。
     #[test]
     fn tagged_prompt_extraction_is_utf8_safe() {
         let extracted = PromptGenerator::extract_tagged_content(

@@ -1,13 +1,15 @@
-//! Docker 容器沙箱执行器
-//!
-//! 通过 Docker CLI 实现容器级隔离：
-//! - 自动创建临时容器
-//! - cgroups 资源限制
-//! - 网络隔离
-//! - 挂载控制
-//! - 显式 label + 清理路径，避免孤立容器长期残留
-//!
-//! 需要宿主机安装 Docker Engine。
+/*!
+ * Docker 容器沙箱执行器
+ *
+ * 通过 Docker CLI 实现容器级隔离：
+ * - 自动创建临时容器
+ * - cgroups 资源限制
+ * - 网络隔离
+ * - 挂载控制
+ * - 显式 label + 清理路径，避免孤立容器长期残留
+ *
+ * 需要宿主机安装 Docker Engine。
+ */
 
 use super::{
     CommandKind, ExecutionResult, IsolationLevel, ResourceLimits, SENSITIVE_MOUNT_PATHS,
@@ -24,11 +26,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
+/// 所有沙箱容器携带的标签，用于识别与批量清理。
 const SANDBOX_LABEL: &str = "echo-sandbox=true";
+/// Docker 可用性检测结果的缓存时长。
 const DOCKER_CACHE_TTL: Duration = Duration::from_secs(30);
+/// Docker 控制类命令的默认超时。
 const DEFAULT_DOCKER_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+/// 默认保留的最大输出字节数。
 const DEFAULT_DOCKER_OUTPUT_BYTES: usize = 1024 * 1024;
+/// 容器清理重试间隔。
 const DOCKER_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(50);
+/// 容器清理最大尝试次数。
 const DOCKER_CLEANUP_RETRY_ATTEMPTS: usize = 3;
 
 /// Docker 沙箱配置
@@ -52,10 +60,12 @@ pub struct DockerConfig {
     pub extra_args: Vec<String>,
 }
 
+/// `extra_args` 中允许使用的 Docker 选项白名单。
 const ALLOWED_DOCKER_EXTRA_OPTIONS: &[&str] =
     &["--entrypoint", "--hostname", "--platform", "--user"];
 
 impl Default for DockerConfig {
+    /// 默认配置：ubuntu 基础镜像、常见语言镜像映射、禁用网络、256MB 内存、50% CPU、只读根文件系统。
     fn default() -> Self {
         let mut language_images = std::collections::HashMap::new();
         language_images.insert("python".to_string(), "python:3.12-slim".to_string());
@@ -82,39 +92,58 @@ impl Default for DockerConfig {
 /// Docker 容器沙箱
 #[derive(Debug, Clone)]
 pub struct DockerSandbox {
+    /// 沙箱配置。
     config: DockerConfig,
+    /// Docker CLI 可执行文件路径。
     docker_program: PathBuf,
+    /// 控制类命令（info/create/rm 等）的超时时间。
     control_timeout: Duration,
+    /// Docker 可用性检测结果缓存：`(检测时间, 是否可用)`，实例间共享。
     availability_cache: Arc<Mutex<Option<(Instant, bool)>>>,
 }
 
+/// 交给后台容器生命周期所有者任务的执行请求。
 struct DockerOwnerRequest {
+    /// 待执行的沙箱命令。
     command: SandboxCommand,
+    /// 资源限制。
     limits: Option<ResourceLimits>,
+    /// 所属运行的取消令牌。
     cancel: Option<Arc<CancellationToken>>,
+    /// 执行超时时间。
     timeout: Duration,
+    /// 容器名称（同时作为清理凭据）。
     container_name: String,
+    /// `docker create` 参数。
     create_args: Vec<String>,
+    /// 调用方放弃等待时触发的令牌。
     caller_abandoned: CancellationToken,
+    /// 输出保留的最大字节数。
     max_output_bytes: usize,
 }
 
+/// 调用方放弃守卫：若调用方 future 在完成前被丢弃，则取消对应令牌。
 struct DockerCallerAbandonmentGuard {
+    /// 调用方放弃令牌。
     token: CancellationToken,
+    /// 是否仍处于武装状态（为 true 时析构会取消令牌）。
     armed: bool,
 }
 
 impl DockerCallerAbandonmentGuard {
+    /// 创建处于武装状态的守卫。
     fn new(token: CancellationToken) -> Self {
         Self { token, armed: true }
     }
 
+    /// 解除武装，析构时不再取消令牌。
     fn disarm(&mut self) {
         self.armed = false;
     }
 }
 
 impl Drop for DockerCallerAbandonmentGuard {
+    /// 若仍处于武装状态，则取消令牌。
     fn drop(&mut self) {
         if self.armed {
             self.token.cancel();
@@ -122,51 +151,80 @@ impl Drop for DockerCallerAbandonmentGuard {
     }
 }
 
+/// Docker 执行中断的原因。
 #[derive(Clone, Copy)]
 enum DockerInterruption {
+    /// 执行超时。
     TimedOut,
+    /// 被取消。
     Cancelled,
 }
 
+/// 写入容器 stdin 的结果。
 enum DockerStdinOutcome {
+    /// 写入完成（可能成功或失败）。
     Written(std::io::Result<()>),
+    /// 写入期间超时。
     TimedOut,
+    /// 写入期间被取消。
     Cancelled,
 }
 
+/// 等待 Docker 子进程结束的结果。
 enum DockerWaitOutcome {
+    /// 子进程已结束。
     Completed(std::io::Result<std::process::ExitStatus>),
+    /// 等待超时。
     TimedOut,
+    /// 等待期间被取消。
     Cancelled,
 }
 
+/// 单个管道（stdout/stderr）的输出捕获结果。
 #[derive(Default)]
 struct DockerPipeCapture {
+    /// 保留下来的输出字节（受输出预算限制）。
     bytes: Vec<u8>,
+    /// 实际读取到的逻辑总字节数。
     total_bytes: u64,
+    /// 是否因预算不足被截断。
     truncated: bool,
 }
 
+/// 一次 Docker CLI 控制阶段的执行结果。
 enum DockerCliStage {
+    /// 正常结束。
     Completed {
+        /// 退出状态。
         status: std::process::ExitStatus,
+        /// 标准输出捕获。
         stdout: DockerPipeCapture,
+        /// 标准错误捕获。
         stderr: DockerPipeCapture,
     },
+    /// 被取消。
     Cancelled {
+        /// 已收集的输出。
         output: DockerPipeOutput,
+        /// 客户端进程清理结果。
         cleanup: std::result::Result<(), String>,
     },
+    /// 超时。
     TimedOut {
+        /// 已收集的输出。
         output: DockerPipeOutput,
+        /// 客户端进程清理结果。
         cleanup: std::result::Result<(), String>,
     },
 }
 
+/// 管道读取任务句柄；管道不存在时为 `None`。
 type DockerPipeReader = Option<tokio::task::JoinHandle<std::io::Result<DockerPipeCapture>>>;
+/// stdout 与 stderr 的收集结果；读取失败时为错误描述。
 type DockerPipeOutput = std::result::Result<(DockerPipeCapture, DockerPipeCapture), String>;
 
 impl DockerSandbox {
+    /// 使用指定配置创建 Docker 沙箱。
     pub fn new(config: DockerConfig) -> Self {
         Self {
             config,
@@ -176,6 +234,7 @@ impl DockerSandbox {
         }
     }
 
+    /// 读取未过期的 Docker 可用性缓存。
     fn cached_availability(&self) -> Option<bool> {
         if let Ok(guard) = self.availability_cache.lock()
             && let Some((checked_at, available)) = *guard
@@ -187,12 +246,14 @@ impl DockerSandbox {
         }
     }
 
+    /// 记录 Docker 可用性检测结果。
     fn record_availability(&self, available: bool) {
         if let Ok(mut guard) = self.availability_cache.lock() {
             *guard = Some((Instant::now(), available));
         }
     }
 
+    /// 带缓存地检测 Docker 可用性；被取消时返回 `Ok(None)`。
     async fn check_docker_controlled(
         &self,
         cancel: Option<&Arc<CancellationToken>>,
@@ -218,6 +279,7 @@ impl DockerSandbox {
         )
     }
 
+    /// 执行 `docker info` 探测 Docker 可用性（受超时与取消控制）。
     async fn probe_docker_controlled(
         &self,
         cancel: Option<&Arc<CancellationToken>>,
@@ -259,10 +321,12 @@ impl DockerSandbox {
         }
     }
 
+    /// 构造指向 Docker 程序的命令。
     fn docker_command(&self) -> Command {
         Command::new(&self.docker_program)
     }
 
+    /// 测试用：使用自定义 Docker 程序路径与较短控制超时创建沙箱。
     #[cfg(all(test, unix))]
     pub(crate) fn with_program(config: DockerConfig, docker_program: PathBuf) -> Self {
         Self {
@@ -282,10 +346,12 @@ impl DockerSandbox {
         )
     }
 
-    /// 构建 docker create 命令行参数（不含 `docker` 可执行文件本身）。
-    ///
-    /// 这里直接面向 `docker create` 组装参数，而不是先拼 `docker run`
-    /// 再反推 image / command 边界，避免 create/start 路径漂移。
+    /**
+     * 构建 docker create 命令行参数（不含 `docker` 可执行文件本身）。
+     *
+     * 这里直接面向 `docker create` 组装参数，而不是先拼 `docker run`
+     * 再反推 image / command 边界，避免 create/start 路径漂移。
+     */
     fn build_docker_create_args(
         &self,
         command: &SandboxCommand,
@@ -425,11 +491,10 @@ impl DockerSandbox {
                     "python" | "python3" => ("python3", "-c"),
                     "node" | "javascript" | "js" => ("node", "-e"),
                     "ruby" => ("ruby", "-e"),
-                    // Sprint 10b: R is a first-class language. Without this
-                    // arm R silently fell through to ("sh","-c") and was
-                    // mis-run as shell (no error, wrong interpreter).
-                    // Image `rocker/r-base:latest` is mapped in mod.rs:84;
-                    // a missing image surfaces as Docker's ImageNotFound.
+                    /* Sprint 10b：R 是一等语言。若没有这个分支，R 会静默落入
+                     * ("sh","-c") 被当作 shell 执行（不报错，但解释器错误）。
+                     * 镜像 `rocker/r-base:latest` 在 mod.rs:84 中映射；
+                     * 镜像缺失时会表现为 Docker 的 ImageNotFound。 */
                     "r" => ("Rscript", "-e"),
                     "perl" => ("perl", "-e"),
                     "php" => ("php", "-r"),
@@ -449,6 +514,7 @@ impl DockerSandbox {
         .await
     }
 
+    /// 使用指定 Docker 程序列出并删除所有沙箱容器，汇总所有失败。
     async fn cleanup_sandbox_containers_with_program(
         program: &Path,
         control_timeout: Duration,
@@ -543,6 +609,7 @@ impl DockerSandbox {
         }
     }
 
+    /// 删除指定容器，失败时有限次重试。
     async fn remove_container(&self, container_id: &str) -> Result<()> {
         let mut last_error = None;
         for attempt in 0..DOCKER_CLEANUP_RETRY_ATTEMPTS {
@@ -567,6 +634,7 @@ impl DockerSandbox {
         }))
     }
 
+    /// 使用指定 Docker 程序执行 `docker rm -f` 删除容器。
     async fn remove_container_with_program(
         program: &Path,
         container_id: &str,
@@ -619,6 +687,7 @@ impl DockerSandbox {
         Ok(())
     }
 
+    /// 清理容器后返回执行结果；清理失败时合并主结果与清理错误。
     async fn finish_with_cleanup(
         &self,
         container_name: &str,
@@ -643,6 +712,7 @@ impl DockerSandbox {
         }
     }
 
+    /// 受控执行入口：检测可用性、构建参数，并在独立任务中托管容器生命周期。
     async fn execute_with_limits_controlled(
         &self,
         command: SandboxCommand,
@@ -719,6 +789,7 @@ impl DockerSandbox {
         outcome
     }
 
+    /// 容器生命周期所有者：依次执行 create、start、写入 stdin、等待结束，并始终清理容器。
     async fn run_container_owner(&self, request: DockerOwnerRequest) -> Result<ExecutionResult> {
         let DockerOwnerRequest {
             command,
@@ -945,6 +1016,7 @@ impl DockerSandbox {
     }
 }
 
+/// 运行一次 Docker CLI 控制阶段，受超时、取消与输出预算约束。
 async fn run_docker_cli_stage(
     program: &Path,
     args: &[String],
@@ -1011,6 +1083,7 @@ async fn run_docker_cli_stage(
     }
 }
 
+/// 判断运行取消令牌或调用方放弃令牌是否已触发。
 fn docker_cancelled(
     cancel: Option<&Arc<CancellationToken>>,
     caller_abandoned: Option<&CancellationToken>,
@@ -1019,6 +1092,7 @@ fn docker_cancelled(
         || caller_abandoned.is_some_and(CancellationToken::is_cancelled)
 }
 
+/// 等待任一取消令牌触发；均不存在时永久挂起。
 async fn wait_for_docker_cancel(
     cancel: Option<&Arc<CancellationToken>>,
     caller_abandoned: Option<&CancellationToken>,
@@ -1036,6 +1110,7 @@ async fn wait_for_docker_cancel(
     }
 }
 
+/// 启动管道读取任务，按共享输出预算保留字节并统计总量。
 fn spawn_docker_pipe_reader<R>(
     pipe: Option<R>,
     retained_budget: Arc<parking_lot::Mutex<usize>>,
@@ -1069,6 +1144,7 @@ where
     })
 }
 
+/// 收集 stdout 与 stderr 读取任务的结果。
 async fn collect_docker_pipes(
     stdout: DockerPipeReader,
     stderr: DockerPipeReader,
@@ -1078,6 +1154,7 @@ async fn collect_docker_pipes(
     Ok((stdout, stderr))
 }
 
+/// 等待单个管道读取任务完成并返回捕获结果。
 async fn collect_docker_pipe(
     name: &str,
     reader: DockerPipeReader,
@@ -1091,6 +1168,7 @@ async fn collect_docker_pipe(
         .map_err(|error| format!("failed to read docker {name}: {error}"))
 }
 
+/// 终止并回收 Docker 客户端子进程（及其进程组）。
 async fn cleanup_docker_client(
     child: &mut tokio::process::Child,
     process_group_id: Option<u32>,
@@ -1098,6 +1176,7 @@ async fn cleanup_docker_client(
     super::local::cleanup_child_process(child, process_group_id).await
 }
 
+/// 构造包含清理与输出事实的控制阶段失败错误。
 fn docker_control_failure(
     primary: &str,
     cleanup: std::result::Result<(), String>,
@@ -1115,6 +1194,7 @@ fn docker_control_failure(
     ))))
 }
 
+/// 以 `Err` 形式返回控制阶段失败错误。
 fn docker_control_error(
     primary: &str,
     cleanup: std::result::Result<(), String>,
@@ -1123,6 +1203,7 @@ fn docker_control_error(
     Err(docker_control_failure(primary, cleanup, output))
 }
 
+/// 构造 Docker 客户端失败错误，附带清理与输出事实。
 fn docker_client_failure(
     primary: &str,
     client_cleanup: std::result::Result<(), String>,
@@ -1153,6 +1234,7 @@ fn docker_client_failure(
     )))
 }
 
+/// 生成超时/取消的终止结果；客户端清理或输出收集失败时转为错误。
 fn docker_interrupted_terminal(
     interruption: DockerInterruption,
     duration: Duration,
@@ -1177,6 +1259,7 @@ fn docker_interrupted_terminal(
     }
 }
 
+/// 根据正常结束的退出状态与输出生成执行结果。
 fn docker_completed_terminal(
     status: std::io::Result<std::process::ExitStatus>,
     output: DockerPipeOutput,
@@ -1209,6 +1292,7 @@ fn docker_completed_terminal(
     Ok(result)
 }
 
+/// 构造超时或取消时的执行结果。
 fn docker_interrupted_result(
     interruption: DockerInterruption,
     duration: Duration,
@@ -1238,6 +1322,7 @@ fn docker_interrupted_result(
     }
 }
 
+/// 构造无输出的超时/取消执行结果。
 fn empty_docker_interrupted_result(
     interruption: DockerInterruption,
     duration: Duration,
@@ -1250,6 +1335,7 @@ fn empty_docker_interrupted_result(
     )
 }
 
+/// 将管道输出收集结果格式化为事实描述。
 fn docker_pipe_output_facts(output: &DockerPipeOutput) -> String {
     match output {
         Ok((stdout, stderr)) => format!(
@@ -1262,6 +1348,7 @@ fn docker_pipe_output_facts(output: &DockerPipeOutput) -> String {
     }
 }
 
+/// 将执行结果格式化为事实描述。
 fn docker_result_facts(result: &ExecutionResult) -> String {
     format!(
         "exit_code={}, timed_out={}, cancelled={}, stdout_bytes={}, stderr_bytes={}, stderr={}",
@@ -1274,6 +1361,7 @@ fn docker_result_facts(result: &ExecutionResult) -> String {
     )
 }
 
+/// 将事实文本截断到最多 1024 个字符。
 fn bounded_docker_fact(value: &str) -> String {
     const MAX_FACT_CHARS: usize = 1_024;
     let mut fact = value.chars().take(MAX_FACT_CHARS).collect::<String>();
@@ -1283,10 +1371,12 @@ fn bounded_docker_fact(value: &str) -> String {
     fact
 }
 
+/// 校验容器 ID 是否为 12~64 位十六进制字符串。
 fn valid_docker_container_id(value: &str) -> bool {
     (12..=64).contains(&value.len()) && value.chars().all(|character| character.is_ascii_hexdigit())
 }
 
+/// 按白名单校验 `extra_args`，拒绝未允许的选项或非法取值。
 fn validate_docker_extra_args(args: &[String]) -> std::result::Result<Vec<String>, String> {
     let mut validated = Vec::with_capacity(args.len());
     let mut index = 0_usize;
@@ -1325,6 +1415,7 @@ fn validate_docker_extra_args(args: &[String]) -> std::result::Result<Vec<String
     Ok(validated)
 }
 
+/// 格式化进程退出状态。
 fn format_exit_status(status: &std::process::ExitStatus) -> String {
     status
         .code()
@@ -1332,19 +1423,24 @@ fn format_exit_status(status: &std::process::ExitStatus) -> String {
         .unwrap_or_else(|| "terminated without an exit code".to_string())
 }
 
+/// Docker 沙箱的 [`SandboxExecutor`] 实现。
 impl SandboxExecutor for DockerSandbox {
+    /// 执行器名称：`docker`。
     fn name(&self) -> &str {
         "docker"
     }
 
+    /// 隔离级别：容器级。
     fn isolation_level(&self) -> IsolationLevel {
         IsolationLevel::Container
     }
 
+    /// 检测 Docker 是否可用。
     fn is_available(&self) -> BoxFuture<'_, bool> {
         Box::pin(self.check_docker())
     }
 
+    /// 清理所有带沙箱标签的容器。
     fn cleanup(&self) -> BoxFuture<'_, Result<()>> {
         Box::pin(Self::cleanup_sandbox_containers_with_program(
             &self.docker_program,
@@ -1352,10 +1448,12 @@ impl SandboxExecutor for DockerSandbox {
         ))
     }
 
+    /// 使用默认配置执行命令（无额外资源限制、不可取消）。
     fn execute(&self, command: SandboxCommand) -> BoxFuture<'_, Result<ExecutionResult>> {
         Box::pin(self.execute_with_limits_controlled(command, None, None))
     }
 
+    /// 按指定资源限制执行命令。
     fn execute_with_limits(
         &self,
         command: SandboxCommand,
@@ -1364,6 +1462,7 @@ impl SandboxExecutor for DockerSandbox {
         Box::pin(self.execute_with_limits_controlled(command, Some(limits), None))
     }
 
+    /// 按指定资源限制执行命令，并支持通过令牌取消。
     fn execute_with_limits_and_cancel(
         &self,
         command: SandboxCommand,
@@ -1376,19 +1475,25 @@ impl SandboxExecutor for DockerSandbox {
 
 // ── 单元测试 ────────────────────────────────────────────────────────────────
 
+/// Docker 沙箱的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 以 shell 脚本模拟 Docker CLI 的测试替身，并记录收到的操作。
     #[cfg(unix)]
     struct FakeDocker {
+        /// 临时目录。
         directory: PathBuf,
+        /// 伪 docker 可执行文件路径。
         program: PathBuf,
+        /// 操作日志文件路径。
         log: PathBuf,
     }
 
     #[cfg(unix)]
     impl FakeDocker {
+        /// 按指定模式生成伪 docker 脚本。
         fn new(mode: &str) -> std::result::Result<Self, Box<dyn std::error::Error>> {
             use std::os::unix::fs::PermissionsExt;
 
@@ -1462,8 +1567,8 @@ esac
 exit 64
 "#
             );
-            // Publish the executable only after the complete script is written. Linux runners can
-            // otherwise report ETXTBSY when execve races with the final write on the temp volume.
+            /* 仅在脚本完整写入后再发布可执行文件。否则在 Linux runner 上，
+             * execve 与临时卷上的最后一次写入竞争时可能报 ETXTBSY。 */
             let script_path = directory.join("docker.script");
             std::fs::write(&script_path, script)?;
             let mut permissions = std::fs::metadata(&script_path)?.permissions();
@@ -1477,10 +1582,12 @@ exit 64
             })
         }
 
+        /// 创建指向该伪 docker 程序的沙箱。
         fn sandbox(&self) -> DockerSandbox {
             DockerSandbox::with_program(DockerConfig::default(), self.program.clone())
         }
 
+        /// 读取已记录的操作列表。
         fn operations(&self) -> std::result::Result<Vec<String>, std::io::Error> {
             std::fs::read_to_string(&self.log).map(|contents| {
                 contents
@@ -1490,6 +1597,7 @@ exit 64
             })
         }
 
+        /// 读取已记录的操作列表；日志文件不存在时返回空列表。
         fn operations_or_empty(&self) -> std::result::Result<Vec<String>, std::io::Error> {
             match self.operations() {
                 Ok(operations) => Ok(operations),
@@ -1501,11 +1609,13 @@ exit 64
 
     #[cfg(unix)]
     impl Drop for FakeDocker {
+        /// 析构时删除临时目录。
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
 
+    /// 轮询操作日志，直到出现指定操作或超时。
     #[cfg(unix)]
     async fn wait_for_operation(log: &Path, operation: &str) -> std::result::Result<(), String> {
         for _ in 0..100 {
@@ -1519,12 +1629,14 @@ exit 64
         Err(format!("fake docker never observed operation {operation}"))
     }
 
+    /// 验证 Docker 流式执行显式回退为缓冲模式。
     #[test]
     fn docker_streaming_is_explicitly_buffered_fallback() {
         let sandbox = DockerSandbox::new(DockerConfig::default());
         assert!(!sandbox.supports_streaming());
     }
 
+    /// 验证正常执行在返回前删除容器。
     #[cfg(unix)]
     #[tokio::test]
     async fn normal_execution_removes_container_before_return()
@@ -1539,6 +1651,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证连续执行复用实例的可用性缓存。
     #[cfg(unix)]
     #[tokio::test]
     async fn consecutive_execution_reuses_instance_availability_cache()
@@ -1558,6 +1671,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证预先取消时不探测也不创建容器。
     #[cfg(unix)]
     #[tokio::test]
     async fn pre_cancel_does_not_probe_or_create_container()
@@ -1578,6 +1692,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证启动后外部中止仍由独立所有者完成清理。
     #[cfg(unix)]
     #[tokio::test]
     async fn outer_abort_after_start_keeps_detached_cleanup_owner()
@@ -1604,6 +1719,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证 stdin 阻塞时的取消能到达所有者清理流程。
     #[cfg(unix)]
     #[tokio::test]
     async fn blocked_stdin_cancellation_reaches_owner_cleanup()
@@ -1635,6 +1751,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证 create 输出为空或非法时仍按容器名清理。
     #[cfg(unix)]
     #[tokio::test]
     async fn empty_or_invalid_create_output_still_uses_named_cleanup_authority()
@@ -1655,6 +1772,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证超时在返回前删除容器。
     #[cfg(unix)]
     #[tokio::test]
     async fn timeout_removes_container_before_return()
@@ -1669,6 +1787,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证取消在返回前删除容器。
     #[cfg(unix)]
     #[tokio::test]
     async fn cancellation_removes_container_before_return()
@@ -1699,6 +1818,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证清理命令非零退出会产生类型化终止错误。
     #[cfg(unix)]
     #[tokio::test]
     async fn cleanup_nonzero_status_is_a_typed_terminal_error()
@@ -1722,6 +1842,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证清理失败时保留非零退出、超时与取消事实。
     #[cfg(unix)]
     #[tokio::test]
     async fn cleanup_failure_preserves_nonzero_timeout_and_cancel_facts()
@@ -1774,6 +1895,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证清理命令启动失败会产生类型化终止错误。
     #[cfg(unix)]
     #[tokio::test]
     async fn cleanup_spawn_failure_is_a_typed_terminal_error()
@@ -1798,6 +1920,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证挂起的控制阶段受时限约束并返回类型化错误。
     #[cfg(unix)]
     #[tokio::test]
     async fn hung_control_stages_are_bounded_and_typed()
@@ -1855,6 +1978,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证全局清理在返回错误前尝试清理每个容器。
     #[cfg(unix)]
     #[tokio::test]
     async fn global_cleanup_attempts_every_container_before_returning_error()
@@ -1876,6 +2000,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证容器列表被截断时清理完整前缀但绝不返回成功。
     #[cfg(unix)]
     #[tokio::test]
     async fn truncated_global_listing_cleans_complete_prefix_but_never_returns_success()
@@ -1893,6 +2018,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证正常、超时与取消路径共享输出预算。
     #[cfg(unix)]
     #[tokio::test]
     async fn output_budget_is_shared_for_normal_timeout_and_cancel()
@@ -1960,6 +2086,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证 extra_args 白名单无法覆盖清理或隔离相关参数。
     #[test]
     fn extra_args_allowlist_cannot_override_cleanup_or_isolation_authority()
     -> std::result::Result<(), String> {
@@ -2024,6 +2151,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证默认配置。
     #[test]
     fn test_docker_config_default() {
         let config = DockerConfig::default();
@@ -2032,6 +2160,7 @@ exit 64
         assert!(config.disable_network);
     }
 
+    /// 验证 Python 代码选择 Python 镜像。
     #[test]
     fn test_select_image_python() {
         let sandbox = DockerSandbox::new(DockerConfig::default());
@@ -2040,6 +2169,7 @@ exit 64
         assert_eq!(image, "python:3.12-slim");
     }
 
+    /// 验证未知语言回退到默认镜像。
     #[test]
     fn test_select_image_fallback() {
         let sandbox = DockerSandbox::new(DockerConfig::default());
@@ -2048,6 +2178,7 @@ exit 64
         assert_eq!(image, "ubuntu:22.04");
     }
 
+    /// 验证 create 参数包含安全加固选项。
     #[test]
     fn test_docker_args_security() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let sandbox = DockerSandbox::new(DockerConfig::default());
@@ -2068,6 +2199,7 @@ exit 64
         Ok(())
     }
 
+    /// 验证资源限制正确反映到 create 参数。
     #[test]
     fn test_docker_args_with_limits() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let sandbox = DockerSandbox::new(DockerConfig::default());
@@ -2080,11 +2212,12 @@ exit 64
         let args = sandbox.build_docker_create_args(&cmd, Some(&limits), "echo-sandbox-test")?;
 
         assert!(args.contains(&"--pids-limit=16".to_string()));
-        // network=true in limits overrides config
+        // limits 中的 network=true 会覆盖配置
         assert!(!args.contains(&"--network=none".to_string()));
         Ok(())
     }
 
+    /// 验证 shell 命令的容器内命令构建。
     #[test]
     fn test_inner_command_shell() {
         let cmd = SandboxCommand::shell("ls -la");
@@ -2092,6 +2225,7 @@ exit 64
         assert_eq!(inner, vec!["sh", "-c", "ls -la"]);
     }
 
+    /// 验证代码命令的容器内命令构建。
     #[test]
     fn test_inner_command_code() {
         let cmd = SandboxCommand::code("python", "print('hi')");
@@ -2099,6 +2233,7 @@ exit 64
         assert_eq!(inner, vec!["python3", "-c", "print('hi')"]);
     }
 
+    /// 验证 create 参数包含完整命令且不含 `run`。
     #[test]
     fn test_docker_args_include_full_command() -> std::result::Result<(), Box<dyn std::error::Error>>
     {
@@ -2113,12 +2248,13 @@ exit 64
         Ok(())
     }
 
-    /// Sprint 10b: R must map to `Rscript -e` in the docker Code backend.
-    ///
-    /// Before the patch, R fell through to `_ => ("sh", "-c")` and was
-    /// SILENTLY mis-run as a shell command (no error, wrong interpreter —
-    /// the worst kind of bug). After the patch it must map to
-    /// `("Rscript", "-e")` like python/node.
+    /**
+     * Sprint 10b：在 docker Code 后端中，R 必须映射到 `Rscript -e`。
+     *
+     * 修复前，R 会落入 `_ => ("sh", "-c")`，被**静默**当作 shell 命令执行
+     * （不报错、解释器错误 —— 最糟糕的一类 bug）。修复后它必须像 python/node
+     * 一样映射到 `("Rscript", "-e")`。
+     */
     #[test]
     fn test_inner_command_code_r_maps_to_rscript() {
         let cmd = SandboxCommand::code("r", "print(1+1)");

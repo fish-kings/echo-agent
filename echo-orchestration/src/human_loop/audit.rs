@@ -1,27 +1,29 @@
-//! 权限审计追踪
-//!
-//! 记录 PermissionService 管线中每个决策的完整上下文，
-//! 用于安全审计、合规报告、调试分析。
-//!
-//! ## 使用方式
-//!
-//! ```rust
-//! use echo_orchestration::human_loop::{InMemoryPermissionAuditSink, PermissionService};
-//! use std::sync::Arc;
-//!
-//! let sink = Arc::new(InMemoryPermissionAuditSink::new(1000));
-//! let service = PermissionService::new()
-//!     .with_audit_sink(sink.clone());
-//!
-//! // 执行后查询审计日志
-//! let recent = sink.recent(10);
-//! for entry in recent {
-//!     println!(
-//!         "{}ms {} → {} ({})",
-//!         entry.elapsed_ms, entry.tool_name, entry.decision, entry.reason
-//!     );
-//! }
-//! ```
+/*!
+权限审计追踪
+
+记录 PermissionService 管线中每个决策的完整上下文，
+用于安全审计、合规报告、调试分析。
+
+## 使用方式
+
+```rust
+use echo_orchestration::human_loop::{InMemoryPermissionAuditSink, PermissionService};
+use std::sync::Arc;
+
+let sink = Arc::new(InMemoryPermissionAuditSink::new(1000));
+let service = PermissionService::new()
+    .with_audit_sink(sink.clone());
+
+// 执行后查询审计日志
+let recent = sink.recent(10);
+for entry in recent {
+    println!(
+        "{}ms {} → {} ({})",
+        entry.elapsed_ms, entry.tool_name, entry.decision, entry.reason
+    );
+}
+```
+*/
 
 use async_trait::async_trait;
 use echo_core::tools::permission::PermissionDecision;
@@ -41,9 +43,11 @@ pub struct PermissionAuditEntry {
     pub args_hash: String,
     /// 决策结果: "allow" | "deny" | "require_approval" | "ask"
     pub decision: String,
-    /// 决策原因: "bypass" | "plan_mode" | "rule_match" | "protected_path" |
-    ///           "cache_hit" | "denial_tracker" | "classifier" | "handler" |
-    ///           "dont_ask" | "no_handler" | "hook"
+    /**
+    决策原因: "bypass" | "plan_mode" | "rule_match" | "protected_path" |
+              "cache_hit" | "denial_tracker" | "classifier" | "handler" |
+              "dont_ask" | "no_handler" | "hook"
+    */
     pub reason: String,
     /// 决策来源（管线阶段名）
     pub source: String,
@@ -75,6 +79,7 @@ impl PermissionAuditEntry {
         }
     }
 
+    /// 将权限决策转换为审计用的字符串表示。
     fn decision_to_str(decision: &PermissionDecision) -> String {
         match decision {
             PermissionDecision::Allow => "allow".to_string(),
@@ -84,6 +89,7 @@ impl PermissionAuditEntry {
         }
     }
 
+    /// 计算参数 JSON 的哈希摘要（十六进制字符串）。
     fn hash_args(input: &serde_json::Value) -> String {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -96,10 +102,12 @@ impl PermissionAuditEntry {
 
 // ── 审计 Sink Trait ───────────────────────────────────────────────────────────
 
-/// 权限审计 Sink — 接收审计条目的抽象接口
-///
-/// 内置实现：
-/// - `InMemoryPermissionAuditSink`: 内存环形缓冲区
+/**
+权限审计 Sink — 接收审计条目的抽象接口
+
+内置实现：
+- `InMemoryPermissionAuditSink`: 内存环形缓冲区
+*/
 #[async_trait]
 pub trait PermissionAuditSink: Send + Sync {
     /// 记录一条审计条目
@@ -109,6 +117,7 @@ pub trait PermissionAuditSink: Send + Sync {
 // 为 Arc<T> 自动实现 PermissionAuditSink
 #[async_trait]
 impl<T: PermissionAuditSink + ?Sized> PermissionAuditSink for Arc<T> {
+    /// 委托给内部 Sink 记录审计条目。
     async fn record(&self, entry: PermissionAuditEntry) {
         (**self).record(entry).await;
     }
@@ -116,16 +125,21 @@ impl<T: PermissionAuditSink + ?Sized> PermissionAuditSink for Arc<T> {
 
 // ── 内存审计 Sink ─────────────────────────────────────────────────────────────
 
-/// 内存审计 Sink — 环形缓冲区，保留最近 N 条审计记录
-///
-/// 线程安全，使用 `std::sync::RwLock` 保护。
-/// 适用于开发调试和内存受限的场景。
+/**
+内存审计 Sink — 环形缓冲区，保留最近 N 条审计记录
+
+线程安全，使用 `std::sync::RwLock` 保护。
+适用于开发调试和内存受限的场景。
+*/
 pub struct InMemoryPermissionAuditSink {
+    /// 审计条目环形缓冲区（按时间正序）
     entries: RwLock<VecDeque<PermissionAuditEntry>>,
+    /// 最大保留条目数
     capacity: usize,
 }
 
 impl Clone for InMemoryPermissionAuditSink {
+    /// 深拷贝当前缓冲区中的审计条目。
     fn clone(&self) -> Self {
         Self {
             entries: RwLock::new(
@@ -184,6 +198,7 @@ impl InMemoryPermissionAuditSink {
 }
 
 impl Default for InMemoryPermissionAuditSink {
+    /// 默认容量为 1000 条。
     fn default() -> Self {
         Self::new(1000)
     }
@@ -191,6 +206,7 @@ impl Default for InMemoryPermissionAuditSink {
 
 #[async_trait]
 impl PermissionAuditSink for InMemoryPermissionAuditSink {
+    /// 追加审计条目，超出容量时淘汰最旧的条目。
     async fn record(&self, entry: PermissionAuditEntry) {
         let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
         if entries.len() >= self.capacity {
@@ -204,27 +220,35 @@ impl PermissionAuditSink for InMemoryPermissionAuditSink {
 
 /// 日志审计 Sink — 使用 tracing 记录每条审计
 pub struct LoggingPermissionAuditSink {
+    /// 输出日志时使用的级别
     level: LogLevel,
 }
 
 /// 日志级别
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
+    /// info 级别
     Info,
+    /// warn 级别
     Warn,
+    /// debug 级别（包含参数哈希与耗时等细节）
     Debug,
+    /// trace 级别（输出完整条目）
     Trace,
 }
 
 impl LoggingPermissionAuditSink {
+    /// 创建指定日志级别的日志审计 Sink
     pub fn new(level: LogLevel) -> Self {
         Self { level }
     }
 
+    /// 创建 info 级别的日志审计 Sink
     pub fn info() -> Self {
         Self::new(LogLevel::Info)
     }
 
+    /// 创建 debug 级别的日志审计 Sink
     pub fn debug() -> Self {
         Self::new(LogLevel::Debug)
     }
@@ -232,6 +256,7 @@ impl LoggingPermissionAuditSink {
 
 #[async_trait]
 impl PermissionAuditSink for LoggingPermissionAuditSink {
+    /// 按配置的日志级别输出审计条目。
     async fn record(&self, entry: PermissionAuditEntry) {
         match self.level {
             LogLevel::Info => {
@@ -275,14 +300,17 @@ impl PermissionAuditSink for LoggingPermissionAuditSink {
 
 /// 组合审计 Sink — 同时写入多个 Sink
 pub struct CompositePermissionAuditSink {
+    /// 下游 Sink 列表
     sinks: Vec<Box<dyn PermissionAuditSink>>,
 }
 
 impl CompositePermissionAuditSink {
+    /// 使用给定的 Sink 列表创建组合 Sink
     pub fn new(sinks: Vec<Box<dyn PermissionAuditSink>>) -> Self {
         Self { sinks }
     }
 
+    /// 追加一个下游 Sink（构建器风格）
     pub fn with_sink(mut self, sink: Box<dyn PermissionAuditSink>) -> Self {
         self.sinks.push(sink);
         self
@@ -291,6 +319,7 @@ impl CompositePermissionAuditSink {
 
 #[async_trait]
 impl PermissionAuditSink for CompositePermissionAuditSink {
+    /// 依次将审计条目写入所有下游 Sink。
     async fn record(&self, entry: PermissionAuditEntry) {
         for sink in &self.sinks {
             sink.record(entry.clone()).await;
@@ -305,6 +334,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// 构造测试用审计条目。
     fn make_entry(
         tool: &str,
         decision: &PermissionDecision,
@@ -322,6 +352,7 @@ mod tests {
         )
     }
 
+    /// 验证内存 Sink 能记录条目。
     #[tokio::test]
     async fn test_in_memory_sink_record() {
         let sink = InMemoryPermissionAuditSink::new(100);
@@ -346,6 +377,7 @@ mod tests {
         assert_eq!(sink.count(), 2);
     }
 
+    /// 验证超出容量时淘汰最旧条目。
     #[tokio::test]
     async fn test_in_memory_sink_capacity_eviction() {
         let sink = InMemoryPermissionAuditSink::new(3);
@@ -366,6 +398,7 @@ mod tests {
         assert_eq!(all[0].tool_name, "tool2");
     }
 
+    /// 验证 recent 按时间倒序返回最近条目。
     #[tokio::test]
     async fn test_in_memory_sink_recent() {
         let sink = InMemoryPermissionAuditSink::new(100);
@@ -386,6 +419,7 @@ mod tests {
         assert_eq!(recent[0].tool_name, "tool4");
     }
 
+    /// 验证按条件查询审计记录。
     #[tokio::test]
     async fn test_in_memory_sink_query() {
         let sink = InMemoryPermissionAuditSink::new(100);
@@ -417,6 +451,7 @@ mod tests {
         assert_eq!(denies[0].tool_name, "Bash");
     }
 
+    /// 验证清空审计记录。
     #[tokio::test]
     async fn test_in_memory_sink_clear() {
         let sink = InMemoryPermissionAuditSink::new(100);
@@ -433,6 +468,7 @@ mod tests {
         assert_eq!(sink.count(), 0);
     }
 
+    /// 验证各类决策转换为字符串的结果。
     #[test]
     fn test_audit_entry_decision_str() {
         assert_eq!(
@@ -464,6 +500,7 @@ mod tests {
         );
     }
 
+    /// 验证组合 Sink 会写入所有下游 Sink。
     #[tokio::test]
     async fn test_composite_sink() {
         let sink1 = Arc::new(InMemoryPermissionAuditSink::new(100));

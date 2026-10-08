@@ -69,8 +69,10 @@ impl std::fmt::Debug for IsolationHandle {
     }
 }
 
-/// 由应用方提供的隔离策略。框架既不解释 `kind` 的含义，
-/// 也不拥有返回句柄背后的生命周期管理策略。
+/**
+由应用方提供的隔离策略。框架既不解释 `kind` 的含义，
+也不拥有返回句柄背后的生命周期管理策略。
+*/
 pub trait IsolationProvider: Send + Sync {
     /// 根据给定的请求建立一个隔离环境，并返回其句柄。
     fn isolate(&self, request: &IsolationRequest) -> Result<IsolationHandle, IsolationError>;

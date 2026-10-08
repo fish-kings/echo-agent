@@ -1,6 +1,8 @@
-//! A2A 协议类型定义
-//!
-//! 根据 Google A2A 协议规范定义的 Agent Card、Task 等类型。
+/*!
+A2A 协议类型定义
+
+根据 Google A2A 协议规范定义的 Agent Card、Task 等类型。
+*/
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -332,12 +334,14 @@ pub struct AgentCapabilities {
     pub state_transition_history: bool,
 }
 
-// ── A2A Task 状态机 ───────────────────────────────────────────────────
-//
-//  submitted → working → [input-required] → completed / failed
-//                       ↑___________________↓
-//
-//  终态：completed、failed、canceled
+/*
+── A2A Task 状态机 ───────────────────────────────────────────────────
+
+ submitted → working → [input-required] → completed / failed
+                      ↑___________________↓
+
+ 终态：completed、failed、canceled
+*/
 
 /**
 任务生命周期状态（A2A 规范状态机）
@@ -595,8 +599,10 @@ pub struct A2AError {
 
 // ── A2A 流式事件类型 ─────────────────────────────────────────────────
 
-// 用于 tasks/sendSubscribe 的 SSE 流式响应。
-// 每个事件是一行 JSON，格式为：`data: <json>\n\n`
+/*
+用于 tasks/sendSubscribe 的 SSE 流式响应。
+每个事件是一行 JSON，格式为：`data: <json>\n\n`
+*/
 
 /// 流式响应中的事件类型
 #[derive(Debug, Clone, Serialize, Deserialize)]

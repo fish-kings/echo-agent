@@ -1,7 +1,9 @@
-//! 面向子 Agent 派发（dispatch）的 LLM 用量统计累加器。
-//!
-//! 跟踪单次子 Agent 派发内所有 LLM 调用的累计 token 用量，
-//! 字段与 `AgentEvent::LlmUsage` 保持一致。
+/*!
+面向子 Agent 派发（dispatch）的 LLM 用量统计累加器。
+
+跟踪单次子 Agent 派发内所有 LLM 调用的累计 token 用量，
+字段与 `AgentEvent::LlmUsage` 保持一致。
+*/
 
 use serde::{Deserialize, Serialize};
 
@@ -25,8 +27,10 @@ pub struct LlmUsageStats {
     pub cached_prompt_tokens: u64,
     /// 累计的缓存创建 prompt token 数。
     pub cache_creation_prompt_tokens: u64,
-    /// 是否有任意一次调用上报了真实的用量元数据。
-    /// 一旦被置为 `true`，就会一直保持 `true`（粘滞状态）。
+    /**
+    是否有任意一次调用上报了真实的用量元数据。
+    一旦被置为 `true`，就会一直保持 `true`（粘滞状态）。
+    */
     pub usage_reported: bool,
     /// 已记录的 LLM 调用次数。
     pub call_count: u64,
@@ -82,6 +86,7 @@ impl LlmUsageStats {
 mod tests {
     use super::*;
 
+    /// 验证多次调用的用量会被正确累加。
     #[test]
     fn accumulates_multiple_calls() {
         let mut stats = LlmUsageStats::default();
@@ -96,6 +101,7 @@ mod tests {
         assert!(stats.usage_reported);
     }
 
+    /// 验证直到有调用上报真实用量前 usage_reported 保持 false。
     #[test]
     fn usage_reported_stays_false_until_any_true() {
         let mut stats = LlmUsageStats::default();
@@ -105,6 +111,7 @@ mod tests {
         assert!(stats.usage_reported);
     }
 
+    /// 验证模型名为空时载荷中的 model 为 "unknown"。
     #[test]
     fn payload_uses_unknown_when_model_empty() {
         let stats = LlmUsageStats::default();
@@ -113,6 +120,7 @@ mod tests {
         assert_eq!(p["usage_reported"], serde_json::json!(false));
     }
 
+    /// 验证设置了模型名时载荷使用真实模型名。
     #[test]
     fn payload_uses_real_model_when_set() {
         let mut stats = LlmUsageStats::default();

@@ -1,35 +1,37 @@
-//! demo42_browser_mcp.rs —— Playwright MCP 浏览器集成演示
-//!
-//! 展示 echo-agent 通过 MCP 配置文件连接 Playwright MCP 服务端，
-//! 使用浏览器自动化能力（导航、快照、截图、点击等）。
-//!
-//! # 架构
-//!
-//! ```text
-//! echo-agent (MCP Client)
-//!    │ 读取 mcp.json 配置
-//!    ▼
-//! @playwright/mcp (MCP Server)
-//!    │ Playwright
-//!    ▼
-//! Chromium / Firefox / WebKit
-//! ```
-//!
-//! # 前置条件
-//!
-//! 1. 安装 Node.js 和 npm
-//! 2. 复制 `examples/mcp.json.example` 为 `mcp.json` 并配置
-//! 3. 设置 LLM API 密钥（DEEPSEEK_API_KEY / QWEN_API_KEY / OPENAI_API_KEY）
-//!
-//! # 运行方式
-//!
-//! ```bash
-//! # 1. 复制配置文件
-//! cp examples/mcp.json.example mcp.json
-//!
-//! # 2. 运行示例
-//! cargo run -p echo-agent-learning --example demo42_browser_mcp --features mcp
-//! ```
+/*!
+ * demo42_browser_mcp.rs —— Playwright MCP 浏览器集成演示
+ *
+ * 展示 echo-agent 通过 MCP 配置文件连接 Playwright MCP 服务端，
+ * 使用浏览器自动化能力（导航、快照、截图、点击等）。
+ *
+ * # 架构
+ *
+ * ```text
+ * echo-agent (MCP Client)
+ *    │ 读取 mcp.json 配置
+ *    ▼
+ * @playwright/mcp (MCP Server)
+ *    │ Playwright
+ *    ▼
+ * Chromium / Firefox / WebKit
+ * ```
+ *
+ * # 前置条件
+ *
+ * 1. 安装 Node.js 和 npm
+ * 2. 复制 `examples/mcp.json.example` 为 `mcp.json` 并配置
+ * 3. 设置 LLM API 密钥（DEEPSEEK_API_KEY / QWEN_API_KEY / OPENAI_API_KEY）
+ *
+ * # 运行方式
+ *
+ * ```bash
+ * # 1. 复制配置文件
+ * cp examples/mcp.json.example mcp.json
+ *
+ * # 2. 运行示例
+ * cargo run -p echo-agent-learning --example demo42_browser_mcp --features mcp
+ * ```
+ */
 
 mod support;
 
@@ -37,8 +39,10 @@ use echo_agent::mcp::McpConfigFile;
 use echo_agent::prelude::*;
 use futures::StreamExt;
 
+/// 浏览器工具调用的超时时间（毫秒）。
 const BROWSER_TOOL_TIMEOUT_MS: u64 = 120_000;
 
+/// 示例入口：加载 MCP 配置并运行 Agent 浏览器任务。
 #[tokio::main]
 async fn main() -> echo_agent::error::Result<()> {
     dotenvy::dotenv().ok();
@@ -63,8 +67,8 @@ async fn main() -> echo_agent::error::Result<()> {
         ));
     };
 
-    // Part 1: MCP 工具发现
-    // demo_tool_discovery(&mcp_config).await?;
+    /* Part 1: MCP 工具发现（已停用）
+    demo_tool_discovery(&mcp_config).await?; */
 
     // Part 2: Agent 集成浏览器任务
     demo_agent_browser_task(&mcp_config).await?;
@@ -72,8 +76,9 @@ async fn main() -> echo_agent::error::Result<()> {
     Ok(())
 }
 
-// ── Part 2: Agent + Browser ───────────────────────────────────────────────────
+// ── Part 2: Agent + 浏览器 ─────────────────────────────────────────────────
 
+/// 演示 Agent 通过 Playwright MCP 工具执行浏览器任务，并实时打印事件。
 async fn demo_agent_browser_task(_config: &McpConfigFile) -> echo_agent::error::Result<()> {
     println!("{}", "─".repeat(55));
     println!("Part 2: Agent 集成浏览器自动化（显示思考过程和工具返回）\n");
@@ -196,6 +201,7 @@ async fn demo_agent_browser_task(_config: &McpConfigFile) -> echo_agent::error::
 
 // ── 辅助函数 ─────────────────────────────────────────────────────────────────
 
+/// 读取显式配置的 LLM 模型配置，缺失时返回错误。
 fn require_configured_model(preferred: Option<&str>) -> echo_agent::error::Result<LlmConfig> {
     support::llm_config(preferred).map_err(|error| {
             echo_agent::error::ReactError::Other(format!(

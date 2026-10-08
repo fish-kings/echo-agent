@@ -1,37 +1,44 @@
-//! Excel file processing tools
-//!
-//! Provides Excel file reading capabilities, supporting:
-//! - .xlsx / .xls / .xlsb / .ods formats
-//! - Read worksheet list
-//! - Extract cell data
+/*!
+Excel 文件处理工具
+
+提供 Excel 文件读取能力，支持：
+- .xlsx / .xls / .xlsb / .ods 格式
+- 读取工作表列表
+- 提取单元格数据
+*/
 
 use futures::future::BoxFuture;
 use serde_json::Value;
 
 use crate::security::{ResourceLimits, SecurityConfig};
-use calamine::Reader; // Import Reader trait for sheet_names(), worksheet_range(), etc.
+use calamine::Reader; // 引入 Reader trait，以使用 sheet_names()、worksheet_range() 等方法
 use echo_core::error::{Result, ToolError};
 use echo_core::tools::permission::ToolPermission;
 use echo_core::tools::{Tool, ToolParameters, ToolResult};
 
+/// 错误信息中使用的工具名称
 const TOOL_NAME: &str = "excel_tools";
 
-/// Excel reading tool
+/// Excel 读取工具：返回工作表列表与数据预览
 pub struct ExcelReadTool;
 
 impl Tool for ExcelReadTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "read_excel"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Read Excel file (.xlsx/.xls/.xlsb/.ods), return sheet list and data preview."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -57,6 +64,7 @@ impl Tool for ExcelReadTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -79,10 +87,10 @@ impl Tool for ExcelReadTool {
             let security = SecurityConfig::global();
             let path = security.validate_file(file_path)?;
 
-            // Open file based on extension
+            // 根据扩展名选择打开方式
             let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-            // Limit preview rows to max allowed
+            // 将预览行数限制在允许的最大值内
             let effective_preview_rows = preview_rows.min(security.limits.max_preview_rows);
 
             let result = match extension {
@@ -115,7 +123,7 @@ impl Tool for ExcelReadTool {
                     &security.limits,
                 )?,
                 _ => {
-                    // Try opening as xlsx
+                    // 尝试按 xlsx 格式打开
                     read_excel_xlsx(
                         file_path,
                         sheet_name,
@@ -131,22 +139,26 @@ impl Tool for ExcelReadTool {
     }
 }
 
-/// Excel info tool
+/// Excel 信息工具：返回工作表列表、行列数等基本信息
 pub struct ExcelInfoTool;
 
 impl Tool for ExcelInfoTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "excel_info"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Get basic info about an Excel file: sheet list, row/column counts, etc."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -160,6 +172,7 @@ impl Tool for ExcelInfoTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -175,14 +188,14 @@ impl Tool for ExcelInfoTool {
             let mut info = Vec::new();
             info.push(format!("File: {}", file_path));
 
-            // Get sheet list
+            // 获取工作表列表
             let sheets = workbook.sheet_names();
             info.push(format!("Number of sheets: {}", sheets.len()));
             info.push(String::new());
             info.push("Sheet list:".to_string());
 
             for (idx, sheet_name) in sheets.iter().enumerate() {
-                // Get sheet range
+                // 获取工作表数据范围
                 let range = workbook.worksheet_range(sheet_name).map_err(|e| {
                     ToolError::ExecutionFailed {
                         tool: TOOL_NAME.to_string(),
@@ -199,7 +212,7 @@ impl Tool for ExcelInfoTool {
                     width
                 ));
 
-                // Show header row (first row)
+                // 显示表头行（第一行）
                 if height > 0 {
                     let headers: Vec<String> = (0..width)
                         .map(|col| {
@@ -218,7 +231,7 @@ impl Tool for ExcelInfoTool {
                         info.push(format!("    Row 1: {}", non_empty.join(" | ")));
                     }
 
-                    // Show row 2 if it looks different from row 1 (hint: might be the real header)
+                    // 若第二行与第一行不同则一并显示（提示：它可能才是真正的表头）
                     if height > 1 {
                         let row2: Vec<String> = (0..width)
                             .map(|col| {
@@ -239,7 +252,7 @@ impl Tool for ExcelInfoTool {
                     }
                 }
 
-                // Detect formula cells using worksheet_formula
+                // 使用 worksheet_formula 检测公式单元格
                 if let Ok(formula_range) = workbook.worksheet_formula(sheet_name) {
                     let mut formula_count = 0usize;
                     let mut sample_formulas: Vec<String> = Vec::new();
@@ -252,7 +265,7 @@ impl Tool for ExcelInfoTool {
                             {
                                 formula_count += 1;
                                 if sample_formulas.len() < 5 {
-                                    // Get the cell reference (e.g. "A10")
+                                    // 获取单元格引用（如 "A10"）
                                     let col_letter = col_to_letter(col);
                                     sample_formulas.push(format!(
                                         "{}{}={}",
@@ -279,22 +292,26 @@ impl Tool for ExcelInfoTool {
     }
 }
 
-/// Excel export tool (export to CSV)
+/// Excel 导出工具（导出为 CSV）
 pub struct ExcelToCsvTool;
 
 impl Tool for ExcelToCsvTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "excel_to_csv"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read, ToolPermission::Write]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Export an Excel worksheet to a CSV file."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -316,6 +333,7 @@ impl Tool for ExcelToCsvTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let input_file = parameters
@@ -335,7 +353,7 @@ impl Tool for ExcelToCsvTool {
 
             let mut workbook = open_excel_auto(input_file)?;
 
-            // Get sheet name
+            // 获取工作表名称
             let sheets = workbook.sheet_names();
             let sheet = resolve_sheet_name(&sheets, sheet_name);
 
@@ -347,7 +365,7 @@ impl Tool for ExcelToCsvTool {
                         message: format!("Failed to read sheet '{}': {:?}", sheet, e),
                     })?;
 
-            // Create output directory
+            // 创建输出目录
             let output_path = security.validate_output_file(output_file)?;
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| ToolError::ExecutionFailed {
@@ -356,11 +374,11 @@ impl Tool for ExcelToCsvTool {
                 })?;
             }
 
-            // Write CSV
+            // 写入 CSV
             let mut csv_content = Vec::new();
             let (height, width) = range.get_size();
 
-            // Limit export rows
+            // 限制导出行数
             let max_export_rows = security.limits.max_preview_rows;
             let export_height = height.min(max_export_rows);
 
@@ -371,7 +389,7 @@ impl Tool for ExcelToCsvTool {
                         .get_value((row as u32, col as u32))
                         .map(format_cell_value)
                         .unwrap_or_default();
-                    // Escape quotes and commas in CSV
+                    // 转义 CSV 中的引号与逗号
                     let escaped = if cell_value.contains(',')
                         || cell_value.contains('"')
                         || cell_value.contains('\n')
@@ -385,7 +403,7 @@ impl Tool for ExcelToCsvTool {
                 csv_content.push(row_data.join(","));
             }
 
-            // Prepend UTF-8 BOM so Excel correctly detects encoding for non-ASCII content
+            // 在开头添加 UTF-8 BOM，使 Excel 能正确识别非 ASCII 内容的编码
             let bom = "\u{FEFF}";
             let csv_output = format!("{}{}", bom, csv_content.join("\n"));
             tokio::fs::write(output_path, csv_output)
@@ -411,9 +429,9 @@ impl Tool for ExcelToCsvTool {
     }
 }
 
-// ── Helper Functions ──────────────────────────────────────────────────
+// ── 辅助函数 ──────────────────────────────────────────────────
 
-/// Read xlsx file
+/// 读取 xlsx 文件
 fn read_excel_xlsx(
     file_path: &str,
     sheet_name: Option<&str>,
@@ -439,7 +457,7 @@ fn read_excel_xlsx(
     )
 }
 
-/// Read xls file
+/// 读取 xls 文件
 fn read_excel_xls(
     file_path: &str,
     sheet_name: Option<&str>,
@@ -465,7 +483,7 @@ fn read_excel_xls(
     )
 }
 
-/// Read xlsb file
+/// 读取 xlsb 文件
 fn read_excel_xlsb(
     file_path: &str,
     sheet_name: Option<&str>,
@@ -491,7 +509,7 @@ fn read_excel_xlsb(
     )
 }
 
-/// Read ods file
+/// 读取 ods 文件
 fn read_excel_ods(
     file_path: &str,
     sheet_name: Option<&str>,
@@ -517,7 +535,7 @@ fn read_excel_ods(
     )
 }
 
-/// Generic Excel data reader
+/// 通用 Excel 数据读取：按工作表、跳过行数与预览行数生成文本预览
 fn read_excel_data<R: calamine::Reader<std::io::BufReader<std::fs::File>>>(
     workbook: &mut R,
     file_path: &str,
@@ -526,11 +544,11 @@ fn read_excel_data<R: calamine::Reader<std::io::BufReader<std::fs::File>>>(
     skip_rows: usize,
     limits: &ResourceLimits,
 ) -> Result<String> {
-    // Get sheet name
+    // 获取工作表名称
     let sheets = workbook.sheet_names();
     let target_sheet = resolve_sheet_name(&sheets, sheet_name);
 
-    // Read sheet data
+    // 读取工作表数据
     let range =
         workbook
             .worksheet_range(&target_sheet)
@@ -541,16 +559,16 @@ fn read_excel_data<R: calamine::Reader<std::io::BufReader<std::fs::File>>>(
 
     let (height, width) = range.get_size();
 
-    // Apply skip_rows offset
+    // 应用 skip_rows 偏移
     let skip = skip_rows.min(height.saturating_sub(1));
     let available_rows = height - skip;
 
-    // Limit preview rows to max allowed
+    // 将预览行数限制在允许的最大值内
     let display_rows = preview_rows
         .min(available_rows)
         .min(limits.max_preview_rows);
 
-    // Format output
+    // 格式化输出
     let mut result = Vec::new();
     result.push(format!("File: {}", file_path));
     result.push(format!("Sheet: {}", target_sheet));
@@ -571,7 +589,7 @@ fn read_excel_data<R: calamine::Reader<std::io::BufReader<std::fs::File>>>(
     ));
     result.push(String::new());
 
-    // Headers and data (with skip offset)
+    // 表头与数据（已应用跳过偏移）
     for row in 0..display_rows {
         let mut row_data = Vec::new();
         for col in 0..width {
@@ -591,7 +609,7 @@ fn read_excel_data<R: calamine::Reader<std::io::BufReader<std::fs::File>>>(
     Ok(result.join("\n"))
 }
 
-/// Format cell value with proper type handling
+/// 按单元格类型将值格式化为字符串
 fn format_cell_value(value: &calamine::Data) -> String {
     use calamine::Data;
     match value {
@@ -601,10 +619,10 @@ fn format_cell_value(value: &calamine::Data) -> String {
         Data::Int(i) => i.to_string(),
         Data::Bool(b) => b.to_string(),
         Data::DateTime(dt) => {
-            // Convert Excel serial date to human-readable format
+            // 将 Excel 序列日期转换为可读格式
             match dt.as_datetime() {
                 Some(ndt) => {
-                    // If time component is midnight, show date only
+                    // 若时间部分为午夜，则只显示日期
                     if ndt.time() == chrono::NaiveTime::MIN {
                         ndt.format("%Y-%m-%d").to_string()
                     } else {
@@ -620,7 +638,7 @@ fn format_cell_value(value: &calamine::Data) -> String {
     }
 }
 
-/// Smart float formatting: preserve precision (up to 6 decimals), strip trailing zeros.
+/// 智能浮点格式化：保留精度（最多 6 位小数）并去掉末尾的零。
 fn format_smart_float(f: f64) -> String {
     if f.is_nan() {
         return "NaN".to_string();
@@ -632,7 +650,7 @@ fn format_smart_float(f: f64) -> String {
             "-Infinity".to_string()
         };
     }
-    // Use up to 6 decimal places, then strip trailing zeros
+    // 先保留最多 6 位小数，再去掉末尾的零
     let formatted = format!("{:.6}", f);
     if formatted.contains('.') {
         let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
@@ -642,7 +660,7 @@ fn format_smart_float(f: f64) -> String {
     }
 }
 
-/// Open any Excel format (.xlsx/.xls/.xlsb/.ods) using auto-detection.
+/// 自动识别格式并打开任意 Excel 文件（.xlsx/.xls/.xlsb/.ods）。
 fn open_excel_auto(file_path: &str) -> Result<calamine::Sheets<std::io::BufReader<std::fs::File>>> {
     calamine::open_workbook_auto(file_path).map_err(|e| {
         echo_core::error::ReactError::Tool(Box::new(ToolError::ExecutionFailed {
@@ -652,18 +670,20 @@ fn open_excel_auto(file_path: &str) -> Result<calamine::Sheets<std::io::BufReade
     })
 }
 
-/// Resolve a sheet name or numeric index to an actual sheet name.
-/// If `sheet_name` is a numeric string like "0", "1", etc., return the corresponding sheet name.
+/**
+将工作表名称或数字索引解析为实际的工作表名称。
+若 `sheet_name` 是 "0"、"1" 这类数字字符串，则返回对应索引的工作表名称。
+*/
 fn resolve_sheet_name(sheets: &[String], sheet_name: Option<&str>) -> String {
     match sheet_name {
         Some(name) => {
-            // Try parsing as index
+            // 尝试按索引解析
             if let Ok(idx) = name.parse::<usize>()
                 && idx < sheets.len()
             {
                 return sheets[idx].clone();
             }
-            // Otherwise treat as literal name
+            // 否则按字面名称处理
             name.to_string()
         }
         None => sheets
@@ -673,7 +693,7 @@ fn resolve_sheet_name(sheets: &[String], sheet_name: Option<&str>) -> String {
     }
 }
 
-/// Convert 0-based column index to Excel column letter (0→A, 1→B, ..., 25→Z, 26→AA, ...)
+/// 将从 0 开始的列索引转换为 Excel 列字母（0→A、1→B、……、25→Z、26→AA、……）
 fn col_to_letter(col: usize) -> String {
     let mut result = String::new();
     let mut c = col;
@@ -690,23 +710,27 @@ fn col_to_letter(col: usize) -> String {
 
 // ── ExcelProfileTool ───────────────────────────────────────────────
 
-/// Excel profiling tool — automatic column type detection and statistical summary.
+/// Excel 数据画像工具：自动检测列类型并生成统计摘要。
 pub struct ExcelProfileTool;
 
 impl Tool for ExcelProfileTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "excel_profile"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Profile an Excel file: detect column types, count nulls, compute basic statistics (min/max/mean for numbers). \
          Useful for quick data quality assessment."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -728,6 +752,7 @@ impl Tool for ExcelProfileTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -759,7 +784,7 @@ impl Tool for ExcelProfileTool {
             let (height, width) = range.get_size();
             let profile_rows = max_rows.unwrap_or(height).min(height);
 
-            // Detect column types and compute stats
+            // 检测列类型并计算统计量
             let mut col_types: Vec<String> = Vec::new();
             let mut col_nulls: Vec<usize> = Vec::new();
             let mut col_numeric_values: Vec<Vec<f64>> = Vec::new();
@@ -797,14 +822,14 @@ impl Tool for ExcelProfileTool {
                 col_numeric_values.push(numeric_vals);
             }
 
-            // Build profile report
+            // 构建画像报告
             let mut report = Vec::new();
             report.push(format!("=== Profile: {} / {} ===", file_path, target_sheet));
             report.push(format!("Rows: {} (profiled: {})", height, profile_rows));
             report.push(format!("Columns: {}", width));
             report.push(String::new());
 
-            // Get header row if available
+            // 获取表头行（若存在）
             let headers: Vec<String> = (0..width)
                 .map(|col| {
                     range
@@ -827,7 +852,7 @@ impl Tool for ExcelProfileTool {
                     headers[col], col_types[col], col_nulls[col], null_pct
                 );
 
-                // Add stats for numeric columns
+                // 为数值列追加统计信息
                 if col_types[col] == "numeric" && !col_numeric_values[col].is_empty() {
                     let vals = &col_numeric_values[col];
                     let min = vals.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -849,22 +874,26 @@ impl Tool for ExcelProfileTool {
 
 // ── ExcelWriteTool ─────────────────────────────────────────────────
 
-/// Excel write tool — create or modify Excel files.
+/// Excel 写入工具：创建或修改 Excel 文件。
 pub struct ExcelWriteTool;
 
 impl Tool for ExcelWriteTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "write_excel"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Write]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Create or write data to an Excel file (.xlsx). Supports specifying sheet name, headers, and data rows."
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -895,6 +924,7 @@ impl Tool for ExcelWriteTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -924,7 +954,7 @@ impl Tool for ExcelWriteTool {
             let security = SecurityConfig::global();
             let output_path = security.validate_output_file(file_path)?;
 
-            // Create parent directory if needed
+            // 按需创建父目录
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| ToolError::ExecutionFailed {
                     tool: TOOL_NAME.to_string(),
@@ -935,7 +965,7 @@ impl Tool for ExcelWriteTool {
             let mut workbook = rust_xlsxwriter::Workbook::new();
             let worksheet = workbook.add_worksheet();
 
-            // Set sheet name
+            // 设置工作表名称
             worksheet
                 .set_name(sheet_name)
                 .map_err(|e| ToolError::ExecutionFailed {
@@ -945,7 +975,7 @@ impl Tool for ExcelWriteTool {
 
             let mut row = 0u32;
 
-            // Write headers
+            // 写入表头
             if let Some(ref headers) = headers {
                 for (col, header) in headers.iter().enumerate() {
                     worksheet
@@ -958,7 +988,7 @@ impl Tool for ExcelWriteTool {
                 row += 1;
             }
 
-            // Write data rows
+            // 写入数据行
             let mut rows_written = 0usize;
             for row_data in data {
                 if let Some(cols) = row_data.as_array() {
@@ -990,7 +1020,7 @@ impl Tool for ExcelWriteTool {
                                     .map_err(write_err)?;
                             }
                             serde_json::Value::Null => {
-                                // Skip null cells
+                                // 跳过空值单元格
                             }
                             _ => {
                                 worksheet
@@ -1024,24 +1054,29 @@ impl Tool for ExcelWriteTool {
 
 // ── ExcelLoadTool ─────────────────────────────────────────────────
 
-/// Excel → Polars DataFrame bridge tool.
-///
-/// Reads an Excel sheet, converts to a Polars DataFrame with type inference,
-/// and saves as Parquet (default) or CSV. This unlocks all Polars data tools
-/// (filter, aggregate, stats, transform, etc.) for Excel data.
+/**
+Excel → Polars DataFrame 桥接工具。
+
+读取 Excel 工作表，经类型推断转换为 Polars DataFrame，
+并保存为 Parquet（默认）或 CSV。这样 Excel 数据即可使用全部 Polars 数据工具
+（过滤、聚合、统计、转换等）。
+*/
 #[cfg(feature = "data")]
 pub struct ExcelLoadTool;
 
 #[cfg(feature = "data")]
 impl Tool for ExcelLoadTool {
+    /// 返回工具名称
     fn name(&self) -> &str {
         "excel_load"
     }
 
+    /// 返回工具所需权限
     fn permissions(&self) -> Vec<ToolPermission> {
         vec![ToolPermission::Read]
     }
 
+    /// 返回工具描述
     fn description(&self) -> &str {
         "Load Excel sheet(s) into Polars DataFrame(s) and save as Parquet/CSV. \
          This bridges Excel data into the data processing pipeline — \
@@ -1054,6 +1089,7 @@ impl Tool for ExcelLoadTool {
          - Skip rows: skip_rows=2 to ignore the first 2 rows entirely"
     }
 
+    /// 返回参数的 JSON Schema
     fn parameters(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -1091,6 +1127,7 @@ impl Tool for ExcelLoadTool {
         })
     }
 
+    /// 执行工具逻辑
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let file_path = parameters
@@ -1105,7 +1142,7 @@ impl Tool for ExcelLoadTool {
                 .get("format")
                 .and_then(|v| v.as_str())
                 .unwrap_or("parquet");
-            // header_row: integer (0-based row index of header). Default 0.
+            // header_row：整数（表头所在的行索引，从 0 开始），默认 0。
             let header_row_idx = parameters
                 .get("header_row")
                 .and_then(|v| v.as_u64())
@@ -1118,11 +1155,11 @@ impl Tool for ExcelLoadTool {
             let security = SecurityConfig::global();
             let _path = security.validate_file(file_path)?;
 
-            // Read Excel
+            // 读取 Excel
             let mut workbook = open_excel_auto(file_path)?;
             let all_sheets = workbook.sheet_names();
 
-            // Determine which sheets to load
+            // 确定需要加载的工作表
             let sheets_to_load: Vec<String> = if let Some(sheets_str) = sheets_param {
                 if sheets_str.trim().to_lowercase() == "all" {
                     all_sheets.clone()
@@ -1158,8 +1195,8 @@ impl Tool for ExcelLoadTool {
                     continue;
                 }
 
-                // header_row_idx is the 0-based row index of the header.
-                // All rows before it are skipped (title rows, metadata, etc.)
+                /* header_row_idx 是表头的行索引（从 0 开始）。
+                之前的所有行（标题行、元数据等）都会被跳过。 */
                 let data_start_row = header_row_idx + 1;
                 if data_start_row >= height {
                     all_results.push(format!(
@@ -1171,7 +1208,7 @@ impl Tool for ExcelLoadTool {
                 let data_rows = height - data_start_row;
                 let load_rows = max_rows.unwrap_or(data_rows).min(data_rows);
 
-                // Extract headers from the header row
+                // 从表头行提取列名
                 let headers: Vec<String> = (0..width)
                     .map(|col| {
                         range
@@ -1189,7 +1226,7 @@ impl Tool for ExcelLoadTool {
                     })
                     .collect();
 
-                // Detect column types by scanning all data rows
+                // 扫描所有数据行以检测列类型
                 let mut col_is_numeric: Vec<bool> = vec![true; width];
                 let mut col_has_float: Vec<bool> = vec![false; width];
                 let mut col_is_bool: Vec<bool> = vec![true; width];
@@ -1244,7 +1281,7 @@ impl Tool for ExcelLoadTool {
                     }
                 }
 
-                // Build Polars Series for each column
+                // 为每一列构建 Polars Series
                 use polars::prelude::*;
                 let mut series_list: Vec<Series> = Vec::with_capacity(width);
 
@@ -1322,7 +1359,7 @@ impl Tool for ExcelLoadTool {
                     }
                 }
 
-                // Build DataFrame
+                // 构建 DataFrame
                 let columns: Vec<polars::prelude::Column> =
                     series_list.into_iter().map(|s| s.into_column()).collect();
                 let col_count = columns.len();
@@ -1335,7 +1372,7 @@ impl Tool for ExcelLoadTool {
                         ),
                     })?;
 
-                // Determine output path (with sheet suffix for multi-sheet)
+                // 确定输出路径（多工作表时追加工作表名后缀）
                 let out_path = if let Some(out) = output_file {
                     if is_multi {
                         let ext = std::path::Path::new(out)
@@ -1369,7 +1406,7 @@ impl Tool for ExcelLoadTool {
                     parent.join(out_name)
                 };
 
-                // Create parent directory if needed
+                // 按需创建父目录
                 if let Some(p) = out_path.parent() {
                     std::fs::create_dir_all(p).map_err(|e| ToolError::ExecutionFailed {
                         tool: TOOL_NAME.to_string(),
@@ -1377,7 +1414,7 @@ impl Tool for ExcelLoadTool {
                     })?;
                 }
 
-                // Write output
+                // 写出结果
                 match format {
                     "csv" => {
                         let mut file = std::fs::File::create(&out_path).map_err(|e| {
@@ -1409,7 +1446,7 @@ impl Tool for ExcelLoadTool {
                     }
                 }
 
-                // Build result summary for this sheet
+                // 为当前工作表构建结果摘要
                 let shape = df.shape();
                 let col_names: Vec<String> = df
                     .get_column_names()
@@ -1446,7 +1483,7 @@ impl Tool for ExcelLoadTool {
                 all_results.push(sheet_result.join("\n"));
             }
 
-            // Final summary
+            // 最终汇总
             let mut result = Vec::new();
             result.push(format!(
                 "Loaded {} sheet(s) from '{}' → {}",

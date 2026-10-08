@@ -1,18 +1,20 @@
-//! 记忆系统
-//!
-//! 分层架构，各层职责各不相同：
-//!
-//! | 层级 | 实现 | 作用范围 |
-//! |------|------|--------|
-//! | 短期上下文 | [`crate::compression::ContextManager`] | 单次 `execute()` 调用内 |
-//! | 对话历史 | [`ConversationStore`] / `SqliteConversationStore` | 会话记录投影、历史浏览、多用户隔离 |
-//! | 长期记忆 | [`Store`] / [`FileStore`] / `SqliteStore` | 跨会话、跨用户共享 |
-//!
-//! 运行时检查点（用于在进程重启后恢复正在进行的对话）存放在
-//! `echo_agent::state::RuntimeStateStore` 中——不在本模块内。
-//!
-//! **注意**：trait 定义与数据类型现已迁移至 `echo_core::memory`。
-//! 此处仅为向后兼容而重新导出。
+/*!
+记忆系统
+
+分层架构，各层职责各不相同：
+
+| 层级 | 实现 | 作用范围 |
+|------|------|--------|
+| 短期上下文 | [`crate::compression::ContextManager`] | 单次 `execute()` 调用内 |
+| 对话历史 | [`ConversationStore`] / `SqliteConversationStore` | 会话记录投影、历史浏览、多用户隔离 |
+| 长期记忆 | [`Store`] / [`FileStore`] / `SqliteStore` | 跨会话、跨用户共享 |
+
+运行时检查点（用于在进程重启后恢复正在进行的对话）存放在
+`echo_agent::state::RuntimeStateStore` 中——不在本模块内。
+
+**注意**：trait 定义与数据类型现已迁移至 `echo_core::memory`。
+此处仅为向后兼容而重新导出。
+*/
 
 pub mod conversation;
 pub mod embedder;

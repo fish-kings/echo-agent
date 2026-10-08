@@ -1,9 +1,11 @@
-//! ReadSkillResourceTool —— 按需加载资源文件（第三层）。
-//!
-//! 当技能的指令内容引用了随附文件（脚本、参考文档、素材）时，
-//! LLM 会调用此工具将其内容加载到上下文中。
-//!
-//! 安全性：拒绝路径穿越（`..`），且只允许从已激活技能的目录中读取文件。
+/*!
+ReadSkillResourceTool —— 按需加载资源文件（第三层）。
+
+当技能的指令内容引用了随附文件（脚本、参考文档、素材）时，
+LLM 会调用此工具将其内容加载到上下文中。
+
+安全性：拒绝路径穿越（`..`），且只允许从已激活技能的目录中读取文件。
+*/
 
 use std::sync::Arc;
 
@@ -18,10 +20,12 @@ use echo_core::tools::{Tool, ToolParameters, ToolResult};
 /// 资源文件的默认最大大小限制（1 MB）。
 const DEFAULT_MAX_RESOURCE_BYTES: usize = 1024 * 1024;
 
-/// 用于从已激活技能目录中读取资源文件的工具。
-///
-/// 仅允许读取已通过 `activate_skill` 激活的技能的资源。
-/// 出于安全考虑会拒绝路径穿越尝试。
+/**
+用于从已激活技能目录中读取资源文件的工具。
+
+仅允许读取已通过 `activate_skill` 激活的技能的资源。
+出于安全考虑会拒绝路径穿越尝试。
+*/
 pub struct ReadSkillResourceTool {
     /// 技能注册表，用于查询技能是否已激活及其描述符信息。
     registry: Arc<RwLock<SkillRegistry>>,
@@ -78,8 +82,10 @@ impl Tool for ReadSkillResourceTool {
         })
     }
 
-    /// 执行资源读取：校验技能已激活、路径安全且未逃逸技能目录、文件大小未超限，
-    /// 随后读取文件内容并包装为 `<skill_resource>` 标签文本返回。
+    /**
+    执行资源读取：校验技能已激活、路径安全且未逃逸技能目录、文件大小未超限，
+    随后读取文件内容并包装为 `<skill_resource>` 标签文本返回。
+    */
     fn execute(&self, parameters: ToolParameters) -> BoxFuture<'_, Result<ToolResult>> {
         Box::pin(async move {
             let skill_name = parameters
@@ -212,9 +218,11 @@ impl Tool for ReadSkillResourceTool {
     }
 }
 
-/// 检查路径中是否包含上级目录穿越（`..`）组件。
-///
-/// 使用 `Path::components` 而非字符串匹配，以应对编码后或非常规形式的路径穿越尝试。
+/**
+检查路径中是否包含上级目录穿越（`..`）组件。
+
+使用 `Path::components` 而非字符串匹配，以应对编码后或非常规形式的路径穿越尝试。
+*/
 fn is_path_traversal_safe(path: &std::path::Path) -> bool {
     use std::path::Component;
     path.components()
@@ -229,8 +237,10 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    /// 验证即使技能通过 `allowed_tools` 限制了可用工具集，
-    /// `read_skill_resource` 工具依然可用并能正确读取该技能目录下的资源内容。
+    /**
+    验证即使技能通过 `allowed_tools` 限制了可用工具集，
+    `read_skill_resource` 工具依然可用并能正确读取该技能目录下的资源内容。
+    */
     #[tokio::test]
     async fn read_skill_resource_remains_available_to_restricted_skill() {
         let root =

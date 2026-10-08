@@ -1,13 +1,15 @@
-//! 本地沙箱执行器
-//!
-//! 使用本地进程执行命令，并在支持的平台启用操作系统原生隔离：
-//! - **macOS**: `sandbox-exec` (Seatbelt)
-//! - **Linux**: `bubblewrap` (user/mount/pid/network namespaces)
-//! - **Windows**: unavailable until a Job Object owns the complete process tree
-//! - **其他**: 仅进程隔离（超时 + 输出截断）
-//! - 支持通过 `SandboxCommand::stdin` 传入标准输入
-//!
-//! 这是最轻量的沙箱层，适合受信代码和只读操作。
+/*!
+ * 本地沙箱执行器
+ *
+ * 使用本地进程执行命令，并在支持的平台启用操作系统原生隔离：
+ * - **macOS**: `sandbox-exec` (Seatbelt)
+ * - **Linux**: `bubblewrap` (user/mount/pid/network namespaces)
+ * - **Windows**: 在 Job Object 能够接管完整进程树之前暂不可用
+ * - **其他**: 仅进程隔离（超时 + 输出截断）
+ * - 支持通过 `SandboxCommand::stdin` 传入标准输入
+ *
+ * 这是最轻量的沙箱层，适合受信代码和只读操作。
+ */
 
 use super::{
     CommandKind, ExecutionResult, IsolationLevel, ResourceLimits, SandboxCommand, SandboxExecutor,
@@ -28,31 +30,51 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// 流式输出时单个分块的最大字节数
 const STREAM_CHUNK_BYTES: usize = 16 * 1024;
+/// 流式事件通道的容量
 const STREAM_CHANNEL_CAPACITY: usize = 32;
 
+/// 本地沙箱的流式事件类型
 type LocalEventStream = Pin<Box<dyn Stream<Item = SandboxStreamEvent> + Send>>;
 
+/// 已启动的本地命令：事件流及其所属的后台任务句柄
 struct StartedLocalCommand {
+    /// 子进程输出与终态事件流
     stream: LocalEventStream,
+    /// 拥有子进程生命周期的后台任务
     task: tokio::task::JoinHandle<LocalChildTerminal>,
 }
 
+/// 本地子进程的终止状态
 enum LocalChildTerminal {
+    /// 正常完成，完成事件已送达
     Completed,
+    /// 执行失败
     Failed(SandboxError),
+    /// 事件接收方已关闭，任务放弃交付终态；携带清理结果
     Abandoned(std::result::Result<(), String>),
 }
 
+/// 驱动本地子进程流式执行所需的参数集合
 struct LocalChildRequest {
+    /// 要写入子进程的标准输入
     stdin: Option<String>,
+    /// 子进程标准输出管道
     stdout: Option<tokio::process::ChildStdout>,
+    /// 子进程标准错误管道
     stderr: Option<tokio::process::ChildStderr>,
+    /// 捕获的进程组 ID，用于整体清理
     process_group_id: Option<u32>,
+    /// 流式事件发送端
     events: mpsc::Sender<SandboxStreamEvent>,
+    /// 执行超时
     timeout: std::time::Duration,
+    /// 输出最大字节数
     max_output_bytes: usize,
+    /// 沙箱类型标识
     sandbox_type: &'static str,
+    /// 可选的取消令牌
     cancel: Option<Arc<CancellationToken>>,
 }
 
@@ -76,6 +98,7 @@ pub struct LocalConfig {
 }
 
 impl Default for LocalConfig {
+    /// 默认配置：在 macOS/Linux 启用 OS 沙箱、禁止网络、30 秒超时、1 MB 输出上限
     fn default() -> Self {
         Self {
             enable_os_sandbox: cfg!(any(target_os = "macos", target_os = "linux")),
@@ -92,6 +115,7 @@ impl Default for LocalConfig {
 /// 本地沙箱执行器
 #[derive(Debug, Clone)]
 pub struct LocalSandbox {
+    /// 本地沙箱配置
     config: LocalConfig,
 }
 
@@ -101,10 +125,12 @@ impl LocalSandbox {
         Self { config }
     }
 
+    /// 判断当前平台上是否实际启用了操作系统沙箱
     fn effective_os_sandbox_enabled(&self) -> bool {
         self.config.enable_os_sandbox && cfg!(any(target_os = "macos", target_os = "linux"))
     }
 
+    /// 返回当前使用的沙箱类型标识
     fn sandbox_type(&self) -> &'static str {
         if !self.effective_os_sandbox_enabled() {
             return "local";
@@ -118,6 +144,7 @@ impl LocalSandbox {
         }
     }
 
+    /// 计算生效的工作目录（未指定时回退到当前目录）
     fn effective_working_dir(&self, sandbox_cmd: &SandboxCommand) -> Option<PathBuf> {
         sandbox_cmd
             .working_dir
@@ -228,12 +255,14 @@ impl LocalSandbox {
         self.build_seatbelt_profile_with_working_dir(None)
     }
 
+    /// 按命令的工作目录生成 Seatbelt profile
     fn build_seatbelt_profile_for(&self, sandbox_cmd: &SandboxCommand) -> String {
         self.build_seatbelt_profile_with_working_dir(
             self.effective_working_dir(sandbox_cmd).as_ref(),
         )
     }
 
+    /// 基于可选工作目录生成完整的 Seatbelt profile
     fn build_seatbelt_profile_with_working_dir(&self, working_dir: Option<&PathBuf>) -> String {
         let mut profile = String::from("(version 1)\n(deny default)\n");
 
@@ -249,15 +278,16 @@ impl LocalSandbox {
         profile
     }
 
+    /// 追加 Seatbelt 基础策略（进程、IPC、设备文件）
     fn append_seatbelt_base_policy(&self, profile: &mut String) {
-        // Shells and language runtimes need broader process metadata access than
-        // fork+exec. File and network access remain constrained by later layers.
+        /* Shell 与语言运行时需要比 fork+exec 更宽的进程元数据访问权限。
+        文件与网络访问仍由后续层约束。 */
         profile.push_str("(allow process*)\n");
         profile.push_str("(allow sysctl-read)\n");
         profile.push_str("(allow mach-lookup)\n");
 
-        // Python multiprocessing, OpenMP, and native libraries commonly touch
-        // these IPC and pseudo-terminal primitives during startup.
+        /* Python multiprocessing、OpenMP 以及原生库在启动时
+        通常会用到这些 IPC 与伪终端原语。 */
         profile.push_str("(allow ipc-posix-sem)\n");
         profile.push_str("(allow ipc-posix-shm)\n");
         profile.push_str("(allow file-read* (literal \"/dev/null\"))\n");
@@ -268,13 +298,15 @@ impl LocalSandbox {
         profile.push_str("(allow file-write* (literal \"/dev/ptmx\"))\n");
     }
 
+    /// 追加平台默认读取策略
     fn append_seatbelt_platform_read_defaults(&self, profile: &mut String) {
-        // Claude Code's sandbox defaults to broad reads so common compilers,
-        // interpreters, and package managers can discover system dependencies.
-        // Sensitive paths are denied again in the filesystem layer.
+        /* Claude Code 的沙箱默认允许广泛读取，以便常见编译器、
+        解释器和包管理器能发现系统依赖。
+        敏感路径会在文件系统层再次拒绝。 */
         profile.push_str("(allow file-read*)\n");
     }
 
+    /// 追加文件系统读写与凭据拒绝策略
     fn append_seatbelt_filesystem_policy(
         &self,
         profile: &mut String,
@@ -291,8 +323,8 @@ impl LocalSandbox {
             append_seatbelt_subpath_rule(profile, "file-write*", path);
         }
 
-        // Match Claude Code's default write boundary: project working directory
-        // plus the session temp directory, not arbitrary parent/home paths.
+        /* 与 Claude Code 的默认写入边界保持一致：项目工作目录
+        加会话临时目录，而非任意父目录或 home 路径。 */
         let session_temp_dir = std::env::temp_dir();
         append_seatbelt_subpath_rule(profile, "file-write*", &session_temp_dir);
 
@@ -301,6 +333,7 @@ impl LocalSandbox {
         }
     }
 
+    /// 构建 Linux bubblewrap 隔离命令
     #[cfg(target_os = "linux")]
     fn build_bubblewrap_command(
         &self,
@@ -370,6 +403,7 @@ impl LocalSandbox {
         command
     }
 
+    /// 非 Linux 平台的回退实现：直接执行程序
     #[cfg(not(target_os = "linux"))]
     fn build_bubblewrap_command(
         &self,
@@ -382,9 +416,11 @@ impl LocalSandbox {
         command
     }
 
-    /// 执行命令并收集输出
-    ///
-    /// 超时时显式 kill + wait 清理子进程，避免僵尸/孤儿进程残留。
+    /**
+     * 执行命令并收集输出
+     *
+     * 超时时显式 kill + wait 清理子进程，避免僵尸/孤儿进程残留。
+     */
     async fn run_command(
         &self,
         command: Command,
@@ -396,6 +432,7 @@ impl LocalSandbox {
             .await
     }
 
+    /// 执行命令并收集输出，支持可选取消令牌
     async fn run_command_controlled(
         &self,
         command: Command,
@@ -455,6 +492,7 @@ impl LocalSandbox {
         }
     }
 
+    /// 以流式方式执行命令，返回事件流
     async fn run_command_stream(
         &self,
         command: Command,
@@ -465,12 +503,13 @@ impl LocalSandbox {
         let StartedLocalCommand { stream, task } = self
             .start_command_stream(command, timeout, stdin, sandbox_type, None)
             .await?;
-        // Streaming callers own the receiver. Dropping it wakes the detached
-        // owner task, which performs kill + wait before it exits.
+        /* 流式调用方持有接收端。丢弃接收端会唤醒已分离的
+        所属任务，该任务在退出前执行 kill + wait。 */
         drop(task);
         Ok(stream)
     }
 
+    /// 启动子进程并创建驱动其执行的后台任务与事件流
     async fn start_command_stream(
         &self,
         mut command: Command,
@@ -525,12 +564,13 @@ impl LocalSandbox {
     }
 }
 
-/// Validate a path for safe inclusion in a macOS Seatbelt sandbox profile.
-///
-/// Rejects paths containing characters that could be used for Seatbelt profile
-/// injection (parentheses for S-expression manipulation, newlines for rule injection,
-/// null bytes for string truncation, semicolons and hash for comment injection).
-/// Only allows: alphanumeric characters, `/`, `.`, `-`, `_`, and spaces.
+/**
+ * 校验路径是否可以安全写入 macOS Seatbelt 沙箱 profile。
+ *
+ * 拒绝包含可能被用于 Seatbelt profile 注入的字符的路径（括号可操纵 S 表达式、
+ * 换行可注入规则、空字节可截断字符串、分号和井号可注入注释）。
+ * 仅允许：字母数字、`/`、`.`、`-`、`_` 和空格。
+ */
 fn validate_sandbox_path(path: &str) -> std::result::Result<(), String> {
     for c in path.chars() {
         if c.is_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ' ') {
@@ -544,6 +584,7 @@ fn validate_sandbox_path(path: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// 为指定路径追加 Seatbelt 允许规则
 fn append_seatbelt_subpath_rule(profile: &mut String, operation: &str, path: &PathBuf) {
     let path = normalize_seatbelt_profile_path(path);
     let path_str = path.display().to_string();
@@ -554,6 +595,7 @@ fn append_seatbelt_subpath_rule(profile: &mut String, operation: &str, path: &Pa
     profile.push_str(&format!("(allow {operation} (subpath \"{escaped}\"))\n"));
 }
 
+/// 为指定路径追加 Seatbelt 读写拒绝规则
 fn append_seatbelt_subpath_deny(profile: &mut String, path: PathBuf) {
     let path = normalize_seatbelt_profile_path(&path);
     let path_str = path.display().to_string();
@@ -565,10 +607,12 @@ fn append_seatbelt_subpath_deny(profile: &mut String, path: PathBuf) {
     profile.push_str(&format!("(deny file-write* (subpath \"{escaped}\"))\n"));
 }
 
+/// 规范化路径（失败时保留原路径）
 fn normalize_seatbelt_profile_path(path: &PathBuf) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.clone())
 }
 
+/// 默认需要拒绝访问的凭据目录/文件列表
 fn credential_deny_defaults() -> Vec<PathBuf> {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
         return Vec::new();
@@ -586,6 +630,7 @@ fn credential_deny_defaults() -> Vec<PathBuf> {
     ]
 }
 
+/// 在 bubblewrap 中屏蔽凭据路径（目录挂 tmpfs，文件绑定 /dev/null）
 #[cfg(target_os = "linux")]
 fn append_bubblewrap_credential_deny(command: &mut Command, path: &PathBuf) {
     if path.is_dir() {
@@ -595,11 +640,13 @@ fn append_bubblewrap_credential_deny(command: &mut Command, path: &PathBuf) {
     }
 }
 
+/// 判断是否为通用临时目录（/tmp 或 /private/tmp）
 #[cfg(target_os = "linux")]
 fn is_generic_temp_dir(path: &PathBuf) -> bool {
     path == &PathBuf::from("/tmp") || path == &PathBuf::from("/private/tmp")
 }
 
+/// 根据语言返回解释器及其调用参数
 fn code_invocation(
     language: &str,
     code: &str,
@@ -641,33 +688,38 @@ fn code_invocation(
     Ok(invocation)
 }
 
-// Local sandbox 的 `max_memory_bytes` 字段在 **所有 local 后端(macOS / Linux / Windows)
-// 上都不被强制**(对齐 Claude Code / Codex —— 它们在沙箱层都不设内存上限)。
-//
-// 本地场景下为何保留字段但不强制(AGENTS.md 要求注明):
-//
-// - **macOS**:XNU kernel 对任何 < RLIM_INFINITY 的 `RLIMIT_DATA` 都返回 EINVAL(已实测
-//   验证,见 https://github.com/hacksider/Deep-Live-Cam/issues/1848);`RLIMIT_AS` 又会
-//   在 dyld/framework 加载阶段拒绝无害的内存映射。macOS 没有可靠的用户态 per-process
-//   内存上限机制(jetsam 系统级不可控、无 cgroup)。
-// - **Linux**:`RLIMIT_AS` 限制整个虚拟地址空间,glibc `ld.so` 用 mmap 加载共享库,
-//   设低了会让进程还没跑到用户代码就因 ENOMEM 崩掉(import 重库 / JIT 运行时尤其严重,
-//   见 https://stackoverflow.com/q/39755928)。设大了又等于没限。cgroup 才是 Linux 上
-//   可靠的内存上限机制,而 cgroup 走 Docker/K8s 路径(`docker.rs`/`k8s.rs`),不经过这里。
-// - **Windows**:local sandbox 本就是 `cmd /C` + 超时/输出截断的进程级后端,无 rlimit 概念。
-//
-// Claude Code 和 Codex 在所有平台的沙箱层都不设内存上限,真正的内存上限交给容器层
-// (cgroup)。embedding application 沿用同一设计:`max_memory_bytes` 字段保留是给 Docker/K8s 路径用的,
-// local 后端(macOS/Linux/Windows)静默忽略它。Linux local 沙箱仍可用 bwrap 做
-// namespace 隔离(见 `build_bubblewrap_command`),只是不限内存。
+/*
+ * Local sandbox 的 `max_memory_bytes` 字段在 **所有 local 后端(macOS / Linux / Windows)
+ * 上都不被强制**(对齐 Claude Code / Codex —— 它们在沙箱层都不设内存上限)。
+ *
+ * 本地场景下为何保留字段但不强制(AGENTS.md 要求注明):
+ *
+ * - **macOS**:XNU kernel 对任何 < RLIM_INFINITY 的 `RLIMIT_DATA` 都返回 EINVAL(已实测
+ *   验证,见 https://github.com/hacksider/Deep-Live-Cam/issues/1848);`RLIMIT_AS` 又会
+ *   在 dyld/framework 加载阶段拒绝无害的内存映射。macOS 没有可靠的用户态 per-process
+ *   内存上限机制(jetsam 系统级不可控、无 cgroup)。
+ * - **Linux**:`RLIMIT_AS` 限制整个虚拟地址空间,glibc `ld.so` 用 mmap 加载共享库,
+ *   设低了会让进程还没跑到用户代码就因 ENOMEM 崩掉(import 重库 / JIT 运行时尤其严重,
+ *   见 https://stackoverflow.com/q/39755928)。设大了又等于没限。cgroup 才是 Linux 上
+ *   可靠的内存上限机制,而 cgroup 走 Docker/K8s 路径(`docker.rs`/`k8s.rs`),不经过这里。
+ * - **Windows**:local sandbox 本就是 `cmd /C` + 超时/输出截断的进程级后端,无 rlimit 概念。
+ *
+ * Claude Code 和 Codex 在所有平台的沙箱层都不设内存上限,真正的内存上限交给容器层
+ * (cgroup)。embedding application 沿用同一设计:`max_memory_bytes` 字段保留是给 Docker/K8s 路径用的,
+ * local 后端(macOS/Linux/Windows)静默忽略它。Linux local 沙箱仍可用 bwrap 做
+ * namespace 隔离(见 `build_bubblewrap_command`),只是不限内存。
+ */
+/// 配置子进程（Unix 下放入独立进程组）
 #[cfg(unix)]
 fn configure_command_process(command: &mut Command, _max_memory_bytes: Option<u64>) {
     command.process_group(0);
 }
 
+/// 非 Unix 平台下无需额外配置
 #[cfg(not(unix))]
 fn configure_command_process(_command: &mut Command, _max_memory_bytes: Option<u64>) {}
 
+/// 检查当前平台是否支持本地执行（Windows 暂不支持）
 fn ensure_local_execution_supported() -> Result<()> {
     if cfg!(windows) {
         Err(echo_core::error::ReactError::Sandbox(Box::new(
@@ -681,6 +733,7 @@ fn ensure_local_execution_supported() -> Result<()> {
     }
 }
 
+/// 终止并回收子进程及其进程组
 pub(super) async fn cleanup_child_process(
     child: &mut tokio::process::Child,
     process_group_id: Option<u32>,
@@ -723,13 +776,13 @@ pub(super) async fn cleanup_child_process(
     }
 }
 
+/// 向整个进程组发送信号（进程组不存在视为成功）
 #[cfg(unix)]
 fn signal_process_group(process_group_id: u32, signal: i32) -> std::result::Result<(), String> {
     let process_group_id = i32::try_from(process_group_id)
         .map_err(|error| format!("process-group id is out of range: {error}"))?;
-    // SAFETY: `kill` receives a negated process-group id captured immediately
-    // after spawning a child configured with `process_group(0)`. No pointers or
-    // borrowed memory cross the FFI boundary.
+    /* SAFETY: `kill` 接收的是取负后的进程组 ID，该 ID 在以 `process_group(0)`
+    配置的子进程 spawn 后立即捕获。没有指针或借用内存跨越 FFI 边界。 */
     let result = unsafe { libc::kill(-process_group_id, signal) };
     if result == 0 {
         return Ok(());
@@ -744,14 +797,14 @@ fn signal_process_group(process_group_id: u32, signal: i32) -> std::result::Resu
     }
 }
 
+/// 轮询确认进程组已不存在，超出重试次数则报错
 #[cfg(unix)]
 async fn verify_process_group_absent(process_group_id: u32) -> std::result::Result<(), String> {
     let process_group_id = i32::try_from(process_group_id)
         .map_err(|error| format!("process-group id is out of range: {error}"))?;
     for _ in 0..100 {
-        // SAFETY: signal 0 performs existence/permission validation only; the
-        // negative id addresses the captured process group and no pointers cross
-        // the FFI boundary.
+        /* SAFETY: 信号 0 仅做存在性/权限校验；负 ID 指向捕获的进程组，
+        没有指针跨越 FFI 边界。 */
         let result = unsafe { libc::kill(-process_group_id, 0) };
         if result != 0 {
             let error = std::io::Error::last_os_error();
@@ -771,6 +824,7 @@ async fn verify_process_group_absent(process_group_id: u32) -> std::result::Resu
     ))
 }
 
+/// 驱动子进程执行：写入 stdin、读取输出、处理超时/取消，并发送流式事件
 async fn run_streaming_child(
     child: &mut tokio::process::Child,
     request: LocalChildRequest,
@@ -990,6 +1044,7 @@ async fn run_streaming_child(
     }
 }
 
+/// 构造失败终态，并在清理失败时附带清理错误
 fn local_failure_after_cleanup(
     primary: String,
     cleanup: std::result::Result<(), String>,
@@ -1005,6 +1060,7 @@ fn local_failure_after_cleanup(
     LocalChildTerminal::Failed(SandboxError::IoError(message))
 }
 
+/// 构造取消终态（清理失败时转为 I/O 失败）
 fn local_cancellation_terminal(
     primary: &str,
     cleanup: std::result::Result<(), String>,
@@ -1015,6 +1071,7 @@ fn local_cancellation_terminal(
     }
 }
 
+/// 构造超时终态：清理成功则发送超时完成结果，否则返回失败
 async fn local_timeout_terminal(
     cleanup: std::result::Result<(), String>,
     stdout: RetainedPipeOutput,
@@ -1057,6 +1114,7 @@ async fn local_timeout_terminal(
     }
 }
 
+/// 构造接收端已关闭时的放弃终态，并记录清理失败
 fn abandoned_local_terminal(cleanup: std::result::Result<(), String>) -> LocalChildTerminal {
     if let Err(error) = cleanup.as_ref() {
         tracing::error!(
@@ -1067,7 +1125,9 @@ fn abandoned_local_terminal(cleanup: std::result::Result<(), String>) -> LocalCh
     LocalChildTerminal::Abandoned(cleanup)
 }
 
+/// 将字符串截断到最大长度，防止错误信息过长
 fn bounded_terminal_fact(value: &str) -> String {
+    // 错误信息的最大字符数
     const MAX_FACT_CHARS: usize = 1_024;
     let mut fact = value.chars().take(MAX_FACT_CHARS).collect::<String>();
     if value.chars().count() > MAX_FACT_CHARS {
@@ -1076,6 +1136,7 @@ fn bounded_terminal_fact(value: &str) -> String {
     fact
 }
 
+/// 将沙箱错误映射为流式失败事件
 fn local_stream_failure(error: &SandboxError) -> SandboxStreamFailure {
     match error {
         SandboxError::Cancelled(message) => SandboxStreamFailure::Cancelled {
@@ -1087,6 +1148,7 @@ fn local_stream_failure(error: &SandboxError) -> SandboxStreamFailure {
     }
 }
 
+/// 若终态为失败，则向事件流发送失败事件
 async fn emit_local_terminal_failure(
     events: &mpsc::Sender<SandboxStreamEvent>,
     terminal: &LocalChildTerminal,
@@ -1100,6 +1162,7 @@ async fn emit_local_terminal_failure(
     }
 }
 
+/// 等待取消信号；未提供令牌时永久挂起
 async fn wait_for_local_cancel(cancel: Option<&Arc<CancellationToken>>) {
     match cancel {
         Some(cancel) => cancel.cancelled().await,
@@ -1107,6 +1170,7 @@ async fn wait_for_local_cancel(cancel: Option<&Arc<CancellationToken>>) {
     }
 }
 
+/// 将输出文本按 UTF-8 安全分块并发送到事件流
 async fn send_sandbox_output(
     tx: &mpsc::Sender<SandboxStreamEvent>,
     channel: SandboxOutputChannel,
@@ -1120,13 +1184,18 @@ async fn send_sandbox_output(
     Ok(())
 }
 
+/// 管道输出的保留缓冲区（受容量上限约束）
 struct RetainedPipeOutput {
+    /// 已保留的字节
     bytes: Vec<u8>,
+    /// 实际产生的总字节数
     total_bytes: u64,
+    /// 是否发生过截断
     truncated: bool,
 }
 
 impl RetainedPipeOutput {
+    /// 创建空缓冲区
     fn new() -> Self {
         Self {
             bytes: Vec::new(),
@@ -1135,6 +1204,7 @@ impl RetainedPipeOutput {
         }
     }
 
+    /// 追加字节，超出剩余容量的部分会被截断
     fn push(&mut self, bytes: &[u8], remaining_capacity: usize) {
         self.total_bytes = self
             .total_bytes
@@ -1146,11 +1216,13 @@ impl RetainedPipeOutput {
         self.truncated |= retain < bytes.len();
     }
 
+    /// 以有损 UTF-8 方式返回保留文本
     fn text(&self) -> String {
         String::from_utf8_lossy(&self.bytes).to_string()
     }
 }
 
+/// 根据保留输出与状态组装执行结果
 fn local_execution_result(
     exit_code: i32,
     stdout: RetainedPipeOutput,
@@ -1180,6 +1252,7 @@ fn local_execution_result(
     }
 }
 
+/// 生成无退出码时的终止说明（Unix 下包含信号编号）
 #[cfg(unix)]
 fn platform_termination_message(status: &std::process::ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt;
@@ -1190,11 +1263,13 @@ fn platform_termination_message(status: &std::process::ExitStatus) -> String {
     }
 }
 
+/// 生成无退出码时的终止说明
 #[cfg(not(unix))]
 fn platform_termination_message(_status: &std::process::ExitStatus) -> String {
     "Process terminated without an exit code".to_string()
 }
 
+/// 生成 bubblewrap 内的默认环境变量，并追加调用方指定的变量
 #[cfg(target_os = "linux")]
 fn default_sandbox_env(extra: &std::collections::HashMap<String, String>) -> Vec<(String, String)> {
     let mut env = vec![
@@ -1213,10 +1288,12 @@ fn default_sandbox_env(extra: &std::collections::HashMap<String, String>) -> Vec
 }
 
 impl SandboxExecutor for LocalSandbox {
+    /// 执行器名称
     fn name(&self) -> &str {
         "local"
     }
 
+    /// 返回当前隔离级别
     fn isolation_level(&self) -> IsolationLevel {
         if self.effective_os_sandbox_enabled()
             && cfg!(any(target_os = "macos", target_os = "linux"))
@@ -1227,6 +1304,7 @@ impl SandboxExecutor for LocalSandbox {
         }
     }
 
+    /// 检查本地沙箱后端是否可用
     fn is_available(&self) -> BoxFuture<'_, bool> {
         Box::pin(async {
             if cfg!(windows) {
@@ -1257,6 +1335,7 @@ impl SandboxExecutor for LocalSandbox {
         })
     }
 
+    /// 执行命令并返回完整结果
     fn execute(&self, command: SandboxCommand) -> BoxFuture<'_, Result<ExecutionResult>> {
         Box::pin(async move {
             ensure_local_execution_supported()?;
@@ -1275,6 +1354,7 @@ impl SandboxExecutor for LocalSandbox {
         })
     }
 
+    /// 以流式方式执行命令
     fn execute_stream<'a>(
         &'a self,
         command: SandboxCommand,
@@ -1296,10 +1376,12 @@ impl SandboxExecutor for LocalSandbox {
         })
     }
 
+    /// 是否支持实时流式输出（Windows 不支持）
     fn supports_streaming(&self) -> bool {
         !cfg!(windows)
     }
 
+    /// 按资源限制执行命令
     fn execute_with_limits(
         &self,
         command: SandboxCommand,
@@ -1313,10 +1395,10 @@ impl SandboxExecutor for LocalSandbox {
                 command.timeout
             };
 
-            // 将 ResourceLimits 的 network / path 约束翻译进 LocalConfig,
-            // 这样 Seatbelt profile 才会真正强制它们。之前只翻译了
-            // cpu_time / max_output_bytes,导致 policy 声明的 network /
-            // writable_paths 形同虚设。
+            /* 将 ResourceLimits 的 network / path 约束翻译进 LocalConfig,
+            这样 Seatbelt profile 才会真正强制它们。之前只翻译了
+            cpu_time / max_output_bytes,导致 policy 声明的 network /
+            writable_paths 形同虚设。 */
             let config = merge_limits_into_config(self.config.clone(), &limits);
 
             let cmd_with_timeout = SandboxCommand { timeout, ..command };
@@ -1326,6 +1408,7 @@ impl SandboxExecutor for LocalSandbox {
         })
     }
 
+    /// 按资源限制执行命令，并支持外部取消
     fn execute_with_limits_and_cancel(
         &self,
         command: SandboxCommand,
@@ -1362,12 +1445,14 @@ impl SandboxExecutor for LocalSandbox {
     }
 }
 
-/// 将 [`ResourceLimits`] 合并进 [`LocalConfig`],使 network / path 约束
-/// 能流到 Seatbelt profile 真正生效。
-///
-/// 路径采用"合并"而非"替换":config 默认带 /usr /bin 读路径,
-/// 替换会破坏基本执行;policy 声明的路径作为增量追加(去重保序)。
-/// network / max_output_bytes / memory_bytes 采用"覆盖":policy 显式声明则覆盖 config 默认。
+/**
+ * 将 [`ResourceLimits`] 合并进 [`LocalConfig`],使 network / path 约束
+ * 能流到 Seatbelt profile 真正生效。
+ *
+ * 路径采用"合并"而非"替换":config 默认带 /usr /bin 读路径,
+ * 替换会破坏基本执行;policy 声明的路径作为增量追加(去重保序)。
+ * network / max_output_bytes / memory_bytes 采用"覆盖":policy 显式声明则覆盖 config 默认。
+ */
 fn merge_limits_into_config(mut config: LocalConfig, limits: &ResourceLimits) -> LocalConfig {
     // network: policy 显式声明则覆盖 base config
     config.allow_network = limits.network;
@@ -1396,6 +1481,7 @@ fn merge_limits_into_config(mut config: LocalConfig, limits: &ResourceLimits) ->
 
 // ── 单元测试 ────────────────────────────────────────────────────────────────
 
+// 单元测试：本地沙箱的配置、构建与执行行为。
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1404,6 +1490,7 @@ mod tests {
     use futures::StreamExt;
     use std::sync::Arc;
 
+    /// 等待测试进程写出 pid 文件并解析
     #[cfg(unix)]
     async fn wait_for_pid(path: &std::path::Path) -> std::result::Result<u32, String> {
         for _ in 0..100 {
@@ -1417,11 +1504,12 @@ mod tests {
         Err(format!("process did not publish pid at {}", path.display()))
     }
 
+    /// 检查指定 pid 的进程是否存在
     #[cfg(unix)]
     fn process_exists(pid: u32) -> std::result::Result<bool, String> {
         let pid = i32::try_from(pid).map_err(|error| format!("pid is out of range: {error}"))?;
-        // SAFETY: signal 0 performs existence validation only and receives a
-        // numeric pid parsed from a child-owned test barrier file.
+        /* SAFETY: 信号 0 仅做存在性校验，接收的是从子进程写出的
+        测试屏障文件中解析得到的数字 pid。 */
         let result = unsafe { libc::kill(pid, 0) };
         if result == 0 {
             return Ok(true);
@@ -1434,6 +1522,7 @@ mod tests {
         }
     }
 
+    /// 验证基本 echo 命令执行
     #[tokio::test]
     async fn test_local_sandbox_echo() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1448,6 +1537,7 @@ mod tests {
         assert_eq!(result.sandbox_type, "local");
     }
 
+    /// 验证本地沙箱声明支持实时流式输出
     #[test]
     fn local_sandbox_declares_live_streaming_support() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1457,6 +1547,7 @@ mod tests {
         assert!(sandbox.supports_streaming());
     }
 
+    /// 验证命令完成前即可流式收到输出
     #[tokio::test]
     async fn local_sandbox_streams_before_command_completes() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1481,6 +1572,7 @@ mod tests {
         ));
     }
 
+    /// 验证流式解码器能正确拼接被拆分的 Unicode 字符
     #[tokio::test]
     async fn local_sandbox_stream_decoder_preserves_split_unicode() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1508,6 +1600,7 @@ mod tests {
         assert_eq!(complete.unwrap().stdout, "€");
     }
 
+    /// 验证流式保留输出受上限约束但仍报告总字节数
     #[tokio::test]
     async fn local_sandbox_stream_caps_retained_output_but_reports_total_bytes() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1532,6 +1625,7 @@ mod tests {
         assert_eq!(result.stdout_bytes, 6);
     }
 
+    /// 验证非零退出码被正确返回
     #[tokio::test]
     async fn test_local_sandbox_exit_code() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1545,6 +1639,7 @@ mod tests {
         assert!(!result.success());
     }
 
+    /// 验证超时命令被标记为 timed_out
     #[tokio::test]
     async fn test_local_sandbox_timeout() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1559,6 +1654,7 @@ mod tests {
         assert!(!result.success());
     }
 
+    /// 验证受控执行被取消时会终止整个进程组
     #[cfg(unix)]
     #[tokio::test]
     async fn controlled_execution_cancellation_stops_process_group()
@@ -1627,6 +1723,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证调用方在 stdin 阻塞期间中止时，分离的所属任务仍会清理进程
     #[cfg(unix)]
     #[tokio::test]
     async fn caller_abort_during_blocked_stdin_keeps_detached_process_owner()
@@ -1657,6 +1754,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证清理失败时不会发出伪造的超时完成事件
     #[tokio::test]
     async fn cleanup_failure_never_emits_fake_timeout_completion() {
         let (events, mut receiver) = mpsc::channel(1);
@@ -1686,6 +1784,7 @@ mod tests {
         ));
     }
 
+    /// 验证读取失败信息同时保留主错误与清理错误
     #[test]
     fn read_failure_preserves_primary_and_cleanup_debt() {
         let terminal = local_failure_after_cleanup(
@@ -1700,6 +1799,7 @@ mod tests {
         ));
     }
 
+    /// 验证 Windows 下所有本地执行路径在无 Job Object 时均拒绝执行
     #[cfg(windows)]
     #[tokio::test]
     async fn every_local_execution_path_fails_closed_without_job_object_owner() {
@@ -1738,6 +1838,7 @@ mod tests {
         ));
     }
 
+    /// 验证环境变量被传递给命令
     #[tokio::test]
     async fn test_local_sandbox_env() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1751,6 +1852,7 @@ mod tests {
         assert_eq!(result.stdout.trim(), "test_value");
     }
 
+    /// 验证程序模式执行
     #[tokio::test]
     async fn test_local_sandbox_program() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1764,6 +1866,7 @@ mod tests {
         assert_eq!(result.stdout.trim(), "hello world");
     }
 
+    /// 验证标准输入被传递给命令
     #[tokio::test]
     async fn test_local_sandbox_stdin() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1777,6 +1880,7 @@ mod tests {
         assert_eq!(result.stdout.trim(), "from-stdin");
     }
 
+    /// 验证禁用 OS 沙箱时后端可用
     #[tokio::test]
     async fn test_local_sandbox_is_available() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -1786,17 +1890,19 @@ mod tests {
         assert!(sandbox.is_available().await);
     }
 
-    /// 验证 `execute_with_limits` 带 `memory_bytes` 时命令能成功执行。
-    ///
-    /// 平台语义(对齐 Claude Code / Codex —— 沙箱层不设内存上限):
-    /// 所有 local 后端(macOS/Linux/Windows)都**静默忽略** `memory_bytes` —— rlimit 在
-    /// 现代动态运行时上不可靠(macOS RLIMIT_DATA 必 EINVAL;Linux RLIMIT_AS 会卡 glibc
-    /// ld.so 的 mmap),真正的内存上限交给容器层(Docker/K8s 的 cgroup)。字段保留是
-    /// 给容器路径用的,local 路径上被忽略,见 `configure_command_process` 注释。
-    ///
-    /// 本测试的历史意义:它守护的是一次回归 —— 之前 macOS 上 `memory_bytes: Some`
-    /// 会让 spawn 直接 EINVAL(`os error 22`),desktop UI 任何代码执行都失败。现在带 limits
-    /// 也必须能成功 spawn。
+    /**
+     * 验证 `execute_with_limits` 带 `memory_bytes` 时命令能成功执行。
+     *
+     * 平台语义(对齐 Claude Code / Codex —— 沙箱层不设内存上限):
+     * 所有 local 后端(macOS/Linux/Windows)都**静默忽略** `memory_bytes` —— rlimit 在
+     * 现代动态运行时上不可靠(macOS RLIMIT_DATA 必 EINVAL;Linux RLIMIT_AS 会卡 glibc
+     * ld.so 的 mmap),真正的内存上限交给容器层(Docker/K8s 的 cgroup)。字段保留是
+     * 给容器路径用的,local 路径上被忽略,见 `configure_command_process` 注释。
+     *
+     * 本测试的历史意义:它守护的是一次回归 —— 之前 macOS 上 `memory_bytes: Some`
+     * 会让 spawn 直接 EINVAL(`os error 22`),desktop UI 任何代码执行都失败。现在带 limits
+     * 也必须能成功 spawn。
+     */
     #[tokio::test]
     async fn execute_with_memory_limit_starts_os_sandbox_shell()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1822,9 +1928,11 @@ mod tests {
         Ok(())
     }
 
-    /// 同 [`execute_with_memory_limit_starts_os_sandbox_shell`],但走 Code 路径(python3 -c)。
-    /// 验证 desktop UI 用例 `print('hello from sandbox')` 能成功执行 —— 之前 macOS 上传
-    /// `memory_bytes: Some` 会让它 EINVAL。
+    /**
+     * 同 [`execute_with_memory_limit_starts_os_sandbox_shell`],但走 Code 路径(python3 -c)。
+     * 验证 desktop UI 用例 `print('hello from sandbox')` 能成功执行 —— 之前 macOS 上传
+     * `memory_bytes: Some` 会让它 EINVAL。
+     */
     #[tokio::test]
     async fn execute_with_memory_limit_starts_os_sandbox_python_when_available()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -1861,6 +1969,7 @@ mod tests {
         Ok(())
     }
 
+    /// 统计命令行匹配指定模式的进程数
     fn _count_processes_matching(pattern: &str) -> i32 {
         std::process::Command::new("sh")
             .args([
@@ -1874,6 +1983,7 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// 验证 Linux 启用沙箱时报告 OsSandbox 隔离级别
     #[cfg(target_os = "linux")]
     #[test]
     fn test_linux_reports_os_sandbox_when_enabled() {
@@ -1884,6 +1994,7 @@ mod tests {
         assert_eq!(sandbox.isolation_level(), IsolationLevel::OsSandbox);
     }
 
+    /// 验证 bubblewrap 命令包含本地隔离参数
     #[cfg(target_os = "linux")]
     #[test]
     fn test_linux_bubblewrap_command_contains_local_isolation() {
@@ -1909,6 +2020,7 @@ mod tests {
         assert!(rendered.contains("/tmp/eko-work"));
     }
 
+    /// 验证 Seatbelt profile 生成内容
     #[cfg(target_os = "macos")]
     #[test]
     fn test_seatbelt_profile_generation() {
@@ -1934,6 +2046,7 @@ mod tests {
         assert!(!profile.contains("(allow network*)"));
     }
 
+    /// 验证路径校验拒绝 profile 注入字符
     #[test]
     fn test_seatbelt_path_validation_rejects_profile_injection_chars() {
         assert!(validate_sandbox_path("/tmp/valid path_1-2.3").is_ok());
@@ -1945,6 +2058,7 @@ mod tests {
         assert!(validate_sandbox_path("/tmp/bad\0null").is_err());
     }
 
+    /// 验证规则构建器会跳过非法路径
     #[test]
     fn test_seatbelt_rule_builder_skips_invalid_paths() {
         let mut profile = String::new();
@@ -1956,9 +2070,11 @@ mod tests {
         assert!(profile.is_empty());
     }
 
-    /// 验证 execute_with_limits 路径下,ResourceLimits 的 network /
-    /// writable_paths 真正流进 LocalConfig(进而 Seatbelt profile 生效)。
-    /// 这是 P2-3 修复的核心:之前 limits.network/writable_paths 被丢弃。
+    /**
+     * 验证 execute_with_limits 路径下,ResourceLimits 的 network /
+     * writable_paths 真正流进 LocalConfig(进而 Seatbelt profile 生效)。
+     * 这是 P2-3 修复的核心:之前 limits.network/writable_paths 被丢弃。
+     */
     #[test]
     fn merge_limits_translates_network_and_paths() {
         let base = LocalConfig::default();
@@ -2041,16 +2157,17 @@ mod tests {
         );
     }
 
-    /// Sprint 10b: R must be a first-class language in the `Code` backend.
-    ///
-    /// Before the patch, R fell through to the `_` arm and returned
-    /// `SandboxError::Unavailable("Unsupported language: r")`. After the patch
-    /// it must map to `("Rscript", "-e")` like python/ruby/perl.
-    ///
-    /// We can't assume Rscript is installed in CI, so we only assert the error
-    /// is NOT "Unsupported language" — i.e. the match arm fired and proceeded
-    /// to interpreter resolution (a missing interpreter surfaces as a spawn
-    /// error, not as "Unsupported language").
+    /**
+     * Sprint 10b：R 必须是 `Code` 后端的一等语言。
+     *
+     * 修复前，R 会落入 `_` 分支并返回
+     * `SandboxError::Unavailable("Unsupported language: r")`。修复后
+     * 它必须像 python/ruby/perl 一样映射为 `("Rscript", "-e")`。
+     *
+     * CI 中无法假设已安装 Rscript，因此只断言错误
+     * 不是 "Unsupported language"——即匹配分支已命中并继续进行
+     * 解释器解析（缺少解释器会表现为 spawn 错误，而非 "Unsupported language"）。
+     */
     #[tokio::test]
     async fn code_backend_supports_r_language_mapping() {
         let sandbox = LocalSandbox::new(LocalConfig {
@@ -2059,7 +2176,7 @@ mod tests {
         });
         let cmd = SandboxCommand::code("r", "print(1+1)");
         match sandbox.execute(cmd).await {
-            Ok(_) => { /* Rscript present + ran */ }
+            Ok(_) => { /* Rscript 已安装并成功运行 */ }
             Err(e) => {
                 let msg = format!("{e:?}");
                 assert!(

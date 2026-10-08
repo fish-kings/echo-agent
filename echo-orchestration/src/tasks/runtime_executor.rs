@@ -1,8 +1,10 @@
-//! 面向动态 Agent 计划的、由存储与策略驱动的 DAG 执行器。
-//!
-//! 框架自身负责依赖遍历、修订版本安全点、有界的 Subagent 波次调度、
-//! 取消、失败传播以及停滞检测。应用方则通过 [`RuntimeDagController`]
-//! 提供持久化、派发、复核与产品策略。
+/*!
+面向动态 Agent 计划的、由存储与策略驱动的 DAG 执行器。
+
+框架自身负责依赖遍历、修订版本安全点、有界的 Subagent 波次调度、
+取消、失败传播以及停滞检测。应用方则通过 [`RuntimeDagController`]
+提供持久化、派发、复核与产品策略。
+*/
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -114,9 +116,11 @@ pub enum RuntimeTaskResolution {
     Superseded,
 }
 
-/// 持久化 claim 结算完成后，进程本地控制投影给出的回执。
-/// 此时持久化任务状态已经是权威状态；可重试的清理失败会单独上报，
-/// 且不得触发第二次 CAS，也不得反转已提交的终态。
+/**
+持久化 claim 结算完成后，进程本地控制投影给出的回执。
+此时持久化任务状态已经是权威状态；可重试的清理失败会单独上报，
+且不得触发第二次 CAS，也不得反转已提交的终态。
+*/
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeAttemptControlCleanupReceipt {
     /// 本地控制投影已成功清退。
@@ -149,10 +153,12 @@ pub struct RuntimeAttemptControlObservation {
 pub type RuntimeAttemptControlObserver =
     Arc<dyn Fn(&RuntimeAttemptControlObservation) + Send + Sync>;
 
-/// 当一次重新排队的 claim 用尽最后一次重试机会时使用的终态。
-///
-/// 重试决策与终态分类保持分离，使应用方能够在框架完成结算后，
-/// 保留一个类型化的超时状态，而无需再修改规范化的任务状态。
+/**
+当一次重新排队的 claim 用尽最后一次重试机会时使用的终态。
+
+重试决策与终态分类保持分离，使应用方能够在框架完成结算后，
+保留一个类型化的超时状态，而无需再修改规范化的任务状态。
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeRetryExhaustion {
     /// 重试耗尽后归为失败。
@@ -166,8 +172,10 @@ pub enum RuntimeRetryExhaustion {
 pub enum RuntimeTaskClaimOutcome {
     /// 认领成功，得到对应的 claim。
     Claimed(TaskClaim),
-    /// 修订版本、状态或规格已发生变化。应重新加载快照；
-    /// 这是乐观并发控制的表现，而非任务失败。
+    /**
+    修订版本、状态或规格已发生变化。应重新加载快照；
+    这是乐观并发控制的表现，而非任务失败。
+    */
     ReloadSnapshot,
 }
 
@@ -214,12 +222,14 @@ pub enum RuntimeDagOutcome {
     Cancelled,
 }
 
-/// 面向 [`super::RuntimeTaskService`] 的持久化、派发与产品策略适配器。
-///
-/// `resolve_dispatch` 负责具体应用层面的复核逻辑，但只返回一个尚未提交的
-/// 请求。`settle_resolution` 提供适配器的事务边界，必须调用
-/// [`super::settle_runtime_resolution`] 来完成提交，而不能自行重新实现
-/// claim、重试或终态迁移的逻辑。
+/**
+面向 [`super::RuntimeTaskService`] 的持久化、派发与产品策略适配器。
+
+`resolve_dispatch` 负责具体应用层面的复核逻辑，但只返回一个尚未提交的
+请求。`settle_resolution` 提供适配器的事务边界，必须调用
+[`super::settle_runtime_resolution`] 来完成提交，而不能自行重新实现
+claim、重试或终态迁移的逻辑。
+*/
 #[async_trait]
 pub trait RuntimeDagController: Send + Sync + 'static {
     /// 一次任务派发成功后返回的输出类型。
@@ -228,8 +238,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
     /// 加载当前运行所对应的最新计划快照。
     async fn load_snapshot(&self, run_id: &str) -> Result<RuntimePlanSnapshot>;
 
-    /// 原子性地将一个处于 Pending 状态、基于 `expected_revision` 的任务
-    /// 转换为一次已认领的 Running 尝试。
+    /**
+    原子性地将一个处于 Pending 状态、基于 `expected_revision` 的任务
+    转换为一次已认领的 Running 尝试。
+    */
     async fn claim_task(
         &self,
         run_id: &str,
@@ -245,11 +257,13 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         claim: &TaskClaim,
     ) -> Result<bool>;
 
-    /// 从就绪前沿中选出一个互不冲突的子集用于派发。
-    ///
-    /// 默认实现会派发整个前沿。应用方可以出于产品特定的资源或文件所有权
-    /// 策略而推迟某些任务，但当 `ready_task_ids` 非空时，必须至少返回一个
-    /// 任务 ID。
+    /**
+    从就绪前沿中选出一个互不冲突的子集用于派发。
+
+    默认实现会派发整个前沿。应用方可以出于产品特定的资源或文件所有权
+    策略而推迟某些任务，但当 `ready_task_ids` 非空时，必须至少返回一个
+    任务 ID。
+    */
     fn select_ready_wave(&self, _tasks: &[Task], ready_task_ids: Vec<TaskId>) -> Vec<TaskId> {
         ready_task_ids
     }
@@ -261,16 +275,20 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         task: Task,
     ) -> Result<Self::DispatchOutput>;
 
-    /// 在共享准入或信号量可能延迟派发之前，先注册由本次 claim 派生出的
-    /// 精确上下文。实现可以将该上下文绑定到进程本地的实时控制注册表；
-    /// 持久化 claim 仍然是权威来源，调用方会在触发该钩子之前先完成校验。
+    /**
+    在共享准入或信号量可能延迟派发之前，先注册由本次 claim 派生出的
+    精确上下文。实现可以将该上下文绑定到进程本地的实时控制注册表；
+    持久化 claim 仍然是权威来源，调用方会在触发该钩子之前先完成校验。
+    */
     async fn reserve_attempt_control(&self, _context: &TaskSubagentContext) -> Result<()> {
         Ok(())
     }
 
-    /// 将一次持久化的精确中断请求投影到实时的预留/尝试注册表中。
-    /// 返回 `true` 表示控制器已接受该请求；运行时在返回前仍会重新校验
-    /// 持久化 claim 的状态。
+    /**
+    将一次持久化的精确中断请求投影到实时的预留/尝试注册表中。
+    返回 `true` 表示控制器已接受该请求；运行时在返回前仍会重新校验
+    持久化 claim 的状态。
+    */
     async fn request_live_interrupt(
         &self,
         _run_id: &str,
@@ -283,8 +301,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         Ok(None)
     }
 
-    /// 在持久化 claim 已经达成终态或被取代之后，清退进程本地的控制投影。
-    /// 该清理动作仅用于诊断目的，绝不能修改已经提交的任务状态。
+    /**
+    在持久化 claim 已经达成终态或被取代之后，清退进程本地的控制投影。
+    该清理动作仅用于诊断目的，绝不能修改已经提交的任务状态。
+    */
     async fn retire_attempt_control(
         &self,
         _run_id: &str,
@@ -294,8 +314,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         RuntimeAttemptControlCleanupReceipt::Retired
     }
 
-    /// 将进程本地的尝试投影与该运行的持久化快照中仍然有效的执行 ID
-    /// 进行核对与协调。
+    /**
+    将进程本地的尝试投影与该运行的持久化快照中仍然有效的执行 ID
+    进行核对与协调。
+    */
     async fn reconcile_attempt_control(
         &self,
         _run_id: &str,
@@ -322,8 +344,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         request: RuntimeTaskResolutionRequest,
     ) -> Result<RuntimeTaskResolution>;
 
-    /// 结算一个无法达成正常解决结果的 claim。实现必须使用比较并交换（CAS）
-    /// 语义，以避免一个已被取代的 claim 覆盖更新的工作结果。
+    /**
+    结算一个无法达成正常解决结果的 claim。实现必须使用比较并交换（CAS）
+    语义，以避免一个已被取代的 claim 覆盖更新的工作结果。
+    */
     async fn abandon_claim(
         &self,
         run_id: &str,
@@ -332,8 +356,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         abandonment: RuntimeClaimAbandonment,
     ) -> Result<RuntimeTaskSettlementOutcome>;
 
-    /// 在任务失败时，决定应将整个 DAG 判定为失败还是暂停。
-    /// 默认实现：当所有未完成任务都已失败或被阻塞时判定为失败，否则暂停。
+    /**
+    在任务失败时，决定应将整个 DAG 判定为失败还是暂停。
+    默认实现：当所有未完成任务都已失败或被阻塞时判定为失败，否则暂停。
+    */
     async fn failed_task_disposition(
         &self,
         _run_id: &str,
@@ -347,8 +373,10 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         })
     }
 
-    /// 将取消令牌发出的停止请求映射为与产品无关的取消或可恢复的暂停。
-    /// 框架自身的任务结算结果始终是权威判断。
+    /**
+    将取消令牌发出的停止请求映射为与产品无关的取消或可恢复的暂停。
+    框架自身的任务结算结果始终是权威判断。
+    */
     async fn interruption_disposition(
         &self,
         _run_id: &str,
@@ -356,9 +384,11 @@ pub trait RuntimeDagController: Send + Sync + 'static {
         Ok(RuntimeInterruptionDisposition::Cancelled)
     }
 
-    /// 使用 [`super::settle_runtime_interruption`]，在一个中断安全点原子性地
-    /// 结算所有未完成任务。若修订版本不匹配，必须返回 `ReloadSnapshot`；
-    /// 适配器不得重新实现 claim 或重试相关的语义。
+    /**
+    使用 [`super::settle_runtime_interruption`]，在一个中断安全点原子性地
+    结算所有未完成任务。若修订版本不匹配，必须返回 `ReloadSnapshot`；
+    适配器不得重新实现 claim 或重试相关的语义。
+    */
     async fn settle_interruption(
         &self,
         run_id: &str,
@@ -372,22 +402,28 @@ pub trait RuntimeDagController: Send + Sync + 'static {
     }
 }
 
-/// Execution configuration accepted by [`super::RuntimeTaskService`].
+/// [`super::RuntimeTaskService`] 接受的执行配置。
 #[derive(Clone)]
 pub struct RuntimeTaskServiceConfig {
+    /// 同时运行的子 Agent 最大数量
     pub max_concurrent_subagents: usize,
+    /// 轮询外部任务进度的时间间隔
     pub external_progress_poll_interval: Duration,
-    /// Maximum time to let cancellation-aware Subagents finish their durable
-    /// terminal writes before remaining non-cooperative dispatches are aborted.
+    /**
+    允许可感知取消的子 Agent 完成持久化终态写入的最长时间，
+    超时后仍未配合退出的分派将被中止。
+    */
     pub cancellation_grace_period: Duration,
+    /// 嵌套委派策略（是否允许派生子 Agent 及最大委派深度）
     pub delegation_policy: NestedDelegationPolicy,
-    /// Optional process-wide admission shared with subagent dispatchers.
+    /// 可选的进程级准入控制，与子 Agent 分派器共享。
     pub shared_admission: Option<Arc<ExecutionAdmission>>,
-    /// Optional diagnostic observer for post-CAS live-control cleanup.
+    /// 可选的诊断观察者，用于观察 CAS 之后的实时控制清理。
     pub attempt_control_observer: Option<RuntimeAttemptControlObserver>,
 }
 
 impl std::fmt::Debug for RuntimeTaskServiceConfig {
+    /// 输出调试信息；观察者回调只显示是否已设置。
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("RuntimeTaskServiceConfig")
@@ -408,6 +444,7 @@ impl std::fmt::Debug for RuntimeTaskServiceConfig {
 }
 
 impl Default for RuntimeTaskServiceConfig {
+    /// 默认配置：并发 4、轮询 250ms、取消宽限期 5s、最大委派深度 2。
     fn default() -> Self {
         Self {
             max_concurrent_subagents: 4,
@@ -424,55 +461,86 @@ impl Default for RuntimeTaskServiceConfig {
     }
 }
 
-/// The framework's executor for revisioned dynamic Agent plans.
+/// 框架中面向可修订动态 Agent 计划的执行器。
 pub(crate) struct RuntimeDagExecutor<C: RuntimeDagController> {
+    /// 持久化状态与调度决策的控制器
     pub(crate) controller: Arc<C>,
+    /// 执行配置
     pub(crate) config: RuntimeTaskServiceConfig,
+    /// 计划结构校验器
     validator: PlanValidator,
+    /// execution_id -> 该次尝试的取消令牌
     pub(crate) attempt_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// execution_id -> 所属 run_id
     pub(crate) attempt_runs: Arc<Mutex<HashMap<String, String>>>,
+    /// execution_id -> 分派任务的中止句柄
     pub(crate) attempt_abort_handles: Arc<Mutex<HashMap<String, AbortHandle>>>,
+    /// tokio 任务 Id -> execution_id
     attempt_task_ids: Arc<Mutex<HashMap<Id, String>>>,
+    /// execution_id -> run_id：已请求但尚未送达的尝试中断
     pub(crate) pending_attempt_interrupts: Arc<Mutex<HashMap<String, String>>>,
+    /// execution_id -> 中止代次：已调度的延迟强制中止
     pub(crate) scheduled_attempt_aborts: Arc<Mutex<HashMap<String, u64>>>,
+    /// execution_id -> 尝试结算投影
     attempt_settlements: Arc<Mutex<HashMap<String, AttemptSettlementProjection>>>,
 }
 
+/// 尝试结算所处阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptSettlementPhase {
+    /// 尝试仍在运行
     Active,
+    /// 本地句柄已 join，等待持久化结算（claim CAS）完成
     JoinedAwaitingDurableSettlement,
 }
 
+/// 单次尝试在本地的结算投影
 struct AttemptSettlementProjection {
+    /// 当前阶段
     phase: AttemptSettlementPhase,
+    /// 结算结果广播发送端
     settled_tx: watch::Sender<Option<AttemptSettlementObservation>>,
+    /// 该尝试的取消令牌
     cancel: CancellationToken,
 }
 
+/// 对外发布的尝试结算观察结果
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AttemptSettlementObservation {
+    /// 已完成持久化结算，附带最终状态
     Settled { status: String },
+    /// 结算权威状态未知（例如持久化出错），附带错误信息
     AuthorityUnknown { error: String },
 }
 
+/// 外部对某次尝试的观察视图
 pub(crate) enum RuntimeAttemptObservation {
+    /// 尝试仍在运行，可取消并订阅结算结果
     Active {
+        /// 该尝试的取消令牌
         cancel: CancellationToken,
+        /// 结算结果订阅端
         settled_rx: watch::Receiver<Option<AttemptSettlementObservation>>,
     },
+    /// 已 join，等待持久化结算
     JoinedAwaitingDurableSettlement {
+        /// 结算结果订阅端
         settled_rx: watch::Receiver<Option<AttemptSettlementObservation>>,
     },
 }
 
+/// 中断边界的结算结果
 enum InterruptionBoundary {
+    /// 产生了最终的 DAG 执行结果
     Outcome(RuntimeDagOutcome),
+    /// 需重新加载快照后继续
     ReloadSnapshot,
+    /// 已无未完成的工作
     NoUnfinishedWork,
 }
 
 impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
+    /// 使用控制器与配置创建执行器，并使用默认的计划校验器。
     pub(crate) fn new(controller: Arc<C>, config: RuntimeTaskServiceConfig) -> Self {
         Self {
             controller,
@@ -488,12 +556,17 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
-    /// Override structural limits while retaining the canonical validator.
+    /// 覆盖结构限制，同时保留规范的校验器。
     pub(crate) fn with_validator(mut self, validator: PlanValidator) -> Self {
         self.validator = validator;
         self
     }
 
+    /**
+    在取消宽限期结束后强制中止指定尝试；`rearm` 为 true 时重新计时。
+
+    使用代次号保证只有最新一次调度会真正执行中止。
+    */
     pub(crate) fn schedule_attempt_abort(&self, execution_id: String, rearm: bool) {
         let generation = {
             let Ok(mut scheduled) = self.scheduled_attempt_aborts.lock() else {
@@ -538,6 +611,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         });
     }
 
+    /// 观察指定尝试的当前阶段，返回取消令牌与结算订阅端。
     pub(crate) fn observe_attempt(&self, execution_id: &str) -> Option<RuntimeAttemptObservation> {
         let settlements = self
             .attempt_settlements
@@ -556,6 +630,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         })
     }
 
+    /// 将尝试标记为已 join、等待持久化结算。
     fn mark_attempt_joined(&self, execution_id: &str) {
         if let Ok(mut settlements) = self.attempt_settlements.lock()
             && let Some(projection) = settlements.get_mut(execution_id)
@@ -564,6 +639,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 发布尝试的持久化结算状态。
     pub(crate) fn settle_attempt_projection(&self, execution_id: &str, status: impl Into<String>) {
         if let Ok(settlements) = self.attempt_settlements.lock()
             && let Some(projection) = settlements.get(execution_id)
@@ -576,6 +652,11 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /**
+    协调本地尝试控制状态：取消并回收不再属于当前快照的尝试。
+
+    已 join 的陈旧尝试立即退役，仍在运行的则调度延迟中止。
+    */
     pub(crate) fn reconcile_local_attempt_control(
         &self,
         run_id: &str,
@@ -625,6 +706,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 测试辅助：判断执行器是否仍持有该尝试的任何监督状态。
     #[cfg(test)]
     pub(crate) fn has_attempt_supervisor_state(&self, execution_id: &str) -> bool {
         self.attempt_cancellations
@@ -652,6 +734,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
                 .is_ok_and(|settlements| settlements.contains_key(execution_id))
     }
 
+    /// 将尝试标记为结算权威状态未知。
     fn mark_attempt_authority_unknown(&self, execution_id: &str, error: impl Into<String>) {
         if let Ok(settlements) = self.attempt_settlements.lock()
             && let Some(projection) = settlements.get(execution_id)
@@ -664,6 +747,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 移除该尝试在本地的全部控制状态。
     fn retire_local_attempt_control(&self, execution_id: &str) {
         if let Ok(mut controls) = self.attempt_cancellations.lock() {
             controls.remove(execution_id);
@@ -685,6 +769,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 若配置了观察者，则上报尝试控制清理回执。
     pub(crate) fn observe_attempt_control_cleanup(
         &self,
         run_id: &str,
@@ -702,6 +787,11 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /**
+    执行运行时 DAG
+
+    循环加载快照、选择就绪波次、分派并结算任务，直到完成、失败、暂停或取消。
+    */
     pub(crate) async fn execute(
         &self,
         run_id: &str,
@@ -713,8 +803,10 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         let mut failure_errors: HashMap<TaskId, String> = HashMap::new();
 
         loop {
-            // Every loop boundary is a safe point: all locally-dispatched
-            // handles from the previous wave have been joined and resolved.
+            /*
+            每个循环边界都是安全点：上一波次本地分派的
+            所有句柄都已 join 并完成结算。
+            */
             let snapshot = self.controller.load_snapshot(run_id).await?;
             if let Err(errors) = self.validator.validate_task_snapshot(&snapshot.tasks) {
                 return Err(ReactError::Other(format!(
@@ -931,9 +1023,11 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
                     }
                 };
                 let claim_id = claim.claim_id.clone();
-                // Each claim owns a child token: cancelling one exact attempt
-                // must not cancel sibling tasks in the same ready wave. The
-                // token is published before waiting for shared admission.
+                /*
+                每个 claim 持有一个子令牌：取消某一次具体尝试
+                不得取消同一就绪波次中的兄弟任务。
+                令牌会在等待共享准入之前发布。
+                */
                 let task_cancel = cancel.child_token();
                 let execution_id = claim.execution_id(run_id, &task.spec.id);
                 let pending_interrupt = self
@@ -1204,8 +1298,10 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
                 }
             }
 
-            // Joined attempts remain addressable until their durable claim CAS
-            // is proven settled or superseded. Cleanup happens after that point.
+            /*
+            已 join 的尝试在其持久化 claim CAS
+            被确认结算或被取代之前仍可寻址，之后才进行清理。
+            */
 
             let mut interruption_policy_failed = false;
             let mut interruption_is_durable = false;
@@ -1474,8 +1570,10 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
                 return Err(ReactError::Other(wave_errors.join("; ")));
             }
 
-            // Resolve the whole wave before honoring a stop request so completed
-            // siblings are never replayed after resume.
+            /*
+            先结算整个波次再响应停止请求，
+            确保已完成的兄弟任务在恢复后不会被重放。
+            */
             if let Some(disposition) = interruption {
                 match self
                     .settle_interruption_boundary(
@@ -1497,6 +1595,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 结算中断边界：由控制器持久化中断处置，并转换为对应的执行结果。
     async fn settle_interruption_boundary(
         &self,
         run_id: &str,
@@ -1538,6 +1637,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         }
     }
 
+    /// 持久化任务结算请求，并校验回执与请求一致且 claim 已不再活跃。
     async fn settle_dispatch_request(
         &self,
         run_id: &str,
@@ -1571,6 +1671,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         Ok(resolution)
     }
 
+    /// 放弃 claim 并持久化放弃结果，校验 claim 已不再活跃。
     async fn settle_abandonment(
         &self,
         run_id: &str,
@@ -1601,6 +1702,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
         Ok(settlement)
     }
 
+    /// 持久化结算后清理尝试控制状态，失败时记录告警以便重试。
     async fn cleanup_attempt_control(&self, run_id: &str, task: &Task, claim: &TaskClaim) {
         let execution_id = claim.execution_id(run_id, &task.spec.id);
         let receipt = self
@@ -1626,6 +1728,7 @@ impl<C: RuntimeDagController> RuntimeDagExecutor<C> {
     }
 }
 
+/// 将任务结算结果映射为状态字符串。
 fn runtime_resolution_status(resolution: &RuntimeTaskResolution) -> &'static str {
     match resolution {
         RuntimeTaskResolution::Completed => "completed",
@@ -1639,6 +1742,7 @@ fn runtime_resolution_status(resolution: &RuntimeTaskResolution) -> &'static str
     }
 }
 
+/// 将 claim 放弃原因映射为状态字符串。
 fn abandonment_status(abandonment: &RuntimeClaimAbandonment) -> &'static str {
     match abandonment {
         RuntimeClaimAbandonment::Interrupted {
@@ -1651,6 +1755,7 @@ fn abandonment_status(abandonment: &RuntimeClaimAbandonment) -> &'static str {
     }
 }
 
+/// 判断结算回执是否与结算请求一致（Superseded 视为匹配）。
 fn resolution_matches_request(
     request: &RuntimeTaskResolutionRequest,
     resolution: &RuntimeTaskResolution,
@@ -1701,8 +1806,10 @@ fn resolution_matches_request(
     }
 }
 
-/// Merge durable and requested interruption signals with one explicit order:
-/// Cancelled is stronger than Paused, and the earlier Paused reason is stable.
+/**
+按明确的优先级合并持久化与请求中的中断信号：
+Cancelled 优先于 Paused，且较早的 Paused 原因保持不变。
+*/
 fn prioritize_interruption(
     current: Option<RuntimeInterruptionDisposition>,
     incoming: Option<RuntimeInterruptionDisposition>,
@@ -1717,6 +1824,7 @@ fn prioritize_interruption(
     }
 }
 
+/// 提取持久化任务状态中携带的错误信息。
 fn persisted_status_error(status: &TaskStatus) -> Option<String> {
     match status {
         TaskStatus::Failed(error) | TaskStatus::Blocked(error) | TaskStatus::Paused(error) => {
@@ -1732,6 +1840,7 @@ fn persisted_status_error(status: &TaskStatus) -> Option<String> {
     }
 }
 
+/// 校验控制器选择的波次：非空、只包含就绪任务且不重复。
 fn validate_selected_wave(
     ready_task_ids: &[TaskId],
     selected_task_ids: Vec<TaskId>,
@@ -1759,6 +1868,7 @@ fn validate_selected_wave(
     Ok(selected_task_ids)
 }
 
+/// 根据停止处置将任务错误转换为失败或暂停结果。
 fn stop_outcome(
     disposition: RuntimeStopDisposition,
     failed_task_id: TaskId,
@@ -1783,41 +1893,73 @@ mod tests {
     use super::*;
     use crate::tasks::{RuntimeTaskAttemptInterruptError, TaskStatus};
 
+    /// 脚本化的 RuntimeDagController 测试替身，通过字段注入各类行为。
     #[derive(Default)]
     struct ScriptedController {
+        /// 当前计划快照
         snapshot: Mutex<Option<RuntimePlanSnapshot>>,
+        /// 按分派顺序记录的任务 ID
         order: Mutex<Vec<TaskId>>,
+        /// 分派时应返回失败的任务及其错误
         fail: Mutex<HashMap<TaskId, String>>,
+        /// 分派成功后应解析为阻塞的任务及其错误与停止处置
         blocked: Mutex<HashMap<TaskId, (String, RuntimeStopDisposition)>>,
+        /// 分派后等待取消信号再返回的任务
         wait_for_cancel: Mutex<HashSet<TaskId>>,
+        /// 分派后永不返回（忽略取消）的任务
         ignore_cancel: Mutex<HashSet<TaskId>>,
+        /// 该任务结算后向快照插入新任务并提升修订号
         insert_after: Mutex<Option<TaskId>>,
+        /// 为 true 时下一次 claim 返回 ReloadSnapshot
         reload_claim_once: Mutex<bool>,
+        /// interruption_disposition 返回的中断处置
         interruption: Mutex<RuntimeInterruptionDisposition>,
+        /// interruption_disposition 返回的脚本化错误
         interruption_error: Mutex<Option<String>>,
+        /// 分派时等待的屏障，用于让同一波次任务并发到达
         dispatch_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+        /// 分派完成后要触发的取消令牌
         cancel_after_dispatch: Mutex<HashMap<TaskId, CancellationToken>>,
+        /// claim 成功后发出的通知
         claim_ready: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// 已预留尝试控制的 execution_id 列表
         reserved: Mutex<Vec<String>>,
+        /// 已退役尝试控制的 execution_id 列表
         retired: Mutex<Vec<String>>,
+        /// claim_is_current 被调用的次数
         current_check_count: Mutex<usize>,
+        /// 第 N 次 claim_is_current 调用时返回一次错误
         current_check_error_at: Mutex<Option<usize>>,
+        /// 第 N 次起 claim_is_current 返回 false（claim 陈旧）
         stale_after_current_check: Mutex<Option<usize>>,
+        /// 陈旧检查时是否将任务直接标记为已完成（模拟被取代）
         supersede_on_stale_check: Mutex<bool>,
+        /// 下一次结算返回的一次性错误
         settlement_error_once: Mutex<Option<String>>,
+        /// 为 true 时结算已提交但返回错误（模拟响应丢失）
         settle_response_error_once: Mutex<bool>,
+        /// 预留尝试控制时返回的错误
         reservation_error: Mutex<Option<String>>,
+        /// 预留尝试控制前的延迟
         reservation_delay: Mutex<Option<Duration>>,
+        /// 进入结算时发出的通知
         settlement_entered: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// 结算继续前需等待的通知
         settlement_release: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// 进入协调时发出的通知
         reconciliation_entered: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// 协调继续前需等待的通知
         reconciliation_release: Mutex<Option<Arc<tokio::sync::Notify>>>,
+        /// 协调尝试控制时返回的错误
         reconciliation_error: Mutex<Option<String>>,
+        /// 为 true 时下一次放弃 claim 返回错误（结果未知）
         abandonment_error_once: Mutex<bool>,
+        /// 退役尝试控制时返回的回执（默认 Retired）
         cleanup_receipt: Mutex<Option<RuntimeAttemptControlCleanupReceipt>>,
     }
 
     impl ScriptedController {
+        /// 用给定任务构造修订号为 1 的脚本化控制器。
         fn with_tasks(tasks: Vec<Task>) -> Self {
             Self {
                 snapshot: Mutex::new(Some(RuntimePlanSnapshot { revision: 1, tasks })),
@@ -1825,6 +1967,7 @@ mod tests {
             }
         }
 
+        /// 返回当前快照中各任务的状态。
         fn statuses(&self) -> HashMap<TaskId, TaskStatus> {
             self.snapshot
                 .lock()
@@ -1843,8 +1986,10 @@ mod tests {
 
     #[async_trait]
     impl RuntimeDagController for ScriptedController {
+        /// 分派结果为任务 ID。
         type DispatchOutput = TaskId;
 
+        /// 返回当前快照的克隆。
         async fn load_snapshot(&self, _run_id: &str) -> Result<RuntimePlanSnapshot> {
             self.snapshot
                 .lock()
@@ -1853,6 +1998,7 @@ mod tests {
                 .ok_or_else(|| ReactError::Other("missing snapshot".to_string()))
         }
 
+        /// 按脚本 claim 任务，可模拟一次 ReloadSnapshot。
         async fn claim_task(
             &self,
             _run_id: &str,
@@ -1892,6 +2038,7 @@ mod tests {
             Ok(result)
         }
 
+        /// 检查 claim 是否仍为当前，可按脚本模拟查询错误或陈旧。
         async fn claim_is_current(
             &self,
             _run_id: &str,
@@ -1960,6 +2107,7 @@ mod tests {
                 .map_err(|error| ReactError::Other(error.to_string()))
         }
 
+        /// 按脚本预留尝试控制，可模拟延迟与错误。
         async fn reserve_attempt_control(&self, context: &TaskSubagentContext) -> Result<()> {
             let delay = *self
                 .reservation_delay
@@ -1986,6 +2134,7 @@ mod tests {
             Ok(())
         }
 
+        /// 按脚本协调尝试控制，可通过通知暂停并模拟错误。
         async fn reconcile_attempt_control(
             &self,
             _run_id: &str,
@@ -2018,6 +2167,7 @@ mod tests {
             Ok(())
         }
 
+        /// 记录退役的 execution_id 并返回脚本化回执。
         async fn retire_attempt_control(
             &self,
             run_id: &str,
@@ -2035,6 +2185,7 @@ mod tests {
                 .unwrap_or(RuntimeAttemptControlCleanupReceipt::Retired)
         }
 
+        /// 按脚本分派任务：可等待屏障、等待取消、永不返回或返回失败。
         async fn dispatch_task(
             &self,
             context: TaskSubagentContext,
@@ -2093,6 +2244,7 @@ mod tests {
             result
         }
 
+        /// 将分派结果转换为结算请求。
         async fn resolve_dispatch(
             &self,
             _run_id: &str,
@@ -2129,6 +2281,7 @@ mod tests {
             })
         }
 
+        /// 按脚本结算任务，可暂停、返回错误、插入新任务或模拟响应丢失。
         async fn settle_resolution(
             &self,
             _run_id: &str,
@@ -2204,6 +2357,7 @@ mod tests {
             Ok(resolution)
         }
 
+        /// 按放弃原因结算 claim，可模拟一次结果未知的错误。
         async fn abandon_claim(
             &self,
             _run_id: &str,
@@ -2245,6 +2399,7 @@ mod tests {
             .map_err(|error| ReactError::Other(error.to_string()))
         }
 
+        /// 返回脚本化的中断处置或错误。
         async fn interruption_disposition(
             &self,
             _run_id: &str,
@@ -2264,6 +2419,7 @@ mod tests {
                 .clone())
         }
 
+        /// 在快照上结算中断处置。
         async fn settle_interruption(
             &self,
             _run_id: &str,
@@ -2286,6 +2442,7 @@ mod tests {
         }
     }
 
+    /// 构造测试用运行时任务。
     fn runtime_task(id: &str, status: TaskStatus, dependencies: &[&str]) -> Task {
         Task {
             spec: crate::tasks::TaskSpec {
@@ -2309,6 +2466,7 @@ mod tests {
         }
     }
 
+    /// 验证执行器遵循依赖顺序，并在安全点采纳新的修订。
     #[tokio::test]
     async fn executor_follows_dependencies_and_safe_point_revision() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -2347,6 +2505,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证精确尝试控制在分派前预留、结算后退役。
     #[tokio::test]
     async fn exact_control_is_reserved_before_dispatch_and_retired_after_settlement() -> Result<()>
     {
@@ -2386,6 +2545,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证结算响应丢失时重新加载已提交的权威状态，而不放弃 claim。
     #[tokio::test]
     async fn lost_settlement_response_reloads_committed_authority_without_abandonment() -> Result<()>
     {
@@ -2416,6 +2576,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已 join 的尝试在持久化结算前仍可寻址。
     #[tokio::test]
     async fn joined_attempt_remains_addressable_until_durable_settlement() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2491,6 +2652,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已 join 的尝试报告权威未知，恢复后结算观察结果。
     #[tokio::test]
     async fn joined_attempt_reports_unknown_authority_and_recovery_settles_observation()
     -> Result<()> {
@@ -2649,6 +2811,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证预留失败且放弃结果未知时保留控制投影。
     #[tokio::test]
     async fn unknown_reservation_abandonment_preserves_control_projection() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2690,6 +2853,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证清理失败会被观察到，但不会回滚已提交的终态。
     #[tokio::test]
     async fn cleanup_failure_is_observed_without_reversing_committed_terminal() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2745,6 +2909,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器将已跳过的任务视为已解决。
     #[tokio::test]
     async fn executor_treats_skipped_tasks_as_resolved() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2760,6 +2925,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器拒绝附着在非活跃状态上的 claim。
     #[tokio::test]
     async fn executor_rejects_claims_attached_to_inactive_statuses() -> Result<()> {
         for status in [TaskStatus::Pending, TaskStatus::Completed] {
@@ -2787,6 +2953,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器将已取消的快照视为已中断。
     #[tokio::test]
     async fn executor_treats_cancelled_snapshot_as_interrupted() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2802,6 +2969,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证恢复出的中断优先于保留的失败。
     #[tokio::test]
     async fn recovered_interruption_takes_precedence_over_retained_failure() -> Result<()> {
         let cancelled = Arc::new(ScriptedController::with_tasks(vec![
@@ -2864,6 +3032,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证已完成的快照优先于迟到的取消请求。
     #[tokio::test]
     async fn completed_snapshot_wins_over_late_cancellation_request() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -2882,6 +3051,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证最后一次成功结算优先于同一边界上的取消。
     #[tokio::test]
     async fn last_success_settlement_wins_over_same_boundary_cancellation() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2911,6 +3081,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证边界上迟到的取消覆盖阻塞结算。
     #[tokio::test]
     async fn late_cancellation_overrides_blocked_resolution_at_boundary() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -2948,6 +3119,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证波次开始前的取消直接结算，不进行分派。
     #[tokio::test]
     async fn service_settles_pre_wave_cancellation_without_dispatch() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -2980,6 +3152,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证波次开始前的暂停直接结算，不重试也不分派。
     #[tokio::test]
     async fn service_settles_pre_wave_pause_without_retry_or_dispatch() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3017,6 +3190,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证取消会排空当前波次并保留已完成的兄弟任务。
     #[tokio::test]
     async fn cancellation_drains_wave_and_preserves_completed_siblings() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -3056,6 +3230,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证精确运行时中断只取消被 claim 任务的子令牌。
     #[tokio::test]
     async fn exact_runtime_interrupt_cancels_only_claimed_task_child() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3110,6 +3285,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证在共享准入前的精确中断会以预先取消的状态分派。
     #[tokio::test]
     async fn exact_interrupt_before_shared_admission_runs_pre_cancelled_dispatch() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3180,6 +3356,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证在运行时预留前的精确中断返回类型化的排队回执。
     #[tokio::test]
     async fn exact_interrupt_before_runtime_reservation_returns_typed_queued_receipt() -> Result<()>
     {
@@ -3219,6 +3396,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证延迟预留时，为句柄就绪前的中断重新调度中止。
     #[tokio::test]
     async fn delayed_reservation_rearms_abort_for_pre_handle_interrupt() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3285,6 +3463,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证请求期间 claim 被取代时，精确中断会退役投影。
     #[tokio::test]
     async fn exact_interrupt_retires_projection_when_claim_supersedes_during_request() -> Result<()>
     {
@@ -3357,6 +3536,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证协调失败时陈旧 claim 的结果仍被保留。
     #[tokio::test]
     async fn stale_claim_outcome_survives_reconciliation_failure() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3408,6 +3588,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证精确中断在宽限期后中止不配合的尝试。
     #[tokio::test]
     async fn exact_interrupt_aborts_non_cooperative_attempt_after_grace() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3475,6 +3656,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证并发的精确中止各自结算自己的 claim。
     #[tokio::test]
     async fn concurrent_exact_aborts_settle_their_own_claims() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -3549,6 +3731,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证根取消与精确中止收敛，且不会错误归属到其他尝试。
     #[tokio::test]
     async fn root_and_exact_abort_converge_without_cross_attempt_attribution() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -3621,6 +3804,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证波次中途暂停保留已完成的兄弟任务，并暂停被中断的 claim。
     #[tokio::test]
     async fn mid_wave_pause_preserves_completed_sibling_and_pauses_interrupted_claim() -> Result<()>
     {
@@ -3694,6 +3878,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证中断策略出错时先清理所有 claim 再返回错误。
     #[tokio::test]
     async fn interruption_policy_error_cleans_every_claim_before_returning_error() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -3772,6 +3957,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证重新 claim 的物理尝试拥有不同的 execution_id。
     #[test]
     fn reclaimed_physical_attempt_has_a_distinct_execution_id() {
         let first = TaskClaim::new(7, 2, "same-spec".to_string());
@@ -3784,6 +3970,7 @@ mod tests {
         );
     }
 
+    /// 验证取消会放弃不配合的分派 claim。
     #[tokio::test]
     async fn cancellation_abandons_a_non_cooperative_dispatch_claim() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3833,6 +4020,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证 claim 冲突时重新加载，既不失败也不分派陈旧工作。
     #[tokio::test]
     async fn claim_conflict_reloads_without_failing_or_dispatching_stale_work() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![runtime_task(
@@ -3861,6 +4049,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器保留持久化终态中的错误详情。
     #[tokio::test]
     async fn executor_preserves_persisted_terminal_error_details() -> Result<()> {
         let terminal_statuses = [
@@ -3894,6 +4083,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器推导下游阻塞而不将其持久化。
     #[tokio::test]
     async fn executor_derives_downstream_block_without_persisting_it() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![
@@ -3934,6 +4124,7 @@ mod tests {
         Ok(())
     }
 
+    /// 验证执行器推导传递性的下游阻塞链而不持久化。
     #[tokio::test]
     async fn executor_derives_transitive_downstream_chain_without_persistence() -> Result<()> {
         let controller = Arc::new(ScriptedController::with_tasks(vec![

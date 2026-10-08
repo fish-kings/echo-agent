@@ -1,12 +1,14 @@
-//! 工具权限模型
-//!
-//! 提供一套多层级的权限控制系统：
-//! - PermissionMode：权限模式（default/plan/auto/bypass 等）
-//! - PermissionRule：规则系统（allow/deny/ask）
-//! - RuleSource：规则来源优先级
-//! - RuleRegistry：规则注册表
-//!
-//! 参考自 Claude Code 的权限架构设计
+/*!
+工具权限模型
+
+提供一套多层级的权限控制系统：
+- PermissionMode：权限模式（default/plan/auto/bypass 等）
+- PermissionRule：规则系统（allow/deny/ask）
+- RuleSource：规则来源优先级
+- RuleRegistry：规则注册表
+
+参考自 Claude Code 的权限架构设计
+*/
 
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -44,25 +46,29 @@ impl std::fmt::Display for ToolPermission {
 
 // ── 权限模式 ──────────────────────────────────────────────────────────────────
 
-/// 权限模式 - 控制权限检查行为
-///
-/// 参考自 Claude Code 的 PermissionMode 设计：
-/// - Default：危险操作需要用户确认
-/// - Plan：内部只读执行模式（不是面向用户的审批模式）
-/// - AcceptEdits：自动接受编辑操作
-/// - BypassPermissions：绕过所有检查（可通过 bypass_disabled 禁用）
-/// - Auto：由 AI 分类器自动决策
-/// - Bubble：子 Agent 的权限向上冒泡给父进程
-/// - DontAsk：静默拒绝未命中允许规则的工具（不向用户提示）
-/// - StrictConfirm：写入/执行/网络/敏感操作前均需询问
+/**
+权限模式 - 控制权限检查行为
+
+参考自 Claude Code 的 PermissionMode 设计：
+- Default：危险操作需要用户确认
+- Plan：内部只读执行模式（不是面向用户的审批模式）
+- AcceptEdits：自动接受编辑操作
+- BypassPermissions：绕过所有检查（可通过 bypass_disabled 禁用）
+- Auto：由 AI 分类器自动决策
+- Bubble：子 Agent 的权限向上冒泡给父进程
+- DontAsk：静默拒绝未命中允许规则的工具（不向用户提示）
+- StrictConfirm：写入/执行/网络/敏感操作前均需询问
+*/
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
     /// 默认模式：危险操作需要用户确认
     #[default]
     Default,
-    /// 内部只读执行模式：不允许写入和执行操作。
-    /// 面向用户的规划/任务路由场景应改用交互模式。
+    /**
+    内部只读执行模式：不允许写入和执行操作。
+    面向用户的规划/任务路由场景应改用交互模式。
+    */
     Plan,
     /// 自动接受文件编辑操作
     #[serde(
@@ -85,10 +91,12 @@ pub enum PermissionMode {
     Auto,
     /// 子 Agent 的权限向上冒泡给父进程
     Bubble,
-    /// 静默模式：匹配到的规则自动允许，未匹配的静默拒绝
-    ///
-    /// 介于 Default 与 BypassPermissions 之间的中间模式，
-    /// 适用于 CI/CD 等无人值守的执行场景。
+    /**
+    静默模式：匹配到的规则自动允许，未匹配的静默拒绝
+
+    介于 Default 与 BypassPermissions 之间的中间模式，
+    适用于 CI/CD 等无人值守的执行场景。
+    */
     #[serde(rename = "dont-ask", alias = "dontask")]
     DontAsk,
     /// 严格交互模式：读取操作被允许，变更或外部操作均需询问。
@@ -120,8 +128,10 @@ impl PermissionMode {
         match self {
             PermissionMode::BypassPermissions => true,
             PermissionMode::AcceptEdits => true,
-            // DontAsk 依赖规则匹配来决定：只有命中显式允许规则的写入才被允许；
-            // 否则静默拒绝。
+            /*
+            DontAsk 依赖规则匹配来决定：只有命中显式允许规则的写入才被允许；
+            否则静默拒绝。
+            */
             PermissionMode::DontAsk => false,
             PermissionMode::Plan => false,
             PermissionMode::StrictConfirm => false,
@@ -220,11 +230,13 @@ impl PermissionDecision {
 
 // ── 规则来源优先级 ─────────────────────────────────────────────────────────────
 
-/// 规则来源优先级（数值越大优先级越高）
-///
-/// 参考自 Claude Code 的 PERMISSION_RULE_SOURCES 设计。
-/// 在拒绝优先（deny-first）的评估策略下，来源优先级仅影响同类型规则
-/// （deny/ask/allow）之间的排序；deny 规则始终优先于 ask 和 allow 规则。
+/**
+规则来源优先级（数值越大优先级越高）
+
+参考自 Claude Code 的 PERMISSION_RULE_SOURCES 设计。
+在拒绝优先（deny-first）的评估策略下，来源优先级仅影响同类型规则
+（deny/ask/allow）之间的排序；deny 规则始终优先于 ask 和 allow 规则。
+*/
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
@@ -308,8 +320,10 @@ pub enum RuleMatcher {
 impl std::str::FromStr for RuleMatcher {
     type Err = String;
 
-    /// 将字符串形式的匹配器规格（如 `"tool:xxx"`、`"pattern:xxx"`、`"perm:xxx"`、
-    /// `"*"`）解析为对应的匹配器。
+    /**
+    将字符串形式的匹配器规格（如 `"tool:xxx"`、`"pattern:xxx"`、`"perm:xxx"`、
+    `"*"`）解析为对应的匹配器。
+    */
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value == "*" || value == "all" {
             return Ok(Self::All);
@@ -914,8 +928,10 @@ mod tests {
             RuleSource::UserSettings,
         ));
 
-        // deny-first: 即使有高优先级 Allow，Deny All 仍然匹配
-        // Read 匹配 Deny(All) → 被拒绝
+        /*
+        deny-first: 即使有高优先级 Allow，Deny All 仍然匹配
+        Read 匹配 Deny(All) → 被拒绝
+        */
         let result = registry.check("Read", &[]);
         assert_eq!(
             result,

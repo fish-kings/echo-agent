@@ -71,8 +71,10 @@ pub struct WorkflowDefinition {
     /// 终止节点名称列表
     #[serde(default)]
     pub finish: Vec<String>,
-    /// 在进入这些节点之前暂停（`*` 表示全部）；启用在已构建图上
-    /// 使用 `run_until_interrupt` + `resume`。
+    /**
+     * 在进入这些节点之前暂停（`*` 表示全部）；启用在已构建图上
+     * 使用 `run_until_interrupt` + `resume`。
+     */
     #[serde(default)]
     pub interrupt_before: Vec<String>,
     /// 在这些节点执行之后暂停（`*` 表示全部）。
@@ -355,10 +357,12 @@ pub fn load_graph_from_json_str(json: &str) -> Result<crate::workflow::Graph> {
     WorkflowDefinition::from_json_str(json)?.build_graph()
 }
 
+/// 工作流加载器的单元测试。
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 验证中断（interrupt_before / interrupt_after）定义可被正确解析。
     #[test]
     fn test_interrupt_definition() {
         let json = r#"{
@@ -388,6 +392,7 @@ mod tests {
         ));
     }
 
+    /// 验证可从 YAML 字符串解析工作流定义。
     #[test]
     fn test_parse_yaml_definition() {
         let yaml = r#"
@@ -419,6 +424,7 @@ max_steps: 50
         assert_eq!(def.max_steps, Some(50));
     }
 
+    /// 验证可从 JSON 字符串解析工作流定义。
     #[test]
     fn test_parse_json_definition() {
         let json = r#"{
@@ -439,6 +445,7 @@ max_steps: 50
         assert_eq!(def.nodes.len(), 2);
     }
 
+    /// 验证可由 YAML 定义构建出图。
     #[test]
     fn test_build_graph_from_yaml() {
         let yaml = r#"
@@ -459,6 +466,7 @@ finish:
         assert_eq!(graph.name, "simple_graph");
     }
 
+    /// 验证条件边定义可被正确解析与构建。
     #[test]
     fn test_conditional_edge_definition() {
         let yaml = r#"
@@ -486,6 +494,7 @@ finish:
         assert_eq!(graph.name, "cond_flow");
     }
 
+    /// 验证并行边定义可被正确解析与构建。
     #[test]
     fn test_parallel_edge_definition() {
         let yaml = r#"

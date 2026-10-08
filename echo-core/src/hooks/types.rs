@@ -1,11 +1,13 @@
-//! Hook 类型定义 —— 整个工作区 crate 共享。
-//!
-//! 本模块包含统一 hook 系统的核心类型，之所以定义在 `echo-core` 中，
-//! 是为了让 `echo-execution` 和 `echo-orchestration` 都能引用这些类型，
-//! 而不产生循环依赖。
-//!
-//! 执行引擎（`HookRegistry`、`parse_hook_output` 等）仍位于
-//! `echo-execution/src/skills/hooks.rs`。
+/*!
+Hook 类型定义 —— 整个工作区 crate 共享。
+
+本模块包含统一 hook 系统的核心类型，之所以定义在 `echo-core` 中，
+是为了让 `echo-execution` 和 `echo-orchestration` 都能引用这些类型，
+而不产生循环依赖。
+
+执行引擎（`HookRegistry`、`parse_hook_output` 等）仍位于
+`echo-execution/src/skills/hooks.rs`。
+*/
 
 use crate::tools::permission::{PermissionDecision, PermissionMode};
 use serde::{Deserialize, Serialize};
@@ -166,14 +168,16 @@ pub enum HookEvent {
     /// Subagent 完成后（无论成功或失败）。
     SubagentStop,
 
-    // ── Task 事件 ──
-    // 与业界对齐的三阶段任务生命周期（Codex item.started/
-    // item.completed；Cursor plan-submit vs build-start；Claude Code
-    // TaskCreated/TaskCompleted）。TaskCreated = 节点进入可执行图
-    // （计划修订已提交）；TaskStarted = 调度器选中该节点，即将派发；
-    // TaskCompleted = 节点达到终止状态，携带在 `task_terminal_status` 上。
-    // Timeout/Cancelled 不是独立事件 —— 它们是 `TaskCompleted` 的状态值
-    // （对齐 Codex CommandExecutionStatus 模型）。
+    /*
+    ── Task 事件 ──
+    与业界对齐的三阶段任务生命周期（Codex item.started/
+    item.completed；Cursor plan-submit vs build-start；Claude Code
+    TaskCreated/TaskCompleted）。TaskCreated = 节点进入可执行图
+    （计划修订已提交）；TaskStarted = 调度器选中该节点，即将派发；
+    TaskCompleted = 节点达到终止状态，携带在 `task_terminal_status` 上。
+    Timeout/Cancelled 不是独立事件 —— 它们是 `TaskCompleted` 的状态值
+    （对齐 Codex CommandExecutionStatus 模型）。
+    */
     /// 任务节点进入可执行图（计划修订已提交）。
     TaskCreated,
     /// 调度器已选中该任务，即将派发执行。
@@ -191,22 +195,25 @@ pub enum HookEvent {
     /// 插件已被禁用或卸载。
     PluginDisabled,
 
-    // ── 扩展的任务事件 ──
-    // TaskTimeout / TaskCancelled 已移除：终止原因现在是
-    // `TaskCompleted` 的状态值（见 TaskTerminalStatus），而不是独立
-    // 事件。与业界对齐（Codex CommandExecutionStatus；Claude Code
-    // 没有 TaskStarted，但它的 TaskCompleted 对终止原因是无关的）。
-    // 这避免了此前「没有承载对象」的问题 —— TodoStatus 没有
-    // Timeout/Cancelled 变体，因此在 PlanTask 层触发它们本身就是一种
-    // 类型错误；它们应属于终止事件的状态字段。
+    /*
+    ── 扩展的任务事件 ──
+    TaskTimeout / TaskCancelled 已移除：终止原因现在是
+    `TaskCompleted` 的状态值（见 TaskTerminalStatus），而不是独立
+    事件。与业界对齐（Codex CommandExecutionStatus；Claude Code
+    没有 TaskStarted，但它的 TaskCompleted 对终止原因是无关的）。
+    这避免了此前「没有承载对象」的问题 —— TodoStatus 没有
+    Timeout/Cancelled 变体，因此在 PlanTask 层触发它们本身就是一种
+    类型错误；它们应属于终止事件的状态字段。
+    */
 
-    // ── 扩展的 Subagent 事件 ──
-    // SubagentCancelled 已移除：终止模型现在统一为
-    // SubagentStop(status = completed|failed|cancelled|timed_out)，
-    // 恰好发出一次。Cancelled 是 SubagentStop 的一个状态，而不是独立
-    // 事件。（Claude Code / Codex / OpenAI Agents SDK / AGTP 均收敛到
-    // 这种「两事件 + 状态枚举」模型。）
-
+    /*
+    ── 扩展的 Subagent 事件 ──
+    SubagentCancelled 已移除：终止模型现在统一为
+    SubagentStop(status = completed|failed|cancelled|timed_out)，
+    恰好发出一次。Cancelled 是 SubagentStop 的一个状态，而不是独立
+    事件。（Claude Code / Codex / OpenAI Agents SDK / AGTP 均收敛到
+    这种「两事件 + 状态枚举」模型。）
+    */
     // ── 演化事件 ──
     /// 任意一条记忆被持久化到 Store 之后。
     PostMemoryWrite,
@@ -320,9 +327,11 @@ impl HookEvent {
         )
     }
 
-    /// 以静态字符串返回 PascalCase 形式的事件名（不分配内存）。
-    ///
-    /// 在热路径上优先使用它，而不是 `format!("{:?}", event)`。
+    /**
+    以静态字符串返回 PascalCase 形式的事件名（不分配内存）。
+
+    在热路径上优先使用它，而不是 `format!("{:?}", event)`。
+    */
     pub const fn as_str(self) -> &'static str {
         match self {
             HookEvent::PreToolUse => "PreToolUse",
@@ -490,11 +499,13 @@ pub struct HookContext {
     /// Subagent 结果摘要（仅 SubagentStop）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_result: Option<String>,
-    /// Subagent 运行的终止状态（仅 SubagentStop）。
-    ///
-    /// 在 SubagentStop 上下文中始终存在。使消费者无需解析自由文本结果，
-    /// 即可区分 completed/failed/cancelled/timed_out。与业界对齐
-    /// （见 [`SubagentStopStatus`]）。
+    /**
+    Subagent 运行的终止状态（仅 SubagentStop）。
+
+    在 SubagentStop 上下文中始终存在。使消费者无需解析自由文本结果，
+    即可区分 completed/failed/cancelled/timed_out。与业界对齐
+    （见 [`SubagentStopStatus`]）。
+    */
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subagent_stop_status: Option<SubagentStopStatus>,
 
@@ -508,19 +519,23 @@ pub struct HookContext {
     /// 任务结果摘要（仅 TaskCompleted）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_result: Option<String>,
-    /// PlanTask 节点的终止状态（仅 TaskCompleted）。
-    ///
-    /// 在 TaskCompleted 上下文中始终存在。使消费者无需解析自由文本，
-    /// 即可区分 completed/failed/cancelled/timed_out/skipped。
-    /// 取代了此前独立的 TaskTimeout/TaskCancelled 事件。
+    /**
+    PlanTask 节点的终止状态（仅 TaskCompleted）。
+
+    在 TaskCompleted 上下文中始终存在。使消费者无需解析自由文本，
+    即可区分 completed/failed/cancelled/timed_out/skipped。
+    取代了此前独立的 TaskTimeout/TaskCancelled 事件。
+    */
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_terminal_status: Option<TaskTerminalStatus>,
 
-    // ── Run / 计划关联字段 ──
-    // 这些字段让 hook 能把一次 Task/Subagent 事件关联回所属的
-    // TaskRun、计划修订版本，以及具体的尝试次数。它们是可选的，
-    // 因为定义 HookContext 的框架层并不总能知道这些值 ——
-    // 由应用运行时（例如宿主应用的 task_runtime）在触发时负责填充。
+    /*
+    ── Run / 计划关联字段 ──
+    这些字段让 hook 能把一次 Task/Subagent 事件关联回所属的
+    TaskRun、计划修订版本，以及具体的尝试次数。它们是可选的，
+    因为定义 HookContext 的框架层并不总能知道这些值 ——
+    由应用运行时（例如宿主应用的 task_runtime）在触发时负责填充。
+    */
     /// 所属 TaskRun ID（已知时用于 Task/Subagent 事件）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -563,6 +578,7 @@ pub struct HookContext {
 }
 
 impl Default for HookContext {
+    /// 创建默认占位上下文，事件类型等字段会由工厂方法覆盖。
     fn default() -> Self {
         Self {
             event: HookEvent::PreToolUse, // 任意占位值，总会被工厂方法覆盖
@@ -943,10 +959,12 @@ impl HookContext {
         }
     }
 
-    /// 为该上下文附加可选的 TaskRun/SubagentRun 标识信息。
-    ///
-    /// 纯框架层的派发可能无法获知每一个标识符。应用运行时应尽量填充所有可
-    /// 得字段，而不是把它们编码进 matcher 或 result 字符串里。
+    /**
+    为该上下文附加可选的 TaskRun/SubagentRun 标识信息。
+
+    纯框架层的派发可能无法获知每一个标识符。应用运行时应尽量填充所有可
+    得字段，而不是把它们编码进 matcher 或 result 字符串里。
+    */
     pub fn with_run_correlation(
         mut self,
         run_id: Option<&str>,
@@ -999,10 +1017,12 @@ impl HookContext {
         }
     }
 
-    /// 构建 TaskCompleted 事件的上下文（终止状态）。
-    ///
-    /// `status` 是结构化的终止原因（completed/failed/cancelled/
-    /// timed_out/skipped），取代了此前独立的 TaskTimeout/Cancelled 事件。
+    /**
+    构建 TaskCompleted 事件的上下文（终止状态）。
+
+    `status` 是结构化的终止原因（completed/failed/cancelled/
+    timed_out/skipped），取代了此前独立的 TaskTimeout/Cancelled 事件。
+    */
     pub fn for_task_completed(
         task_id: &str,
         task_subject: &str,
@@ -1111,9 +1131,11 @@ pub struct HookResult {
     pub retry: bool,
     /// 来自 hook 的任意元数据。
     pub metadata: Option<Value>,
-    /// 用于 ActivateSkill hook：要直接激活的 skill（名称 + 原因）。
-    /// 当 `ActivateSkill` 动作匹配时由 `execute_action` 填充；
-    /// 由 `fire_lifecycle_hook` 消费，用于调用 `ReactAgent::activate_skill`。
+    /**
+    用于 ActivateSkill hook：要直接激活的 skill（名称 + 原因）。
+    当 `ActivateSkill` 动作匹配时由 `execute_action` 填充；
+    由 `fire_lifecycle_hook` 消费，用于调用 `ReactAgent::activate_skill`。
+    */
     pub activate_skill: Option<(String, String)>,
 }
 
@@ -1177,6 +1199,7 @@ pub enum HookSource {
 }
 
 impl std::fmt::Display for HookSource {
+    /// 输出 hook 来源标识，如 `skill:名称`、`user_config`、`plugin:名称`。
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HookSource::Skill(name) => write!(f, "skill:{}", name),
@@ -1476,8 +1499,10 @@ mod tests {
 
     #[test]
     fn test_subagent_stop_status_serde_and_str() {
-        // 与业界对齐的终止模型：SubagentStop 携带一个状态枚举，
-        // 不存在单独的 SubagentCancelled 事件。
+        /*
+        与业界对齐的终止模型：SubagentStop 携带一个状态枚举，
+        不存在单独的 SubagentCancelled 事件。
+        */
         for (status, expected) in [
             (SubagentStopStatus::Completed, "completed"),
             (SubagentStopStatus::Failed, "failed"),

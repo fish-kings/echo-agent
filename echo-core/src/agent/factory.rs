@@ -1,21 +1,23 @@
-//! Agent 工厂模式 —— 基于配置创建 agent
-//!
-//! 提供 [`AgentFactoryConfig`]，用于承载创建 agent 所需的配置，
-//! 以及一个从配置生产 agent 的 [`AgentFactory`] trait。
-//!
-//! # 示例
-//!
-//! ```rust,ignore
-//! use echo_core::agent::factory::{AgentFactory, AgentFactoryConfig};
-//!
-//! let config = AgentFactoryConfig::new()
-//!     .model("qwen3-max")
-//!     .name("my-agent")
-//!     .with_system_prompt("You are a helpful assistant");
-//!
-//! struct ProductFactory;
-//! // 在拥有 Agent builder 的产品/门面代码中实现 `AgentFactory`。
-//! ```
+/*!
+Agent 工厂模式 —— 基于配置创建 agent
+
+提供 [`AgentFactoryConfig`]，用于承载创建 agent 所需的配置，
+以及一个从配置生产 agent 的 [`AgentFactory`] trait。
+
+# 示例
+
+```rust,ignore
+use echo_core::agent::factory::{AgentFactory, AgentFactoryConfig};
+
+let config = AgentFactoryConfig::new()
+    .model("qwen3-max")
+    .name("my-agent")
+    .with_system_prompt("You are a helpful assistant");
+
+struct ProductFactory;
+// 在拥有 Agent builder 的产品/门面代码中实现 `AgentFactory`。
+```
+*/
 
 use crate::error::Result;
 use crate::tools::Tool;
@@ -39,14 +41,16 @@ Response style:
 
 // ── Agent Factory Config ────────────────────────────────────────────────────
 
-/// 通过 [`AgentFactory`] 创建 agent 所需的配置。
-///
-/// 承载构建 agent 所需的模型、名称、系统提示词与工具。工厂读取该配置
-/// 并委托给相应的 builder 完成构建。
-///
-/// 注意：该结构体**没有**实现 `Clone`，因为它持有不可克隆的
-/// `Box<dyn Tool>` 实例。工厂通过 [`AgentFactoryConfig::into_tools`]
-/// 完整消费该配置。
+/**
+通过 [`AgentFactory`] 创建 agent 所需的配置。
+
+承载构建 agent 所需的模型、名称、系统提示词与工具。工厂读取该配置
+并委托给相应的 builder 完成构建。
+
+注意：该结构体**没有**实现 `Clone`，因为它持有不可克隆的
+`Box<dyn Tool>` 实例。工厂通过 [`AgentFactoryConfig::into_tools`]
+完整消费该配置。
+*/
 pub struct AgentFactoryConfig {
     /// LLM 模型标识符（例如 "qwen3-max"、"gpt-5.5"）。
     model: String,
@@ -59,9 +63,11 @@ pub struct AgentFactoryConfig {
 }
 
 impl AgentFactoryConfig {
-    /// 创建一个新的工厂配置。
-    ///
-    /// 默认值：model = ""，name = "assistant"，并使用一份实用型 agent 系统提示词。
+    /**
+    创建一个新的工厂配置。
+
+    默认值：model = ""，name = "assistant"，并使用一份实用型 agent 系统提示词。
+    */
     pub fn new() -> Self {
         Self {
             model: String::new(),
@@ -125,9 +131,11 @@ impl AgentFactoryConfig {
         self.tools.len()
     }
 
-    /// 消费该配置并返回其持有的工具向量。
-    ///
-    /// 由于 `Box<dyn Tool>` 无法克隆，这是工厂从配置中取出工具的主要方式。
+    /**
+    消费该配置并返回其持有的工具向量。
+
+    由于 `Box<dyn Tool>` 无法克隆，这是工厂从配置中取出工具的主要方式。
+    */
     pub fn into_tools(self) -> Vec<Box<dyn Tool>> {
         self.tools
     }

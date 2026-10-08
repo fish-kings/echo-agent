@@ -1,7 +1,9 @@
-//! 基于失败模式生成技能补丁。
-//!
-//! 分析技能遥测数据以识别常见的失败模式，并生成补丁提案，
-//! 通过更完善的错误处理来改进技能说明。
+/*!
+基于失败模式生成技能补丁。
+
+分析技能遥测数据以识别常见的失败模式，并生成补丁提案，
+通过更完善的错误处理来改进技能说明。
+*/
 
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -358,8 +360,10 @@ impl SkillPatcher {
             )));
         }
 
-        // 将 frontmatter（--- ... ---）与正文拆分开。若没有 frontmatter，
-        // 则将全部内容都当作正文处理。
+        /*
+        将 frontmatter（--- ... ---）与正文拆分开。若没有 frontmatter，
+        则将全部内容都当作正文处理。
+        */
         let (frontmatter, body) = if let Some(rest) = content.strip_prefix("---\n") {
             if let Some(end) = rest.find("\n---\n") {
                 let fm_end = end + 8; // 4（前缀）+ 内容 + 4（\n---\n）
